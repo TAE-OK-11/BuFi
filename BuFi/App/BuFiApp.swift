@@ -10,7 +10,6 @@ struct BuFiApp: App {
             RootView()
                 .environmentObject(model)
                 .environmentObject(audio)
-                .preferredColorScheme(.dark)
                 .tint(BuFiTheme.accent)
         }
     }

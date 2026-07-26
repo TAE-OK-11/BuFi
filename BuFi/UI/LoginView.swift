@@ -73,7 +73,10 @@ struct LoginView: View {
                             .onSubmit(connect)
                             .padding(.horizontal, 16)
                             .frame(height: 56)
-                            .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
+                            .background(
+                                BuFiTheme.elevated,
+                                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            )
                     }
                     .padding(.top, 34)
 
@@ -87,7 +90,7 @@ struct LoginView: View {
                     Button(action: connect) {
                         HStack {
                             if model.sessionState == .connecting {
-                                ProgressView().tint(.black)
+                                ProgressView().tint(.white)
                             }
                             Text(
                                 model.sessionState == .connecting
@@ -96,7 +99,7 @@ struct LoginView: View {
                             )
                         }
                         .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.black)
+                        .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 56)
                         .background(BuFiTheme.accent, in: Capsule())
@@ -107,6 +110,7 @@ struct LoginView: View {
                         password.isEmpty ||
                         model.sessionState == .connecting
                     )
+                    .buttonStyle(BuFiPressStyle())
                     .padding(.top, 22)
 
                     Text("비밀번호는 Apple Keychain에만 저장됩니다.")
@@ -148,7 +152,10 @@ struct LoginView: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 56)
-        .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
+        .background(
+            BuFiTheme.elevated,
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
     }
 
     private func connect() {

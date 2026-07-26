@@ -15,6 +15,9 @@ struct MusicDetailView: View {
     @State private var selectedSong: Song?
     @State private var palette = ArtworkPalette.fallback
     @State private var isFavorite = false
+    @State private var artistImageURL: String?
+    @State private var artistBiography = ""
+    @State private var artistAlbumCount = 0
 
     var body: some View {
         ScrollView {
@@ -26,14 +29,20 @@ struct MusicDetailView: View {
                         .padding(.top, 60)
                 } else {
                     controls
+                    if isArtist, !artistBiography.isEmpty { artistAbout }
                     if !albums.isEmpty { albumRail }
                     songList
                 }
             }
-            .padding(.bottom, 40)
+            // Keep the final row fully scrollable above both the mini player and
+            // the tab bar. The native iOS 26 accessory reserves its own safe area,
+            // while this content tail also covers compact devices, larger text,
+            // and the pre-iOS 26 fallback inset.
+            .padding(.bottom, audio.currentSong == nil ? 48 : 136)
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task(id: route) { await load() }
         .sheet(item: $selectedSong) { song in
@@ -43,7 +52,59 @@ struct MusicDetailView: View {
         }
     }
 
+    @ViewBuilder
     private var hero: some View {
+        if isArtist {
+            artistHero
+        } else {
+            collectionHero
+        }
+    }
+
+    private var artistHero: some View {
+        ZStack(alignment: .bottomLeading) {
+            ArtworkView(
+                coverArt: coverArt,
+                remoteURL: artistImageURL,
+                size: 430,
+                cornerRadius: 24,
+                onPalette: { palette = $0 }
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: 350)
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.12), .black.opacity(0.88)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(title.isEmpty ? " " : title)
+                    .font(.system(size: 35, weight: .bold))
+                    .tracking(-1.2)
+                    .lineLimit(2)
+                Text(
+                    String(
+                        format: String(localized: "%d개 앨범 · %d개 인기곡"),
+                        max(artistAlbumCount, albums.count),
+                        songs.count
+                    )
+                )
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.74))
+            }
+            .foregroundStyle(.white)
+            .padding(22)
+        }
+        .shadow(color: .black.opacity(0.24), radius: 22, y: 12)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 18)
+    }
+
+    private var collectionHero: some View {
         VStack(spacing: 19) {
             ArtworkView(
                 coverArt: coverArt,
@@ -60,6 +121,7 @@ struct MusicDetailView: View {
                     .tracking(-0.7)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
+                    .foregroundStyle(.white)
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 15, weight: .medium))
@@ -75,14 +137,17 @@ struct MusicDetailView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 12) {
             Button(action: toggleFavorite) {
                 Image(systemName: isFavorite ? "heart.fill" : "heart")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 23, weight: .semibold))
                     .foregroundStyle(isFavorite ? BuFiTheme.accentSoft : .white)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 54, height: 54)
+                    .background(.white.opacity(0.10), in: Circle())
+                    .buFiGlass(cornerRadius: 27, interactive: true)
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .buttonStyle(BuFiPressStyle())
             .opacity(canFavorite ? 1 : 0)
             .disabled(!canFavorite)
             .accessibilityLabel(isFavorite ? "좋아요 취소" : "좋아요 표시")
@@ -95,13 +160,16 @@ struct MusicDetailView: View {
                 }
             } label: {
                 Image(systemName: "shuffle")
-                    .font(.system(size: 22, weight: .semibold))
-                    .frame(width: 44, height: 44)
+                    .font(.system(size: 23, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 54, height: 54)
+                    .background(.white.opacity(0.10), in: Circle())
+                    .buFiGlass(cornerRadius: 27, interactive: true)
             }
+            .frame(maxWidth: .infinity)
+            .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
             .accessibilityLabel("셔플 재생")
-
-            Spacer()
 
             Button {
                 if let first = songs.first {
@@ -114,13 +182,37 @@ struct MusicDetailView: View {
                     .frame(width: 62, height: 62)
                     .background(BuFiTheme.accent, in: Circle())
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
             .accessibilityLabel("모두 재생")
         }
-        .buttonStyle(.plain)
         .padding(.horizontal, 20)
         .padding(.bottom, 10)
+    }
+
+    private var artistAbout: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("아티스트 소개")
+                .font(.system(size: 22, weight: .bold))
+            Text(artistBiography)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(.secondary)
+                .lineSpacing(3)
+                .lineLimit(5)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 18)
+        .background(
+            BuFiTheme.elevated,
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(BuFiTheme.separator.opacity(0.35), lineWidth: 0.5)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 
     private var albumRail: some View {
@@ -212,6 +304,9 @@ struct MusicDetailView: View {
         isLoading = true
         albums = []
         songs = []
+        artistImageURL = nil
+        artistBiography = ""
+        artistAlbumCount = 0
         do {
             switch route {
             case .album(let album):
@@ -249,11 +344,26 @@ struct MusicDetailView: View {
                 title = artist.name
                 subtitle = String(localized: "아티스트")
                 coverArt = artist.coverArt
+                artistImageURL = artist.artistImageUrl
+                artistAlbumCount = artist.albumCount ?? 0
                 let detail = try await model.artist(id: artist.id, name: artist.name)
                 isFavorite = detail.artist.isStarred
                 coverArt = detail.artist.coverArt ?? coverArt
                 songs = detail.topSongs
                 albums = detail.albums
+                artistAlbumCount = detail.artist.albumCount ?? detail.albums.count
+                artistImageURL =
+                    detail.artist.artistImageUrl
+                    ?? detail.info?.largeImageUrl
+                    ?? detail.info?.mediumImageUrl
+                artistBiography = (detail.info?.biography ?? "")
+                    .replacingOccurrences(
+                        of: "<[^>]+>",
+                        with: " ",
+                        options: .regularExpression
+                    )
+                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
             }
         } catch {
             model.errorMessage = error.localizedDescription

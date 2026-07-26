@@ -117,6 +117,16 @@ actor ArtworkStore {
         paletteMemory.removeAllObjects()
     }
 
+    func clearAll() {
+        clearMemory()
+        session.configuration.urlCache?.removeAllCachedResponses()
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+    }
+
     private static func components(_ color: UIColor) -> RGBAColor {
         var red: CGFloat = 0
         var green: CGFloat = 0

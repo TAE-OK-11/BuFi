@@ -14,7 +14,7 @@ struct LibraryView: View {
                 }
                 .padding(.bottom, 34)
             }
-            .background(BuFiTheme.background)
+            .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
@@ -37,6 +37,7 @@ struct LibraryView: View {
                 .overlay {
                     Image(systemName: "music.note")
                         .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
                 }
             Text("내 라이브러리")
                 .font(.system(size: 31, weight: .bold))
@@ -54,7 +55,7 @@ struct LibraryView: View {
                         .background(BuFiTheme.elevated, in: Circle())
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("라이브러리 새로고침")
         }
         .padding(.horizontal, 17)
@@ -71,18 +72,18 @@ struct LibraryView: View {
                         Label(item.title, systemImage: item.icon)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(
-                                filter == item ? Color.white : Color.white.opacity(0.58)
+                                filter == item ? Color.white : Color.primary
                             )
                             .padding(.horizontal, 14)
                             .frame(height: 36)
                             .background(
                                 filter == item
                                     ? BuFiTheme.accent.opacity(0.92)
-                                    : Color.white.opacity(0.09),
+                                    : BuFiTheme.elevated,
                                 in: Capsule()
                             )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                 }
             }
             .padding(.horizontal, 17)
@@ -210,11 +211,11 @@ struct LibraryView: View {
                 Image(systemName: favorite ? "heart.fill" : "heart")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(
-                        favorite ? BuFiTheme.accent : Color.white.opacity(0.50)
+                        favorite ? BuFiTheme.accent : Color.secondary
                     )
                     .frame(width: 38, height: 38)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
             .accessibilityLabel(favorite ? "좋아요 취소" : "좋아요 표시")
         }
         .padding(.horizontal, 17)

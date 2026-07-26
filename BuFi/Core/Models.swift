@@ -143,6 +143,7 @@ struct ArtistDetail: Sendable {
     var artist: Artist
     var albums: [Album]
     var topSongs: [Song]
+    var info: ArtistInfo?
 }
 
 struct LyricLine: Identifiable, Hashable, Sendable {
@@ -323,7 +324,7 @@ struct ArtistInfoPayload: Decodable {
     let artistInfo2: ArtistInfo?
 }
 
-struct ArtistInfo: Decodable {
+struct ArtistInfo: Decodable, Sendable {
     let biography: String?
     let musicBrainzId: String?
     let lastFmUrl: String?

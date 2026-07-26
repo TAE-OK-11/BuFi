@@ -276,12 +276,17 @@ actor OpenSubsonicClient {
             "getTopSongs",
             parameters: ["artist": name, "count": "20"]
         )
-        let (albums, top) = try await (albumsPayload, topPayload)
+        async let infoPayload: ArtistInfoPayload? = try? request(
+            "getArtistInfo2",
+            parameters: ["id": id, "count": "8", "includeNotPresent": "false"]
+        )
+        let (albums, top, info) = try await (albumsPayload, topPayload, infoPayload)
         guard let artist = albums.artist else { throw OpenSubsonicError.invalidResponse }
         return ArtistDetail(
             artist: artist.artistValue,
             albums: artist.album ?? [],
-            topSongs: top.topSongs?.song ?? []
+            topSongs: top.topSongs?.song ?? [],
+            info: info?.artistInfo2
         )
     }
 
