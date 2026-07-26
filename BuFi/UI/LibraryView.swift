@@ -185,19 +185,9 @@ struct LibraryView: View {
                 HStack(spacing: 13) {
                     ArtworkView(coverArt: artist.coverArt, size: 66, cornerRadius: 33)
                         .frame(width: 66, height: 66)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(artist.name)
-                            .font(.system(size: 17, weight: .semibold))
-                            .lineLimit(1)
-                        Text(
-                            favorite
-                                ? String(localized: "좋아요 표시한 아티스트")
-                                : String(localized: "아티스트")
-                        )
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+                    Text(artist.name)
+                        .font(.system(size: 17, weight: .semibold))
                         .lineLimit(1)
-                    }
                     Spacer()
                 }
                 .contentShape(Rectangle())
