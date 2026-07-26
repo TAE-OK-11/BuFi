@@ -135,7 +135,10 @@ final class AudioEngine: NSObject, ObservableObject {
         if isPlaying || player.timeControlStatus == .playing {
             pause()
         } else {
+            configureAudioSession()
             wantsPlayback = true
+            player.isMuted = false
+            player.volume = 1
             player.play()
         }
     }
@@ -199,6 +202,25 @@ final class AudioEngine: NSObject, ObservableObject {
         play(queue[index], in: queue)
     }
 
+    func excludeCurrentAndAdvance() {
+        guard queue.indices.contains(queueIndex) else { return }
+        let removedIndex = queueIndex
+        queue.remove(at: removedIndex)
+        guard !queue.isEmpty else {
+            pause()
+            currentSong = nil
+            queueIndex = -1
+            lyrics = .empty
+            activeLyricIndex = -1
+            player.replaceCurrentItem(with: nil)
+            updateNowPlaying()
+            scheduleQueueSave(immediate: true)
+            return
+        }
+        queueIndex = min(removedIndex, queue.count - 1)
+        play(queue[queueIndex], in: queue)
+    }
+
     func toggleShuffle() {
         isShuffleEnabled.toggle()
         scheduleQueueSave()
@@ -255,7 +277,13 @@ final class AudioEngine: NSObject, ObservableObject {
                     compatibilityFormat: compatibilityFormat
                 )
                 guard self.currentSong?.id == song.id else { return }
-                self.replacePlayerItem(url: url, autoplay: autoplay)
+                let mimeType: String?
+                switch compatibilityFormat {
+                case "aac": mimeType = "audio/aac"
+                case "mp3": mimeType = "audio/mpeg"
+                default: mimeType = song.contentType
+                }
+                self.replacePlayerItem(url: url, autoplay: autoplay, mimeType: mimeType)
             } catch {
                 self.isBuffering = false
                 self.handlePlaybackFailure()
@@ -263,9 +291,16 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func replacePlayerItem(url: URL, autoplay: Bool) {
+    private func replacePlayerItem(url: URL, autoplay: Bool, mimeType: String?) {
         let position = elapsed
-        let item = AVPlayerItem(url: url)
+        // Amperfy uses an out-of-band MIME hint before handing Subsonic
+        // streams to its player. Some servers omit or generalize Content-Type,
+        // so applying the same GPLv3-covered compatibility pattern keeps
+        // Core AVFoundation from rejecting an otherwise valid audio stream.
+        let options: [String: Any] = mimeType.map {
+            ["AVURLAssetOutOfBandMIMETypeKey": $0]
+        } ?? [:]
+        let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
         item.preferredForwardBufferDuration = 12
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
 
@@ -278,7 +313,12 @@ final class AudioEngine: NSObject, ObservableObject {
                     let seconds = item.duration.seconds
                     if seconds.isFinite, seconds > 0 { self.duration = seconds }
                     if position > 0 { self.seek(to: position) }
-                    if autoplay || self.wantsPlayback { self.player.play() }
+                    if autoplay || self.wantsPlayback {
+                        self.configureAudioSession()
+                        self.player.isMuted = false
+                        self.player.volume = 1
+                        self.player.play()
+                    }
                 case .failed:
                     self.isBuffering = false
                     self.handlePlaybackFailure()
@@ -378,11 +418,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 .playback,
                 mode: .default,
                 policy: .longFormAudio,
-                options: [.allowAirPlay]
+                options: [.allowAirPlay, .allowBluetoothA2DP]
             )
             try session.setActive(true)
+            player.isMuted = false
+            player.volume = 1
         } catch {
-            // Playback can still be attempted; the UI surfaces AVPlayer failures.
+            // A later play attempt retries activation. This matters when another
+            // app temporarily owns the built-in speaker during launch.
         }
     }
 
@@ -453,17 +496,30 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func handleRouteChange(_ notification: Notification) {
         guard let rawValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              AVAudioSession.RouteChangeReason(rawValue: rawValue) == .oldDeviceUnavailable else {
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawValue) else {
             return
         }
-        pause()
+        switch reason {
+        case .oldDeviceUnavailable, .newDeviceAvailable, .routeConfigurationChange:
+            let shouldContinue = isPlaying || wantsPlayback
+            configureAudioSession()
+            if shouldContinue {
+                wantsPlayback = true
+                player.play()
+            }
+        default:
+            break
+        }
     }
 
     private func installRemoteCommands() {
         let commands = MPRemoteCommandCenter.shared()
         commands.playCommand.addTarget { [weak self] _ in
             Task { @MainActor in
+                self?.configureAudioSession()
                 self?.wantsPlayback = true
+                self?.player.isMuted = false
+                self?.player.volume = 1
                 self?.player.play()
             }
             return .success

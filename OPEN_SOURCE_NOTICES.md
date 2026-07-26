@@ -3,7 +3,7 @@
 ## BuFi
 
 Copyright © 2026 TAE-OK-11  
-Licensed under the MIT License. See `LICENSE`.
+Licensed under the GNU General Public License v3.0 or later. See `LICENSE`.
 
 ## XcodeGen
 
@@ -16,11 +16,10 @@ application.
 
 ## Amperfy
 
-Amperfy was reviewed as a compatibility and feature reference for Subsonic
-clients. No Amperfy source code is copied, modified, or linked into BuFi.
+BuFi adapts selected playback compatibility and audio-session patterns from
+Amperfy's GPLv3 source. BuFi is therefore distributed under GPLv3-or-later and
+keeps the complete corresponding source available in this repository.
 
 - Project: <https://github.com/BLeeEZ/amperfy>
 - License: GNU General Public License v3.0
-
-If Amperfy code is incorporated in a future version, the resulting work must
-comply with GPLv3, including source distribution and prominent license notices.
+- Copyright: Maximilian Bauer and Amperfy contributors

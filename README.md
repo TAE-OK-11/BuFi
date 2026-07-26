@@ -9,7 +9,9 @@ It is designed around the iOS media stack rather than a web view.
 - Home, search, albums, artists, playlists, starred music, and server diagnostics
 - Native `AVPlayer` playback with queue, shuffle, repeat, seeking, AirPlay, lock-screen controls, and scrobbling
 - Automatic AAC/MP3 compatibility fallback when an original file cannot be decoded
+- Built-in speaker session recovery and Subsonic MIME compatibility handling
 - Synchronized OpenSubsonic lyrics with a full-screen lyrics view
+- Native Liquid Glass surfaces on iOS 26 with a material fallback on iOS 17–18
 - Core Graphics dominant-color clustering and an adaptive player background
 - Actor-backed artwork caching and downsampling
 - Offline downloads stored in Application Support
@@ -18,7 +20,7 @@ It is designed around the iOS media stack rather than a web view.
 ## Requirements
 
 - iOS 17 or later
-- Xcode 16 or later
+- Xcode 26 or later
 - A Navidrome/OpenSubsonic server reachable over HTTPS
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) for generating the Xcode project
 
@@ -48,15 +50,11 @@ third-party runtime dependencies.
 
 ## Open-source policy
 
-BuFi currently ships without third-party runtime dependencies. XcodeGen is used
-only to generate the Xcode project and is available under the MIT License.
-
-[Amperfy](https://github.com/BLeeEZ/amperfy) (GPLv3) was evaluated as a
-compatibility and feature reference. No Amperfy source code is copied or linked
-into BuFi, so BuFi remains independently implemented under the MIT License. If
-GPL-covered source is incorporated later, BuFi's distribution license and
-source-availability obligations must be updated before publishing binaries.
+BuFi ships without third-party runtime packages. XcodeGen is used only to
+generate the project. Playback compatibility and audio-session patterns are
+adapted from [Amperfy](https://github.com/BLeeEZ/amperfy), and the corresponding
+source remains available in this public repository under GPLv3-or-later.
 
 ## License
 
-MIT
+GNU General Public License v3.0 or later

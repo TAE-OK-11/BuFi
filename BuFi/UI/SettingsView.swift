@@ -76,7 +76,7 @@ private struct OpenSourceNoticesView: View {
         List {
             Section("BuFi") {
                 Text("Copyright © 2026 TAE-OK-11")
-                Text("MIT License")
+                Text("GNU GPL v3 or later")
                 Text("BuFi는 SwiftUI, AVFoundation, MediaPlayer, Core Graphics, CryptoKit, Keychain, URLSession 등 Apple 시스템 프레임워크로 구현됩니다.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -89,13 +89,13 @@ private struct OpenSourceNoticesView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Section("참고 프로젝트") {
+            Section("재생 호환성") {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Amperfy").font(.headline)
                     Text("GNU GPL v3")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Text("호환 기능과 사용자 경험을 조사하기 위한 참고 자료이며, Amperfy 소스 코드는 BuFi에 포함하지 않았습니다.")
+                    Text("Subsonic 스트림 MIME 처리와 오디오 세션 패턴을 Amperfy의 GPLv3 구현에서 적용했습니다. 전체 대응 소스는 BuFi 공개 저장소에서 제공합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

@@ -58,7 +58,7 @@ struct PlayerView: View {
                 endPoint: .bottom
             )
             LinearGradient(
-                colors: [.clear, .black.opacity(0.14), .black.opacity(0.32)],
+                colors: [.white.opacity(0.08), .clear, .black.opacity(0.14)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -81,13 +81,8 @@ struct PlayerView: View {
 
             Spacer()
             VStack(spacing: 3) {
-                Text(song.album.isEmpty ? "지금 재생 중" : song.album)
-                    .font(.system(size: 12, weight: .bold))
-                    .textCase(.uppercase)
-                    .lineLimit(1)
-                Text(song.artist)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
+                Text("추천 트랙 재생 중")
+                    .font(.system(size: 13, weight: .bold))
                     .lineLimit(1)
             }
             .frame(maxWidth: 240)
@@ -116,7 +111,7 @@ struct PlayerView: View {
     }
 
     private func artwork(_ song: Song, availableHeight: CGFloat) -> some View {
-        let edge = min(UIScreen.main.bounds.width - 44, max(250, availableHeight * 0.43))
+        let edge = min(UIScreen.main.bounds.width - 36, max(264, availableHeight * 0.47))
         return ArtworkView(
             coverArt: song.coverArt,
             size: edge,
@@ -142,6 +137,15 @@ struct PlayerView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            Button {
+                audio.excludeCurrentAndAdvance()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 25, weight: .regular))
+                    .frame(width: 42, height: 42)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("현재 추천에서 제외")
             Button {
                 Task { await model.toggleStar(song: song) }
             } label: {
@@ -193,12 +197,12 @@ struct PlayerView: View {
                 audio.togglePlayback()
             } label: {
                 ZStack {
-                    Circle().fill(.white).frame(width: 76, height: 76)
+                    Circle().fill(.white).frame(width: 64, height: 64)
                     if audio.isBuffering {
                         ProgressView().tint(.black)
                     } else {
                         Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 31, weight: .bold))
+                            .font(.system(size: 27, weight: .bold))
                             .foregroundStyle(Color(palette.bottom))
                             .offset(x: audio.isPlaying ? 0 : 2)
                     }
@@ -246,20 +250,35 @@ struct PlayerView: View {
     @ViewBuilder
     private var lyricsCard: some View {
         if !audio.lyrics.lines.isEmpty {
-            Button {
-                audio.showFullLyrics = true
-            } label: {
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack {
-                        Text("가사")
-                            .font(.system(size: 20, weight: .bold))
-                        Spacer()
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text("가사")
+                        .font(.system(size: 20, weight: .bold))
+                    Spacer()
+                    if let song = audio.currentSong {
+                        ShareLink(item: "\(song.title) — \(song.artist)") {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 15, weight: .bold))
+                                .frame(width: 38, height: 38)
+                                .background(.black.opacity(0.22), in: Circle())
+                        }
+                        .accessibilityLabel("가사 공유")
+                    }
+                    Button {
+                        audio.showFullLyrics = true
+                    } label: {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.system(size: 15, weight: .bold))
                             .frame(width: 38, height: 38)
-                            .background(.black.opacity(0.24), in: Circle())
+                            .background(.black.opacity(0.22), in: Circle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("전체 화면 가사")
+                }
 
+                Button {
+                    audio.showFullLyrics = true
+                } label: {
                     VStack(alignment: .leading, spacing: 13) {
                         ForEach(visibleLyrics) { line in
                             Text(line.text)
@@ -273,12 +292,13 @@ struct PlayerView: View {
                     .frame(maxHeight: 205, alignment: .top)
                     .clipped()
                 }
-                .padding(18)
-                .foregroundStyle(.white)
-                .background(Color.white.opacity(0.30), in: RoundedRectangle(cornerRadius: 18))
-                .contentShape(RoundedRectangle(cornerRadius: 18))
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .padding(18)
+            .foregroundStyle(.white)
+            .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 18))
+            .contentShape(RoundedRectangle(cornerRadius: 18))
+            .buFiGlass(cornerRadius: 18, interactive: true)
             .padding(.top, 8)
         } else {
             Text("이 곡에는 표시할 가사가 없습니다.")
@@ -447,7 +467,9 @@ private struct FullLyricsView: View {
         .padding(.horizontal, 24)
         .padding(.top, 10)
         .padding(.bottom, 14)
-        .background(.ultraThinMaterial)
+        .buFiGlass(cornerRadius: 28)
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
     }
 
     private func color(for index: Int) -> Color {

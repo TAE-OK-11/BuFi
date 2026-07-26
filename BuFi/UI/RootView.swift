@@ -87,6 +87,9 @@ struct RootView: View {
             tabButton(.settings, title: "설정", icon: "gearshape.fill")
         }
         .frame(height: 57)
+        .padding(.horizontal, 8)
+        .buFiGlass(cornerRadius: 28, interactive: true)
+        .padding(.horizontal, 8)
     }
 
     private func tabButton(_ value: AppTab, title: String, icon: String) -> some View {

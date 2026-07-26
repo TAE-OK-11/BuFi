@@ -22,6 +22,37 @@ extension TimeInterval {
     }
 }
 
+private struct BuFiGlassModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let interactive: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(
+                interactive ? .regular.interactive() : .regular,
+                in: .rect(cornerRadius: cornerRadius)
+            )
+        } else {
+            content
+                .background(.ultraThinMaterial, in: RoundedRectangle(
+                    cornerRadius: cornerRadius,
+                    style: .continuous
+                ))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(.white.opacity(0.12), lineWidth: 0.6)
+                }
+        }
+    }
+}
+
+extension View {
+    func buFiGlass(cornerRadius: CGFloat, interactive: Bool = false) -> some View {
+        modifier(BuFiGlassModifier(cornerRadius: cornerRadius, interactive: interactive))
+    }
+}
+
 struct ArtworkView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -244,12 +275,10 @@ struct MiniPlayerView: View {
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
+                    .opacity(0.78)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(.white.opacity(0.1), lineWidth: 0.5)
-                }
+                .buFiGlass(cornerRadius: 9, interactive: true)
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 8)
