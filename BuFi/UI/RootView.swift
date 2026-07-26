@@ -131,7 +131,7 @@ struct RootView: View {
                 return
             }
             guard model.sessionState == .ready else { return }
-            await model.refresh(showErrors: false)
+            await model.refresh()
         }
     }
 }
