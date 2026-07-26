@@ -1,0 +1,65 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unsigned-ipa:
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/BuFiDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build | xcpretty
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="$RUNNER_TEMP/BuFiDerivedData/Build/Products/Release-iphoneos/BuFi.app"
+          test -d "$APP_PATH"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/Payload/BuFi.app"
+          cd "$RUNNER_TEMP"
+          zip -qry "$GITHUB_WORKSPACE/BuFi-unsigned.ipa" Payload
+          shasum -a 256 "$GITHUB_WORKSPACE/BuFi-unsigned.ipa" > "$GITHUB_WORKSPACE/BuFi-unsigned.ipa.sha256"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BuFi-unsigned-${{ github.sha }}
+          path: |
+            BuFi-unsigned.ipa
+            BuFi-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
+

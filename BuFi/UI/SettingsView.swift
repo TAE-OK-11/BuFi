@@ -1,0 +1,107 @@
+import SwiftUI
+
+struct SettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var audio: AudioEngine
+    @State private var offlineBytes: Int64 = 0
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 14) {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 54, height: 54)
+                            .overlay { Text("T").font(.title3).foregroundStyle(.black) }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("TAE Music")
+                                .font(.headline)
+                            Text(model.serverVersion.isEmpty ? "OpenSubsonic" : "서버 \(model.serverVersion)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+
+                Section("스트리밍") {
+                    Picker("음질", selection: $audio.quality) {
+                        ForEach(StreamQuality.allCases) { quality in
+                            Text(quality.title).tag(quality)
+                        }
+                    }
+                    HStack {
+                        Label("AirPlay", systemImage: "airplayaudio")
+                        Spacer()
+                        AirPlayButton()
+                            .frame(width: 42, height: 34)
+                    }
+                    LabeledContent(
+                        "오프라인 저장 공간",
+                        value: ByteCountFormatter.string(fromByteCount: offlineBytes, countStyle: .file)
+                    )
+                }
+
+                Section("앱") {
+                    LabeledContent("최소 iOS", value: "17.0")
+                    LabeledContent("버전", value: "0.1.0")
+                    Label("분석·광고 SDK 없음", systemImage: "hand.raised.fill")
+                    NavigationLink("오픈소스 및 라이선스") {
+                        OpenSourceNoticesView()
+                    }
+                }
+
+                Section {
+                    Button("라이브러리 새로고침") {
+                        Task { await model.refresh() }
+                    }
+                    Button("로그아웃", role: .destructive) {
+                        model.logout()
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color(red: 0.07, green: 0.07, blue: 0.07))
+            .navigationTitle("설정")
+            .task {
+                offlineBytes = await OfflineStore.shared.totalBytes()
+            }
+        }
+    }
+}
+
+private struct OpenSourceNoticesView: View {
+    var body: some View {
+        List {
+            Section("BuFi") {
+                Text("Copyright © 2026 TAE-OK-11")
+                Text("MIT License")
+                Text("BuFi는 SwiftUI, AVFoundation, MediaPlayer, Core Graphics, CryptoKit, Keychain, URLSession 등 Apple 시스템 프레임워크로 구현됩니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("빌드 도구") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("XcodeGen").font(.headline)
+                    Text("MIT License · Copyright © Yonas Kolb")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("참고 프로젝트") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Amperfy").font(.headline)
+                    Text("GNU GPL v3")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("호환 기능과 사용자 경험을 조사하기 위한 참고 자료이며, Amperfy 소스 코드는 BuFi에 포함하지 않았습니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("오픈소스")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
