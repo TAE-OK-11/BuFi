@@ -24,8 +24,7 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    header
+                LazyVStack(alignment: .leading, spacing: 20) {
                     searchField
                     if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         browse
@@ -33,6 +32,7 @@ struct SearchView: View {
                         results
                     }
                 }
+                .padding(.top, 10)
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
@@ -50,35 +50,10 @@ struct SearchView: View {
         }
     }
 
-    private var header: some View {
-        HStack {
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: 44, height: 44)
-                .overlay {
-                    Image(systemName: "music.note")
-                        .foregroundStyle(.white)
-                        .font(.system(size: 17, weight: .bold))
-                }
-            Text("검색")
-                .font(.system(size: 32, weight: .bold))
-                .tracking(-1)
-            Spacer()
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-    }
-
     private var searchField: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 22, weight: .semibold))
             TextField(
                 "",
                 text: $query,
@@ -107,13 +82,13 @@ struct SearchView: View {
         }
         .foregroundStyle(.primary)
         .padding(.horizontal, 16)
-        .frame(height: 58)
+        .frame(height: 56)
         .background(
             BuFiTheme.elevated,
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
                 .stroke(BuFiTheme.separator.opacity(0.5), lineWidth: 0.5)
         }
         .padding(.horizontal, 16)
