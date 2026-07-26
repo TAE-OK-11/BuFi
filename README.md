@@ -26,6 +26,7 @@ It is designed around the iOS media stack rather than a web view.
 
 ```sh
 brew install xcodegen
+sh Scripts/prepare-assets.sh
 xcodegen generate
 open BuFi.xcodeproj
 ```

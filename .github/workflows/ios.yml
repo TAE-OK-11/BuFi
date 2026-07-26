@@ -25,6 +25,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Prepare generated assets
+        run: sh Scripts/prepare-assets.sh
+
       - name: Generate project
         run: xcodegen generate
 
