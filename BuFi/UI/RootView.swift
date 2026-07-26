@@ -116,12 +116,12 @@ struct RootView: View {
     @ViewBuilder
     private func tabPage<Content: View>(_ content: Content) -> some View {
         content
-            .safeAreaInset(edge: .bottom, spacing: 8) {
+            .safeAreaInset(edge: .bottom, spacing: 10) {
                 if audio.currentSong != nil {
                     LegacyMiniPlayerView()
                         .frame(height: 60)
                         .padding(.horizontal, 8)
-                        .padding(.bottom, 4)
+                        .padding(.bottom, 6)
                 }
             }
     }
