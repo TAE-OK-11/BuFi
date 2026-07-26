@@ -221,6 +221,7 @@ struct AlbumCard: View {
 }
 
 struct SongRow: View {
+    @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
 
     let song: Song
@@ -229,54 +230,174 @@ struct SongRow: View {
     var artworkSize: CGFloat = 54
     var onMore: (() -> Void)?
 
+    @ViewBuilder
     var body: some View {
-        HStack(spacing: 12) {
-            if showsArtwork {
-                ArtworkView(
-                    coverArt: song.coverArt,
-                    size: artworkSize,
-                    cornerRadius: max(5, artworkSize * 0.11)
-                )
-                .frame(width: artworkSize, height: artworkSize)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(song.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(
-                        audio.currentSong?.id == song.id ? BuFiTheme.accent : .primary
-                    )
-                    .lineLimit(1)
-                Text([song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 6)
-            if song.isStarred {
-                Image(systemName: "heart.fill")
-                    .foregroundStyle(BuFiTheme.accent)
-                    .font(.system(size: 17))
-            }
-            if let onMore {
-                Button(action: onMore) {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 38, height: 38)
-                        .contentShape(Rectangle())
+        if usesCompactAlbumLayout {
+            compactAlbumRow
+        } else {
+            standardRow
+        }
+    }
+
+    private var compactAlbumRow: some View {
+        HStack(spacing: 0) {
+            Button {
+                audio.play(song, in: queue)
+            } label: {
+                HStack(spacing: 12) {
+                    Group {
+                        if audio.currentSong?.id == song.id {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(BuFiTheme.accent)
+                        } else {
+                            Text(String(format: "%02d", displayedTrackNumber))
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                    .frame(width: 28, alignment: .trailing)
+
+                    Text(song.title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(
+                            audio.currentSong?.id == song.id
+                                ? BuFiTheme.accent
+                                : Color.primary
+                        )
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(durationText)
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .frame(minWidth: 38, alignment: .trailing)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(song.title) 더 보기")
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 16) {
+                Button {
+                    Task { await model.toggleStar(song: song) }
+                } label: {
+                    Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(song.isStarred ? BuFiTheme.accent : Color.secondary)
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
+
+                if let onMore {
+                    Button(action: onMore) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(song.title) 더 보기")
+                }
+            }
+            .padding(.leading, 14)
+        }
+        .frame(minHeight: 52)
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var standardRow: some View {
+        HStack(spacing: 0) {
+            Button {
+                audio.play(song, in: queue)
+            } label: {
+                HStack(spacing: 12) {
+                    if showsArtwork {
+                        ArtworkView(
+                            coverArt: song.coverArt,
+                            size: artworkSize,
+                            cornerRadius: max(5, artworkSize * 0.11)
+                        )
+                        .frame(width: artworkSize, height: artworkSize)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(song.title)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(
+                                audio.currentSong?.id == song.id
+                                    ? BuFiTheme.accent
+                                    : Color.primary
+                            )
+                            .lineLimit(1)
+                        Text([song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 14) {
+                Button {
+                    Task { await model.toggleStar(song: song) }
+                } label: {
+                    Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(song.isStarred ? BuFiTheme.accent : Color.secondary)
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
+
+                if let onMore {
+                    Button(action: onMore) {
+                        Image(systemName: "ellipsis")
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(song.title) 더 보기")
+                }
+            }
+            .padding(.leading, 10)
         }
         .padding(.vertical, 5)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            audio.play(song, in: queue)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var usesCompactAlbumLayout: Bool {
+        guard showsArtwork, artworkSize <= 44, !queue.isEmpty else { return false }
+
+        let albumIDs = Set(
+            queue.compactMap { item -> String? in
+                guard let id = item.albumId, !id.isEmpty else { return nil }
+                return id
+            }
+        )
+        let albumNames = Set(
+            queue.map { $0.album.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        let singleAlbum = albumIDs.count == 1 || albumNames.count == 1
+        let tracksWithNumbers = queue.reduce(into: 0) { count, item in
+            if item.track != nil { count += 1 }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction {
-            audio.play(song, in: queue)
-        }
+        let enoughTrackMetadata = tracksWithNumbers >= max(1, (queue.count * 2) / 3)
+        return singleAlbum && enoughTrackMetadata
+    }
+
+    private var displayedTrackNumber: Int {
+        song.track ?? ((queue.firstIndex(where: { $0.id == song.id }) ?? 0) + 1)
+    }
+
+    private var durationText: String {
+        song.safeDuration > 0 ? song.safeDuration.playbackText : "—:—"
     }
 }
 
