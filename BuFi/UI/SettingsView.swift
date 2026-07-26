@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
     @AppStorage("restore-play-queue") private var restorePlayQueue = true
     @AppStorage("keep-screen-awake") private var keepScreenAwake = false
+    @AppStorage("server-sync-interval") private var syncInterval = 30.0
 
     var body: some View {
         NavigationStack {
@@ -44,8 +45,8 @@ struct SettingsView: View {
                                         model.serverVersion
                                     )
                             )
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                     }
                     .padding(.vertical, 6)
@@ -65,6 +66,18 @@ struct SettingsView: View {
                     Toggle(isOn: $hapticsEnabled) {
                         Label("햅틱 피드백", systemImage: "waveform.path")
                     }
+                }
+
+                Section("서버 동기화") {
+                    Picker("자동 동기화 주기", selection: $syncInterval) {
+                        Text("30초").tag(30.0)
+                        Text("1분").tag(60.0)
+                        Text("5분").tag(300.0)
+                        Text("15분").tag(900.0)
+                    }
+                    Text("앱을 사용하는 동안 선택한 주기로 서버의 라이브러리와 좋아요 상태를 자동으로 갱신합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("재생") {
@@ -122,16 +135,12 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Button("라이브러리 새로고침") {
-                        Task { await model.refresh() }
-                    }
                     Button("로그아웃", role: .destructive) {
                         model.logout()
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(BuFiTheme.background)
+            .listStyle(.insetGrouped)
             .navigationTitle("설정")
             .task {
                 offlineBytes = await OfflineStore.shared.totalBytes()
@@ -175,10 +184,10 @@ struct SettingsView: View {
     private var versionText: String {
         let version =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "1.1.0"
+            ?? "1.2.0"
         let build =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-            ?? "3"
+            ?? "4"
         return "\(version) (\(build))"
     }
 }
