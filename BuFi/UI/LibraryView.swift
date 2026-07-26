@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var audio: AudioEngine
     @State private var filter = LibraryFilter.playlists
 
     var body: some View {
@@ -11,8 +12,8 @@ struct LibraryView: View {
                     filters
                     content
                 }
-                .padding(.top, 10)
-                .padding(.bottom, 34)
+                .padding(.top, 18)
+                .padding(.bottom, audio.currentSong == nil ? 56 : 154)
             }
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
@@ -67,7 +68,8 @@ struct LibraryView: View {
                                 playlist.songCount ?? 0
                             ),
                             cover: playlist.coverArt,
-                            circle: false
+                            circle: false,
+                            placeholderIcon: "music.note.list"
                         )
                     }
                     .buttonStyle(.plain)
@@ -86,7 +88,8 @@ struct LibraryView: View {
                                 album.artist
                             ),
                             cover: album.coverArt,
-                            circle: false
+                            circle: false,
+                            placeholderIcon: "square.stack.fill"
                         )
                     }
                     .buttonStyle(.plain)
@@ -200,13 +203,14 @@ struct LibraryView: View {
         title: String,
         subtitle: String,
         cover: String?,
-        circle: Bool
+        circle: Bool,
+        placeholderIcon: String
     ) -> some View {
         HStack(spacing: 13) {
-            ArtworkView(
-                coverArt: cover,
-                size: 66,
-                cornerRadius: circle ? 33 : 11
+            libraryArtwork(
+                cover: cover,
+                circle: circle,
+                placeholderIcon: placeholderIcon
             )
             .frame(width: 66, height: 66)
             VStack(alignment: .leading, spacing: 5) {
@@ -226,6 +230,42 @@ struct LibraryView: View {
         .padding(.horizontal, 17)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func libraryArtwork(
+        cover: String?,
+        circle: Bool,
+        placeholderIcon: String
+    ) -> some View {
+        if let cover, !cover.isEmpty {
+            ArtworkView(
+                coverArt: cover,
+                size: 66,
+                cornerRadius: circle ? 33 : 11
+            )
+        } else {
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        BuFiTheme.accent.opacity(0.74),
+                        BuFiTheme.deezerGlow.opacity(0.76),
+                        Color.black.opacity(0.72)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: placeholderIcon)
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: circle ? 33 : 11,
+                    style: .continuous
+                )
+            )
+        }
     }
 
     private func empty(_ title: String, icon: String) -> some View {
