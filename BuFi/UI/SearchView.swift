@@ -26,10 +26,17 @@ struct SearchView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     searchField
-                    if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        browse
-                    } else {
-                        results
+                    Group {
+                        if isSearchSession {
+                            searchSessionContent
+                        } else {
+                            browse
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 260, alignment: .top)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        focused = false
                     }
                 }
                 .padding(.top, 20)
@@ -50,11 +57,15 @@ struct SearchView: View {
         }
     }
 
+    private var isSearchSession: Bool {
+        focused || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var searchField: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 21, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(focused ? BuFiTheme.accentSoft : .secondary)
             TextField(
                 "",
                 text: $query,
@@ -73,6 +84,7 @@ struct SearchView: View {
                 Button {
                     query = ""
                     model.clearSearch()
+                    focused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -90,10 +102,54 @@ struct SearchView: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.55), lineWidth: 0.6)
+                .stroke(
+                    focused
+                        ? LinearGradient(
+                            colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                        : LinearGradient(
+                            colors: [
+                                BuFiTheme.separator.opacity(0.55),
+                                BuFiTheme.separator.opacity(0.55)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                    lineWidth: focused ? 1.4 : 0.6
+                )
         }
+        .shadow(
+            color: focused ? BuFiTheme.accent.opacity(0.18) : .clear,
+            radius: focused ? 13 : 0
+        )
+        .shadow(
+            color: focused ? BuFiTheme.deezerGlow.opacity(0.13) : .clear,
+            radius: focused ? 18 : 0
+        )
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
+        .animation(.easeOut(duration: 0.22), value: focused)
+    }
+
+    @ViewBuilder
+    private var searchSessionContent: some View {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                Text("검색어를 입력하세요")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 54)
+        } else {
+            results
+        }
     }
 
     @ViewBuilder
@@ -249,10 +305,9 @@ struct SearchView: View {
                             HStack(spacing: 13) {
                                 ArtworkView(coverArt: artist.coverArt, size: 62, cornerRadius: 31)
                                     .frame(width: 62, height: 62)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(artist.name).font(.system(size: 17, weight: .semibold))
-                                    Text("아티스트").font(.system(size: 13)).foregroundStyle(.secondary)
-                                }
+                                Text(artist.name)
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .lineLimit(1)
                                 Spacer()
                                 Image(systemName: "chevron.right").foregroundStyle(.secondary)
                             }
