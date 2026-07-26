@@ -72,33 +72,29 @@ struct RootView: View {
 
     private var appContent: some View {
         tabs
-            .safeAreaInset(edge: .bottom, spacing: 8) {
-                if audio.currentSong != nil {
-                    LegacyMiniPlayerView()
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 4)
-                }
-            }
     }
 
     private var tabs: some View {
         TabView(selection: $tab) {
-            HomeView()
+            tabPage(HomeView())
                 .tabItem {
                     Label("홈", systemImage: "house.fill")
                 }
                 .tag(AppTab.home)
-            SearchView()
+
+            tabPage(SearchView())
                 .tabItem {
                     Label("검색하기", systemImage: "magnifyingglass")
                 }
                 .tag(AppTab.search)
-            LibraryView()
+
+            tabPage(LibraryView())
                 .tabItem {
                     Label("내 라이브러리", systemImage: "music.note.list")
                 }
                 .tag(AppTab.library)
-            SettingsView()
+
+            tabPage(SettingsView())
                 .tabItem {
                     Label("설정", systemImage: "gearshape.fill")
                 }
@@ -115,6 +111,19 @@ struct RootView: View {
                 : .none,
             value: tab
         )
+    }
+
+    @ViewBuilder
+    private func tabPage<Content: View>(_ content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .bottom, spacing: 8) {
+                if audio.currentSong != nil {
+                    LegacyMiniPlayerView()
+                        .frame(height: 60)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 4)
+                }
+            }
     }
 
     private var syncTaskID: String {
