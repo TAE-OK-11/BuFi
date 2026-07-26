@@ -12,6 +12,7 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @State private var tab: AppTab = .home
+    @State private var pageOpacity = 1.0
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("motion-enabled") private var motionEnabled = true
@@ -76,25 +77,25 @@ struct RootView: View {
 
     private var tabs: some View {
         TabView(selection: $tab) {
-            tabPage(HomeView())
+            tabPage(HomeView(), tag: .home)
                 .tabItem {
                     Label("홈", systemImage: "house.fill")
                 }
                 .tag(AppTab.home)
 
-            tabPage(SearchView())
+            tabPage(SearchView(), tag: .search)
                 .tabItem {
                     Label("검색하기", systemImage: "magnifyingglass")
                 }
                 .tag(AppTab.search)
 
-            tabPage(LibraryView())
+            tabPage(LibraryView(), tag: .library)
                 .tabItem {
                     Label("내 라이브러리", systemImage: "music.note.list")
                 }
                 .tag(AppTab.library)
 
-            tabPage(SettingsView())
+            tabPage(SettingsView(), tag: .settings)
                 .tabItem {
                     Label("설정", systemImage: "gearshape.fill")
                 }
@@ -102,20 +103,24 @@ struct RootView: View {
         }
         .tint(BuFiTheme.accent)
         .onChange(of: tab) { _, _ in
-            guard hapticsEnabled else { return }
-            UISelectionFeedbackGenerator().selectionChanged()
+            if hapticsEnabled {
+                UISelectionFeedbackGenerator().selectionChanged()
+            }
+            guard motionEnabled else {
+                pageOpacity = 1
+                return
+            }
+            pageOpacity = 0
+            withAnimation(.easeOut(duration: 0.18)) {
+                pageOpacity = 1
+            }
         }
-        .animation(
-            motionEnabled
-                ? .interactiveSpring(response: 0.38, dampingFraction: 0.82)
-                : .none,
-            value: tab
-        )
     }
 
     @ViewBuilder
-    private func tabPage<Content: View>(_ content: Content) -> some View {
+    private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
         content
+            .opacity(tab == tag ? pageOpacity : 1)
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if audio.currentSong != nil {
                     LegacyMiniPlayerView()
