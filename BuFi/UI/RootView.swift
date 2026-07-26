@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum AppTab: Hashable {
     case home
@@ -11,6 +12,9 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @State private var tab: AppTab = .home
+    @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
+    @AppStorage("haptics-enabled") private var hapticsEnabled = true
+    @AppStorage("motion-enabled") private var motionEnabled = true
 
     var body: some View {
         Group {
@@ -22,6 +26,12 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: model.sessionState)
+        .preferredColorScheme(
+            AppAppearance(rawValue: appearanceMode)?.colorScheme
+        )
+        .transaction { transaction in
+            if !motionEnabled { transaction.animation = nil }
+        }
         .alert(
             "오류",
             isPresented: Binding(
@@ -45,70 +55,67 @@ struct RootView: View {
             Text(audio.playbackError ?? "")
         }
         .fullScreenCover(isPresented: $audio.showPlayer) {
-            PlayerView()
-                .environmentObject(model)
-                .environmentObject(audio)
+            NavigationStack {
+                PlayerView()
+                    .navigationDestination(for: MusicRoute.self) { route in
+                        MusicDetailView(route: route)
+                    }
+            }
+            .environmentObject(model)
+            .environmentObject(audio)
         }
     }
 
+    @ViewBuilder
     private var appContent: some View {
+        if #available(iOS 26.0, *) {
+            tabs
+                .tabViewBottomAccessory(isEnabled: audio.currentSong != nil) {
+                    MiniPlayerView()
+                }
+        } else {
+            tabs
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if audio.currentSong != nil {
+                        MiniPlayerView()
+                    }
+                }
+        }
+    }
+
+    private var tabs: some View {
         TabView(selection: $tab) {
             HomeView()
+                .tabItem {
+                    Label("홈", systemImage: "house.fill")
+                }
                 .tag(AppTab.home)
             SearchView()
+                .tabItem {
+                    Label("검색하기", systemImage: "magnifyingglass")
+                }
                 .tag(AppTab.search)
             LibraryView()
+                .tabItem {
+                    Label("내 라이브러리", systemImage: "music.note.list")
+                }
                 .tag(AppTab.library)
             SettingsView()
+                .tabItem {
+                    Label("설정", systemImage: "gearshape.fill")
+                }
                 .tag(AppTab.settings)
         }
-        .toolbar(.hidden, for: .tabBar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 5) {
-                MiniPlayerView()
-                bottomBar
-            }
-            .background(
-                LinearGradient(
-                    colors: [.clear, BuFiTheme.background.opacity(0.98)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            )
+        .tint(BuFiTheme.accent)
+        .onChange(of: tab) { _, _ in
+            guard hapticsEnabled else { return }
+            UISelectionFeedbackGenerator().selectionChanged()
         }
-    }
-
-    private var bottomBar: some View {
-        HStack {
-            tabButton(.home, title: "홈", icon: "house.fill")
-            tabButton(.search, title: "검색하기", icon: "magnifyingglass")
-            tabButton(.library, title: "내 라이브러리", icon: "books.vertical.fill")
-            tabButton(.settings, title: "설정", icon: "gearshape.fill")
-        }
-        .frame(height: 57)
-        .padding(.horizontal, 7)
-        .background(.black.opacity(0.16), in: Capsule())
-        .buFiGlass(cornerRadius: 29, interactive: true)
-        .padding(.horizontal, 10)
-    }
-
-    private func tabButton(_ value: AppTab, title: String, icon: String) -> some View {
-        Button {
-            tab = value
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 22, weight: tab == value ? .bold : .regular))
-                Text(LocalizedStringKey(title))
-                    .font(.system(size: 10, weight: .medium))
-            }
-            .foregroundStyle(tab == value ? BuFiTheme.accentSoft : .secondary)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(LocalizedStringKey(title)))
-        .accessibilityAddTraits(tab == value ? .isSelected : [])
+        .animation(
+            motionEnabled
+                ? .interactiveSpring(response: 0.38, dampingFraction: 0.82)
+                : .none,
+            value: tab
+        )
     }
 }

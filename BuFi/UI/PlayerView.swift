@@ -4,11 +4,13 @@ struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var palette = ArtworkPalette.fallback
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
     @State private var showQueue = false
+    @AppStorage("motion-enabled") private var motionEnabled = true
 
     var body: some View {
         GeometryReader { proxy in
@@ -33,7 +35,7 @@ struct PlayerView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
+        .toolbar(.hidden, for: .navigationBar)
         .fullScreenCover(isPresented: $audio.showFullLyrics) {
             FullLyricsView(palette: palette)
                 .environmentObject(audio)
@@ -57,11 +59,19 @@ struct PlayerView: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            LinearGradient(
-                colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            if colorScheme == .light {
+                LinearGradient(
+                    colors: [.white.opacity(0.46), .white.opacity(0.72)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                LinearGradient(
+                    colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
         }
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 0.55), value: palette)
@@ -90,7 +100,7 @@ struct PlayerView: View {
                     .lineLimit(1)
                 Text(song.artist)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.62))
+                    .foregroundStyle(playerSecondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: 240)
@@ -125,16 +135,33 @@ struct PlayerView: View {
 
     private func artwork(_ song: Song, availableHeight: CGFloat) -> some View {
         let edge = min(UIScreen.main.bounds.width - 44, max(264, availableHeight * 0.47))
-        return ArtworkView(
-            coverArt: song.coverArt,
-            size: edge,
-            cornerRadius: 16,
-            onPalette: { palette = $0 }
-        )
+        return ZStack {
+            ArtworkView(
+                coverArt: song.coverArt,
+                size: edge,
+                cornerRadius: 14,
+                onPalette: { palette = $0 }
+            )
+            .id(song.id)
+            .transition(
+                motionEnabled
+                    ? .asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .move(edge: .leading).combined(with: .opacity)
+                    )
+                    : .opacity
+            )
+        }
         .frame(width: edge, height: edge)
         .shadow(color: .black.opacity(0.38), radius: 28, y: 17)
         .padding(.top, 13)
         .padding(.bottom, 28)
+        .animation(
+            motionEnabled
+                ? .interactiveSpring(response: 0.52, dampingFraction: 0.84)
+                : .none,
+            value: song.id
+        )
     }
 
     private func metadata(_ song: Song) -> some View {
@@ -144,10 +171,31 @@ struct PlayerView: View {
                     .font(.system(size: 25, weight: .bold))
                     .tracking(-0.7)
                     .lineLimit(1)
-                Text(song.artist)
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.68))
-                    .lineLimit(1)
+                    .contentTransition(.interpolate)
+                if let route = artistRoute(for: song) {
+                    NavigationLink(value: route) {
+                        HStack(spacing: 5) {
+                            Text(song.artist)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(playerSecondary)
+                    }
+                    .buttonStyle(BuFiPressStyle())
+                    .accessibilityLabel(
+                        String(
+                            format: String(localized: "%@ 아티스트 페이지 열기"),
+                            song.artist
+                        )
+                    )
+                } else {
+                    Text(song.artist)
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(playerSecondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
             Button {
@@ -155,34 +203,32 @@ struct PlayerView: View {
             } label: {
                 Image(systemName: song.isStarred ? "heart.fill" : "heart")
                     .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(song.isStarred ? BuFiTheme.accentSoft : Color.white)
+                    .foregroundStyle(song.isStarred ? BuFiTheme.accent : playerPrimary)
                     .contentTransition(.symbolEffect(.replace))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
             .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
         }
         .padding(.bottom, 18)
     }
 
     private var progress: some View {
-        VStack(spacing: 4) {
-            Slider(
+        VStack(spacing: 0) {
+            InteractiveSeekBar(
                 value: $scrubValue,
-                in: 0...max(audio.duration, 1),
-                onEditingChanged: { editing in
-                    isScrubbing = editing
-                    if !editing { audio.seek(to: scrubValue) }
-                }
-            )
-            .tint(.white)
-            .accessibilityLabel("재생 위치")
+                range: 0...max(audio.duration, 1),
+                tint: playerPrimary
+            ) { editing in
+                isScrubbing = editing
+                if !editing { audio.seek(to: scrubValue) }
+            }
             HStack {
                 Text((isScrubbing ? scrubValue : audio.elapsed).playbackText)
                 Spacer()
                 Text("-\(max(0, audio.duration - (isScrubbing ? scrubValue : audio.elapsed)).playbackText)")
             }
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.white.opacity(0.64))
+            .foregroundStyle(playerSecondary)
             .monospacedDigit()
         }
     }
@@ -190,37 +236,37 @@ struct PlayerView: View {
     private var transport: some View {
         HStack {
             control(
-                audio.isShuffleEnabled ? "shuffle.circle.fill" : "shuffle",
-                size: 23,
+                "shuffle",
+                size: 24,
                 active: audio.isShuffleEnabled,
                 label: "셔플"
             ) { audio.toggleShuffle() }
             Spacer()
-            control("backward.end.fill", size: 33, label: "이전 곡") { audio.previous() }
+            control("backward.end.fill", size: 31, label: "이전 곡") { audio.previous() }
             Spacer()
             Button {
                 audio.togglePlayback()
             } label: {
                 ZStack {
-                    Circle().fill(.white).frame(width: 70, height: 70)
+                    Circle().fill(playerPrimary).frame(width: 70, height: 70)
                     if audio.isBuffering {
-                        ProgressView().tint(.black)
+                        ProgressView().tint(playerButtonForeground)
                     } else {
                         Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 27, weight: .bold))
-                            .foregroundStyle(Color(palette.bottom))
+                            .foregroundStyle(playerButtonForeground)
                             .offset(x: audio.isPlaying ? 0 : 2)
                     }
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
             .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
             Spacer()
-            control("forward.end.fill", size: 33, label: "다음 곡") { audio.next() }
+            control("forward.end.fill", size: 31, label: "다음 곡") { audio.next() }
             Spacer()
             control(
                 audio.repeatMode == .one ? "repeat.1" : "repeat",
-                size: 23,
+                size: 24,
                 active: audio.repeatMode != .off,
                 label: "반복"
             ) { audio.cycleRepeat() }
@@ -230,7 +276,7 @@ struct PlayerView: View {
 
     private func utilityRow(_ song: Song) -> some View {
         HStack(spacing: 25) {
-            AirPlayButton()
+            AirPlayButton(lightContent: colorScheme == .dark)
                 .frame(width: 32, height: 32)
                 .accessibilityLabel("AirPlay")
             Spacer()
@@ -300,12 +346,12 @@ struct PlayerView: View {
                 .buttonStyle(.plain)
             }
             .padding(20)
-            .foregroundStyle(.white)
+            .foregroundStyle(playerPrimary)
             .background(
                 LinearGradient(
                     colors: [
-                        Color.white.opacity(0.22),
-                        Color.white.opacity(0.13)
+                        playerPrimary.opacity(0.19),
+                        playerPrimary.opacity(0.10)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -318,7 +364,7 @@ struct PlayerView: View {
         } else {
             Text("이 곡에는 표시할 가사가 없습니다.")
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(playerSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 18)
         }
@@ -333,11 +379,11 @@ struct PlayerView: View {
 
     private func lyricColor(_ line: LyricLine) -> Color {
         guard let index = audio.lyrics.lines.firstIndex(where: { $0.id == line.id }) else {
-            return .black.opacity(0.76)
+            return playerPrimary.opacity(0.76)
         }
-        if index == audio.activeLyricIndex { return .white }
-        if index < audio.activeLyricIndex { return .white.opacity(0.28) }
-        return .white.opacity(0.58)
+        if index == audio.activeLyricIndex { return playerPrimary }
+        if index < audio.activeLyricIndex { return playerPrimary.opacity(0.28) }
+        return playerPrimary.opacity(0.58)
     }
 
     private func control(
@@ -348,23 +394,69 @@ struct PlayerView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(active ? BuFiTheme.accentSoft : Color.white)
-                .frame(width: 42, height: 42)
+            ZStack(alignment: .bottom) {
+                Image(systemName: icon)
+                    .font(.system(size: size, weight: .semibold))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(active ? BuFiTheme.accent : playerPrimary)
+                    .frame(width: 48, height: 48)
+                if active {
+                    Circle()
+                        .fill(BuFiTheme.accentSoft)
+                        .frame(width: 4, height: 4)
+                        .offset(y: 2)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BuFiPressStyle())
         .accessibilityLabel(label)
+    }
+
+    private func artistRoute(for song: Song) -> MusicRoute? {
+        let artists = model.home.starredArtists + model.home.artists
+        if let artistID = song.artistId {
+            let artist = artists.first(where: { $0.id == artistID }) ?? Artist(
+                id: artistID,
+                name: song.artist,
+                coverArt: song.coverArt,
+                artistImageUrl: nil,
+                albumCount: nil,
+                starred: nil
+            )
+            return .artist(artist)
+        }
+        guard let artist = artists.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+        }) else {
+            return nil
+        }
+        return .artist(artist)
+    }
+
+    private var playerPrimary: Color {
+        colorScheme == .dark ? .white : .black.opacity(0.86)
+    }
+
+    private var playerSecondary: Color {
+        playerPrimary.opacity(0.64)
+    }
+
+    private var playerButtonForeground: Color {
+        colorScheme == .dark ? Color(palette.bottom) : .white
     }
 }
 
 private struct FullLyricsView: View {
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     let palette: ArtworkPalette
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
+    @AppStorage("lyrics-auto-scroll") private var autoScroll = true
+    @AppStorage("motion-enabled") private var motionEnabled = true
 
     var body: some View {
         ZStack {
@@ -374,6 +466,14 @@ private struct FullLyricsView: View {
                 endPoint: .bottom
             )
             .ignoresSafeArea()
+            if colorScheme == .light {
+                LinearGradient(
+                    colors: [.white.opacity(0.48), .white.opacity(0.73)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+            }
 
             VStack(spacing: 0) {
                 header
@@ -381,7 +481,6 @@ private struct FullLyricsView: View {
                 footer
             }
         }
-        .preferredColorScheme(.dark)
         .onAppear { scrubValue = audio.elapsed }
         .onChange(of: audio.elapsed) { _, value in
             if !isScrubbing { scrubValue = value }
@@ -405,7 +504,7 @@ private struct FullLyricsView: View {
                     .lineLimit(1)
                 Text(audio.currentSong?.artist ?? "")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.7))
+                    .foregroundStyle(lyricsSecondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: 250)
@@ -441,8 +540,12 @@ private struct FullLyricsView: View {
                 .padding(.horizontal, 24)
             }
             .onChange(of: audio.activeLyricIndex) { _, index in
-                guard audio.lyrics.lines.indices.contains(index) else { return }
-                withAnimation(.easeInOut(duration: 0.42)) {
+                guard autoScroll, audio.lyrics.lines.indices.contains(index) else { return }
+                withAnimation(
+                    motionEnabled
+                        ? .interactiveSpring(response: 0.48, dampingFraction: 0.86)
+                        : .none
+                ) {
                     proxy.scrollTo(audio.lyrics.lines[index].id, anchor: .center)
                 }
             }
@@ -457,31 +560,30 @@ private struct FullLyricsView: View {
     }
 
     private var footer: some View {
-        VStack(spacing: 12) {
-            Slider(
+        VStack(spacing: 7) {
+            InteractiveSeekBar(
                 value: $scrubValue,
-                in: 0...max(audio.duration, 1),
-                onEditingChanged: { editing in
-                    isScrubbing = editing
-                    if !editing { audio.seek(to: scrubValue) }
-                }
-            )
-            .tint(.white)
+                range: 0...max(audio.duration, 1),
+                tint: lyricsPrimary
+            ) { editing in
+                isScrubbing = editing
+                if !editing { audio.seek(to: scrubValue) }
+            }
             HStack {
                 Text((isScrubbing ? scrubValue : audio.elapsed).playbackText)
                 Spacer()
                 Text("-\(max(0, audio.duration - (isScrubbing ? scrubValue : audio.elapsed)).playbackText)")
             }
             .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.white.opacity(0.66))
+            .foregroundStyle(lyricsSecondary)
             .monospacedDigit()
 
             Button { audio.togglePlayback() } label: {
                 Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 29, weight: .bold))
-                    .foregroundStyle(Color(palette.bottom))
+                    .foregroundStyle(playButtonForeground)
                     .frame(width: 72, height: 72)
-                    .background(.white, in: Circle())
+                    .background(lyricsPrimary, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
@@ -495,9 +597,21 @@ private struct FullLyricsView: View {
     }
 
     private func color(for index: Int) -> Color {
-        if index == audio.activeLyricIndex { return .white }
-        if index < audio.activeLyricIndex { return .white.opacity(0.30) }
-        return .white.opacity(0.54)
+        if index == audio.activeLyricIndex { return lyricsPrimary }
+        if index < audio.activeLyricIndex { return lyricsPrimary.opacity(0.30) }
+        return lyricsPrimary.opacity(0.54)
+    }
+
+    private var lyricsPrimary: Color {
+        colorScheme == .dark ? .white : .black.opacity(0.86)
+    }
+
+    private var lyricsSecondary: Color {
+        lyricsPrimary.opacity(0.66)
+    }
+
+    private var playButtonForeground: Color {
+        colorScheme == .dark ? Color(palette.bottom) : .white
     }
 }
 

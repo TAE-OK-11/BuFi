@@ -47,6 +47,17 @@ actor OfflineStore {
         }
     }
 
+    func removeAll() throws {
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        for file in files {
+            try FileManager.default.removeItem(at: file)
+        }
+    }
+
     func totalBytes() -> Int64 {
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory,
@@ -68,4 +79,3 @@ actor OfflineStore {
         return directory.appendingPathComponent(digest).appendingPathExtension("audio")
     }
 }
-

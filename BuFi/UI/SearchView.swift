@@ -9,10 +9,16 @@ struct SearchView: View {
     @FocusState private var focused: Bool
 
     private let categories: [(String, Color, String)] = [
-        ("음악", .pink, "music.note.list"),
-        ("좋아요 표시한 곡", .indigo, "heart.fill"),
-        ("새로 나온 음악", .purple, "sparkles"),
-        ("차트", .mint, "chart.bar.fill")
+        (
+            "좋아요 표시한 곡",
+            Color(red: 0.78, green: 0.16, blue: 0.27),
+            "heart.fill"
+        ),
+        (
+            "좋아요 표시한 앨범",
+            Color(red: 0.38, green: 0.24, blue: 0.62),
+            "square.stack.fill"
+        )
     ]
 
     var body: some View {
@@ -30,7 +36,7 @@ struct SearchView: View {
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(BuFiTheme.background)
+            .background(BuFiScreenBackground())
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
             }
@@ -64,16 +70,6 @@ struct SearchView: View {
                 .font(.system(size: 32, weight: .bold))
                 .tracking(-1)
             Spacer()
-            Button {
-                focused = true
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 19, weight: .semibold))
-                    .frame(width: 38, height: 38)
-                    .background(BuFiTheme.elevated, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("검색")
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -83,8 +79,14 @@ struct SearchView: View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 24, weight: .semibold))
-            TextField("어떤 것을 듣고 싶으세요?", text: $query)
+            TextField(
+                "",
+                text: $query,
+                prompt: Text("어떤 것을 듣고 싶으세요?")
+                    .foregroundStyle(Color(uiColor: .secondaryLabel))
+            )
                 .focused($focused)
+                .foregroundStyle(.primary)
                 .submitLabel(.search)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -103,10 +105,17 @@ struct SearchView: View {
                 .accessibilityLabel("검색어 지우기")
             }
         }
-        .foregroundStyle(.black)
+        .foregroundStyle(.primary)
         .padding(.horizontal, 16)
         .frame(height: 58)
-        .background(.white, in: RoundedRectangle(cornerRadius: 14))
+        .background(
+            BuFiTheme.elevated,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(BuFiTheme.separator.opacity(0.5), lineWidth: 0.5)
+        }
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
     }
@@ -116,7 +125,7 @@ struct SearchView: View {
         switch browseMode {
         case .main:
             browseMain
-        case .favorites:
+        case .favoriteSongs:
             browseCollectionHeader("좋아요 표시한 곡")
             if model.home.starredSongs.isEmpty {
                 ContentUnavailableView(
@@ -132,12 +141,12 @@ struct SearchView: View {
                 }
                 .padding(.horizontal, 16)
             }
-        case .newReleases:
-            browseCollectionHeader("새로 나온 음악")
-            if model.home.recentAlbums.isEmpty {
+        case .favoriteAlbums:
+            browseCollectionHeader("좋아요 표시한 앨범")
+            if model.home.starredAlbums.isEmpty {
                 ContentUnavailableView(
-                    "새로 추가된 앨범이 없습니다",
-                    systemImage: "sparkles"
+                    "저장한 앨범이 없습니다",
+                    systemImage: "square.stack"
                 )
                 .padding(.top, 32)
             } else {
@@ -145,27 +154,11 @@ struct SearchView: View {
                     columns: [GridItem(.flexible()), GridItem(.flexible())],
                     spacing: 20
                 ) {
-                    ForEach(model.home.recentAlbums) { album in
+                    ForEach(model.home.starredAlbums) { album in
                         NavigationLink(value: MusicRoute.album(album)) {
-                            AlbumCard(album: album, width: newReleaseCardWidth)
+                            AlbumCard(album: album, width: collectionCardWidth)
                         }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 16)
-            }
-        case .charts:
-            browseCollectionHeader("차트")
-            if chartSongs.isEmpty {
-                ContentUnavailableView(
-                    "차트에 표시할 곡이 없습니다",
-                    systemImage: "chart.bar"
-                )
-                .padding(.top, 32)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(chartSongs) { song in
-                        SongRow(song: song, queue: chartSongs)
+                        .buttonStyle(BuFiPressStyle())
                     }
                 }
                 .padding(.horizontal, 16)
@@ -178,33 +171,36 @@ struct SearchView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(Array(categories.enumerated()), id: \.offset) { index, category in
                     Button {
-                        switch index {
-                        case 0:
-                            focused = true
-                        case 1:
-                            browseMode = .favorites
-                        case 2:
-                            browseMode = .newReleases
-                        default:
-                            browseMode = .charts
+                        withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.82)) {
+                            browseMode = index == 0 ? .favoriteSongs : .favoriteAlbums
                         }
                     } label: {
                         ZStack(alignment: .bottomTrailing) {
-                            category.1
+                            LinearGradient(
+                                colors: [
+                                    category.1,
+                                    category.1.opacity(0.64),
+                                    BuFiTheme.deezerGlow.opacity(index == 0 ? 0.18 : 0.58)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                             Image(systemName: category.2)
-                                .font(.system(size: 50, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.28))
-                                .rotationEffect(.degrees(12))
-                                .padding(12)
+                                .font(.system(size: 54, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.22))
+                                .rotationEffect(.degrees(9))
+                                .padding(14)
                             Text(LocalizedStringKey(category.0))
-                                .font(.system(size: 19, weight: .bold))
+                                .font(.system(size: 20, weight: .bold))
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                                .padding(15)
+                                .padding(16)
                         }
-                        .frame(height: 112)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .foregroundStyle(.white)
+                        .frame(height: 128)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .shadow(color: category.1.opacity(0.18), radius: 16, y: 8)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                 }
             }
             .padding(.horizontal, 16)
@@ -219,7 +215,7 @@ struct SearchView: View {
                                 NavigationLink(value: MusicRoute.album(album)) {
                                     AlbumCard(album: album)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(BuFiPressStyle())
                             }
                         }
                         .padding(.horizontal, 16)
@@ -249,20 +245,7 @@ struct SearchView: View {
         .padding(.horizontal, 16)
     }
 
-    private var chartSongs: [Song] {
-        Array(
-            model.home.randomSongs
-                .sorted {
-                    if ($0.playCount ?? 0) == ($1.playCount ?? 0) {
-                        return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-                    }
-                    return ($0.playCount ?? 0) > ($1.playCount ?? 0)
-                }
-                .prefix(30)
-        )
-    }
-
-    private var newReleaseCardWidth: CGFloat {
+    private var collectionCardWidth: CGFloat {
         max(132, (UIScreen.main.bounds.width - 52) / 2)
     }
 
@@ -338,7 +321,6 @@ struct SearchView: View {
 
 private enum SearchBrowseMode {
     case main
-    case favorites
-    case newReleases
-    case charts
+    case favoriteSongs
+    case favoriteAlbums
 }

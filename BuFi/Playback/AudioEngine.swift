@@ -68,7 +68,9 @@ final class AudioEngine: NSObject, ObservableObject {
         installPlayerObservers()
         installSystemObservers()
         installRemoteCommands()
-        restoreLocalQueue()
+        if queueRestorationEnabled {
+            restoreLocalQueue()
+        }
     }
 
     deinit {
@@ -104,10 +106,11 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         if let song = currentSong {
-            loadCurrentItem()
+            loadCurrentItem(resumeFrom: elapsed)
             loadLyrics(for: song)
         }
 
+        guard queueRestorationEnabled else { return }
         serverQueueTask = Task { [weak self] in
             guard let self,
                   let serverQueue = try? await client?.playQueue(),
@@ -125,7 +128,7 @@ final class AudioEngine: NSObject, ObservableObject {
             self.duration = self.currentSong?.safeDuration ?? 0
             self.lyrics = .empty
             self.activeLyricIndex = -1
-            self.loadCurrentItem()
+            self.loadCurrentItem(resumeFrom: self.elapsed)
             if let song = self.currentSong { self.loadLyrics(for: song) }
             self.updateNowPlaying()
         }
@@ -141,6 +144,7 @@ final class AudioEngine: NSObject, ObservableObject {
         preferredIndex: Int?,
         autoplay: Bool = true
     ) {
+        let previousSongID = currentSong?.id
         let normalizedQueue = sourceQueue.isEmpty ? [song] : sourceQueue
         queue = normalizedQueue
         if let preferredIndex, normalizedQueue.indices.contains(preferredIndex) {
@@ -164,8 +168,13 @@ final class AudioEngine: NSObject, ObservableObject {
         playbackError = nil
         wantsPlayback = autoplay
         scrobbled = false
-        showPlayer = true
-        loadCurrentItem()
+        let automaticallyOpensPlayer =
+            UserDefaults.standard.object(forKey: "auto-open-player") as? Bool ?? false
+        showPlayer = showPlayer || automaticallyOpensPlayer
+        if previousSongID != song.id {
+            provideTrackChangeHaptic()
+        }
+        loadCurrentItem(resumeFrom: 0)
         loadLyrics(for: song)
         scheduleQueueSave()
         updateNowPlaying()
@@ -317,6 +326,22 @@ final class AudioEngine: NSObject, ObservableObject {
         scheduleQueueSave()
     }
 
+    func setQueueRestoration(enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "restore-play-queue")
+        if enabled {
+            scheduleQueueSave(immediate: true)
+        } else {
+            queueSaveTask?.cancel()
+            UserDefaults.standard.removeObject(forKey: queueStorageKey)
+        }
+    }
+
+    func refreshIdleTimerPreference() {
+        let keepAwake =
+            UserDefaults.standard.object(forKey: "keep-screen-awake") as? Bool ?? false
+        UIApplication.shared.isIdleTimerDisabled = keepAwake && isPlaying
+    }
+
     func toggleCurrentStar() async {
         guard let song = currentSong, let client else { return }
         let enabled = !song.isStarred
@@ -347,8 +372,12 @@ final class AudioEngine: NSObject, ObservableObject {
         return try await OfflineStore.shared.download(song: song, client: client)
     }
 
-    private func loadCurrentItem(compatibilityFormat: String? = nil) {
+    private func loadCurrentItem(
+        compatibilityFormat: String? = nil,
+        resumeFrom requestedPosition: TimeInterval? = nil
+    ) {
         guard let song = currentSong else { return }
+        let resumePosition = max(0, requestedPosition ?? elapsed)
         itemLoadTask?.cancel()
         activeCompatibilityFormat = compatibilityFormat
         isBuffering = true
@@ -366,7 +395,11 @@ final class AudioEngine: NSObject, ObservableObject {
                 case "mp3": mimeType = "audio/mpeg"
                 default: mimeType = song.contentType
                 }
-                self.replacePlayerItem(url: url, mimeType: mimeType)
+                self.replacePlayerItem(
+                    url: url,
+                    mimeType: mimeType,
+                    resumePosition: resumePosition
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -377,8 +410,11 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func replacePlayerItem(url: URL, mimeType: String?) {
-        let position = elapsed
+    private func replacePlayerItem(
+        url: URL,
+        mimeType: String?,
+        resumePosition: TimeInterval
+    ) {
         // Amperfy uses an out-of-band MIME hint before handing Subsonic
         // streams to its player. Some servers omit or generalize Content-Type,
         // so applying the same GPLv3-covered compatibility pattern keeps
@@ -400,7 +436,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.recoveryAttempt = 0
                     let seconds = item.duration.seconds
                     if seconds.isFinite, seconds > 0 { self.duration = seconds }
-                    if position > 0 { self.seek(to: position) }
+                    if resumePosition > 0 { self.seek(to: resumePosition) }
                     if self.wantsPlayback {
                         self.configureAudioSession()
                         self.player.isMuted = false
@@ -453,7 +489,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let format = fallbackFormats[fallbackIndex]
         fallbackIndex += 1
         activeCompatibilityFormat = format
-        loadCurrentItem(compatibilityFormat: format)
+        loadCurrentItem(compatibilityFormat: format, resumeFrom: elapsed)
     }
 
     private func schedulePlaybackRecovery() {
@@ -473,7 +509,10 @@ final class AudioEngine: NSObject, ObservableObject {
             if self.player.timeControlStatus != .playing, self.wantsPlayback {
                 self.recoveryAttempt += 1
                 if self.recoveryAttempt <= 2 {
-                    self.loadCurrentItem(compatibilityFormat: self.activeCompatibilityFormat)
+                    self.loadCurrentItem(
+                        compatibilityFormat: self.activeCompatibilityFormat,
+                        resumeFrom: self.elapsed
+                    )
                 } else {
                     self.handlePlaybackFailure()
                 }
@@ -510,6 +549,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     self?.recoveryTask = nil
                     self?.endBackgroundBridge()
                 }
+                self?.refreshIdleTimerPreference()
                 self?.updateRemoteCommands()
                 self?.updateNowPlaying()
             }
@@ -521,6 +561,7 @@ final class AudioEngine: NSObject, ObservableObject {
         ) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.player.currentItem != nil else { return }
                 let seconds = time.seconds
                 if seconds.isFinite { self.elapsed = max(0, seconds) }
                 if let itemDuration = self.player.currentItem?.duration.seconds,
@@ -599,7 +640,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard let self else { return }
                 self.configureAudioSession()
                 if self.currentSong != nil {
-                    self.loadCurrentItem()
+                    self.loadCurrentItem(resumeFrom: self.elapsed)
                 }
             }
         })
@@ -894,6 +935,17 @@ final class AudioEngine: NSObject, ObservableObject {
         return NSNumber(value: hash)
     }
 
+    private var queueRestorationEnabled: Bool {
+        UserDefaults.standard.object(forKey: "restore-play-queue") as? Bool ?? true
+    }
+
+    private func provideTrackChangeHaptic() {
+        let enabled =
+            UserDefaults.standard.object(forKey: "haptics-enabled") as? Bool ?? true
+        guard enabled else { return }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.62)
+    }
+
     private func submitScrobbleIfNeeded() {
         guard !scrobbled,
               let song = currentSong,
@@ -922,7 +974,11 @@ final class AudioEngine: NSObject, ObservableObject {
                   let data = try? JSONEncoder().encode(snapshot) else {
                 return
             }
-            UserDefaults.standard.set(data, forKey: queueStorageKey)
+            if self.queueRestorationEnabled {
+                UserDefaults.standard.set(data, forKey: queueStorageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: queueStorageKey)
+            }
             guard let client,
                   let current = snapshot.currentID,
                   !snapshot.queue.isEmpty else {

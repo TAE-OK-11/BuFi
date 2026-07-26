@@ -25,7 +25,7 @@ struct HomeView: View {
                 }
                 .padding(.bottom, 28)
             }
-            .background(BuFiTheme.background)
+            .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
@@ -35,8 +35,17 @@ struct HomeView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 19) {
-            HStack {
+        VStack(alignment: .leading, spacing: 17) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(greeting)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("홈")
+                        .font(.system(size: 34, weight: .bold))
+                        .tracking(-1.1)
+                }
+                Spacer()
                 Circle()
                     .fill(
                         LinearGradient(
@@ -45,16 +54,12 @@ struct HomeView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                    .frame(width: 42, height: 42)
+                    .frame(width: 40, height: 40)
                     .overlay {
                         Text("T")
-                            .font(.system(size: 20, weight: .medium))
+                            .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(.white)
                     }
-                Text(greeting)
-                    .font(.system(size: 25, weight: .bold))
-                    .tracking(-0.7)
-                Spacer()
                 Button {
                     Task { await model.refresh() }
                 } label: {
@@ -62,10 +67,12 @@ struct HomeView: View {
                         ProgressView()
                     } else {
                         Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 22, weight: .semibold))
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 40, height: 40)
+                            .background(BuFiTheme.elevated, in: Circle())
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BuFiPressStyle())
                 .accessibilityLabel("라이브러리 새로고침")
             }
 
@@ -114,13 +121,13 @@ struct HomeView: View {
                 } label: {
                     quickCard(title: "좋아요 표시한 곡", coverArt: model.home.starredSongs.first?.coverArt)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BuFiPressStyle())
             }
             ForEach(Array(model.home.recentAlbums.prefix(7))) { album in
                 NavigationLink(value: MusicRoute.album(album)) {
                     quickCard(title: album.name, coverArt: album.coverArt)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BuFiPressStyle())
             }
         }
         .padding(.horizontal, 16)
@@ -154,7 +161,7 @@ struct HomeView: View {
                                     .frame(width: 166, height: 166)
                                     Text(playlist.name)
                                         .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(.white)
+                                        .foregroundStyle(.primary)
                                         .lineLimit(2)
                                     Text(
                                         String(
@@ -167,7 +174,7 @@ struct HomeView: View {
                                 }
                                 .frame(width: 166, alignment: .leading)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(BuFiPressStyle())
                         }
                     }
                     .padding(.horizontal, 16)
@@ -188,8 +195,15 @@ struct HomeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(height: 60)
-        .background(BuFiTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
-        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .background(
+            BuFiTheme.elevated,
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(BuFiTheme.separator.opacity(0.35), lineWidth: 0.5)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     @ViewBuilder
@@ -204,7 +218,7 @@ struct HomeView: View {
                             NavigationLink(value: MusicRoute.album(album)) {
                                 AlbumCard(album: album)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(BuFiPressStyle())
                         }
                     }
                     .padding(.horizontal, 16)
@@ -238,7 +252,7 @@ struct HomeView: View {
                                 }
                                 .frame(width: 166, alignment: .leading)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(BuFiPressStyle())
                         }
                     }
                     .padding(.horizontal, 16)
@@ -253,15 +267,15 @@ struct HomeView: View {
         } label: {
             Text(item.title)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(filter == item ? .white : .primary)
                 .padding(.horizontal, 16)
                 .frame(height: 34)
                 .background(
-                    filter == item ? BuFiTheme.accent : Color.white.opacity(0.10),
+                    filter == item ? BuFiTheme.accent : BuFiTheme.elevated,
                     in: Capsule()
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BuFiPressStyle())
     }
 
     private var greeting: LocalizedStringKey {

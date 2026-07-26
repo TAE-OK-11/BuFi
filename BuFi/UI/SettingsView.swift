@@ -4,6 +4,15 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @State private var offlineBytes: Int64 = 0
+    @State private var confirmOfflineRemoval = false
+    @State private var confirmArtworkRemoval = false
+    @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
+    @AppStorage("motion-enabled") private var motionEnabled = true
+    @AppStorage("haptics-enabled") private var hapticsEnabled = true
+    @AppStorage("auto-open-player") private var autoOpenPlayer = false
+    @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
+    @AppStorage("restore-play-queue") private var restorePlayQueue = true
+    @AppStorage("keep-screen-awake") private var keepScreenAwake = false
 
     var body: some View {
         NavigationStack {
@@ -42,11 +51,40 @@ struct SettingsView: View {
                     .padding(.vertical, 6)
                 }
 
-                Section("스트리밍") {
+                Section("화면 및 동작") {
+                    Picker("화면 모드", selection: $appearanceMode) {
+                        ForEach(AppAppearance.allCases) { appearance in
+                            Text(appearance.title).tag(appearance.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Toggle(isOn: $motionEnabled) {
+                        Label("Liquid Glass 애니메이션", systemImage: "sparkles")
+                    }
+                    Toggle(isOn: $hapticsEnabled) {
+                        Label("햅틱 피드백", systemImage: "waveform.path")
+                    }
+                }
+
+                Section("재생") {
                     Picker("음질", selection: $audio.quality) {
                         ForEach(StreamQuality.allCases) { quality in
                             Text(quality.title).tag(quality)
                         }
+                    }
+                    .tint(Color(uiColor: .secondaryLabel))
+                    Toggle(isOn: $autoOpenPlayer) {
+                        Label("재생 시 플레이어 자동 열기", systemImage: "rectangle.expand.vertical")
+                    }
+                    Toggle(isOn: $restorePlayQueue) {
+                        Label("재생 대기목록 기억", systemImage: "clock.arrow.circlepath")
+                    }
+                    Toggle(isOn: $lyricsAutoScroll) {
+                        Label("가사 자동 스크롤", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+                    Toggle(isOn: $keepScreenAwake) {
+                        Label("재생 중 화면 켜두기", systemImage: "sun.max")
                     }
                     HStack {
                         Label("AirPlay", systemImage: "airplayaudio")
@@ -54,15 +92,29 @@ struct SettingsView: View {
                         AirPlayButton()
                             .frame(width: 42, height: 34)
                     }
-                    LabeledContent(
-                        "오프라인 저장 공간",
-                        value: ByteCountFormatter.string(fromByteCount: offlineBytes, countStyle: .file)
-                    )
+                }
+
+                Section("저장 공간") {
+                    LabeledContent("오프라인 저장 공간") {
+                        Text(
+                            ByteCountFormatter.string(
+                                fromByteCount: offlineBytes,
+                                countStyle: .file
+                            )
+                        )
+                        .foregroundStyle(.secondary)
+                    }
+                    Button("오프라인 음악 모두 삭제", role: .destructive) {
+                        confirmOfflineRemoval = true
+                    }
+                    Button("앨범 이미지 캐시 비우기") {
+                        confirmArtworkRemoval = true
+                    }
                 }
 
                 Section("앱") {
                     LabeledContent("최소 iOS", value: "17.0")
-                    LabeledContent("버전", value: "1.0.0")
+                    LabeledContent("버전", value: versionText)
                     Label("분석·광고 SDK 없음", systemImage: "hand.raised.fill")
                     NavigationLink("오픈소스 및 라이선스") {
                         OpenSourceNoticesView()
@@ -84,7 +136,50 @@ struct SettingsView: View {
             .task {
                 offlineBytes = await OfflineStore.shared.totalBytes()
             }
+            .onChange(of: restorePlayQueue) { _, enabled in
+                audio.setQueueRestoration(enabled: enabled)
+            }
+            .onChange(of: keepScreenAwake) { _, _ in
+                audio.refreshIdleTimerPreference()
+            }
+            .confirmationDialog(
+                "오프라인 음악을 모두 삭제할까요?",
+                isPresented: $confirmOfflineRemoval,
+                titleVisibility: .visible
+            ) {
+                Button("모두 삭제", role: .destructive) {
+                    Task {
+                        try? await OfflineStore.shared.removeAll()
+                        offlineBytes = await OfflineStore.shared.totalBytes()
+                    }
+                }
+                Button("취소", role: .cancel) {}
+            } message: {
+                Text("다운로드한 음악만 삭제되며 서버의 원본은 유지됩니다.")
+            }
+            .confirmationDialog(
+                "앨범 이미지 캐시를 비울까요?",
+                isPresented: $confirmArtworkRemoval,
+                titleVisibility: .visible
+            ) {
+                Button("캐시 비우기", role: .destructive) {
+                    Task { await ArtworkStore.shared.clearAll() }
+                }
+                Button("취소", role: .cancel) {}
+            } message: {
+                Text("이미지는 필요할 때 서버에서 다시 불러옵니다.")
+            }
         }
+    }
+
+    private var versionText: String {
+        let version =
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "1.1.0"
+        let build =
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            ?? "3"
+        return "\(version) (\(build))"
     }
 }
 
