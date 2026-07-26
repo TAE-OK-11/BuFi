@@ -29,15 +29,11 @@ struct MusicDetailView: View {
                         .padding(.top, 60)
                 } else {
                     controls
-                    if isArtist, !artistBiography.isEmpty { artistAbout }
                     if !albums.isEmpty { albumRail }
                     songList
+                    if isArtist, !artistBiography.isEmpty { artistAbout }
                 }
             }
-            // Keep the final row fully scrollable above both the mini player and
-            // the tab bar. The native iOS 26 accessory reserves its own safe area,
-            // while this content tail also covers compact devices, larger text,
-            // and the pre-iOS 26 fallback inset.
             .padding(.bottom, audio.currentSong == nil ? 48 : 136)
         }
         .background(background)
@@ -68,17 +64,24 @@ struct MusicDetailView: View {
                 remoteURL: artistImageURL,
                 size: 430,
                 cornerRadius: 24,
+                contentMode: .fit,
+                blurredBackdrop: true,
                 onPalette: { palette = $0 }
             )
             .frame(maxWidth: .infinity)
-            .frame(height: 350)
+            .frame(height: 360)
 
             LinearGradient(
-                colors: [.clear, .black.opacity(0.12), .black.opacity(0.88)],
+                stops: [
+                    .init(color: .clear, location: 0.48),
+                    .init(color: .black.opacity(0.16), location: 0.68),
+                    .init(color: .black.opacity(0.86), location: 1)
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .allowsHitTesting(false)
 
             VStack(alignment: .leading, spacing: 7) {
                 Text(title.isEmpty ? " " : title)
@@ -93,10 +96,11 @@ struct MusicDetailView: View {
                     )
                 )
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.74))
+                .foregroundStyle(.white.opacity(0.78))
             }
             .foregroundStyle(.white)
-            .padding(22)
+            .padding(.horizontal, 22)
+            .padding(.bottom, 20)
         }
         .shadow(color: .black.opacity(0.24), radius: 22, y: 12)
         .padding(.horizontal, 16)
@@ -199,7 +203,7 @@ struct MusicDetailView: View {
                 .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
-                .lineLimit(5)
+                .lineLimit(6)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 18)
@@ -212,7 +216,7 @@ struct MusicDetailView: View {
                 .stroke(BuFiTheme.separator.opacity(0.35), lineWidth: 0.5)
         }
         .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.top, 28)
     }
 
     private var albumRail: some View {
