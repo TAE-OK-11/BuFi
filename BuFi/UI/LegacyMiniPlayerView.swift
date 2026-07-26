@@ -5,17 +5,25 @@ struct LegacyMiniPlayerView: View {
     @State private var palette = ArtworkPalette.fallback
     @AppStorage("motion-enabled") private var motionEnabled = true
 
+    private let playerHeight: CGFloat = 60
+    private let cornerRadius: CGFloat = 10
+
     var body: some View {
         if let song = audio.currentSong {
             ZStack {
                 Button {
                     audio.showPlayer = true
                 } label: {
-                    Color.clear
-                        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(Color.clear)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(
+                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        )
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(song.title), \(song.artist)")
+                .accessibilityHint("전체 플레이어 열기")
 
                 VStack(spacing: 0) {
                     HStack(spacing: 9) {
@@ -54,7 +62,7 @@ struct LegacyMiniPlayerView: View {
                         .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
                     }
                     .padding(.horizontal, 6)
-                    .frame(height: 58)
+                    .frame(height: playerHeight - 2)
                     .id(song.id)
                     .transition(
                         motionEnabled
@@ -76,8 +84,15 @@ struct LegacyMiniPlayerView: View {
                         }
                     }
                     .frame(height: 2)
+                    .allowsHitTesting(false)
                 }
+                .frame(maxWidth: .infinity)
+                .frame(height: playerHeight)
             }
+            .frame(maxWidth: .infinity)
+            .frame(height: playerHeight)
+            .fixedSize(horizontal: false, vertical: true)
+            .clipped()
             .animation(
                 motionEnabled
                     ? .interactiveSpring(response: 0.42, dampingFraction: 0.84)
@@ -85,21 +100,24 @@ struct LegacyMiniPlayerView: View {
                 value: song.id
             )
             .foregroundStyle(.white)
-            .background(
-                LinearGradient(
-                    colors: [
-                        Color(palette.top).opacity(0.96),
-                        Color(palette.bottom).opacity(0.98)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            )
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(palette.top).opacity(0.96),
+                                Color(palette.bottom).opacity(0.98)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(.white.opacity(0.11), lineWidth: 0.6)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .shadow(color: .black.opacity(0.34), radius: 14, y: 7)
         }
     }
