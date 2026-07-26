@@ -42,7 +42,7 @@ struct LegacyMiniPlayerView: View {
                                 .contentTransition(.interpolate)
                             Text(song.artist)
                                 .font(.system(size: 13))
-                                .foregroundStyle(.white.opacity(0.76))
+                                .foregroundStyle(.white.opacity(0.78))
                                 .lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -75,7 +75,7 @@ struct LegacyMiniPlayerView: View {
 
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
-                            Color.white.opacity(0.19)
+                            Color.white.opacity(0.18)
                             Color.white
                                 .frame(
                                     width: proxy.size.width *
@@ -101,24 +101,28 @@ struct LegacyMiniPlayerView: View {
             )
             .foregroundStyle(.white)
             .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(palette.top).opacity(0.96),
-                                Color(palette.bottom).opacity(0.98)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                ZStack {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(palette.top).opacity(0.78),
+                                    Color(palette.bottom).opacity(0.82)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
+                }
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(.white.opacity(0.11), lineWidth: 0.6)
+                    .stroke(.white.opacity(0.14), lineWidth: 0.6)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .shadow(color: .black.opacity(0.34), radius: 14, y: 7)
+            .shadow(color: .black.opacity(0.24), radius: 10, y: 5)
         }
     }
 }
