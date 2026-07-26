@@ -15,6 +15,7 @@ struct RootView: View {
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("motion-enabled") private var motionEnabled = true
+    @AppStorage("server-sync-interval") private var syncInterval = 30.0
 
     var body: some View {
         Group {
@@ -31,6 +32,9 @@ struct RootView: View {
         )
         .transaction { transaction in
             if !motionEnabled { transaction.animation = nil }
+        }
+        .task(id: syncTaskID) {
+            await runAutomaticSync()
         }
         .alert(
             "오류",
@@ -66,21 +70,15 @@ struct RootView: View {
         }
     }
 
-    @ViewBuilder
     private var appContent: some View {
-        if #available(iOS 26.1, *) {
-            tabs
-                .tabViewBottomAccessory(isEnabled: audio.currentSong != nil) {
+        tabs
+            .safeAreaInset(edge: .bottom, spacing: 10) {
+                if audio.currentSong != nil {
                     MiniPlayerView()
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 2)
                 }
-        } else {
-            tabs
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if audio.currentSong != nil {
-                        MiniPlayerView()
-                    }
-                }
-        }
+            }
     }
 
     private var tabs: some View {
@@ -117,5 +115,23 @@ struct RootView: View {
                 : .none,
             value: tab
         )
+    }
+
+    private var syncTaskID: String {
+        "\(model.sessionState)-\(syncInterval)"
+    }
+
+    private func runAutomaticSync() async {
+        guard model.sessionState == .ready else { return }
+        let seconds = max(syncInterval, 30)
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard model.sessionState == .ready else { return }
+            await model.refresh()
+        }
     }
 }
