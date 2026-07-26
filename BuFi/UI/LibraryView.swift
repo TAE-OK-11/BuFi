@@ -2,39 +2,19 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var filter = 0
+    @State private var filter = LibraryFilter.playlists
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    HStack {
-                        Circle()
-                            .fill(Color.orange)
-                            .frame(width: 44, height: 44)
-                            .overlay { Text("T").foregroundStyle(.black) }
-                        Text("내 라이브러리")
-                            .font(.system(size: 30, weight: .bold))
-                            .tracking(-1)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-
-                    Picker("라이브러리 필터", selection: $filter) {
-                        Text("플레이리스트").tag(0)
-                        Text("앨범").tag(1)
-                        Text("아티스트").tag(2)
-                        Text("곡").tag(3)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 16)
-
+                LazyVStack(alignment: .leading, spacing: 20, pinnedViews: [.sectionHeaders]) {
+                    header
+                    filters
                     content
                 }
-                .padding(.bottom, 28)
+                .padding(.bottom, 34)
             }
-            .background(Color(red: 0.07, green: 0.07, blue: 0.07))
+            .background(BuFiTheme.background)
             .refreshable { await model.refresh() }
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
@@ -43,10 +23,76 @@ struct LibraryView: View {
         }
     }
 
+    private var header: some View {
+        HStack(spacing: 13) {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 44, height: 44)
+                .overlay {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 17, weight: .bold))
+                }
+            Text("내 라이브러리")
+                .font(.system(size: 31, weight: .bold))
+                .tracking(-1)
+            Spacer()
+            Button {
+                Task { await model.refresh() }
+            } label: {
+                if model.isRefreshing {
+                    ProgressView()
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 18, weight: .semibold))
+                        .frame(width: 38, height: 38)
+                        .background(BuFiTheme.elevated, in: Circle())
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("라이브러리 새로고침")
+        }
+        .padding(.horizontal, 17)
+        .padding(.top, 15)
+    }
+
+    private var filters: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(LibraryFilter.allCases) { item in
+                    Button {
+                        withAnimation(.snappy(duration: 0.24)) { filter = item }
+                    } label: {
+                        Label(item.title, systemImage: item.icon)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(
+                                filter == item ? Color.white : Color.white.opacity(0.58)
+                            )
+                            .padding(.horizontal, 14)
+                            .frame(height: 36)
+                            .background(
+                                filter == item
+                                    ? BuFiTheme.accent.opacity(0.92)
+                                    : Color.white.opacity(0.09),
+                                in: Capsule()
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 17)
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
         switch filter {
-        case 0:
+        case .playlists:
             if model.home.playlists.isEmpty {
                 empty("플레이리스트가 없습니다", icon: "music.note.list")
             } else {
@@ -54,7 +100,10 @@ struct LibraryView: View {
                     NavigationLink(value: MusicRoute.playlist(playlist)) {
                         libraryRow(
                             title: playlist.name,
-                            subtitle: "플레이리스트 · \(playlist.songCount ?? 0)곡",
+                            subtitle: String(
+                                format: String(localized: "플레이리스트 · %d곡"),
+                                playlist.songCount ?? 0
+                            ),
                             cover: playlist.coverArt,
                             circle: false
                         )
@@ -62,7 +111,7 @@ struct LibraryView: View {
                     .buttonStyle(.plain)
                 }
             }
-        case 1:
+        case .albums:
             if model.home.starredAlbums.isEmpty {
                 empty("저장한 앨범이 없습니다", icon: "square.stack")
             } else {
@@ -70,7 +119,10 @@ struct LibraryView: View {
                     NavigationLink(value: MusicRoute.album(album)) {
                         libraryRow(
                             title: album.name,
-                            subtitle: "앨범 · \(album.artist)",
+                            subtitle: String(
+                                format: String(localized: "앨범 · %@"),
+                                album.artist
+                            ),
                             cover: album.coverArt,
                             circle: false
                         )
@@ -78,32 +130,108 @@ struct LibraryView: View {
                     .buttonStyle(.plain)
                 }
             }
-        case 2:
-            if model.home.starredArtists.isEmpty {
-                empty("팔로우한 아티스트가 없습니다", icon: "person.2")
-            } else {
-                ForEach(model.home.starredArtists) { artist in
-                    NavigationLink(value: MusicRoute.artist(artist)) {
-                        libraryRow(
-                            title: artist.name,
-                            subtitle: "아티스트",
-                            cover: artist.coverArt,
-                            circle: true
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        default:
+        case .artists:
+            artistsContent
+        case .songs:
             if model.home.starredSongs.isEmpty {
                 empty("좋아요 표시한 곡이 없습니다", icon: "heart")
             } else {
                 ForEach(model.home.starredSongs) { song in
                     SongRow(song: song, queue: model.home.starredSongs)
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 17)
             }
         }
+    }
+
+    @ViewBuilder
+    private var artistsContent: some View {
+        if allArtists.isEmpty {
+            empty("아티스트가 없습니다", icon: "person.2")
+        } else {
+            if !favoriteArtists.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    librarySectionTitle("좋아요 표시한 아티스트", icon: "heart.fill")
+                    ForEach(favoriteArtists) { artist in
+                        artistRow(artist, favorite: true)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                librarySectionTitle("모든 아티스트", icon: "textformat")
+                ForEach(artistSections) { section in
+                    Section {
+                        ForEach(section.artists) { artist in
+                            artistRow(artist, favorite: false)
+                        }
+                    } header: {
+                        Text(section.title)
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(BuFiTheme.accentSoft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 17)
+                            .padding(.vertical, 7)
+                            .background(BuFiTheme.background.opacity(0.94))
+                    }
+                }
+            }
+        }
+    }
+
+    private func artistRow(_ artist: Artist, favorite: Bool) -> some View {
+        HStack(spacing: 8) {
+            NavigationLink(value: MusicRoute.artist(artist)) {
+                HStack(spacing: 13) {
+                    ArtworkView(coverArt: artist.coverArt, size: 66, cornerRadius: 33)
+                        .frame(width: 66, height: 66)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(artist.name)
+                            .font(.system(size: 17, weight: .semibold))
+                            .lineLimit(1)
+                        Text(
+                            favorite
+                                ? String(localized: "좋아요 표시한 아티스트")
+                                : String(localized: "아티스트")
+                        )
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                Task { await model.toggleStar(artist: artist) }
+            } label: {
+                Image(systemName: favorite ? "heart.fill" : "heart")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(
+                        favorite ? BuFiTheme.accent : Color.white.opacity(0.50)
+                    )
+                    .frame(width: 38, height: 38)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(favorite ? "좋아요 취소" : "좋아요 표시")
+        }
+        .padding(.horizontal, 17)
+        .padding(.vertical, 4)
+    }
+
+    private func librarySectionTitle(_ title: String, icon: String) -> some View {
+        Label {
+            Text(LocalizedStringKey(title))
+        } icon: {
+            Image(systemName: icon)
+                .foregroundStyle(BuFiTheme.accent)
+        }
+        .font(.system(size: 21, weight: .bold))
+        .padding(.horizontal, 17)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
     }
 
     private func libraryRow(
@@ -115,10 +243,10 @@ struct LibraryView: View {
         HStack(spacing: 13) {
             ArtworkView(
                 coverArt: cover,
-                size: 68,
-                cornerRadius: circle ? 34 : 6
+                size: 66,
+                cornerRadius: circle ? 33 : 11
             )
-            .frame(width: 68, height: 68)
+            .frame(width: 66, height: 66)
             VStack(alignment: .leading, spacing: 5) {
                 Text(title)
                     .font(.system(size: 17, weight: .semibold))
@@ -130,17 +258,130 @@ struct LibraryView: View {
             }
             Spacer()
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 17)
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 
     private func empty(_ title: String, icon: String) -> some View {
-        ContentUnavailableView(title, systemImage: icon)
+        ContentUnavailableView(LocalizedStringKey(title), systemImage: icon)
             .frame(maxWidth: .infinity)
             .padding(.top, 70)
     }
+
+    private var allArtists: [Artist] {
+        var values: [String: Artist] = [:]
+        for artist in model.home.artists { values[artist.id] = artist }
+        for artist in model.home.starredArtists {
+            var starred = artist
+            if starred.starred == nil {
+                starred.starred = ISO8601DateFormatter().string(from: Date())
+            }
+            values[artist.id] = starred
+        }
+        return values.values.sorted(by: artistSort)
+    }
+
+    private var favoriteArtists: [Artist] {
+        allArtists.filter(\.isStarred).sorted(by: artistSort)
+    }
+
+    private var artistSections: [ArtistSection] {
+        let favoriteIDs = Set(favoriteArtists.map(\.id))
+        let grouped = Dictionary(grouping: allArtists.filter { !favoriteIDs.contains($0.id) }) {
+            ArtistSectioning.title(for: $0.name)
+        }
+        return grouped.keys.sorted(by: ArtistSectioning.sectionSort).map {
+            ArtistSection(title: $0, artists: grouped[$0, default: []].sorted(by: artistSort))
+        }
+    }
+
+    private func artistSort(_ lhs: Artist, _ rhs: Artist) -> Bool {
+        lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+    }
 }
 
+private enum LibraryFilter: Int, CaseIterable, Identifiable {
+    case playlists
+    case albums
+    case artists
+    case songs
+
+    var id: Int { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .playlists: "플레이리스트"
+        case .albums: "앨범"
+        case .artists: "아티스트"
+        case .songs: "곡"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .playlists: "music.note.list"
+        case .albums: "square.stack"
+        case .artists: "person.2"
+        case .songs: "heart.fill"
+        }
+    }
+}
+
+private struct ArtistSection: Identifiable {
+    let title: String
+    let artists: [Artist]
+    var id: String { title }
+}
+
+private enum ArtistSectioning {
+    private static let koreanInitials = [
+        "ㄱ", "ㄱ", "ㄴ", "ㄷ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅂ",
+        "ㅅ", "ㅅ", "ㅇ", "ㅈ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"
+    ]
+    private static let koreanSectionOrder = [
+        "ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ",
+        "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"
+    ]
+
+    static func title(for name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let scalar = trimmed.unicodeScalars.first else { return "#" }
+        let value = scalar.value
+        if (0xAC00...0xD7A3).contains(value) {
+            return koreanInitials[Int((value - 0xAC00) / 588)]
+        }
+        let folded = trimmed.folding(
+            options: [.diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        guard let first = folded.first else { return "#" }
+        let upper = String(first).uppercased()
+        if upper.range(of: "^[A-Z]$", options: .regularExpression) != nil {
+            return upper
+        }
+        return String(first)
+    }
+
+    static func sectionSort(_ lhs: String, _ rhs: String) -> Bool {
+        let leftRank = rank(lhs)
+        let rightRank = rank(rhs)
+        if leftRank != rightRank { return leftRank < rightRank }
+        return lhs.localizedStandardCompare(rhs) == .orderedAscending
+    }
+
+    private static func rank(_ section: String) -> Int {
+        if let scalar = section.unicodeScalars.first,
+           scalar.value >= 65,
+           scalar.value <= 90 {
+            return Int(scalar.value - 65)
+        }
+        if let index = koreanSectionOrder.firstIndex(of: section) {
+            return 100 + index
+        }
+        return section == "#" ? 1_000 : 500
+    }
+}

@@ -16,10 +16,10 @@ enum StreamQuality: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .automatic: "자동"
+        case .automatic: String(localized: "자동")
         case .aac320: "AAC 320kbps"
         case .opus160: "Opus 160kbps"
-        case .original: "원본 무손실"
+        case .original: String(localized: "원본 무손실")
         }
     }
 
@@ -113,6 +113,7 @@ struct HomeSnapshot: Sendable {
     var starredAlbums: [Album] = []
     var starredSongs: [Song] = []
     var starredArtists: [Artist] = []
+    var artists: [Artist] = []
     var randomSongs: [Song] = []
     var playlists: [Playlist] = []
 
@@ -333,6 +334,19 @@ struct ArtistInfo: Decodable {
 
 struct ArtistAlbumsPayload: Decodable {
     let artist: ArtistWithAlbums?
+}
+
+struct ArtistsPayload: Decodable {
+    let artists: ArtistsContainer?
+}
+
+struct ArtistsContainer: Decodable {
+    let index: [ArtistIndex]?
+}
+
+struct ArtistIndex: Decodable {
+    let name: String?
+    let artist: [Artist]?
 }
 
 struct ArtistWithAlbums: Decodable {

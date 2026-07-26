@@ -2,6 +2,14 @@ import AVKit
 import SwiftUI
 import UIKit
 
+enum BuFiTheme {
+    static let accent = Color(red: 0.98, green: 0.20, blue: 0.34)
+    static let accentSoft = Color(red: 1.00, green: 0.40, blue: 0.48)
+    static let deezerGlow = Color(red: 0.56, green: 0.26, blue: 0.98)
+    static let background = Color(red: 0.055, green: 0.055, blue: 0.065)
+    static let elevated = Color.white.opacity(0.095)
+}
+
 extension Color {
     init(_ rgba: RGBAColor) {
         self.init(
@@ -146,7 +154,9 @@ struct SongRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(song.title)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(audio.currentSong?.id == song.id ? .green : .white)
+                    .foregroundStyle(
+                        audio.currentSong?.id == song.id ? BuFiTheme.accentSoft : .white
+                    )
                     .lineLimit(1)
                 Text([song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · "))
                     .font(.system(size: 13))
@@ -155,8 +165,8 @@ struct SongRow: View {
             }
             Spacer(minLength: 6)
             if song.isStarred {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(BuFiTheme.accent)
                     .font(.system(size: 17))
             }
             Button {
@@ -188,12 +198,12 @@ struct SectionTitle: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.system(size: 24, weight: .bold))
                 .tracking(-0.6)
             Spacer()
             if let trailing {
-                Text(trailing)
+                Text(LocalizedStringKey(trailing))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
@@ -205,7 +215,7 @@ struct AirPlayButton: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
         view.prioritizesVideoDevices = false
-        view.activeTintColor = .systemGreen
+        view.activeTintColor = .systemPink
         view.tintColor = .white
         return view
     }
@@ -219,69 +229,77 @@ struct MiniPlayerView: View {
 
     var body: some View {
         if let song = audio.currentSong {
-            Button {
-                audio.showPlayer = true
-            } label: {
-                VStack(spacing: 0) {
-                    HStack(spacing: 10) {
-                        ArtworkView(
-                            coverArt: song.coverArt,
-                            size: 52,
-                            cornerRadius: 5,
-                            onPalette: { palette = $0 }
-                        )
-                        .frame(width: 52, height: 52)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(song.title)
-                                .font(.system(size: 15, weight: .semibold))
-                                .lineLimit(1)
-                            Text(song.artist)
-                                .font(.system(size: 13))
-                                .foregroundStyle(.white.opacity(0.72))
-                                .lineLimit(1)
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Button {
+                        audio.showPlayer = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            ArtworkView(
+                                coverArt: song.coverArt,
+                                size: 52,
+                                cornerRadius: 5,
+                                onPalette: { palette = $0 }
+                            )
+                            .frame(width: 52, height: 52)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(song.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .lineLimit(1)
+                                Text(song.artist)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.white.opacity(0.72))
+                                    .lineLimit(1)
+                            }
                         }
-                        Spacer(minLength: 4)
-                        AirPlayButton()
-                            .frame(width: 37, height: 37)
-                        Button {
-                            audio.togglePlayback()
-                        } label: {
-                            Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 22, weight: .semibold))
-                                .frame(width: 42, height: 42)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.horizontal, 7)
-                    .frame(height: 62)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(song.title), \(song.artist)")
 
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Color.white.opacity(0.18)
-                            Color.white
-                                .frame(
-                                    width: proxy.size.width *
-                                    min(max(audio.elapsed / max(audio.duration, 1), 0), 1)
-                                )
-                        }
+                    AirPlayButton()
+                        .frame(width: 37, height: 37)
+                    Button {
+                        audio.togglePlayback()
+                    } label: {
+                        Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 42, height: 42)
                     }
-                    .frame(height: 2)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
                 }
-                .foregroundStyle(.white)
-                .background(
-                    LinearGradient(
-                        colors: [Color(palette.top), Color(palette.bottom)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .opacity(0.78)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .buFiGlass(cornerRadius: 9, interactive: true)
+                .padding(.horizontal, 7)
+                .frame(height: 62)
+
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Color.white.opacity(0.18)
+                        Color.white
+                            .frame(
+                                width: proxy.size.width *
+                                min(max(audio.elapsed / max(audio.duration, 1), 0), 1)
+                            )
+                    }
+                }
+                .frame(height: 2)
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 8)
+            .foregroundStyle(.white)
+            .background(
+                LinearGradient(
+                    colors: [Color(palette.top), Color(palette.bottom)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .opacity(0.78)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(.white.opacity(0.13), lineWidth: 0.7)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .buFiGlass(cornerRadius: 16, interactive: true)
+            .padding(.horizontal, 10)
         }
     }
 }

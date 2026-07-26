@@ -14,6 +14,7 @@ struct MusicDetailView: View {
     @State private var isLoading = true
     @State private var selectedSong: Song?
     @State private var palette = ArtworkPalette.fallback
+    @State private var isFavorite = false
 
     var body: some View {
         ScrollView {
@@ -75,9 +76,22 @@ struct MusicDetailView: View {
 
     private var controls: some View {
         HStack(spacing: 20) {
+            Button(action: toggleFavorite) {
+                Image(systemName: isFavorite ? "heart.fill" : "heart")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(isFavorite ? BuFiTheme.accentSoft : .white)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .opacity(canFavorite ? 1 : 0)
+            .disabled(!canFavorite)
+            .accessibilityLabel(isFavorite ? "좋아요 취소" : "좋아요 표시")
+
             Button {
-                if let first = songs.first {
-                    audio.play(first, in: songs)
+                guard !songs.isEmpty else { return }
+                let shuffled = songs.shuffled()
+                if let first = shuffled.first {
+                    audio.play(first, in: shuffled)
                 }
             } label: {
                 Image(systemName: "shuffle")
@@ -96,9 +110,9 @@ struct MusicDetailView: View {
             } label: {
                 Image(systemName: "play.fill")
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.black)
+                    .foregroundStyle(.white)
                     .frame(width: 62, height: 62)
-                    .background(Color.green, in: Circle())
+                    .background(BuFiTheme.accent, in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(songs.isEmpty)
@@ -133,7 +147,9 @@ struct MusicDetailView: View {
     private var songList: some View {
         if songs.isEmpty {
             ContentUnavailableView(
-                isArtist ? "인기곡이 없습니다" : "수록곡이 없습니다",
+                isArtist
+                    ? LocalizedStringKey("인기곡이 없습니다")
+                    : LocalizedStringKey("수록곡이 없습니다"),
                 systemImage: "music.note"
             )
             .frame(maxWidth: .infinity)
@@ -158,7 +174,7 @@ struct MusicDetailView: View {
         LinearGradient(
             colors: [
                 Color(palette.top).opacity(0.92),
-                Color(red: 0.07, green: 0.07, blue: 0.07)
+                BuFiTheme.background
             ],
             startPoint: .top,
             endPoint: .init(x: 0.5, y: 0.43)
@@ -171,6 +187,26 @@ struct MusicDetailView: View {
         return false
     }
 
+    private var canFavorite: Bool {
+        switch route {
+        case .album, .artist: true
+        case .playlist: false
+        }
+    }
+
+    private func toggleFavorite() {
+        guard canFavorite else { return }
+        isFavorite.toggle()
+        switch route {
+        case .album(let album):
+            Task { await model.toggleStar(album: album) }
+        case .artist(let artist):
+            Task { await model.toggleStar(artist: artist) }
+        case .playlist:
+            break
+        }
+    }
+
     @MainActor
     private func load() async {
         isLoading = true
@@ -179,8 +215,13 @@ struct MusicDetailView: View {
         do {
             switch route {
             case .album(let album):
+                isFavorite = album.isStarred
                 title = album.name
-                subtitle = ["앨범", album.artist, album.year.map(String.init)]
+                subtitle = [
+                    String(localized: "앨범"),
+                    album.artist,
+                    album.year.map(String.init)
+                ]
                     .compactMap { $0 }
                     .filter { !$0.isEmpty }
                     .joined(separator: " · ")
@@ -188,11 +229,14 @@ struct MusicDetailView: View {
                 let detail = try await model.album(id: album.id)
                 songs = detail.songs
             case .playlist(let playlist):
+                isFavorite = false
                 title = playlist.name
                 subtitle = [
-                    "플레이리스트",
+                    String(localized: "플레이리스트"),
                     playlist.owner,
-                    playlist.songCount.map { "\($0)곡" }
+                    playlist.songCount.map {
+                        String(format: String(localized: "%d곡"), $0)
+                    }
                 ]
                 .compactMap { $0 }
                 .filter { !$0.isEmpty }
@@ -201,10 +245,12 @@ struct MusicDetailView: View {
                 let detail = try await model.playlist(id: playlist.id)
                 songs = detail.songs
             case .artist(let artist):
+                isFavorite = artist.isStarred
                 title = artist.name
-                subtitle = "아티스트"
+                subtitle = String(localized: "아티스트")
                 coverArt = artist.coverArt
                 let detail = try await model.artist(id: artist.id, name: artist.name)
+                isFavorite = detail.artist.isStarred
                 coverArt = detail.artist.coverArt ?? coverArt
                 songs = detail.topSongs
                 albums = detail.albums
@@ -261,7 +307,11 @@ private struct SongActionsSheet: View {
 
     private func action(_ title: String, icon: String, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
-            Label(title, systemImage: icon)
+            Label {
+                Text(LocalizedStringKey(title))
+            } icon: {
+                Image(systemName: icon)
+            }
                 .font(.system(size: 16, weight: .medium))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(height: 44)

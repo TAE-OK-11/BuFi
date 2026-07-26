@@ -9,6 +9,7 @@ enum MusicRoute: Hashable {
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
+    @State private var filter = HomeFilter.all
 
     private let columns = [
         GridItem(.flexible(), spacing: 9),
@@ -20,17 +21,11 @@ struct HomeView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 30) {
                     header
-                    quickGrid
-                    albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
-                    songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
-                    albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
-                    if !model.home.starredAlbums.isEmpty {
-                        albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
-                    }
+                    filteredContent
                 }
                 .padding(.bottom, 28)
             }
-            .background(Color(red: 0.07, green: 0.07, blue: 0.07))
+            .background(BuFiTheme.background)
             .refreshable { await model.refresh() }
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
@@ -43,14 +38,20 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 19) {
             HStack {
                 Circle()
-                    .fill(Color.orange)
+                    .fill(
+                        LinearGradient(
+                            colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                     .frame(width: 42, height: 42)
                     .overlay {
                         Text("T")
                             .font(.system(size: 20, weight: .medium))
-                            .foregroundStyle(.black)
+                            .foregroundStyle(.white)
                     }
-                Text(greeting)
+            Text(greeting)
                     .font(.system(size: 25, weight: .bold))
                     .tracking(-0.7)
                 Spacer()
@@ -69,13 +70,38 @@ struct HomeView: View {
             }
 
             HStack(spacing: 8) {
-                filterPill("전체", selected: true)
-                filterPill("음악")
-                filterPill("플레이리스트")
+                ForEach(HomeFilter.allCases) { item in
+                    filterPill(item)
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
+    }
+
+    @ViewBuilder
+    private var filteredContent: some View {
+        switch filter {
+        case .all:
+            quickGrid
+            albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
+            songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
+            playlistSection(showEmpty: false)
+            albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
+            if !model.home.starredAlbums.isEmpty {
+                albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+            }
+        case .music:
+            quickGrid
+            albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
+            songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
+            albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
+            if !model.home.starredAlbums.isEmpty {
+                albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+            }
+        case .playlists:
+            playlistSection(showEmpty: true)
+        }
     }
 
     private var quickGrid: some View {
@@ -100,11 +126,61 @@ struct HomeView: View {
         .padding(.horizontal, 16)
     }
 
+    @ViewBuilder
+    private func playlistSection(showEmpty: Bool) -> some View {
+        if model.home.playlists.isEmpty {
+            if showEmpty {
+                ContentUnavailableView(
+                    "플레이리스트가 없습니다",
+                    systemImage: "music.note.list"
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.top, 44)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 15) {
+                SectionTitle(title: "내 플레이리스트")
+                    .padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 15) {
+                        ForEach(model.home.playlists) { playlist in
+                            NavigationLink(value: MusicRoute.playlist(playlist)) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ArtworkView(
+                                        coverArt: playlist.coverArt,
+                                        size: 166,
+                                        cornerRadius: 9
+                                    )
+                                    .frame(width: 166, height: 166)
+                                    Text(playlist.name)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(2)
+                                    Text(
+                                        String(
+                                            format: String(localized: "%d곡"),
+                                            playlist.songCount ?? 0
+                                        )
+                                    )
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                                }
+                                .frame(width: 166, alignment: .leading)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+        }
+    }
+
     private func quickCard(title: String, coverArt: String?) -> some View {
         HStack(spacing: 0) {
             ArtworkView(coverArt: coverArt, size: 60, cornerRadius: 4)
                 .frame(width: 60, height: 60)
-            Text(title)
+            Text(LocalizedStringKey(title))
                 .font(.system(size: 14, weight: .bold))
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -112,8 +188,8 @@ struct HomeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(height: 60)
-        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 5))
-        .contentShape(RoundedRectangle(cornerRadius: 5))
+        .background(BuFiTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
     }
 
     @ViewBuilder
@@ -171,16 +247,24 @@ struct HomeView: View {
         }
     }
 
-    private func filterPill(_ title: String, selected: Bool = false) -> some View {
-        Text(title)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(selected ? .black : .white)
-            .padding(.horizontal, 16)
-            .frame(height: 34)
-            .background(selected ? Color.green : Color.white.opacity(0.12), in: Capsule())
+    private func filterPill(_ item: HomeFilter) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.24)) { filter = item }
+        } label: {
+            Text(item.title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 34)
+                .background(
+                    filter == item ? BuFiTheme.accent : Color.white.opacity(0.10),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
     }
 
-    private var greeting: String {
+    private var greeting: LocalizedStringKey {
         switch Calendar.current.component(.hour, from: .now) {
         case 5..<12: "좋은 아침이에요"
         case 12..<18: "좋은 오후예요"
@@ -189,3 +273,18 @@ struct HomeView: View {
     }
 }
 
+private enum HomeFilter: Int, CaseIterable, Identifiable {
+    case all
+    case music
+    case playlists
+
+    var id: Int { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .all: "전체"
+        case .music: "음악"
+        case .playlists: "플레이리스트"
+        }
+    }
+}

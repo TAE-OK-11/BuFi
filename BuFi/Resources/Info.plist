@@ -4,6 +4,12 @@
 <dict>
   <key>CFBundleDevelopmentRegion</key>
   <string>ko</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>ko</string>
+    <string>en</string>
+    <string>ja</string>
+  </array>
   <key>CFBundleDisplayName</key>
   <string>BuFi</string>
   <key>CFBundleExecutable</key>

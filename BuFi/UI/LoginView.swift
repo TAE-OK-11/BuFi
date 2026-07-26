@@ -17,7 +17,11 @@ struct LoginView: View {
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [Color(red: 0.16, green: 0.19, blue: 0.18), .black],
+                colors: [
+                    BuFiTheme.accent.opacity(0.30),
+                    BuFiTheme.deezerGlow.opacity(0.12),
+                    BuFiTheme.background
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -27,7 +31,7 @@ struct LoginView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Image(systemName: "music.note.house.fill")
                         .font(.system(size: 36, weight: .bold))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(BuFiTheme.accentSoft)
                         .padding(.top, 24)
 
                     Spacer(minLength: 72)
@@ -85,13 +89,17 @@ struct LoginView: View {
                             if model.sessionState == .connecting {
                                 ProgressView().tint(.black)
                             }
-                            Text(model.sessionState == .connecting ? "연결 중…" : "서버에 연결")
+                            Text(
+                                model.sessionState == .connecting
+                                    ? String(localized: "연결 중…")
+                                    : String(localized: "서버에 연결")
+                            )
                         }
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(.black)
                         .frame(maxWidth: .infinity)
                         .frame(height: 56)
-                        .background(.green, in: Capsule())
+                        .background(BuFiTheme.accent, in: Capsule())
                     }
                     .disabled(
                         server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
@@ -126,7 +134,7 @@ struct LoginView: View {
             Image(systemName: icon)
                 .frame(width: 22)
                 .foregroundStyle(.secondary)
-            TextField(title, text: text)
+            TextField(LocalizedStringKey(title), text: text)
                 .textContentType(contentType)
                 .focused($focus, equals: field)
                 .submitLabel(field == .server ? .next : field == .username ? .next : .go)
@@ -150,4 +158,3 @@ struct LoginView: View {
         }
     }
 }
-

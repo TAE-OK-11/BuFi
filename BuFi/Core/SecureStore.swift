@@ -8,9 +8,12 @@ enum SecureStoreError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .encoding:
-            "보안 저장소 데이터를 인코딩하지 못했습니다."
+            String(localized: "보안 저장소 데이터를 인코딩하지 못했습니다.")
         case .keychain(let status):
-            "Keychain 오류가 발생했습니다. (\(status))"
+            String(
+                format: String(localized: "Keychain 오류가 발생했습니다. (%d)"),
+                status
+            )
         }
     }
 }

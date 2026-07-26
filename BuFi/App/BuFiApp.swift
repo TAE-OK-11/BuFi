@@ -11,8 +11,7 @@ struct BuFiApp: App {
                 .environmentObject(model)
                 .environmentObject(audio)
                 .preferredColorScheme(.dark)
-                .tint(.green)
+                .tint(BuFiTheme.accent)
         }
     }
 }
-
