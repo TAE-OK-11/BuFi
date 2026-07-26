@@ -38,8 +38,8 @@ targets:
       path: BuFi/Resources/Info.plist
       properties:
         CFBundleDisplayName: BuFi
-        CFBundleShortVersionString: "1.1.0"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "1.2.0"
+        CFBundleVersion: "4"
         CFBundleLocalizations:
           - ko
           - en
@@ -60,8 +60,8 @@ targets:
         PRODUCT_NAME: BuFi
         GENERATE_INFOPLIST_FILE: false
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        MARKETING_VERSION: "1.1.0"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "1.2.0"
+        CURRENT_PROJECT_VERSION: "4"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_ASSET_PATHS: ""
     scheme:
