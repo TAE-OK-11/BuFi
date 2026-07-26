@@ -10,13 +10,16 @@ enum OpenSubsonicError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .invalidServerURL:
-            "서버 주소가 올바르지 않습니다."
+            String(localized: "서버 주소가 올바르지 않습니다.")
         case .invalidResponse:
-            "OpenSubsonic 응답 형식이 올바르지 않습니다."
+            String(localized: "OpenSubsonic 응답 형식이 올바르지 않습니다.")
         case .server(_, let message):
             message
         case .http(let status):
-            "서버가 HTTP \(status)로 응답했습니다."
+            String(
+                format: String(localized: "서버가 HTTP %d로 응답했습니다."),
+                status
+            )
         }
     }
 }
@@ -50,6 +53,7 @@ actor OpenSubsonicClient {
         )
         configuration.httpMaximumConnectionsPerHost = 6
         configuration.waitsForConnectivity = true
+        configuration.multipathServiceType = .handover
         self.session = URLSession(configuration: configuration)
         self.decoder = JSONDecoder()
     }
@@ -129,14 +133,7 @@ actor OpenSubsonicClient {
     }
 
     private func decodeResponse<Payload: Decodable>(from url: URL) async throws -> Payload {
-        var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw OpenSubsonicError.invalidResponse
-        }
+        let (data, http) = try await responseData(from: url, acceptsZstandard: true)
         guard (200..<300).contains(http.statusCode) else {
             throw OpenSubsonicError.http(http.statusCode)
         }
@@ -145,7 +142,8 @@ actor OpenSubsonicClient {
         guard statusEnvelope.response.status == "ok" else {
             throw OpenSubsonicError.server(
                 code: statusEnvelope.response.error?.code,
-                message: statusEnvelope.response.error?.message ?? "서버 요청이 실패했습니다."
+                message: statusEnvelope.response.error?.message
+                    ?? String(localized: "서버 요청이 실패했습니다.")
             )
         }
         return try decoder.decode(APIEnvelope<Payload>.self, from: data).response
@@ -153,19 +151,51 @@ actor OpenSubsonicClient {
 
     func ping() async throws -> StatusBody {
         let url = try endpointURL("ping")
-        let (data, response) = try await session.data(from: url)
-        guard let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode) else {
+        let (data, http) = try await responseData(from: url, acceptsZstandard: true)
+        guard (200..<300).contains(http.statusCode) else {
             throw OpenSubsonicError.invalidResponse
         }
         let envelope = try decoder.decode(StatusEnvelope.self, from: data)
         guard envelope.response.status == "ok" else {
             throw OpenSubsonicError.server(
                 code: envelope.response.error?.code,
-                message: envelope.response.error?.message ?? "서버 연결에 실패했습니다."
+                message: envelope.response.error?.message
+                    ?? String(localized: "서버 연결에 실패했습니다.")
             )
         }
         return envelope.response
+    }
+
+    private func responseData(
+        from url: URL,
+        acceptsZstandard: Bool
+    ) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            acceptsZstandard ? "zstd, br, gzip" : "br, gzip",
+            forHTTPHeaderField: "Accept-Encoding"
+        )
+        if url.scheme?.lowercased() == "https" {
+            request.assumesHTTP3Capable = true
+        }
+
+        let (encodedData, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        do {
+            let data = try HTTPContentDecoder.decode(
+                encodedData,
+                contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+            )
+            return (data, http)
+        } catch where acceptsZstandard {
+            // A server can negotiate zstd with an older CFNetwork build.
+            // Retrying with Brotli/gzip keeps login and library sync reliable.
+            return try await responseData(from: url, acceptsZstandard: false)
+        }
     }
 
     func home() async throws -> HomeSnapshot {
@@ -178,21 +208,23 @@ actor OpenSubsonicClient {
             parameters: ["type": "random", "size": "20"]
         )
         async let starred: StarredPayload? = try? request("getStarred2")
+        async let artists: ArtistsPayload? = try? request("getArtists")
         async let randomSongs: RandomSongsPayload? = try? request(
             "getRandomSongs",
             parameters: ["size": "40"]
         )
         async let playlists: PlaylistsPayload? = try? request("getPlaylists")
 
-        let values = await (recent, randomAlbums, starred, randomSongs, playlists)
+        let values = await (recent, randomAlbums, starred, artists, randomSongs, playlists)
         return HomeSnapshot(
             recentAlbums: values.0?.albumList2?.album ?? [],
             randomAlbums: values.1?.albumList2?.album ?? [],
             starredAlbums: values.2?.starred2?.album ?? [],
             starredSongs: values.2?.starred2?.song ?? [],
             starredArtists: values.2?.starred2?.artist ?? [],
-            randomSongs: values.3?.randomSongs?.song ?? [],
-            playlists: values.4?.playlists?.playlist ?? []
+            artists: values.3?.artists?.index?.flatMap { $0.artist ?? [] } ?? [],
+            randomSongs: values.4?.randomSongs?.song ?? [],
+            playlists: values.5?.playlists?.playlist ?? []
         )
     }
 
@@ -306,8 +338,25 @@ actor OpenSubsonicClient {
         try endpointURL("download", parameters: ["id": songID], json: false)
     }
 
-    func star(id: String, enabled: Bool) async throws {
-        let _: EmptyPayload = try await request(enabled ? "star" : "unstar", parameters: ["id": id])
+    enum StarTarget: Sendable {
+        case song
+        case album
+        case artist
+
+        var parameterName: String {
+            switch self {
+            case .song: "id"
+            case .album: "albumId"
+            case .artist: "artistId"
+            }
+        }
+    }
+
+    func star(id: String, target: StarTarget = .song, enabled: Bool) async throws {
+        let _: EmptyPayload = try await request(
+            enabled ? "star" : "unstar",
+            parameters: [target.parameterName: id]
+        )
     }
 
     func scrobble(id: String, submission: Bool) async throws {

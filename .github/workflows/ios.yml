@@ -20,7 +20,13 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Show Xcode version
-        run: xcodebuild -version
+        run: |
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          elif [ -d /Applications/Xcode_26.5.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+          fi
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -66,3 +72,40 @@ jobs:
             BuFi-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 30
+
+  ios-27-compatibility:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show Xcode and iOS SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Prepare generated assets
+        run: sh Scripts/prepare-assets.sh
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build with iOS 27 SDK
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/BuFi27DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build

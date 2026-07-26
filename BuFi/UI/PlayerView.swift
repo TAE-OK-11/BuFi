@@ -58,7 +58,7 @@ struct PlayerView: View {
                 endPoint: .bottom
             )
             LinearGradient(
-                colors: [.white.opacity(0.08), .clear, .black.opacity(0.14)],
+                colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -80,9 +80,17 @@ struct PlayerView: View {
             .accessibilityLabel("플레이어 닫기")
 
             Spacer()
-            VStack(spacing: 3) {
-                Text("추천 트랙 재생 중")
-                    .font(.system(size: 13, weight: .bold))
+            VStack(spacing: 2) {
+                Text(
+                    song.album.isEmpty
+                        ? String(localized: "지금 재생 중")
+                        : song.album
+                )
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Text(song.artist)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.62))
                     .lineLimit(1)
             }
             .frame(maxWidth: 240)
@@ -92,7 +100,12 @@ struct PlayerView: View {
                 Button {
                     Task { await model.toggleStar(song: song) }
                 } label: {
-                    Label(song.isStarred ? "좋아요 취소" : "좋아요 표시", systemImage: "heart")
+                    Label(
+                        song.isStarred
+                            ? String(localized: "좋아요 취소")
+                            : String(localized: "좋아요 표시"),
+                        systemImage: "heart"
+                    )
                 }
                 Button {
                     Task { await model.download(song) }
@@ -111,25 +124,25 @@ struct PlayerView: View {
     }
 
     private func artwork(_ song: Song, availableHeight: CGFloat) -> some View {
-        let edge = min(UIScreen.main.bounds.width - 36, max(264, availableHeight * 0.47))
+        let edge = min(UIScreen.main.bounds.width - 44, max(264, availableHeight * 0.47))
         return ArtworkView(
             coverArt: song.coverArt,
             size: edge,
-            cornerRadius: 10,
+            cornerRadius: 16,
             onPalette: { palette = $0 }
         )
         .frame(width: edge, height: edge)
-        .shadow(color: .black.opacity(0.36), radius: 25, y: 15)
-        .padding(.top, 15)
-        .padding(.bottom, 30)
+        .shadow(color: .black.opacity(0.38), radius: 28, y: 17)
+        .padding(.top, 13)
+        .padding(.bottom, 28)
     }
 
     private func metadata(_ song: Song) -> some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(song.title)
-                    .font(.system(size: 24, weight: .bold))
-                    .tracking(-0.6)
+                    .font(.system(size: 25, weight: .bold))
+                    .tracking(-0.7)
                     .lineLimit(1)
                 Text(song.artist)
                     .font(.system(size: 17, weight: .medium))
@@ -138,20 +151,12 @@ struct PlayerView: View {
             }
             Spacer(minLength: 4)
             Button {
-                audio.excludeCurrentAndAdvance()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 25, weight: .regular))
-                    .frame(width: 42, height: 42)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("현재 추천에서 제외")
-            Button {
                 Task { await model.toggleStar(song: song) }
             } label: {
-                Image(systemName: song.isStarred ? "checkmark.circle.fill" : "plus.circle")
-                    .font(.system(size: 30, weight: .medium))
-                    .foregroundStyle(song.isStarred ? Color.green : Color.white)
+                Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                    .font(.system(size: 27, weight: .semibold))
+                    .foregroundStyle(song.isStarred ? BuFiTheme.accentSoft : Color.white)
+                    .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
@@ -197,7 +202,7 @@ struct PlayerView: View {
                 audio.togglePlayback()
             } label: {
                 ZStack {
-                    Circle().fill(.white).frame(width: 64, height: 64)
+                    Circle().fill(.white).frame(width: 70, height: 70)
                     if audio.isBuffering {
                         ProgressView().tint(.black)
                     } else {
@@ -220,7 +225,7 @@ struct PlayerView: View {
                 label: "반복"
             ) { audio.cycleRepeat() }
         }
-        .frame(height: 104)
+        .frame(height: 112)
     }
 
     private func utilityRow(_ song: Song) -> some View {
@@ -294,12 +299,22 @@ struct PlayerView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(18)
+            .padding(20)
             .foregroundStyle(.white)
-            .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 18))
-            .contentShape(RoundedRectangle(cornerRadius: 18))
-            .buFiGlass(cornerRadius: 18, interactive: true)
-            .padding(.top, 8)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.22),
+                        Color.white.opacity(0.13)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .buFiGlass(cornerRadius: 24, interactive: true)
+            .padding(.top, 10)
         } else {
             Text("이 곡에는 표시할 가사가 없습니다.")
                 .font(.system(size: 14, weight: .medium))
@@ -321,8 +336,8 @@ struct PlayerView: View {
             return .black.opacity(0.76)
         }
         if index == audio.activeLyricIndex { return .white }
-        if index < audio.activeLyricIndex { return .white.opacity(0.34) }
-        return .black.opacity(0.78)
+        if index < audio.activeLyricIndex { return .white.opacity(0.28) }
+        return .white.opacity(0.58)
     }
 
     private func control(
@@ -335,7 +350,7 @@ struct PlayerView: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(active ? Color.green : Color.white)
+                .foregroundStyle(active ? BuFiTheme.accentSoft : Color.white)
                 .frame(width: 42, height: 42)
         }
         .buttonStyle(.plain)
@@ -431,6 +446,13 @@ private struct FullLyricsView: View {
                     proxy.scrollTo(audio.lyrics.lines[index].id, anchor: .center)
                 }
             }
+            .onAppear {
+                let index = audio.activeLyricIndex
+                guard audio.lyrics.lines.indices.contains(index) else { return }
+                DispatchQueue.main.async {
+                    proxy.scrollTo(audio.lyrics.lines[index].id, anchor: .center)
+                }
+            }
         }
     }
 
@@ -474,8 +496,8 @@ private struct FullLyricsView: View {
 
     private func color(for index: Int) -> Color {
         if index == audio.activeLyricIndex { return .white }
-        if index < audio.activeLyricIndex { return .white.opacity(0.36) }
-        return .black.opacity(0.80)
+        if index < audio.activeLyricIndex { return .white.opacity(0.30) }
+        return .white.opacity(0.54)
     }
 }
 
@@ -490,7 +512,7 @@ private struct QueueView: View {
                     ContentUnavailableView("재생목록이 비어 있습니다", systemImage: "list.bullet")
                 } else {
                     List {
-                        ForEach(Array(audio.queue.enumerated()), id: \.element.id) { index, song in
+                        ForEach(Array(audio.queue.enumerated()), id: \.offset) { index, song in
                             Button {
                                 audio.playQueueItem(at: index)
                                 dismiss()
@@ -500,7 +522,11 @@ private struct QueueView: View {
                                         .frame(width: 48, height: 48)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
-                                            .foregroundStyle(index == audio.queueIndex ? .green : .primary)
+                                            .foregroundStyle(
+                                                index == audio.queueIndex
+                                                    ? BuFiTheme.accentSoft
+                                                    : Color.primary
+                                            )
                                             .lineLimit(1)
                                         Text(song.artist)
                                             .font(.caption)
@@ -510,18 +536,25 @@ private struct QueueView: View {
                                     Spacer()
                                     if index == audio.queueIndex {
                                         Image(systemName: "speaker.wave.2.fill")
-                                            .foregroundStyle(.green)
+                                            .foregroundStyle(BuFiTheme.accent)
                                     }
                                 }
                             }
                             .buttonStyle(.plain)
                             .listRowBackground(Color.clear)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    audio.removeQueueItem(at: index)
+                                } label: {
+                                    Label("목록에서 제거", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                     .listStyle(.plain)
                 }
             }
-            .navigationTitle("다음 재생")
+            .navigationTitle("재생 대기 목록")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

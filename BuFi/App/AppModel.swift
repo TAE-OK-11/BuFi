@@ -143,12 +143,41 @@ final class AppModel: ObservableObject {
 
     func toggleStar(song: Song) async {
         guard let client else { return }
+        let enabled = !song.isStarred
+        updateStarredSong(song, enabled: enabled)
+        AudioEngine.shared.updateStarred(songID: song.id, enabled: enabled)
         do {
-            let enabled = !song.isStarred
-            try await client.star(id: song.id, enabled: enabled)
-            AudioEngine.shared.updateStarred(songID: song.id, enabled: enabled)
+            try await client.star(id: song.id, target: .song, enabled: enabled)
             await refresh()
         } catch {
+            updateStarredSong(song, enabled: !enabled)
+            AudioEngine.shared.updateStarred(songID: song.id, enabled: !enabled)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func toggleStar(album: Album) async {
+        guard let client else { return }
+        let enabled = !album.isStarred
+        updateStarredAlbum(album, enabled: enabled)
+        do {
+            try await client.star(id: album.id, target: .album, enabled: enabled)
+            await refresh()
+        } catch {
+            updateStarredAlbum(album, enabled: !enabled)
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func toggleStar(artist: Artist) async {
+        guard let client else { return }
+        let enabled = !artist.isStarred
+        updateStarredArtist(artist, enabled: enabled)
+        do {
+            try await client.star(id: artist.id, target: .artist, enabled: enabled)
+            await refresh()
+        } catch {
+            updateStarredArtist(artist, enabled: !enabled)
             errorMessage = error.localizedDescription
         }
     }
@@ -162,6 +191,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func updateStarredSong(_ song: Song, enabled: Bool) {
+        var updated = song
+        updated.starred = enabled ? ISO8601DateFormatter().string(from: Date()) : nil
+        home.starredSongs.removeAll { $0.id == song.id }
+        if enabled { home.starredSongs.insert(updated, at: 0) }
+        home.randomSongs = home.randomSongs.map { $0.id == song.id ? updated : $0 }
+    }
+
+    private func updateStarredAlbum(_ album: Album, enabled: Bool) {
+        var updated = album
+        updated.starred = enabled ? ISO8601DateFormatter().string(from: Date()) : nil
+        home.starredAlbums.removeAll { $0.id == album.id }
+        if enabled { home.starredAlbums.insert(updated, at: 0) }
+        home.recentAlbums = home.recentAlbums.map { $0.id == album.id ? updated : $0 }
+        home.randomAlbums = home.randomAlbums.map { $0.id == album.id ? updated : $0 }
+    }
+
+    private func updateStarredArtist(_ artist: Artist, enabled: Bool) {
+        var updated = artist
+        updated.starred = enabled ? ISO8601DateFormatter().string(from: Date()) : nil
+        home.starredArtists.removeAll { $0.id == artist.id }
+        if enabled { home.starredArtists.insert(updated, at: 0) }
+        home.artists = home.artists.map { $0.id == artist.id ? updated : $0 }
+    }
+
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
         sessionState = .connecting
         errorMessage = nil
@@ -173,7 +227,12 @@ final class AppModel: ObservableObject {
             self.home = snapshot
             self.serverVersion = status.serverVersion ?? status.version ?? ""
             self.sessionState = .ready
-            AudioEngine.shared.configure(client: client)
+            AudioEngine.shared.configure(
+                client: client,
+                songFavoriteChangeHandler: { [weak self] song, enabled in
+                    self?.updateStarredSong(song, enabled: enabled)
+                }
+            )
             if persist { try secureStore.save(credentials) }
         } catch {
             client = nil

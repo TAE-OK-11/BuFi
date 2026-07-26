@@ -1,10 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct SearchView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var audio: AudioEngine
 
     @State private var query = ""
+    @State private var browseMode = SearchBrowseMode.main
     @FocusState private var focused: Bool
 
     private let categories: [(String, Color, String)] = [
@@ -29,12 +30,15 @@ struct SearchView: View {
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(Color(red: 0.07, green: 0.07, blue: 0.07))
+            .background(BuFiTheme.background)
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
             }
             .toolbar(.hidden, for: .navigationBar)
             .onChange(of: query) { _, value in
+                if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    browseMode = .main
+                }
                 model.search(value)
             }
         }
@@ -43,16 +47,33 @@ struct SearchView: View {
     private var header: some View {
         HStack {
             Circle()
-                .fill(Color.orange)
+                .fill(
+                    LinearGradient(
+                        colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
                 .frame(width: 44, height: 44)
-                .overlay { Text("T").foregroundStyle(.black).font(.system(size: 20)) }
+                .overlay {
+                    Image(systemName: "music.note")
+                        .foregroundStyle(.white)
+                        .font(.system(size: 17, weight: .bold))
+                }
             Text("검색")
                 .font(.system(size: 32, weight: .bold))
                 .tracking(-1)
             Spacer()
-            Image(systemName: "camera")
-                .font(.system(size: 24, weight: .semibold))
-                .accessibilityLabel("카메라 검색")
+            Button {
+                focused = true
+            } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 19, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .background(BuFiTheme.elevated, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("검색")
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -85,32 +106,87 @@ struct SearchView: View {
         .foregroundStyle(.black)
         .padding(.horizontal, 16)
         .frame(height: 58)
-        .background(.white, in: RoundedRectangle(cornerRadius: 9))
+        .background(.white, in: RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
     }
 
+    @ViewBuilder
     private var browse: some View {
+        switch browseMode {
+        case .main:
+            browseMain
+        case .favorites:
+            browseCollectionHeader("좋아요 표시한 곡")
+            if model.home.starredSongs.isEmpty {
+                ContentUnavailableView(
+                    "좋아요 표시한 곡이 없습니다",
+                    systemImage: "heart"
+                )
+                .padding(.top, 32)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(model.home.starredSongs) { song in
+                        SongRow(song: song, queue: model.home.starredSongs)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        case .newReleases:
+            browseCollectionHeader("새로 나온 음악")
+            if model.home.recentAlbums.isEmpty {
+                ContentUnavailableView(
+                    "새로 추가된 앨범이 없습니다",
+                    systemImage: "sparkles"
+                )
+                .padding(.top, 32)
+            } else {
+                LazyVGrid(
+                    columns: [GridItem(.flexible()), GridItem(.flexible())],
+                    spacing: 20
+                ) {
+                    ForEach(model.home.recentAlbums) { album in
+                        NavigationLink(value: MusicRoute.album(album)) {
+                            AlbumCard(album: album, width: newReleaseCardWidth)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        case .charts:
+            browseCollectionHeader("차트")
+            if chartSongs.isEmpty {
+                ContentUnavailableView(
+                    "차트에 표시할 곡이 없습니다",
+                    systemImage: "chart.bar"
+                )
+                .padding(.top, 32)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(chartSongs) { song in
+                        SongRow(song: song, queue: chartSongs)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    private var browseMain: some View {
         VStack(alignment: .leading, spacing: 28) {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(Array(categories.enumerated()), id: \.offset) { index, category in
                     Button {
                         switch index {
                         case 0:
-                            query = " "
-                            model.clearSearch()
+                            focused = true
                         case 1:
-                            if let song = model.home.starredSongs.first {
-                                audio.play(song, in: model.home.starredSongs)
-                            }
+                            browseMode = .favorites
                         case 2:
-                            query = String(Calendar.current.component(.year, from: .now))
+                            browseMode = .newReleases
                         default:
-                            if let song = model.home.randomSongs.max(by: {
-                                ($0.playCount ?? 0) < ($1.playCount ?? 0)
-                            }) {
-                                audio.play(song, in: model.home.randomSongs)
-                            }
+                            browseMode = .charts
                         }
                     } label: {
                         ZStack(alignment: .bottomTrailing) {
@@ -120,7 +196,7 @@ struct SearchView: View {
                                 .foregroundStyle(.white.opacity(0.28))
                                 .rotationEffect(.degrees(12))
                                 .padding(12)
-                            Text(category.0)
+                            Text(LocalizedStringKey(category.0))
                                 .font(.system(size: 19, weight: .bold))
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .padding(15)
@@ -151,6 +227,43 @@ struct SearchView: View {
                 }
             }
         }
+    }
+
+    private func browseCollectionHeader(_ title: String) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                withAnimation(.snappy(duration: 0.24)) { browseMode = .main }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 18, weight: .bold))
+                    .frame(width: 38, height: 38)
+                    .background(BuFiTheme.elevated, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("검색 둘러보기로 돌아가기")
+            Text(LocalizedStringKey(title))
+                .font(.system(size: 27, weight: .bold))
+                .tracking(-0.7)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var chartSongs: [Song] {
+        Array(
+            model.home.randomSongs
+                .sorted {
+                    if ($0.playCount ?? 0) == ($1.playCount ?? 0) {
+                        return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+                    }
+                    return ($0.playCount ?? 0) > ($1.playCount ?? 0)
+                }
+                .prefix(30)
+        )
+    }
+
+    private var newReleaseCardWidth: CGFloat {
+        max(132, (UIScreen.main.bounds.width - 52) / 2)
     }
 
     @ViewBuilder
@@ -217,9 +330,15 @@ struct SearchView: View {
     }
 
     private func resultHeader(_ title: String) -> some View {
-        Text(title)
+        Text(LocalizedStringKey(title))
             .font(.system(size: 22, weight: .bold))
             .padding(.top, 4)
     }
 }
 
+private enum SearchBrowseMode {
+    case main
+    case favorites
+    case newReleases
+    case charts
+}

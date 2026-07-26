@@ -23,3 +23,12 @@ keeps the complete corresponding source available in this repository.
 - Project: <https://github.com/BLeeEZ/amperfy>
 - License: GNU General Public License v3.0
 - Copyright: Maximilian Bauer and Amperfy contributors
+
+## Zstandard
+
+BuFi links the reference decoder to safely handle HTTP
+`Content-Encoding: zstd` on Foundation versions that do not expand it.
+
+- Project: <https://github.com/facebook/zstd>
+- License option used by BuFi: BSD 3-Clause
+- Copyright: Meta Platforms, Inc. and contributors

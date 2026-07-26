@@ -96,14 +96,14 @@ actor ArtworkStore {
 
         let top = UIColor(
             hue: hue,
-            saturation: min(max(saturation * 1.15, 0.30), 0.80),
-            brightness: min(max(brightness * 0.72, 0.25), 0.52),
+            saturation: min(max(saturation * 1.05, 0.24), 0.76),
+            brightness: min(max(brightness * 0.78, 0.28), 0.58),
             alpha: 1
         )
         let bottom = UIColor(
             hue: hue,
-            saturation: min(max(saturation * 0.72, 0.18), 0.58),
-            brightness: min(max(brightness * 0.28, 0.07), 0.18),
+            saturation: min(max(saturation * 0.74, 0.16), 0.56),
+            brightness: min(max(brightness * 0.30, 0.065), 0.20),
             alpha: 1
         )
 
@@ -145,13 +145,13 @@ actor ArtworkStore {
         return UIImage(cgImage: image)
     }
 
-    /// Samples a small Core Graphics bitmap and chooses the strongest hue cluster.
-    /// This avoids the muddy result produced by averaging unrelated foreground and
-    /// background colors while keeping the operation deterministic and inexpensive.
+    /// Quantizes a Core Graphics thumbnail into neighboring hue clusters. Population,
+    /// saturation, luminance and edge coverage are all considered so a tiny logo or
+    /// skin tone does not overpower the actual cover palette.
     private static func dominantColor(in image: UIImage) -> UIColor? {
         guard let source = image.cgImage else { return nil }
-        let width = 28
-        let height = 28
+        let width = 36
+        let height = 36
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         let didDraw = bytes.withUnsafeMutableBytes { storage -> Bool in
             guard let context = CGContext(
@@ -177,9 +177,11 @@ actor ArtworkStore {
             var green = 0.0
             var blue = 0.0
             var weight = 0.0
+            var samples = 0
         }
-        var buckets = [Bucket](repeating: Bucket(), count: 36)
+        var buckets = [Bucket](repeating: Bucket(), count: 48)
         var neutral = Bucket()
+        var acceptedSamples = 0
 
         for offset in stride(from: 0, to: bytes.count, by: 4) {
             let alpha = Double(bytes[offset + 3]) / 255
@@ -191,14 +193,22 @@ actor ArtworkStore {
             let minimum = min(red, green, blue)
             let delta = maximum - minimum
             guard maximum > 0.08, maximum < 0.96 else { continue }
+            acceptedSamples += 1
+
+            let pixel = offset / 4
+            let x = Double(pixel % width) / Double(width - 1)
+            let y = Double(pixel / width) / Double(height - 1)
+            let edgeDistance = max(abs(x - 0.5), abs(y - 0.5)) * 2
+            let spatialWeight = 0.94 + min(0.20, edgeDistance * 0.20)
 
             let saturation = maximum == 0 ? 0 : delta / maximum
             if saturation < 0.12 {
-                let weight = 0.22 + maximum * 0.2
+                let weight = (0.24 + maximum * 0.18) * spatialWeight
                 neutral.red += red * weight
                 neutral.green += green * weight
                 neutral.blue += blue * weight
                 neutral.weight += weight
+                neutral.samples += 1
                 continue
             }
 
@@ -212,17 +222,42 @@ actor ArtworkStore {
             }
             let normalizedHue = ((hue / 6).truncatingRemainder(dividingBy: 1) + 1)
                 .truncatingRemainder(dividingBy: 1)
-            let index = min(35, max(0, Int(normalizedHue * 36)))
+            let index = min(47, max(0, Int(normalizedHue * 48)))
             let brightnessPreference = max(0.25, 1 - abs(maximum - 0.56) * 1.25)
-            let weight = pow(saturation, 1.35) * brightnessPreference
+            let weight = (
+                0.22 + pow(saturation, 1.18) * brightnessPreference
+            ) * spatialWeight
             buckets[index].red += red * weight
             buckets[index].green += green * weight
             buckets[index].blue += blue * weight
             buckets[index].weight += weight
+            buckets[index].samples += 1
         }
 
-        if let selected = buckets.max(by: { $0.weight < $1.weight }),
-           selected.weight > max(0.8, neutral.weight * 0.22) {
+        let minimumPopulation = max(3, acceptedSamples / 100)
+        func clusterScore(_ index: Int) -> Double {
+            let bucket = buckets[index]
+            guard bucket.samples >= minimumPopulation else { return 0 }
+            let previous = buckets[(index + buckets.count - 1) % buckets.count]
+            let next = buckets[(index + 1) % buckets.count]
+            return bucket.weight + (previous.weight + next.weight) * 0.34
+        }
+        let selectedIndex = buckets.indices.max { lhs, rhs in
+            clusterScore(lhs) < clusterScore(rhs)
+        }
+
+        if let selectedIndex,
+           clusterScore(selectedIndex) > max(0.9, neutral.weight * 0.18) {
+            var selected = buckets[selectedIndex]
+            for neighbor in [
+                (selectedIndex + buckets.count - 1) % buckets.count,
+                (selectedIndex + 1) % buckets.count
+            ] where buckets[neighbor].samples >= minimumPopulation {
+                selected.red += buckets[neighbor].red * 0.38
+                selected.green += buckets[neighbor].green * 0.38
+                selected.blue += buckets[neighbor].blue * 0.38
+                selected.weight += buckets[neighbor].weight * 0.38
+            }
             return UIColor(
                 red: selected.red / selected.weight,
                 green: selected.green / selected.weight,

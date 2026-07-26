@@ -70,7 +70,7 @@ struct RootView: View {
             }
             .background(
                 LinearGradient(
-                    colors: [.clear, Color.black.opacity(0.96)],
+                    colors: [.clear, BuFiTheme.background.opacity(0.98)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -87,9 +87,10 @@ struct RootView: View {
             tabButton(.settings, title: "설정", icon: "gearshape.fill")
         }
         .frame(height: 57)
-        .padding(.horizontal, 8)
-        .buFiGlass(cornerRadius: 28, interactive: true)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 7)
+        .background(.black.opacity(0.16), in: Capsule())
+        .buFiGlass(cornerRadius: 29, interactive: true)
+        .padding(.horizontal, 10)
     }
 
     private func tabButton(_ value: AppTab, title: String, icon: String) -> some View {
@@ -99,15 +100,15 @@ struct RootView: View {
             VStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 22, weight: tab == value ? .bold : .regular))
-                Text(title)
+                Text(LocalizedStringKey(title))
                     .font(.system(size: 10, weight: .medium))
             }
-            .foregroundStyle(tab == value ? .white : .secondary)
+            .foregroundStyle(tab == value ? BuFiTheme.accentSoft : .secondary)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(title)
+        .accessibilityLabel(Text(LocalizedStringKey(title)))
         .accessibilityAddTraits(tab == value ? .isSelected : [])
     }
 }
