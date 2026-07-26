@@ -79,7 +79,6 @@ final class AudioEngine: NSObject, ObservableObject {
         recoveryTask?.cancel()
         itemLoadTask?.cancel()
         nowPlayingArtworkTask?.cancel()
-        endBackgroundBridge()
     }
 
     func configure(

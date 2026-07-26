@@ -51,7 +51,7 @@ struct HomeView: View {
                             .font(.system(size: 20, weight: .medium))
                             .foregroundStyle(.white)
                     }
-            Text(greeting)
+                Text(greeting)
                     .font(.system(size: 25, weight: .bold))
                     .tracking(-0.7)
                 Spacer()
