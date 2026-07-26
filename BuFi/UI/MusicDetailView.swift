@@ -29,16 +29,12 @@ struct MusicDetailView: View {
                         .padding(.top, 60)
                 } else {
                     controls
-                    if isArtist, !artistBiography.isEmpty { artistAbout }
                     if !albums.isEmpty { albumRail }
                     songList
+                    if isArtist, !artistBiography.isEmpty { artistAbout }
                 }
             }
-            // Keep the final row fully scrollable above both the mini player and
-            // the tab bar. The native iOS 26 accessory reserves its own safe area,
-            // while this content tail also covers compact devices, larger text,
-            // and the pre-iOS 26 fallback inset.
-            .padding(.bottom, audio.currentSong == nil ? 48 : 136)
+            .padding(.bottom, audio.currentSong == nil ? 56 : 148)
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)
@@ -63,22 +59,25 @@ struct MusicDetailView: View {
 
     private var artistHero: some View {
         ZStack(alignment: .bottomLeading) {
-            ArtworkView(
+            ArtistHeroArtwork(
                 coverArt: coverArt,
                 remoteURL: artistImageURL,
-                size: 430,
+                height: 360,
                 cornerRadius: 24,
                 onPalette: { palette = $0 }
             )
-            .frame(maxWidth: .infinity)
-            .frame(height: 350)
 
             LinearGradient(
-                colors: [.clear, .black.opacity(0.12), .black.opacity(0.88)],
+                gradient: Gradient(stops: [
+                    .init(color: .clear, location: 0.48),
+                    .init(color: .black.opacity(0.14), location: 0.68),
+                    .init(color: .black.opacity(0.86), location: 1.0)
+                ]),
                 startPoint: .top,
                 endPoint: .bottom
             )
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .allowsHitTesting(false)
 
             VStack(alignment: .leading, spacing: 7) {
                 Text(title.isEmpty ? " " : title)
@@ -93,14 +92,15 @@ struct MusicDetailView: View {
                     )
                 )
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.74))
+                .foregroundStyle(.white.opacity(0.78))
             }
             .foregroundStyle(.white)
-            .padding(22)
+            .padding(.horizontal, 22)
+            .padding(.bottom, 20)
         }
-        .shadow(color: .black.opacity(0.24), radius: 22, y: 12)
+        .shadow(color: .black.opacity(0.22), radius: 20, y: 10)
         .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.top, 6)
         .padding(.bottom, 18)
     }
 
@@ -109,7 +109,7 @@ struct MusicDetailView: View {
             ArtworkView(
                 coverArt: coverArt,
                 size: 270,
-                cornerRadius: isArtist ? 135 : 10,
+                cornerRadius: 10,
                 onPalette: { palette = $0 }
             )
             .frame(width: 270, height: 270)
@@ -137,20 +137,21 @@ struct MusicDetailView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 0) {
             Button(action: toggleFavorite) {
                 Image(systemName: isFavorite ? "heart.fill" : "heart")
-                    .font(.system(size: 23, weight: .semibold))
+                    .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(isFavorite ? BuFiTheme.accentSoft : .white)
                     .frame(width: 54, height: 54)
                     .background(.white.opacity(0.10), in: Circle())
                     .buFiGlass(cornerRadius: 27, interactive: true)
             }
-            .frame(maxWidth: .infinity)
             .buttonStyle(BuFiPressStyle())
             .opacity(canFavorite ? 1 : 0)
             .disabled(!canFavorite)
             .accessibilityLabel(isFavorite ? "좋아요 취소" : "좋아요 표시")
+
+            Spacer(minLength: 20)
 
             Button {
                 guard !songs.isEmpty else { return }
@@ -160,16 +161,17 @@ struct MusicDetailView: View {
                 }
             } label: {
                 Image(systemName: "shuffle")
-                    .font(.system(size: 23, weight: .semibold))
+                    .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 54, height: 54)
                     .background(.white.opacity(0.10), in: Circle())
                     .buFiGlass(cornerRadius: 27, interactive: true)
             }
-            .frame(maxWidth: .infinity)
             .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
             .accessibilityLabel("셔플 재생")
+
+            Spacer(minLength: 20)
 
             Button {
                 if let first = songs.first {
@@ -177,42 +179,42 @@ struct MusicDetailView: View {
                 }
             } label: {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 28, weight: .bold))
+                    .font(.system(size: 25, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 62, height: 62)
+                    .frame(width: 58, height: 58)
                     .background(BuFiTheme.accent, in: Circle())
             }
-            .frame(maxWidth: .infinity)
             .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
             .accessibilityLabel("모두 재생")
         }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 2)
+        .padding(.bottom, 12)
     }
 
     private var artistAbout: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("아티스트 소개")
                 .font(.system(size: 22, weight: .bold))
             Text(artistBiography)
                 .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(.secondary)
-                .lineSpacing(3)
-                .lineLimit(5)
+                .lineSpacing(5)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 20)
         .background(
             BuFiTheme.elevated,
             in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.35), lineWidth: 0.5)
+                .stroke(BuFiTheme.separator.opacity(0.38), lineWidth: 0.6)
         }
         .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.top, 28)
     }
 
     private var albumRail: some View {
