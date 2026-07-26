@@ -7,11 +7,11 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20, pinnedViews: [.sectionHeaders]) {
-                    header
+                LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
                     filters
                     content
                 }
+                .padding(.top, 10)
                 .padding(.bottom, 34)
             }
             .background(BuFiScreenBackground())
@@ -21,45 +21,6 @@ struct LibraryView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-    }
-
-    private var header: some View {
-        HStack(spacing: 13) {
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: 44, height: 44)
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-            Text("내 라이브러리")
-                .font(.system(size: 31, weight: .bold))
-                .tracking(-1)
-            Spacer()
-            Button {
-                Task { await model.refresh() }
-            } label: {
-                if model.isRefreshing {
-                    ProgressView()
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 18, weight: .semibold))
-                        .frame(width: 38, height: 38)
-                        .background(BuFiTheme.elevated, in: Circle())
-                }
-            }
-            .buttonStyle(BuFiPressStyle())
-            .accessibilityLabel("라이브러리 새로고침")
-        }
-        .padding(.horizontal, 17)
-        .padding(.top, 15)
     }
 
     private var filters: some View {

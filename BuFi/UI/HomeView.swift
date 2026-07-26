@@ -19,10 +19,11 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 30) {
-                    header
+                LazyVStack(alignment: .leading, spacing: 26) {
+                    filterBar
                     filteredContent
                 }
+                .padding(.top, 10)
                 .padding(.bottom, 28)
             }
             .background(BuFiScreenBackground())
@@ -34,56 +35,15 @@ struct HomeView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 17) {
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(greeting)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text("홈")
-                        .font(.system(size: 34, weight: .bold))
-                        .tracking(-1.1)
-                }
-                Spacer()
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 40, height: 40)
-                    .overlay {
-                        Text("T")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                Button {
-                    Task { await model.refresh() }
-                } label: {
-                    if model.isRefreshing {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 18, weight: .semibold))
-                            .frame(width: 40, height: 40)
-                            .background(BuFiTheme.elevated, in: Circle())
-                    }
-                }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel("라이브러리 새로고침")
-            }
-
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(HomeFilter.allCases) { item in
                     filterPill(item)
                 }
             }
+            .padding(.horizontal, 16)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
     }
 
     @ViewBuilder
@@ -276,14 +236,6 @@ struct HomeView: View {
                 )
         }
         .buttonStyle(BuFiPressStyle())
-    }
-
-    private var greeting: LocalizedStringKey {
-        switch Calendar.current.component(.hour, from: .now) {
-        case 5..<12: "좋은 아침이에요"
-        case 12..<18: "좋은 오후예요"
-        default: "좋은 저녁이에요"
-        }
     }
 }
 
