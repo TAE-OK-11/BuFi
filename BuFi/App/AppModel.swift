@@ -21,6 +21,9 @@ final class AppModel: ObservableObject {
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var refreshInFlight = false
+    private var lastFullRefresh = Date.distantPast
+    private static let starDateFormatter = ISO8601DateFormatter()
 
     init() {
         if let credentials = secureStore.load() {
@@ -49,19 +52,38 @@ final class AppModel: ObservableObject {
         client = nil
         home = .empty
         searchResults = .empty
+        refreshInFlight = false
+        lastFullRefresh = .distantPast
         sessionState = .signedOut
         serverVersion = ""
         AudioEngine.shared.configure(client: nil)
     }
 
-    func refresh() async {
-        guard let client, !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+    func refresh(forceFull: Bool = false, silent: Bool = false) async {
+        guard let client, !refreshInFlight else { return }
+        refreshInFlight = true
+        if !silent { isRefreshing = true }
+        defer {
+            refreshInFlight = false
+            if !silent { isRefreshing = false }
+        }
+
         do {
-            home = try await client.home()
+            let needsFullRefresh = forceFull ||
+                Date().timeIntervalSince(lastFullRefresh) >= 300 ||
+                isHomeEmpty
+            let snapshot: HomeSnapshot
+            if needsFullRefresh {
+                snapshot = try await client.home()
+                lastFullRefresh = Date()
+            } else {
+                snapshot = try await client.incrementalHome(from: home)
+            }
+            if homeChanged(snapshot) {
+                home = snapshot
+            }
         } catch {
-            errorMessage = error.localizedDescription
+            if !silent { errorMessage = error.localizedDescription }
         }
     }
 
@@ -148,7 +170,6 @@ final class AppModel: ObservableObject {
         AudioEngine.shared.updateStarred(songID: song.id, enabled: enabled)
         do {
             try await client.star(id: song.id, target: .song, enabled: enabled)
-            await refresh()
         } catch {
             updateStarredSong(song, enabled: !enabled)
             AudioEngine.shared.updateStarred(songID: song.id, enabled: !enabled)
@@ -162,7 +183,6 @@ final class AppModel: ObservableObject {
         updateStarredAlbum(album, enabled: enabled)
         do {
             try await client.star(id: album.id, target: .album, enabled: enabled)
-            await refresh()
         } catch {
             updateStarredAlbum(album, enabled: !enabled)
             errorMessage = error.localizedDescription
@@ -175,7 +195,6 @@ final class AppModel: ObservableObject {
         updateStarredArtist(artist, enabled: enabled)
         do {
             try await client.star(id: artist.id, target: .artist, enabled: enabled)
-            await refresh()
         } catch {
             updateStarredArtist(artist, enabled: !enabled)
             errorMessage = error.localizedDescription
@@ -193,7 +212,7 @@ final class AppModel: ObservableObject {
 
     private func updateStarredSong(_ song: Song, enabled: Bool) {
         var updated = song
-        updated.starred = enabled ? ISO8601DateFormatter().string(from: Date()) : nil
+        updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
         home.starredSongs.removeAll { $0.id == song.id }
         if enabled { home.starredSongs.insert(updated, at: 0) }
         home.randomSongs = home.randomSongs.map { $0.id == song.id ? updated : $0 }
@@ -201,7 +220,7 @@ final class AppModel: ObservableObject {
 
     private func updateStarredAlbum(_ album: Album, enabled: Bool) {
         var updated = album
-        updated.starred = enabled ? ISO8601DateFormatter().string(from: Date()) : nil
+        updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
         home.starredAlbums.removeAll { $0.id == album.id }
         if enabled { home.starredAlbums.insert(updated, at: 0) }
         home.recentAlbums = home.recentAlbums.map { $0.id == album.id ? updated : $0 }
@@ -210,10 +229,32 @@ final class AppModel: ObservableObject {
 
     private func updateStarredArtist(_ artist: Artist, enabled: Bool) {
         var updated = artist
-        updated.starred = enabled ? ISO8601DateFormatter().string(from: Date()) : nil
+        updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
         home.starredArtists.removeAll { $0.id == artist.id }
         if enabled { home.starredArtists.insert(updated, at: 0) }
         home.artists = home.artists.map { $0.id == artist.id ? updated : $0 }
+    }
+
+    private var isHomeEmpty: Bool {
+        home.recentAlbums.isEmpty &&
+            home.randomAlbums.isEmpty &&
+            home.starredAlbums.isEmpty &&
+            home.starredSongs.isEmpty &&
+            home.starredArtists.isEmpty &&
+            home.artists.isEmpty &&
+            home.randomSongs.isEmpty &&
+            home.playlists.isEmpty
+    }
+
+    private func homeChanged(_ next: HomeSnapshot) -> Bool {
+        home.recentAlbums != next.recentAlbums ||
+            home.randomAlbums != next.randomAlbums ||
+            home.starredAlbums != next.starredAlbums ||
+            home.starredSongs != next.starredSongs ||
+            home.starredArtists != next.starredArtists ||
+            home.artists != next.artists ||
+            home.randomSongs != next.randomSongs ||
+            home.playlists != next.playlists
     }
 
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
@@ -225,6 +266,7 @@ final class AppModel: ObservableObject {
             let snapshot = try await client.home()
             self.client = client
             self.home = snapshot
+            self.lastFullRefresh = Date()
             self.serverVersion = status.serverVersion ?? status.version ?? ""
             self.sessionState = .ready
             AudioEngine.shared.configure(
