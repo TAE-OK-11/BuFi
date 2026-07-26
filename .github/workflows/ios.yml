@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show Xcode version
         run: xcodebuild -version
@@ -54,7 +54,8 @@ jobs:
           ditto "$APP_PATH" "$RUNNER_TEMP/Payload/BuFi.app"
           cd "$RUNNER_TEMP"
           zip -qry "$GITHUB_WORKSPACE/BuFi-unsigned.ipa" Payload
-          shasum -a 256 "$GITHUB_WORKSPACE/BuFi-unsigned.ipa" > "$GITHUB_WORKSPACE/BuFi-unsigned.ipa.sha256"
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 BuFi-unsigned.ipa > BuFi-unsigned.ipa.sha256
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
