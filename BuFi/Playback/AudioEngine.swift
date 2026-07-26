@@ -346,7 +346,7 @@ final class AudioEngine: NSObject, ObservableObject {
             try session.setCategory(
                 .playback,
                 mode: .default,
-                routeSharingPolicy: .longFormAudio,
+                policy: .longFormAudio,
                 options: [.allowAirPlay]
             )
             try session.setActive(true)
