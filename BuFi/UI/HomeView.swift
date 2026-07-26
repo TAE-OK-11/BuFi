@@ -11,20 +11,15 @@ struct HomeView: View {
     @EnvironmentObject private var audio: AudioEngine
     @State private var filter = HomeFilter.all
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 9),
-        GridItem(.flexible(), spacing: 9)
-    ]
-
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 26) {
+                LazyVStack(alignment: .leading, spacing: 28) {
                     filterBar
                     filteredContent
                 }
-                .padding(.top, 10)
-                .padding(.bottom, 28)
+                .padding(.top, 24)
+                .padding(.bottom, 34)
             }
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
@@ -50,7 +45,7 @@ struct HomeView: View {
     private var filteredContent: some View {
         switch filter {
         case .all:
-            quickGrid
+            quickCarousel
             albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
             songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
             playlistSection(showEmpty: false)
@@ -59,7 +54,7 @@ struct HomeView: View {
                 albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
             }
         case .music:
-            quickGrid
+            quickCarousel
             albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
             songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
             albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
@@ -71,26 +66,32 @@ struct HomeView: View {
         }
     }
 
-    private var quickGrid: some View {
-        LazyVGrid(columns: columns, spacing: 9) {
-            if !model.home.starredSongs.isEmpty {
-                Button {
-                    if let first = model.home.starredSongs.first {
-                        audio.play(first, in: model.home.starredSongs)
+    private var quickCarousel: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 10) {
+                if !model.home.starredSongs.isEmpty {
+                    Button {
+                        if let first = model.home.starredSongs.first {
+                            audio.play(first, in: model.home.starredSongs)
+                        }
+                    } label: {
+                        quickCard(
+                            title: "좋아요 표시한 곡",
+                            coverArt: model.home.starredSongs.first?.coverArt
+                        )
                     }
-                } label: {
-                    quickCard(title: "좋아요 표시한 곡", coverArt: model.home.starredSongs.first?.coverArt)
+                    .buttonStyle(BuFiPressStyle())
                 }
-                .buttonStyle(BuFiPressStyle())
-            }
-            ForEach(Array(model.home.recentAlbums.prefix(7))) { album in
-                NavigationLink(value: MusicRoute.album(album)) {
-                    quickCard(title: album.name, coverArt: album.coverArt)
+
+                ForEach(Array(model.home.recentAlbums.prefix(5))) { album in
+                    NavigationLink(value: MusicRoute.album(album)) {
+                        quickCard(title: album.name, coverArt: album.coverArt)
+                    }
+                    .buttonStyle(BuFiPressStyle())
                 }
-                .buttonStyle(BuFiPressStyle())
             }
+            .padding(.horizontal, 16)
         }
-        .padding(.horizontal, 16)
     }
 
     @ViewBuilder
@@ -113,12 +114,8 @@ struct HomeView: View {
                         ForEach(model.home.playlists) { playlist in
                             NavigationLink(value: MusicRoute.playlist(playlist)) {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    ArtworkView(
-                                        coverArt: playlist.coverArt,
-                                        size: 166,
-                                        cornerRadius: 9
-                                    )
-                                    .frame(width: 166, height: 166)
+                                    playlistArtwork(playlist)
+                                        .frame(width: 166, height: 166)
                                     Text(playlist.name)
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(.primary)
@@ -143,27 +140,50 @@ struct HomeView: View {
         }
     }
 
+    @ViewBuilder
+    private func playlistArtwork(_ playlist: Playlist) -> some View {
+        if let cover = playlist.coverArt, !cover.isEmpty {
+            ArtworkView(coverArt: cover, size: 166, cornerRadius: 9)
+        } else {
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        BuFiTheme.accent.opacity(0.72),
+                        BuFiTheme.deezerGlow.opacity(0.82),
+                        Color.black.opacity(0.68)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 48, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+    }
+
     private func quickCard(title: String, coverArt: String?) -> some View {
         HStack(spacing: 0) {
-            ArtworkView(coverArt: coverArt, size: 60, cornerRadius: 4)
-                .frame(width: 60, height: 60)
+            ArtworkView(coverArt: coverArt, size: 66, cornerRadius: 5)
+                .frame(width: 66, height: 66)
             Text(LocalizedStringKey(title))
-                .font(.system(size: 14, weight: .bold))
+                .font(.system(size: 15, weight: .bold))
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: 60)
+        .frame(width: 224, height: 66)
         .background(
             BuFiTheme.elevated,
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.35), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(BuFiTheme.separator.opacity(0.42), lineWidth: 0.6)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
     @ViewBuilder
