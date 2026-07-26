@@ -10,6 +10,7 @@ struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @State private var filter = HomeFilter.all
+    @Namespace private var filterSelection
 
     var body: some View {
         NavigationStack {
@@ -31,14 +32,65 @@ struct HomeView: View {
     }
 
     private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(HomeFilter.allCases) { item in
-                    filterPill(item)
+        HStack(spacing: 4) {
+            ForEach(HomeFilter.allCases) { item in
+                Button {
+                    withAnimation(
+                        .interactiveSpring(
+                            response: 0.34,
+                            dampingFraction: 0.80,
+                            blendDuration: 0.08
+                        )
+                    ) {
+                        filter = item
+                    }
+                } label: {
+                    Text(item.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(
+                            filter == item
+                                ? Color.white
+                                : Color.white.opacity(0.62)
+                        )
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background {
+                            if filter == item {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.white.opacity(0.14))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(Color.white.opacity(0.13), lineWidth: 0.7)
+                                    }
+                                    .matchedGeometryEffect(
+                                        id: "home-filter-selection",
+                                        in: filterSelection
+                                    )
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityAddTraits(filter == item ? .isSelected : [])
             }
-            .padding(.horizontal, 16)
         }
+        .padding(4)
+        .frame(height: 50)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.black.opacity(0.58))
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .opacity(0.26)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 0.7)
+        }
+        .buFiGlass(cornerRadius: 16, interactive: true)
+        .padding(.horizontal, 16)
     }
 
     @ViewBuilder
@@ -68,29 +120,103 @@ struct HomeView: View {
 
     private var quickCarousel: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 10) {
+            LazyHStack(spacing: 11) {
                 if !model.home.starredSongs.isEmpty {
                     Button {
                         if let first = model.home.starredSongs.first {
                             audio.play(first, in: model.home.starredSongs)
                         }
                     } label: {
-                        quickCard(
+                        quickCategoryCard(
                             title: "좋아요 표시한 곡",
-                            coverArt: model.home.starredSongs.first?.coverArt
+                            coverArt: nil,
+                            icon: "heart.fill",
+                            colors: [
+                                Color(red: 0.78, green: 0.16, blue: 0.27),
+                                Color(red: 0.47, green: 0.14, blue: 0.45)
+                            ]
                         )
                     }
                     .buttonStyle(BuFiPressStyle())
                 }
 
-                ForEach(Array(model.home.recentAlbums.prefix(5))) { album in
+                ForEach(
+                    Array(model.home.recentAlbums.prefix(5).enumerated()),
+                    id: \.element.id
+                ) { index, album in
                     NavigationLink(value: MusicRoute.album(album)) {
-                        quickCard(title: album.name, coverArt: album.coverArt)
+                        quickCategoryCard(
+                            title: album.name,
+                            coverArt: album.coverArt,
+                            icon: "square.stack.fill",
+                            colors: quickCardColors(index)
+                        )
                     }
                     .buttonStyle(BuFiPressStyle())
                 }
             }
             .padding(.horizontal, 16)
+        }
+    }
+
+    private func quickCategoryCard(
+        title: String,
+        coverArt: String?,
+        icon: String,
+        colors: [Color]
+    ) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            LinearGradient(
+                colors: colors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            if let coverArt, !coverArt.isEmpty {
+                ArtworkView(coverArt: coverArt, size: 66, cornerRadius: 8)
+                    .frame(width: 66, height: 66)
+                    .rotationEffect(.degrees(6))
+                    .shadow(color: .black.opacity(0.28), radius: 8, y: 5)
+                    .offset(x: 10, y: 12)
+            } else {
+                Image(systemName: icon)
+                    .font(.system(size: 44, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.19))
+                    .rotationEffect(.degrees(8))
+                    .padding(12)
+            }
+
+            Text(LocalizedStringKey(title))
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: 118, maxHeight: .infinity, alignment: .topLeading)
+                .padding(13)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(width: 176, height: 92)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.7)
+        }
+        .shadow(color: colors.first?.opacity(0.16) ?? .clear, radius: 12, y: 6)
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func quickCardColors(_ index: Int) -> [Color] {
+        switch index % 5 {
+        case 0:
+            [Color(red: 0.18, green: 0.37, blue: 0.58), Color(red: 0.20, green: 0.18, blue: 0.44)]
+        case 1:
+            [Color(red: 0.10, green: 0.48, blue: 0.43), Color(red: 0.08, green: 0.27, blue: 0.34)]
+        case 2:
+            [Color(red: 0.64, green: 0.31, blue: 0.20), Color(red: 0.39, green: 0.18, blue: 0.29)]
+        case 3:
+            [Color(red: 0.43, green: 0.25, blue: 0.61), Color(red: 0.25, green: 0.16, blue: 0.42)]
+        default:
+            [Color(red: 0.34, green: 0.39, blue: 0.43), Color(red: 0.18, green: 0.22, blue: 0.28)]
         }
     }
 
@@ -163,29 +289,6 @@ struct HomeView: View {
         }
     }
 
-    private func quickCard(title: String, coverArt: String?) -> some View {
-        HStack(spacing: 0) {
-            ArtworkView(coverArt: coverArt, size: 66, cornerRadius: 5)
-                .frame(width: 66, height: 66)
-            Text(LocalizedStringKey(title))
-                .font(.system(size: 15, weight: .bold))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(width: 224, height: 66)
-        .background(
-            BuFiTheme.elevated,
-            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.42), lineWidth: 0.6)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-
     @ViewBuilder
     private func albumSection(_ title: String, albums: [Album]) -> some View {
         if !albums.isEmpty {
@@ -239,23 +342,6 @@ struct HomeView: View {
                 }
             }
         }
-    }
-
-    private func filterPill(_ item: HomeFilter) -> some View {
-        Button {
-            withAnimation(.snappy(duration: 0.24)) { filter = item }
-        } label: {
-            Text(item.title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(filter == item ? .white : .primary)
-                .padding(.horizontal, 16)
-                .frame(height: 34)
-                .background(
-                    filter == item ? BuFiTheme.accent : BuFiTheme.elevated,
-                    in: Capsule()
-                )
-        }
-        .buttonStyle(BuFiPressStyle())
     }
 }
 
