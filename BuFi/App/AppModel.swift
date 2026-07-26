@@ -144,7 +144,9 @@ final class AppModel: ObservableObject {
     func toggleStar(song: Song) async {
         guard let client else { return }
         do {
-            try await client.star(id: song.id, enabled: !song.isStarred)
+            let enabled = !song.isStarred
+            try await client.star(id: song.id, enabled: enabled)
+            AudioEngine.shared.updateStarred(songID: song.id, enabled: enabled)
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

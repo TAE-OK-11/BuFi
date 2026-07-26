@@ -169,30 +169,30 @@ actor OpenSubsonicClient {
     }
 
     func home() async throws -> HomeSnapshot {
-        async let recent: AlbumListPayload = request(
+        async let recent: AlbumListPayload? = try? request(
             "getAlbumList2",
             parameters: ["type": "newest", "size": "20"]
         )
-        async let randomAlbums: AlbumListPayload = request(
+        async let randomAlbums: AlbumListPayload? = try? request(
             "getAlbumList2",
             parameters: ["type": "random", "size": "20"]
         )
-        async let starred: StarredPayload = request("getStarred2")
-        async let randomSongs: RandomSongsPayload = request(
+        async let starred: StarredPayload? = try? request("getStarred2")
+        async let randomSongs: RandomSongsPayload? = try? request(
             "getRandomSongs",
             parameters: ["size": "40"]
         )
-        async let playlists: PlaylistsPayload = request("getPlaylists")
+        async let playlists: PlaylistsPayload? = try? request("getPlaylists")
 
-        let values = try await (recent, randomAlbums, starred, randomSongs, playlists)
+        let values = await (recent, randomAlbums, starred, randomSongs, playlists)
         return HomeSnapshot(
-            recentAlbums: values.0.albumList2?.album ?? [],
-            randomAlbums: values.1.albumList2?.album ?? [],
-            starredAlbums: values.2.starred2?.album ?? [],
-            starredSongs: values.2.starred2?.song ?? [],
-            starredArtists: values.2.starred2?.artist ?? [],
-            randomSongs: values.3.randomSongs?.song ?? [],
-            playlists: values.4.playlists?.playlist ?? []
+            recentAlbums: values.0?.albumList2?.album ?? [],
+            randomAlbums: values.1?.albumList2?.album ?? [],
+            starredAlbums: values.2?.starred2?.album ?? [],
+            starredSongs: values.2?.starred2?.song ?? [],
+            starredArtists: values.2?.starred2?.artist ?? [],
+            randomSongs: values.3?.randomSongs?.song ?? [],
+            playlists: values.4?.playlists?.playlist ?? []
         )
     }
 

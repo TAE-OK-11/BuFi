@@ -33,6 +33,17 @@ struct RootView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+        .alert(
+            "재생 오류",
+            isPresented: Binding(
+                get: { audio.playbackError != nil },
+                set: { if !$0 { audio.playbackError = nil } }
+            )
+        ) {
+            Button("확인", role: .cancel) { audio.playbackError = nil }
+        } message: {
+            Text(audio.playbackError ?? "")
+        }
         .fullScreenCover(isPresented: $audio.showPlayer) {
             PlayerView()
                 .environmentObject(model)
@@ -97,4 +108,3 @@ struct RootView: View {
         .accessibilityAddTraits(tab == value ? .isSelected : [])
     }
 }
-

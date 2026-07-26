@@ -29,11 +29,18 @@ struct SecureStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw SecureStoreError.keychain(updateStatus)
+        }
 
         var value = query
-        value[kSecValueData as String] = data
-        value[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        value.merge(update) { _, new in new }
         let status = SecItemAdd(value as CFDictionary, nil)
         guard status == errSecSuccess else { throw SecureStoreError.keychain(status) }
     }
@@ -64,4 +71,3 @@ struct SecureStore {
         SecItemDelete(query as CFDictionary)
     }
 }
-

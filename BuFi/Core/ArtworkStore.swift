@@ -23,8 +23,8 @@ struct ArtworkPalette: Equatable, Sendable {
 actor ArtworkStore {
     static let shared = ArtworkStore()
 
-    private let memory = NSCache<NSURL, UIImage>()
-    private let paletteMemory = NSCache<NSURL, PaletteBox>()
+    private let memory = NSCache<NSString, UIImage>()
+    private let paletteMemory = NSCache<NSString, PaletteBox>()
     private let session: URLSession
     private let directory: URL
 
@@ -49,10 +49,10 @@ actor ArtworkStore {
     }
 
     func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
-        let key = url as NSURL
+        let key = Self.cacheKey(for: url)
         if let cached = memory.object(forKey: key) { return cached }
 
-        let diskURL = directory.appendingPathComponent(Self.hash(url.absoluteString))
+        let diskURL = directory.appendingPathComponent(Self.hash(key as String))
         let data: Data
         if let diskData = try? Data(contentsOf: diskURL), !diskData.isEmpty {
             data = diskData
@@ -75,7 +75,7 @@ actor ArtworkStore {
     }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
-        let key = url as NSURL
+        let key = Self.cacheKey(for: url)
         if let cached = paletteMemory.object(forKey: key) { return cached.value }
 
         let source: UIImage
@@ -241,6 +241,23 @@ actor ArtworkStore {
 
     private static func hash(_ value: String) -> String {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// OpenSubsonic authentication salts and tokens are intentionally different
+    /// for every request. Excluding only those volatile fields lets identical
+    /// artwork share the same memory, disk and palette cache entries.
+    private static func cacheKey(for url: URL) -> NSString {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString as NSString
+        }
+        let authenticationFields: Set<String> = ["u", "s", "t", "v", "c", "f"]
+        components.queryItems = components.queryItems?
+            .filter { !authenticationFields.contains($0.name) }
+            .sorted {
+                if $0.name == $1.name { return ($0.value ?? "") < ($1.value ?? "") }
+                return $0.name < $1.name
+            }
+        return (components.string ?? url.absoluteString) as NSString
     }
 }
 
