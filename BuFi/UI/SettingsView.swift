@@ -75,7 +75,7 @@ struct SettingsView: View {
                         Text("5분").tag(300.0)
                         Text("15분").tag(900.0)
                     }
-                    Text("앱을 사용하는 동안 선택한 주기로 서버의 라이브러리와 좋아요 상태를 자동으로 갱신합니다.")
+                    Text("앱이 활성 상태일 때만 동기화합니다. 평소에는 좋아요·새 앨범·플레이리스트만 가볍게 갱신하고, 전체 라이브러리는 5분 간격으로 확인합니다. 저전력 모드에서는 주기를 자동으로 늘립니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -128,6 +128,7 @@ struct SettingsView: View {
                 Section("앱") {
                     LabeledContent("최소 iOS", value: "17.0")
                     LabeledContent("버전", value: versionText)
+                    Label("적응형 배터리·메모리 최적화", systemImage: "leaf.fill")
                     Label("분석·광고 SDK 없음", systemImage: "hand.raised.fill")
                     NavigationLink("오픈소스 및 라이선스") {
                         OpenSourceNoticesView()
@@ -184,10 +185,10 @@ struct SettingsView: View {
     private var versionText: String {
         let version =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "1.2.6"
+            ?? "1.2.8"
         let build =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-            ?? "10"
+            ?? "12"
         return "\(version) (\(build))"
     }
 }

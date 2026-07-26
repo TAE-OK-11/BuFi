@@ -42,18 +42,13 @@ actor OpenSubsonicClient {
             password: credentials.password
         )
 
-        let configuration = URLSessionConfiguration.default
+        let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 18
         configuration.timeoutIntervalForResource = 60
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCache = URLCache(
-            memoryCapacity: 24 * 1_024 * 1_024,
-            diskCapacity: 128 * 1_024 * 1_024,
-            diskPath: "BuFiAPI"
-        )
-        configuration.httpMaximumConnectionsPerHost = 6
+        configuration.urlCache = nil
+        configuration.httpMaximumConnectionsPerHost = 4
         configuration.waitsForConnectivity = true
-        configuration.multipathServiceType = .handover
         self.session = URLSession(configuration: configuration)
         self.decoder = JSONDecoder()
     }
@@ -192,8 +187,6 @@ actor OpenSubsonicClient {
             )
             return (data, http)
         } catch where acceptsZstandard {
-            // A server can negotiate zstd with an older CFNetwork build.
-            // Retrying with Brotli/gzip keeps login and library sync reliable.
             return try await responseData(from: url, acceptsZstandard: false)
         }
     }
@@ -201,21 +194,25 @@ actor OpenSubsonicClient {
     func home() async throws -> HomeSnapshot {
         async let recent: AlbumListPayload? = try? request(
             "getAlbumList2",
-            parameters: ["type": "newest", "size": "20"]
+            parameters: ["type": "newest", "size": "16"]
         )
         async let randomAlbums: AlbumListPayload? = try? request(
             "getAlbumList2",
-            parameters: ["type": "random", "size": "20"]
+            parameters: ["type": "random", "size": "16"]
         )
         async let starred: StarredPayload? = try? request("getStarred2")
         async let artists: ArtistsPayload? = try? request("getArtists")
         async let randomSongs: RandomSongsPayload? = try? request(
             "getRandomSongs",
-            parameters: ["size": "40"]
+            parameters: ["size": "24"]
         )
         async let playlists: PlaylistsPayload? = try? request("getPlaylists")
 
         let values = await (recent, randomAlbums, starred, artists, randomSongs, playlists)
+        guard values.0 != nil || values.1 != nil || values.2 != nil ||
+                values.3 != nil || values.4 != nil || values.5 != nil else {
+            throw OpenSubsonicError.invalidResponse
+        }
         return HomeSnapshot(
             recentAlbums: values.0?.albumList2?.album ?? [],
             randomAlbums: values.1?.albumList2?.album ?? [],
@@ -226,6 +223,34 @@ actor OpenSubsonicClient {
             randomSongs: values.4?.randomSongs?.song ?? [],
             playlists: values.5?.playlists?.playlist ?? []
         )
+    }
+
+    func incrementalHome(from previous: HomeSnapshot) async throws -> HomeSnapshot {
+        async let recent: AlbumListPayload? = try? request(
+            "getAlbumList2",
+            parameters: ["type": "newest", "size": "16"]
+        )
+        async let starred: StarredPayload? = try? request("getStarred2")
+        async let playlists: PlaylistsPayload? = try? request("getPlaylists")
+
+        let values = await (recent, starred, playlists)
+        guard values.0 != nil || values.1 != nil || values.2 != nil else {
+            throw OpenSubsonicError.invalidResponse
+        }
+
+        var snapshot = previous
+        if let albums = values.0?.albumList2?.album {
+            snapshot.recentAlbums = albums
+        }
+        if let starred = values.1?.starred2 {
+            snapshot.starredAlbums = starred.album ?? []
+            snapshot.starredSongs = starred.song ?? []
+            snapshot.starredArtists = starred.artist ?? []
+        }
+        if let playlists = values.2?.playlists?.playlist {
+            snapshot.playlists = playlists
+        }
+        return snapshot
     }
 
     func search(_ query: String) async throws -> SearchResults {

@@ -25,22 +25,21 @@ actor ArtworkStore {
 
     private let memory = NSCache<NSString, UIImage>()
     private let paletteMemory = NSCache<NSString, PaletteBox>()
+    private var inFlightImages: [NSString: Task<UIImage, Error>] = [:]
     private let session: URLSession
     private let directory: URL
 
     init() {
         memory.totalCostLimit = 64 * 1_024 * 1_024
-        memory.countLimit = 180
+        memory.countLimit = 140
         paletteMemory.countLimit = 100
 
-        let configuration = URLSessionConfiguration.default
-        configuration.urlCache = URLCache(
-            memoryCapacity: 16 * 1_024 * 1_024,
-            diskCapacity: 180 * 1_024 * 1_024,
-            diskPath: "BuFiArtwork"
-        )
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.httpMaximumConnectionsPerHost = 5
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpMaximumConnectionsPerHost = 3
+        configuration.timeoutIntervalForRequest = 18
+        configuration.timeoutIntervalForResource = 45
         session = URLSession(configuration: configuration)
 
         let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -49,29 +48,48 @@ actor ArtworkStore {
     }
 
     func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
-        let key = Self.cacheKey(for: url)
-        if let cached = memory.object(forKey: key) { return cached }
+        let dataKey = Self.cacheKey(for: url)
+        let requestedPixelSize = min(max(pixelSize, 64), 1_024)
+        let imageKey = "\(dataKey)#\(Int(requestedPixelSize.rounded()))" as NSString
+        if let cached = memory.object(forKey: imageKey) { return cached }
+        if let existing = inFlightImages[imageKey] { return try await existing.value }
 
-        let diskURL = directory.appendingPathComponent(Self.hash(key as String))
-        let data: Data
-        if let diskData = try? Data(contentsOf: diskURL), !diskData.isEmpty {
-            data = diskData
-        } else {
-            let (downloaded, response) = try await session.data(from: url)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  !downloaded.isEmpty else {
-                throw URLError(.badServerResponse)
+        let diskURL = directory.appendingPathComponent(Self.hash(dataKey as String))
+        let task = Task(priority: .utility) { [session] () throws -> UIImage in
+            let data: Data
+            if let diskData = try? Data(contentsOf: diskURL, options: [.mappedIfSafe]),
+               !diskData.isEmpty {
+                data = diskData
+            } else {
+                let (downloaded, response) = try await session.data(from: url)
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode),
+                      !downloaded.isEmpty else {
+                    throw URLError(.badServerResponse)
+                }
+                data = downloaded
+                try? data.write(
+                    to: diskURL,
+                    options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+                )
             }
-            data = downloaded
-            try? data.write(to: diskURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        }
 
-        guard let image = Self.downsample(data: data, pixelSize: pixelSize) else {
-            throw URLError(.cannotDecodeContentData)
+            guard let image = Self.downsample(data: data, pixelSize: requestedPixelSize) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            return image
         }
-        memory.setObject(image, forKey: key, cost: Int(image.size.width * image.size.height * 4))
-        return image
+        inFlightImages[imageKey] = task
+
+        do {
+            let image = try await task.value
+            inFlightImages[imageKey] = nil
+            memory.setObject(image, forKey: imageKey, cost: Self.imageCost(image))
+            return image
+        } catch {
+            inFlightImages[imageKey] = nil
+            throw error
+        }
     }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
@@ -113,13 +131,14 @@ actor ArtworkStore {
     }
 
     func clearMemory() {
+        inFlightImages.values.forEach { $0.cancel() }
+        inFlightImages.removeAll()
         memory.removeAllObjects()
         paletteMemory.removeAllObjects()
     }
 
     func clearAll() {
         clearMemory()
-        session.configuration.urlCache?.removeAllCachedResponses()
         try? FileManager.default.removeItem(at: directory)
         try? FileManager.default.createDirectory(
             at: directory,
@@ -141,6 +160,13 @@ actor ArtworkStore {
         )
     }
 
+    private static func imageCost(_ image: UIImage) -> Int {
+        guard let cgImage = image.cgImage else {
+            return Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        }
+        return cgImage.width * cgImage.height * 4
+    }
+
     private static func downsample(data: Data, pixelSize: CGFloat) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         let options: [CFString: Any] = [
@@ -155,9 +181,6 @@ actor ArtworkStore {
         return UIImage(cgImage: image)
     }
 
-    /// Quantizes a Core Graphics thumbnail into neighboring hue clusters. Population,
-    /// saturation, luminance and edge coverage are all considered so a tiny logo or
-    /// skin tone does not overpower the actual cover palette.
     private static func dominantColor(in image: UIImage) -> UIColor? {
         guard let source = image.cgImage else { return nil }
         let width = 36
@@ -288,9 +311,6 @@ actor ArtworkStore {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// OpenSubsonic authentication salts and tokens are intentionally different
-    /// for every request. Excluding only those volatile fields lets identical
-    /// artwork share the same memory, disk and palette cache entries.
     private static func cacheKey(for url: URL) -> NSString {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return url.absoluteString as NSString

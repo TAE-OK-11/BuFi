@@ -11,8 +11,10 @@ enum AppTab: Hashable {
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
+    @Environment(\.scenePhase) private var scenePhase
     @State private var tab: AppTab = .home
     @State private var pageOpacity = 1.0
+    @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("motion-enabled") private var motionEnabled = true
@@ -36,6 +38,18 @@ struct RootView: View {
         }
         .task(id: syncTaskID) {
             await runAutomaticSync()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: Notification.Name.NSProcessInfoPowerStateDidChange
+            )
+        ) { _ in
+            lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            Task(priority: .utility) {
+                await ArtworkStore.shared.clearMemory()
+            }
         }
         .alert(
             "오류",
@@ -132,20 +146,25 @@ struct RootView: View {
     }
 
     private var syncTaskID: String {
-        "\(model.sessionState)-\(syncInterval)"
+        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)"
+    }
+
+    private var effectiveSyncInterval: TimeInterval {
+        let selected = max(syncInterval, 30)
+        guard lowPowerMode else { return selected }
+        return max(selected * 2, 120)
     }
 
     private func runAutomaticSync() async {
-        guard model.sessionState == .ready else { return }
-        let seconds = max(syncInterval, 30)
+        guard model.sessionState == .ready, scenePhase == .active else { return }
         while !Task.isCancelled {
             do {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                try await Task.sleep(for: .seconds(effectiveSyncInterval))
             } catch {
                 return
             }
-            guard model.sessionState == .ready else { return }
-            await model.refresh()
+            guard model.sessionState == .ready, scenePhase == .active else { return }
+            await model.refresh(silent: true)
         }
     }
 }
