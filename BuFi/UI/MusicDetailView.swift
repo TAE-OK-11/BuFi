@@ -125,7 +125,7 @@ struct MusicDetailView: View {
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.68))
+                        .foregroundStyle(.white.opacity(0.72))
                         .multilineTextAlignment(.center)
                 }
             }
@@ -137,21 +137,67 @@ struct MusicDetailView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 0) {
-            Button(action: toggleFavorite) {
-                Image(systemName: isFavorite ? "heart.fill" : "heart")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(isFavorite ? BuFiTheme.accentSoft : .white)
-                    .frame(width: 54, height: 54)
-                    .background(.white.opacity(0.10), in: Circle())
-                    .buFiGlass(cornerRadius: 27, interactive: true)
-            }
-            .buttonStyle(BuFiPressStyle())
-            .opacity(canFavorite ? 1 : 0)
-            .disabled(!canFavorite)
-            .accessibilityLabel(isFavorite ? "좋아요 취소" : "좋아요 표시")
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                if canFavorite {
+                    Button(action: toggleFavorite) {
+                        Image(systemName: isFavorite ? "checkmark" : "plus")
+                            .font(.system(size: 19, weight: .semibold))
+                            .frame(width: 42, height: 42)
+                            .background(.white.opacity(0.10), in: Circle())
+                            .buFiGlass(cornerRadius: 21, interactive: true)
+                    }
+                    .buttonStyle(BuFiPressStyle())
+                    .accessibilityLabel(isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가")
+                }
 
-            Spacer(minLength: 20)
+                Button {
+                    downloadAll()
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 19, weight: .semibold))
+                        .frame(width: 42, height: 42)
+                        .background(.white.opacity(0.10), in: Circle())
+                        .buFiGlass(cornerRadius: 21, interactive: true)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .disabled(songs.isEmpty)
+                .accessibilityLabel("모두 오프라인 저장")
+
+                Menu {
+                    Button {
+                        if let first = songs.first {
+                            audio.play(first, in: songs)
+                        }
+                    } label: {
+                        Label("모두 재생", systemImage: "play.fill")
+                    }
+                    Button {
+                        guard !songs.isEmpty else { return }
+                        let shuffled = songs.shuffled()
+                        if let first = shuffled.first {
+                            audio.play(first, in: shuffled)
+                        }
+                    } label: {
+                        Label("셔플 재생", systemImage: "shuffle")
+                    }
+                    Button {
+                        downloadAll()
+                    } label: {
+                        Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 20, weight: .semibold))
+                        .frame(width: 42, height: 42)
+                        .background(.white.opacity(0.10), in: Circle())
+                        .buFiGlass(cornerRadius: 21, interactive: true)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityLabel("더 보기")
+            }
+
+            Spacer(minLength: 12)
 
             Button {
                 guard !songs.isEmpty else { return }
@@ -161,17 +207,15 @@ struct MusicDetailView: View {
                 }
             } label: {
                 Image(systemName: "shuffle")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 21, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 54, height: 54)
-                    .background(.white.opacity(0.10), in: Circle())
-                    .buFiGlass(cornerRadius: 27, interactive: true)
+                    .frame(width: 52, height: 52)
+                    .background(.white.opacity(0.12), in: Circle())
+                    .buFiGlass(cornerRadius: 26, interactive: true)
             }
             .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
             .accessibilityLabel("셔플 재생")
-
-            Spacer(minLength: 20)
 
             Button {
                 if let first = songs.first {
@@ -179,18 +223,20 @@ struct MusicDetailView: View {
                 }
             } label: {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 25, weight: .bold))
+                    .font(.system(size: 26, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 58, height: 58)
+                    .frame(width: 60, height: 60)
                     .background(BuFiTheme.accent, in: Circle())
+                    .offset(x: 1)
             }
             .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
             .accessibilityLabel("모두 재생")
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 2)
-        .padding(.bottom, 12)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 22)
+        .padding(.top, 2)
+        .padding(.bottom, 22)
     }
 
     private var artistAbout: some View {
@@ -254,13 +300,14 @@ struct MusicDetailView: View {
                     SongRow(
                         song: song,
                         queue: songs,
-                        showsArtwork: isArtist,
+                        showsArtwork: true,
+                        artworkSize: isArtist ? 54 : 44,
                         onMore: { selectedSong = song }
                     )
                     .padding(.horizontal, 16)
                 }
             }
-            .padding(.top, albums.isEmpty ? 6 : 22)
+            .padding(.top, albums.isEmpty ? 14 : 26)
         }
     }
 
@@ -298,6 +345,17 @@ struct MusicDetailView: View {
             Task { await model.toggleStar(artist: artist) }
         case .playlist:
             break
+        }
+    }
+
+    private func downloadAll() {
+        guard !songs.isEmpty else { return }
+        let items = songs
+        Task {
+            for song in items {
+                guard !Task.isCancelled else { return }
+                await model.download(song)
+            }
         }
     }
 
