@@ -24,7 +24,7 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
+                LazyVStack(alignment: .leading, spacing: 14) {
                     searchField
                     if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         browse
@@ -32,8 +32,8 @@ struct SearchView: View {
                         results
                     }
                 }
-                .padding(.top, 10)
-                .padding(.bottom, 28)
+                .padding(.top, 20)
+                .padding(.bottom, 34)
             }
             .scrollDismissesKeyboard(.interactively)
             .background(BuFiScreenBackground())
@@ -53,21 +53,22 @@ struct SearchView: View {
     private var searchField: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(.secondary)
             TextField(
                 "",
                 text: $query,
                 prompt: Text("어떤 것을 듣고 싶으세요?")
                     .foregroundStyle(Color(uiColor: .secondaryLabel))
             )
-                .focused($focused)
-                .foregroundStyle(.primary)
-                .submitLabel(.search)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onSubmit {
-                    Task { await model.searchImmediately(query) }
-                }
+            .focused($focused)
+            .foregroundStyle(.primary)
+            .submitLabel(.search)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .onSubmit {
+                Task { await model.searchImmediately(query) }
+            }
             if !query.isEmpty {
                 Button {
                     query = ""
@@ -89,7 +90,7 @@ struct SearchView: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.5), lineWidth: 0.5)
+                .stroke(BuFiTheme.separator.opacity(0.55), lineWidth: 0.6)
         }
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
@@ -142,7 +143,7 @@ struct SearchView: View {
     }
 
     private var browseMain: some View {
-        VStack(alignment: .leading, spacing: 28) {
+        VStack(alignment: .leading, spacing: 22) {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(Array(categories.enumerated()), id: \.offset) { index, category in
                     Button {
@@ -154,26 +155,26 @@ struct SearchView: View {
                             LinearGradient(
                                 colors: [
                                     category.1,
-                                    category.1.opacity(0.64),
-                                    BuFiTheme.deezerGlow.opacity(index == 0 ? 0.18 : 0.58)
+                                    category.1.opacity(0.66),
+                                    BuFiTheme.deezerGlow.opacity(index == 0 ? 0.16 : 0.52)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                             Image(systemName: category.2)
-                                .font(.system(size: 54, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.22))
-                                .rotationEffect(.degrees(9))
-                                .padding(14)
+                                .font(.system(size: 50, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.20))
+                                .rotationEffect(.degrees(8))
+                                .padding(13)
                             Text(LocalizedStringKey(category.0))
-                                .font(.system(size: 20, weight: .bold))
+                                .font(.system(size: 19, weight: .bold))
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                                .padding(16)
+                                .padding(15)
                         }
                         .foregroundStyle(.white)
-                        .frame(height: 128)
+                        .frame(height: 118)
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .shadow(color: category.1.opacity(0.18), radius: 16, y: 8)
+                        .shadow(color: category.1.opacity(0.16), radius: 14, y: 7)
                     }
                     .buttonStyle(BuFiPressStyle())
                 }
@@ -182,8 +183,11 @@ struct SearchView: View {
 
             if !model.home.recentAlbums.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionTitle(title: "앨범 둘러보기")
+                    Text("앨범 둘러보기")
+                        .font(.system(size: 26, weight: .bold))
+                        .tracking(-0.7)
                         .padding(.horizontal, 16)
+                        .padding(.top, 2)
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(spacing: 15) {
                             ForEach(model.home.recentAlbums) { album in
@@ -289,7 +293,7 @@ struct SearchView: View {
 
     private func resultHeader(_ title: String) -> some View {
         Text(LocalizedStringKey(title))
-            .font(.system(size: 22, weight: .bold))
+            .font(.system(size: 23, weight: .bold))
             .padding(.top, 4)
     }
 }
