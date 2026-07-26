@@ -72,11 +72,11 @@ struct RootView: View {
 
     private var appContent: some View {
         tabs
-            .safeAreaInset(edge: .bottom, spacing: 10) {
+            .safeAreaInset(edge: .bottom, spacing: 8) {
                 if audio.currentSong != nil {
-                    MiniPlayerView()
+                    LegacyMiniPlayerView()
                         .padding(.horizontal, 8)
-                        .padding(.bottom, 2)
+                        .padding(.bottom, 4)
                 }
             }
     }
