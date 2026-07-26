@@ -187,7 +187,21 @@ struct AlbumCard: View {
     var width: CGFloat = 166
     @AppStorage("motion-enabled") private var motionEnabled = true
 
+    @ViewBuilder
     var body: some View {
+        if motionEnabled {
+            card
+                .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                    content
+                        .scaleEffect(phase.isIdentity ? 1 : 0.965)
+                        .opacity(phase.isIdentity ? 1 : 0.86)
+                }
+        } else {
+            card
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
             ArtworkView(coverArt: album.coverArt, size: width, cornerRadius: 7)
                 .frame(width: width, height: width)
@@ -202,11 +216,6 @@ struct AlbumCard: View {
                 .foregroundStyle(.secondary)
         }
         .frame(width: width, alignment: .leading)
-        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-            content
-                .scaleEffect(motionEnabled && !phase.isIdentity ? 0.965 : 1)
-                .opacity(motionEnabled && !phase.isIdentity ? 0.86 : 1)
-        }
         .accessibilityElement(children: .combine)
     }
 }

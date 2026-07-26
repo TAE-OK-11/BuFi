@@ -68,7 +68,7 @@ struct RootView: View {
 
     @ViewBuilder
     private var appContent: some View {
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.1, *) {
             tabs
                 .tabViewBottomAccessory(isEnabled: audio.currentSong != nil) {
                     MiniPlayerView()
