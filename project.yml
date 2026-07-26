@@ -40,6 +40,10 @@ targets:
         CFBundleDisplayName: BuFi
         CFBundleShortVersionString: "1.1.0"
         CFBundleVersion: "3"
+        CFBundleLocalizations:
+          - ko
+          - en
+          - ja
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIBackgroundModes:
