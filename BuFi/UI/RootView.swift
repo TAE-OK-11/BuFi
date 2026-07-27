@@ -31,9 +31,7 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: model.sessionState)
-        .preferredColorScheme(
-            AppAppearance(rawValue: appearanceMode)?.colorScheme
-        )
+        .preferredColorScheme(AppAppearance(rawValue: appearanceMode)?.colorScheme)
         .transaction { transaction in
             if !motionEnabled { transaction.animation = nil }
         }
@@ -100,27 +98,19 @@ struct RootView: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             tabPage(HomeView(), tag: .home)
-                .tabItem {
-                    Label("홈", systemImage: "house.fill")
-                }
+                .tabItem { Label("홈", systemImage: "house.fill") }
                 .tag(AppTab.home)
 
             tabPage(SearchView(), tag: .search)
-                .tabItem {
-                    Label("검색하기", systemImage: "magnifyingglass")
-                }
+                .tabItem { Label("검색하기", systemImage: "magnifyingglass") }
                 .tag(AppTab.search)
 
             tabPage(LibraryView(), tag: .library)
-                .tabItem {
-                    Label("내 라이브러리", systemImage: "music.note.list")
-                }
+                .tabItem { Label("내 라이브러리", systemImage: "music.note.list") }
                 .tag(AppTab.library)
 
             tabPage(SettingsView(), tag: .settings)
-                .tabItem {
-                    Label("설정", systemImage: "gearshape.fill")
-                }
+                .tabItem { Label("설정", systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
         }
         .tint(BuFiTheme.accent)
@@ -154,7 +144,17 @@ struct RootView: View {
     }
 
     private var syncTaskID: String {
-        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalState.rawValue)-\(audio.isPlaying)-\(tab)"
+        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)-\(audio.isPlaying)-\(tab)"
+    }
+
+    private var thermalKey: String {
+        switch thermalState {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
     }
 
     private var baseSyncInterval: TimeInterval {
