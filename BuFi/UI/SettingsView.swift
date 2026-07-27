@@ -51,6 +51,7 @@ struct SettingsView: View {
                     }
                     .padding(.vertical, 6)
                 }
+                .listRowBackground(settingsRowBackground)
 
                 Section("화면 및 동작") {
                     Picker("화면 모드", selection: $appearanceMode) {
@@ -59,6 +60,7 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .tint(BuFiTheme.accent)
 
                     Toggle(isOn: $motionEnabled) {
                         Label("Liquid Glass 애니메이션", systemImage: "sparkles")
@@ -67,6 +69,7 @@ struct SettingsView: View {
                         Label("햅틱 피드백", systemImage: "waveform.path")
                     }
                 }
+                .listRowBackground(settingsRowBackground)
 
                 Section("서버 동기화") {
                     Picker("자동 동기화 주기", selection: $syncInterval) {
@@ -75,10 +78,12 @@ struct SettingsView: View {
                         Text("5분").tag(300.0)
                         Text("15분").tag(900.0)
                     }
+                    .tint(Color(uiColor: .secondaryLabel))
                     Text("앱이 활성 상태일 때만 동기화합니다. 평소에는 좋아요·새 앨범·플레이리스트만 가볍게 갱신하고, 전체 라이브러리는 5분 간격으로 확인합니다. 저전력 모드에서는 주기를 자동으로 늘립니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                .listRowBackground(settingsRowBackground)
 
                 Section("재생") {
                     Picker("음질", selection: $audio.quality) {
@@ -106,6 +111,7 @@ struct SettingsView: View {
                             .frame(width: 42, height: 34)
                     }
                 }
+                .listRowBackground(settingsRowBackground)
 
                 Section("저장 공간") {
                     LabeledContent("오프라인 저장 공간") {
@@ -124,6 +130,7 @@ struct SettingsView: View {
                         confirmArtworkRemoval = true
                     }
                 }
+                .listRowBackground(settingsRowBackground)
 
                 Section("앱") {
                     LabeledContent("최소 iOS", value: "17.0")
@@ -134,14 +141,18 @@ struct SettingsView: View {
                         OpenSourceNoticesView()
                     }
                 }
+                .listRowBackground(settingsRowBackground)
 
                 Section {
                     Button("로그아웃", role: .destructive) {
                         model.logout()
                     }
                 }
+                .listRowBackground(settingsRowBackground)
             }
             .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(BuFiScreenBackground())
             .navigationTitle("설정")
             .task {
                 offlineBytes = await OfflineStore.shared.totalBytes()
@@ -182,13 +193,17 @@ struct SettingsView: View {
         }
     }
 
+    private var settingsRowBackground: Color {
+        BuFiTheme.elevated
+    }
+
     private var versionText: String {
         let version =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "1.2.8"
+            ?? "1.3.1"
         let build =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-            ?? "12"
+            ?? "14"
         return "\(version) (\(build))"
     }
 }
