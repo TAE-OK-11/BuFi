@@ -129,11 +129,16 @@ actor OfflineStore {
             defer { session.finishTasksAndInvalidate() }
 
             let (temporary, response) = try await session.download(from: remote)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  http.url?.scheme?.lowercased() == "https" else {
+            guard let http = response as? HTTPURLResponse else {
+                throw OpenSubsonicError.invalidResponse
+            }
+            guard http.url?.scheme?.lowercased() == "https" else {
                 throw OpenSubsonicError.insecureServerURL
             }
+            guard (200..<300).contains(http.statusCode) else {
+                throw OpenSubsonicError.http(http.statusCode)
+            }
+
             let values = try temporary.resourceValues(forKeys: [.fileSizeKey])
             let bytes = Int64(values.fileSize ?? 0)
             guard bytes > 0 else { throw URLError(.zeroByteResource) }
@@ -215,7 +220,7 @@ actor OfflineStore {
             options: [.skipsHiddenFiles]
         ) else { return 0 }
         return files.reduce(into: Int64(0)) { total, url in
-            guard url != indexURL else { return }
+            if let indexURL, url == indexURL { return }
             total += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
         }
     }
