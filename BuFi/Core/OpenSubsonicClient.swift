@@ -292,15 +292,19 @@ actor OpenSubsonicClient {
         }
 
         return HomeSnapshot(
-            recentAlbums: values.0?.albumList2?.album ?? fallback.recentAlbums,
-            randomAlbums: values.1?.albumList2?.album ?? fallback.randomAlbums,
+            recentAlbums: values.0.map { $0.albumList2?.album ?? [] }
+                ?? fallback.recentAlbums,
+            randomAlbums: values.1.map { $0.albumList2?.album ?? [] }
+                ?? fallback.randomAlbums,
             starredAlbums: starredAlbums,
             starredSongs: starredSongs,
             starredArtists: starredArtists,
             artists: values.3.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
                 ?? fallback.artists,
-            randomSongs: values.4?.randomSongs?.song ?? fallback.randomSongs,
-            playlists: values.5?.playlists?.playlist ?? fallback.playlists
+            randomSongs: values.4.map { $0.randomSongs?.song ?? [] }
+                ?? fallback.randomSongs,
+            playlists: values.5.map { $0.playlists?.playlist ?? [] }
+                ?? fallback.playlists
         )
     }
 
@@ -318,16 +322,16 @@ actor OpenSubsonicClient {
         }
 
         var snapshot = previous
-        if let albums = values.0?.albumList2?.album {
-            snapshot.recentAlbums = albums
+        if let recent = values.0 {
+            snapshot.recentAlbums = recent.albumList2?.album ?? []
         }
         if let starred = values.1?.starred2 {
             snapshot.starredAlbums = starred.album ?? []
             snapshot.starredSongs = starred.song ?? []
             snapshot.starredArtists = starred.artist ?? []
         }
-        if let playlists = values.2?.playlists?.playlist {
-            snapshot.playlists = playlists
+        if let playlists = values.2 {
+            snapshot.playlists = playlists.playlists?.playlist ?? []
         }
         return snapshot
     }

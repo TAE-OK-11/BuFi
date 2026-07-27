@@ -131,12 +131,23 @@ actor OfflineStore {
         let songGeneration = songGenerations[song.id, default: 0]
         let taskKey = scope + ":" + song.id
         if let existingTask = inFlight[taskKey] {
-            return try await existingTask.task.value.url
+            let result = try await existingTask.task.value
+            guard activeScope == scope,
+                  scopeGeneration == existingTask.scopeGeneration,
+                  songGenerations[song.id, default: 0] == existingTask.songGeneration else {
+                throw CancellationError()
+            }
+            return result.url
         }
 
         let remote = try await client.downloadURL(songID: song.id)
         guard remote.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
+        }
+        guard activeScope == scope,
+              scopeGeneration == generation,
+              songGenerations[song.id, default: 0] == songGeneration else {
+            throw CancellationError()
         }
         let fileName = Self.fileName(for: song)
         let destination = directory.appendingPathComponent(fileName)
@@ -214,17 +225,18 @@ actor OfflineStore {
     func remove(songID: String) throws {
         guard let directory else { return }
         invalidateDownload(songID: songID)
-        if let entry = entries.removeValue(forKey: songID) {
+        defer { scheduleIndexPersistence(immediate: true) }
+        if let entry = entries[songID] {
             let url = directory.appendingPathComponent(entry.fileName)
             if FileManager.default.fileExists(atPath: url.path) {
                 try FileManager.default.removeItem(at: url)
             }
+            entries[songID] = nil
         }
         let legacy = legacyFileURL(songID: songID, directory: directory)
         if FileManager.default.fileExists(atPath: legacy.path) {
             try FileManager.default.removeItem(at: legacy)
         }
-        scheduleIndexPersistence(immediate: true)
     }
 
     func removeAll() throws {
@@ -238,9 +250,22 @@ actor OfflineStore {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )
-        for file in files { try FileManager.default.removeItem(at: file) }
-        entries.removeAll()
+        var firstError: Error?
+        for file in files {
+            do {
+                try FileManager.default.removeItem(at: file)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        entries = entries.reduce(into: [:]) { result, pair in
+            let url = directory.appendingPathComponent(pair.value.fileName)
+            if FileManager.default.fileExists(atPath: url.path) {
+                result[pair.key] = pair.value
+            }
+        }
         scheduleIndexPersistence(immediate: true)
+        if let firstError { throw firstError }
     }
 
     func totalBytes() -> Int64 {
