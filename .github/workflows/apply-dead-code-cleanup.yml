@@ -1,0 +1,78 @@
+name: Apply Dead Code Cleanup
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.head_ref == 'refactor/dead-code-lightweight' && github.actor != 'github-actions[bot]'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refactor/dead-code-lightweight
+          fetch-depth: 0
+
+      - name: Apply cleanup
+        run: |
+          python3 Scripts/apply-dead-code-cleanup.py
+          git diff --check
+
+      - name: Install build tools
+        run: |
+          brew install xcodegen
+          brew install peripheryapp/periphery/periphery
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Compile Release
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | xcpretty
+
+      - name: Rescan unused code
+        run: |
+          mkdir -p .audit
+          set +e
+          periphery scan \
+            --project BuFi.xcodeproj \
+            --schemes BuFi \
+            --targets BuFi \
+            --format xcode \
+            --retain-public \
+            --retain-objc-annotated \
+            --retain-swift-ui-previews \
+            > .audit/periphery-after.txt 2>&1
+          echo "exit_code=$?" >> .audit/periphery-after.txt
+          set -e
+          {
+            echo "Swift files: $(find BuFi -name '*.swift' | wc -l | tr -d ' ')"
+            echo "Total Swift lines: $(find BuFi -name '*.swift' -print0 | xargs -0 cat | wc -l | tr -d ' ')"
+            echo
+            find BuFi -name '*.swift' -print0 | xargs -0 wc -l | sort -nr
+          } > .audit/size-after.txt
+
+      - name: Commit cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A BuFi .audit/periphery-after.txt .audit/size-after.txt
+          git commit -m "refactor: remove dead code and consolidate duplicated UI"
+          git push origin HEAD:refactor/dead-code-lightweight
