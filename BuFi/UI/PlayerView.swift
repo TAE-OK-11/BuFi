@@ -120,13 +120,9 @@ struct PlayerView: View {
             Spacer()
             ZStack {
                 VStack(spacing: 2) {
-                    Text(
-                        song.album.isEmpty
-                            ? String(localized: "지금 재생 중")
-                            : song.album
-                    )
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
+                    Text(song.album.isEmpty ? String(localized: "지금 재생 중") : song.album)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
                     Text(song.artist)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(playerSecondary)
@@ -151,9 +147,7 @@ struct PlayerView: View {
                     Task { await model.toggleStar(song: song) }
                 } label: {
                     Label(
-                        song.isStarred
-                            ? String(localized: "좋아요 취소")
-                            : String(localized: "좋아요 표시"),
+                        song.isStarred ? String(localized: "좋아요 취소") : String(localized: "좋아요 표시"),
                         systemImage: "heart"
                     )
                 }
@@ -207,8 +201,7 @@ struct PlayerView: View {
         .contentShape(Rectangle())
         .onChange(of: artworkPage) { oldIndex, index in
             transitionDirection = index >= oldIndex ? 1 : -1
-            guard index != audio.queueIndex,
-                  audio.queue.indices.contains(index) else { return }
+            guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
         }
     }
@@ -223,8 +216,7 @@ struct PlayerView: View {
                 if let route = artistRoute(for: song) {
                     NavigationLink(value: route) {
                         HStack(spacing: 5) {
-                            Text(song.artist)
-                                .lineLimit(1)
+                            Text(song.artist).lineLimit(1)
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 11, weight: .bold))
                         }
@@ -232,12 +224,7 @@ struct PlayerView: View {
                         .foregroundStyle(playerSecondary)
                     }
                     .buttonStyle(BuFiPressStyle())
-                    .accessibilityLabel(
-                        String(
-                            format: String(localized: "%@ 아티스트 페이지 열기"),
-                            song.artist
-                        )
-                    )
+                    .accessibilityLabel(String(format: String(localized: "%@ 아티스트 페이지 열기"), song.artist))
                 } else {
                     Text(song.artist)
                         .font(.system(size: 17, weight: .medium))
@@ -282,9 +269,7 @@ struct PlayerView: View {
 
     private var transport: some View {
         HStack {
-            control("shuffle", size: 24, active: audio.isShuffleEnabled, label: "셔플") {
-                audio.toggleShuffle()
-            }
+            control("shuffle", size: 24, active: audio.isShuffleEnabled, label: "셔플") { audio.toggleShuffle() }
             Spacer()
             control("backward.end.fill", size: 31, label: "이전 곡") { audio.previous() }
             Spacer()
@@ -411,10 +396,7 @@ struct PlayerView: View {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [
-                                playerPrimary.opacity(0.19),
-                                playerPrimary.opacity(0.10)
-                            ],
+                            colors: [playerPrimary.opacity(0.19), playerPrimary.opacity(0.10)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -611,9 +593,7 @@ private struct FullLyricsView: View {
 
     private var header: some View {
         HStack {
-            Button {
-                closeLyrics()
-            } label: {
+            Button { closeLyrics() } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 23, weight: .semibold))
                     .frame(width: 44, height: 44)
@@ -733,9 +713,7 @@ private struct FullLyricsView: View {
                 dragOffset = value.translation.height * 0.72
             }
             .onEnded { value in
-                let shouldDismiss =
-                    value.translation.height > 100 ||
-                    value.predictedEndTranslation.height > 180
+                let shouldDismiss = value.translation.height > 100 || value.predictedEndTranslation.height > 180
                 if shouldDismiss {
                     closeLyrics()
                 } else {
@@ -759,33 +737,13 @@ private struct FullLyricsView: View {
         return lyricsPrimary.opacity(0.54)
     }
 
-    private var dragProgress: CGFloat {
-        min(max(dragOffset / 420, 0), 1)
-    }
-
-    private var dragScale: CGFloat {
-        1 - (dragProgress * 0.055)
-    }
-
-    private var dragOpacity: Double {
-        1 - Double(dragProgress * 0.16)
-    }
-
-    private var dragCornerRadius: CGFloat {
-        dragProgress * 28
-    }
-
-    private var lyricsPrimary: Color {
-        colorScheme == .dark ? .white : .black.opacity(0.86)
-    }
-
-    private var lyricsSecondary: Color {
-        lyricsPrimary.opacity(0.66)
-    }
-
-    private var playButtonForeground: Color {
-        colorScheme == .dark ? Color(palette.bottom) : .white
-    }
+    private var dragProgress: CGFloat { min(max(dragOffset / 420, 0), 1) }
+    private var dragScale: CGFloat { 1 - (dragProgress * 0.055) }
+    private var dragOpacity: Double { 1 - Double(dragProgress * 0.16) }
+    private var dragCornerRadius: CGFloat { dragProgress * 28 }
+    private var lyricsPrimary: Color { colorScheme == .dark ? .white : .black.opacity(0.86) }
+    private var lyricsSecondary: Color { lyricsPrimary.opacity(0.66) }
+    private var playButtonForeground: Color { colorScheme == .dark ? Color(palette.bottom) : .white }
 }
 
 private struct QueueView: View {
@@ -809,11 +767,7 @@ private struct QueueView: View {
                                         .frame(width: 48, height: 48)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
-                                            .foregroundStyle(
-                                                index == audio.queueIndex
-                                                    ? BuFiTheme.accentSoft
-                                                    : Color.primary
-                                            )
+                                            .foregroundStyle(index == audio.queueIndex ? BuFiTheme.accentSoft : Color.primary)
                                             .lineLimit(1)
                                         Text(song.artist)
                                             .font(.caption)
