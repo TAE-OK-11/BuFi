@@ -231,7 +231,7 @@ final class AppModel: ObservableObject {
         var updated = artist
         updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
         home.starredArtists.removeAll { $0.id == artist.id }
-        if enabled { home.starredArtists.insert(artist, at: 0) }
+        if enabled { home.starredArtists.insert(updated, at: 0) }
         home.artists = home.artists.map { $0.id == artist.id ? updated : $0 }
     }
 
