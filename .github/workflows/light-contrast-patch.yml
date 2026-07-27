@@ -1,0 +1,43 @@
+name: Apply light mode contrast patch
+on:
+  push:
+    branches:
+      - feat/light-mode-contrast-1.3.1
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/light-mode-contrast-1.3.1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply patch
+        run: python .github/scripts/apply_light_contrast.py
+      - name: Verify patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          detail = Path('BuFi/UI/MusicDetailView.swift').read_text()
+          settings = Path('BuFi/UI/SettingsView.swift').read_text()
+          project = Path('project.yml').read_text()
+          assert '@Environment(\\.colorScheme)' in detail
+          assert 'detailControlForeground' in detail
+          assert '.scrollContentBackground(.hidden)' in settings
+          assert 'CFBundleShortVersionString: "1.3.1"' in project
+          print('patch verification ok')
+          PY
+      - name: Remove one-shot patch files
+        run: rm -f .github/scripts/apply_light_contrast.py .github/workflows/light-contrast-patch.yml
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Fix light mode contrast across detail surfaces"
+          git push origin HEAD:feat/light-mode-contrast-1.3.1
