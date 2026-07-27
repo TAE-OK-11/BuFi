@@ -1,0 +1,98 @@
+name: Verify BuFi PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unsigned-ipa:
+    name: unsigned-ipa
+    runs-on: macos-26-arm64
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26
+        run: |
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          elif [ -d /Applications/Xcode_26.5.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+          fi
+          xcodebuild -version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build unsigned app
+        run: |
+          rm -rf build
+          xcodebuild \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            clean build
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH=$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name 'BuFi.app' -print -quit)
+          test -n "$APP_PATH"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          ditto "$APP_PATH" build/Payload/BuFi.app
+          cd build
+          /usr/bin/zip -qry BuFi-1.4.0-build15-unsigned.ipa Payload
+          shasum -a 256 BuFi-1.4.0-build15-unsigned.ipa > BuFi-1.4.0-build15-unsigned.ipa.sha256
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BuFi-1.4.0-build15-unsigned
+          path: |
+            build/BuFi-1.4.0-build15-unsigned.ipa
+            build/BuFi-1.4.0-build15-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-27-compatibility:
+    name: ios-27-compatibility
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v5
+      - name: Show Xcode and iOS SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build with iOS 27 SDK
+        run: |
+          xcodebuild \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData-27 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            clean build
