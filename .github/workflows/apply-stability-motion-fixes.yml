@@ -18,10 +18,15 @@ jobs:
         with:
           ref: fix/playback-time-motion-stability
           fetch-depth: 0
-      - name: Apply fixes
+      - name: Apply and commit fixes
         run: |
           python3 Scripts/apply-stability-motion-fixes.py
           git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi
+          git commit -m "fix: stabilize playback timing and refine motion"
+          git push origin HEAD:fix/playback-time-motion-stability
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate project
@@ -39,10 +44,3 @@ jobs:
             SWIFT_LTO=NO \
             LLVM_LTO=NO \
             build
-      - name: Commit fixes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add BuFi
-          git commit -m "fix: stabilize playback timing and refine motion"
-          git push origin HEAD:fix/playback-time-motion-stability
