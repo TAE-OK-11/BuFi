@@ -144,10 +144,11 @@ struct RootView: View {
 
     @ViewBuilder
     private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
+        let activeProgress = tab == tag && effectiveMotion ? pageProgress : 1
         content
-            .opacity(tab == tag ? pageProgress : 1)
-            .scaleEffect(tab == tag ? 0.992 + (0.008 * pageProgress) : 1)
-            .blur(radius: tab == tag ? (1 - pageProgress) * 1.2 : 0)
+            .opacity(activeProgress)
+            .scaleEffect(0.992 + (0.008 * activeProgress))
+            .blur(radius: (1 - activeProgress) * 1.2)
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if audio.currentSong != nil {
                     LegacyMiniPlayerView()
