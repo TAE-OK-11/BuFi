@@ -39,10 +39,10 @@ actor ArtworkStore {
         guard activeScope != accountScope else { return }
 
         if !didDiscardLegacyCache {
-            await pipeline.cache.removeAll(caches: [.all])
+            pipeline.cache.removeAll(caches: [.all])
             didDiscardLegacyCache = true
         } else {
-            await pipeline.cache.removeAll(caches: [.memory])
+            pipeline.cache.removeAll(caches: [.memory])
         }
 
         if pipelineScope != accountScope {
@@ -65,29 +65,6 @@ actor ArtworkStore {
         return try await pipeline.image(for: request)
     }
 
-    func prefetch(urls: [URL], pixelSize: CGFloat) async {
-        guard activeScope != nil,
-              !urls.isEmpty,
-              Self.allowsDiscretionaryWork else {
-            return
-        }
-        var seen = Set<String>()
-        let candidates = urls.filter { url in
-            seen.insert(ArtworkPipelineDelegate.normalizedCacheKey(for: url)).inserted
-        }.prefix(2)
-        await withTaskGroup(of: Void.self) { group in
-            for url in candidates {
-                group.addTask(priority: .utility) { [pipeline] in
-                    let request = ImageRequest(
-                        url: url,
-                        processors: [.resize(width: min(max(pixelSize, 64), 1_024))],
-                        priority: .low
-                    )
-                    _ = try? await pipeline.image(for: request)
-                }
-            }
-        }
-    }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
         guard activeScope != nil else { return .fallback }
@@ -129,26 +106,15 @@ actor ArtworkStore {
     }
 
     func clearMemory() async {
-        await pipeline.cache.removeAll(caches: [.memory])
+        pipeline.cache.removeAll(caches: [.memory])
         paletteMemory.removeAllObjects()
     }
 
     func clearAll() async {
-        await pipeline.cache.removeAll(caches: [.all])
+        pipeline.cache.removeAll(caches: [.all])
         paletteMemory.removeAllObjects()
     }
 
-    private static var allowsDiscretionaryWork: Bool {
-        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
-        switch ProcessInfo.processInfo.thermalState {
-        case .nominal, .fair:
-            return true
-        case .serious, .critical:
-            return false
-        @unknown default:
-            return false
-        }
-    }
 
     private static func makePipeline(name: String) -> ImagePipeline {
         var configuration = ImagePipeline.Configuration.withDataCache(

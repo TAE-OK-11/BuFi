@@ -30,7 +30,6 @@ final class AppModel: ObservableObject {
     private(set) var client: OpenSubsonicClient?
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
-    private var refreshTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var lastFullRefresh = Date.distantPast
     private var sessionGeneration = 0
@@ -50,10 +49,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var allSongs: [Song] {
-        var ids = Set<String>()
-        return (home.randomSongs + home.starredSongs).filter { ids.insert($0.id).inserted }
-    }
 
     func login(serverURL: String, username: String, password: String) async {
         let credentials = ServerCredentials(
@@ -68,7 +63,6 @@ final class AppModel: ObservableObject {
         sessionGeneration += 1
         searchGeneration += 1
         searchTask?.cancel()
-        refreshTask?.cancel()
         secureStore.delete()
         client = nil
         home = .empty
@@ -123,11 +117,7 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         let generation = searchGeneration
         searchTask?.cancel()
-        let query = rawQuery
-            .precomposedStringWithCompatibilityMapping
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = Self.normalizedSearchQuery(rawQuery)
         guard !query.isEmpty, let client else {
             searchResults = .empty
             isSearching = false
@@ -158,11 +148,7 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         let generation = searchGeneration
         searchTask?.cancel()
-        let query = rawQuery
-            .precomposedStringWithCompatibilityMapping
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = Self.normalizedSearchQuery(rawQuery)
         guard !query.isEmpty, let client else {
             searchResults = .empty
             isSearching = false
@@ -181,6 +167,14 @@ final class AppModel: ObservableObject {
             isSearching = false
             errorMessage = error.localizedDescription
         }
+    }
+
+    private static func normalizedSearchQuery(_ value: String) -> String {
+        value
+            .precomposedStringWithCompatibilityMapping
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func clearSearch() {
@@ -421,34 +415,15 @@ final class AppModel: ObservableObject {
         artistDetailCache.removeAll(keepingCapacity: false)
     }
 
-    private var isHomeEmpty: Bool {
-        home.recentAlbums.isEmpty &&
-            home.randomAlbums.isEmpty &&
-            home.starredAlbums.isEmpty &&
-            home.starredSongs.isEmpty &&
-            home.starredArtists.isEmpty &&
-            home.artists.isEmpty &&
-            home.randomSongs.isEmpty &&
-            home.playlists.isEmpty
-    }
+    private var isHomeEmpty: Bool { home == .empty }
 
-    private func homeChanged(_ next: HomeSnapshot) -> Bool {
-        home.recentAlbums != next.recentAlbums ||
-            home.randomAlbums != next.randomAlbums ||
-            home.starredAlbums != next.starredAlbums ||
-            home.starredSongs != next.starredSongs ||
-            home.starredArtists != next.starredArtists ||
-            home.artists != next.artists ||
-            home.randomSongs != next.randomSongs ||
-            home.playlists != next.playlists
-    }
+    private func homeChanged(_ next: HomeSnapshot) -> Bool { home != next }
 
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
         sessionGeneration += 1
         let generation = sessionGeneration
         searchGeneration += 1
         searchTask?.cancel()
-        refreshTask?.cancel()
         refreshInFlight = false
         isRefreshing = false
         isSearching = false

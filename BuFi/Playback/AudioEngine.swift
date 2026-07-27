@@ -24,8 +24,8 @@ final class AudioEngine: NSObject, ObservableObject {
     @Published var quality: StreamQuality {
         didSet {
             UserDefaults.standard.set(quality.rawValue, forKey: "stream-quality")
-            guard oldValue != quality, let song = currentSong else { return }
-            restartPlaybackPlan(for: song, resumeFrom: elapsed)
+            guard oldValue != quality, currentSong != nil else { return }
+            restartPlaybackPlan(resumeFrom: elapsed)
         }
     }
 
@@ -124,7 +124,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         if let song = currentSong {
-            restartPlaybackPlan(for: song, resumeFrom: elapsed)
+            restartPlaybackPlan(resumeFrom: elapsed)
             loadLyrics(for: song)
         }
 
@@ -146,7 +146,7 @@ final class AudioEngine: NSObject, ObservableObject {
             self.duration = self.currentSong?.safeDuration ?? 0
             self.lyrics = .empty
             self.activeLyricIndex = -1
-            self.restartPlaybackPlan(for: self.currentSong!, resumeFrom: self.elapsed)
+            self.restartPlaybackPlan(resumeFrom: self.elapsed)
             if let song = self.currentSong { self.loadLyrics(for: song) }
             self.updateNowPlaying()
         }
@@ -380,17 +380,6 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    func localOrRemoteURL(for song: Song, compatibilityFormat: String? = nil) async throws -> URL {
-        if let local = await OfflineStore.shared.localURL(for: song.id) {
-            return local
-        }
-        guard let client else { throw OpenSubsonicError.invalidServerURL }
-        return try await client.streamURL(
-            songID: song.id,
-            quality: quality,
-            compatibilityFormat: compatibilityFormat
-        )
-    }
 
     private func playbackResource(
         for song: Song,
@@ -489,14 +478,8 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    func downloadCurrent() async throws -> URL {
-        guard let song = currentSong, let client else {
-            throw OpenSubsonicError.invalidResponse
-        }
-        return try await OfflineStore.shared.download(song: song, client: client)
-    }
 
-    private func restartPlaybackPlan(for song: Song, resumeFrom: TimeInterval) {
+    private func restartPlaybackPlan(resumeFrom: TimeInterval) {
         fallbackIndex = 0
         fallbackFormats = Self.fallbackFormats(for: quality)
         activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
@@ -790,8 +773,8 @@ final class AudioEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.configureAudioSession()
-                if let song = self.currentSong {
-                    self.restartPlaybackPlan(for: song, resumeFrom: self.elapsed)
+                if self.currentSong != nil {
+                    self.restartPlaybackPlan(resumeFrom: self.elapsed)
                 }
             }
         })

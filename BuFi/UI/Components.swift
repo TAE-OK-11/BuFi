@@ -8,7 +8,6 @@ enum BuFiTheme {
     static let deezerGlow = Color(red: 0.56, green: 0.26, blue: 0.98)
     static let background = Color(uiColor: .systemBackground)
     static let elevated = Color(uiColor: .secondarySystemBackground)
-    static let tertiary = Color(uiColor: .tertiarySystemBackground)
     static let separator = Color(uiColor: .separator)
 }
 
@@ -93,6 +92,77 @@ struct BuFiPressStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.972 : 1)
             .brightness(configuration.isPressed ? -0.018 : 0)
             .animation(BuFiMotion.tap, value: configuration.isPressed)
+    }
+}
+
+struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
+    let items: [Item]
+    @Binding var selection: Item
+    var fontSize: CGFloat = 14
+    let title: (Item) -> LocalizedStringKey
+
+    @Namespace private var selectionNamespace
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items) { item in
+                Button {
+                    withAnimation(
+                        .interactiveSpring(
+                            response: 0.34,
+                            dampingFraction: 0.80,
+                            blendDuration: 0.08
+                        )
+                    ) {
+                        selection = item
+                    }
+                } label: {
+                    Text(title(item))
+                        .font(.system(size: fontSize, weight: .semibold))
+                        .foregroundStyle(
+                            selection == item
+                                ? Color.white
+                                : Color.white.opacity(0.62)
+                        )
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .background {
+                            if selection == item {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.white.opacity(0.14))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(Color.white.opacity(0.13), lineWidth: 0.7)
+                                    }
+                                    .matchedGeometryEffect(
+                                        id: "filter-selection",
+                                        in: selectionNamespace
+                                    )
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityAddTraits(selection == item ? .isSelected : [])
+            }
+        }
+        .padding(4)
+        .frame(height: 50)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.black.opacity(0.58))
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .opacity(0.26)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.09), lineWidth: 0.7)
+        }
+        .buFiGlass(cornerRadius: 16, interactive: true)
+        .padding(.horizontal, 16)
     }
 }
 

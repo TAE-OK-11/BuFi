@@ -16,7 +16,6 @@ struct MusicDetailView: View {
     @State private var selectedSong: Song?
     @State private var palette = ArtworkPalette.fallback
     @State private var isFavorite = false
-    @State private var artistImageURL: String?
     @State private var artistBiography = ""
     @State private var artistAlbumCount = 0
     @AppStorage("motion-enabled") private var motionEnabled = true
@@ -66,7 +65,6 @@ struct MusicDetailView: View {
         ZStack(alignment: .bottomLeading) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
-                remoteURL: artistImageURL,
                 height: 360,
                 cornerRadius: 24,
                 onPalette: { nextPalette in
@@ -455,7 +453,6 @@ struct MusicDetailView: View {
         isLoading = true
         albums = []
         songs = []
-        artistImageURL = nil
         artistBiography = ""
         artistAlbumCount = 0
         do {
@@ -495,7 +492,6 @@ struct MusicDetailView: View {
                 title = artist.name
                 subtitle = String(localized: "아티스트")
                 coverArt = artist.coverArt
-                artistImageURL = artist.artistImageUrl
                 artistAlbumCount = artist.albumCount ?? 0
                 let detail = try await model.artist(id: artist.id, name: artist.name)
                 isFavorite = detail.artist.isStarred
@@ -503,11 +499,6 @@ struct MusicDetailView: View {
                 songs = detail.topSongs
                 albums = detail.albums
                 artistAlbumCount = detail.artist.albumCount ?? detail.albums.count
-                artistImageURL =
-                    detail.artist.artistImageUrl
-                    ?? detail.info?.largeImageUrl
-                    ?? detail.info?.mediumImageUrl
-                    ?? artistImageURL
                 artistBiography = (detail.info?.biography ?? "")
                     .replacingOccurrences(
                         of: "<[^>]+>",

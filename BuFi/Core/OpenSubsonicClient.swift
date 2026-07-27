@@ -385,13 +385,13 @@ actor OpenSubsonicClient {
     func album(id: String) async throws -> AlbumDetail {
         let payload: AlbumPayload = try await request("getAlbum", parameters: ["id": id])
         guard let value = payload.album else { throw OpenSubsonicError.invalidResponse }
-        return AlbumDetail(album: value.albumValue, songs: value.song ?? [])
+        return AlbumDetail(songs: value.song ?? [])
     }
 
     func playlist(id: String) async throws -> PlaylistDetail {
         let payload: PlaylistPayload = try await request("getPlaylist", parameters: ["id": id])
         guard let value = payload.playlist else { throw OpenSubsonicError.invalidResponse }
-        return PlaylistDetail(playlist: value.playlistValue, songs: value.entry ?? [])
+        return PlaylistDetail(songs: value.entry ?? [])
     }
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
@@ -432,9 +432,6 @@ actor OpenSubsonicClient {
             return LyricLine(id: index, start: start, text: text)
         }
         return LyricsDocument(
-            displayTitle: source.displayTitle,
-            displayArtist: source.displayArtist,
-            language: source.lang,
             synced: source.synced ?? !lines.isEmpty,
             lines: lines.sorted { $0.start < $1.start }
         )

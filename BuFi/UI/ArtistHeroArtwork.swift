@@ -5,7 +5,6 @@ struct ArtistHeroArtwork: View {
     @EnvironmentObject private var model: AppModel
 
     let coverArt: String?
-    let remoteURL: String?
     var height: CGFloat = 360
     var cornerRadius: CGFloat = 24
     var onPalette: ((ArtworkPalette) -> Void)?
