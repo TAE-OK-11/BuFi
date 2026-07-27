@@ -1,0 +1,30 @@
+name: Apply Beau UI
+
+on:
+  push:
+    branches: [beau]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-26-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: beau
+          fetch-depth: 0
+      - name: Apply beau transformation
+        run: |
+          python3 Scripts/apply-beau-ui.py
+          git diff --check
+      - name: Commit beau UI
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/UI/Components.swift BuFi/UI/HomeView.swift BuFi/UI/SearchView.swift BuFi/UI/LibraryView.swift
+          git commit -m "ui: create polished beau experience"
+          git push origin HEAD:beau
