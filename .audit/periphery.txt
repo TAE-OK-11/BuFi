@@ -1,4 +1,65 @@
-error: Unknown option '--color'
-Usage: periphery scan [<options>] [<build-arguments> ...]
-  See 'periphery scan --help' for more information.
-exit_code=64
+* Inspecting project...
+* Building BuFi...
+* Indexing...
+* Analyzing...
+
+/Users/runner/work/BuFi/BuFi/BuFi/App/AppModel.swift:53:9: warning: Property 'allSongs' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/ArtworkStore.swift:68:10: warning: Function 'prefetch(urls:pixelSize:)' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/ArtworkStore.swift:141:24: warning: Property 'allowsDiscretionaryWork' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:52:9: warning: Property 'discNumber' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:53:9: warning: Property 'year' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:54:9: warning: Property 'genre' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:55:9: warning: Property 'bitRate' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:59:9: warning: Property 'playCount' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:69:9: warning: Property 'artistId' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:71:9: warning: Property 'songCount' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:72:9: warning: Property 'duration' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:74:9: warning: Property 'genre' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:76:9: warning: Property 'playCount' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:78:9: warning: Property 'title' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:96:9: warning: Property 'comment' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:98:9: warning: Property 'publicValue' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:100:9: warning: Property 'duration' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:102:9: warning: Property 'changed' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:133:9: warning: Property 'album' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:138:9: warning: Property 'playlist' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:156:9: warning: Property 'displayTitle' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:157:9: warning: Property 'displayArtist' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:158:9: warning: Property 'language' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:187:9: warning: Property 'type' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:189:9: warning: Property 'openSubsonic' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:319:8: warning: Struct 'ArtistPayload' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:329:9: warning: Property 'musicBrainzId' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:330:9: warning: Property 'lastFmUrl' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:331:9: warning: Property 'smallImageUrl' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:349:9: warning: Property 'name' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:407:9: warning: Property 'username' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:408:9: warning: Property 'changed' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/Models.swift:409:9: warning: Property 'changedBy' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/OfflineStore.swift:17:13: warning: Property 'byteCount' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/Core/OfflineStore.swift:104:10: warning: Function 'isDownloaded(songID:)' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/OfflineStore.swift:108:10: warning: Function 'downloadedSongs()' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/OfflineStore.swift:273:10: warning: Function 'remove(songID:)' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Core/OfflineStore.swift:413:18: warning: Function 'invalidateDownload(songID:)' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Playback/AudioEngine.swift:383:10: warning: Function 'localOrRemoteURL(for:compatibilityFormat:)' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Playback/AudioEngine.swift:492:10: warning: Function 'downloadCurrent()' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/Playback/AudioEngine.swift:499:42: warning: Parameter 'song' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/UI/ArtistHeroArtwork.swift:8:9: warning: Property 'remoteURL' is assigned, but never used
+/Users/runner/work/BuFi/BuFi/BuFi/UI/BuFiMotion.swift:19:16: warning: Property 'selection' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/UI/BuFiMotion.swift:24:16: warning: Property 'entrance' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/UI/BuFiMotion.swift:29:16: warning: Property 'list' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/UI/Components.swift:11:16: warning: Property 'tertiary' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/UI/LibraryView.swift:351:9: warning: Property 'icon' is unused
+/Users/runner/work/BuFi/BuFi/BuFi/UI/MiniPlayerView.swift:3:8: warning: Struct 'MiniPlayerView' is unused
+
+* Seeing false positives?
+ - Periphery only analyzes files that are members of the targets you specify.
+   References to declarations identified as unused may reside in files that are members of other targets, e.g test targets.
+ - Periphery is a very precise tool, false positives often turn out to be correct after further investigation.
+ - If it really is a false positive, please report it - https://github.com/peripheryapp/periphery/issues.
+
+* Update Available
+Version 3.8.0 is now available, you are using version 2.21.2.
+Release notes: https://github.com/peripheryapp/periphery/releases/tag/3.8.0
+To disable update checks pass the --disable-update-check option to the scan command.
+exit_code=0
