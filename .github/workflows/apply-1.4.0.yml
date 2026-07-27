@@ -8,12 +8,20 @@ on:
       - .github/scripts/apply_light_contrast.py
       - .github/scripts/apply_architecture_1_4.py
       - .github/workflows/apply-1.4.0.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/scripts/apply_light_contrast.py
+      - .github/scripts/apply_architecture_1_4.py
+      - .github/workflows/apply-1.4.0.yml
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.head_ref == 'feat/light-mode-contrast-1.3.1' || github.ref_name == 'feat/light-mode-contrast-1.3.1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,10 +36,9 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
           for path in Path('BuFi').rglob('*.swift'):
               text = path.read_text()
-              assert '\\r' not in text, path
+              assert '\r' not in text, path
           project = Path('project.yml').read_text()
           assert 'CFBundleShortVersionString: "1.4.0"' in project
           assert 'CFBundleVersion: "15"' in project
