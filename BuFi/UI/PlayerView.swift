@@ -247,23 +247,31 @@ struct PlayerView: View {
     }
 
     private var progress: some View {
-        VStack(spacing: 0) {
+        let duration = audio.duration.isFinite ? max(0, audio.duration) : 0
+        let rawElapsed = isScrubbing ? scrubValue : audio.elapsed
+        let elapsed = min(max(0, rawElapsed.isFinite ? rawElapsed : 0), max(duration, 0))
+        let seekUpperBound = max(duration, 1)
+        let remaining = max(0, duration - elapsed)
+
+        return VStack(spacing: 0) {
             InteractiveSeekBar(
                 value: $scrubValue,
-                range: 0...max(audio.duration, 1),
+                range: 0...seekUpperBound,
                 tint: playerPrimary
             ) { editing in
                 isScrubbing = editing
-                if !editing { audio.seek(to: scrubValue) }
+                if !editing { audio.seek(to: min(scrubValue, duration)) }
             }
             HStack {
-                Text((isScrubbing ? scrubValue : audio.elapsed).playbackText)
+                Text(elapsed.playbackText)
                 Spacer()
-                Text("-\(max(0, audio.duration - (isScrubbing ? scrubValue : audio.elapsed)).playbackText)")
+                Text(duration > 0 ? "-\(remaining.playbackText)" : "--:--")
             }
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(playerSecondary)
             .monospacedDigit()
+            .contentTransition(.numericText())
+            .animation(motionEnabled ? BuFiMotion.micro : .none, value: Int(elapsed))
         }
     }
 

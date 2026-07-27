@@ -549,8 +549,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 case .readyToPlay:
                     self.isBuffering = false
                     self.recoveryAttempt = 0
-                    let seconds = item.duration.seconds
-                    if seconds.isFinite, seconds > 0 { self.duration = seconds }
+                    guard self.player.currentItem === item else { return }
+                    self.updateDuration(using: item.duration.seconds)
                     if resumePosition > 0 { self.seek(to: resumePosition) }
                     if self.wantsPlayback {
                         self.configureAudioSession()
@@ -570,6 +570,33 @@ final class AudioEngine: NSObject, ObservableObject {
         player.replaceCurrentItem(with: item)
     }
 
+    private func updateDuration(using playerDuration: TimeInterval) {
+        let metadataDuration = currentSong?.safeDuration ?? 0
+        let validPlayerDuration = playerDuration.isFinite && playerDuration > 0
+        let validMetadataDuration = metadataDuration.isFinite && metadataDuration > 0
+
+        guard validPlayerDuration || validMetadataDuration else {
+            duration = 0
+            return
+        }
+        guard validPlayerDuration else {
+            duration = metadataDuration
+            return
+        }
+        guard validMetadataDuration else {
+            duration = playerDuration
+            return
+        }
+
+        // Transcoded and malformed streams can report an AVAsset duration based
+        // on an incomplete byte range. OpenSubsonic's song duration is stable;
+        // accept the player value only when it closely agrees with metadata.
+        let tolerance = max(3, metadataDuration * 0.03)
+        duration = abs(playerDuration - metadataDuration) <= tolerance
+            ? playerDuration
+            : metadataDuration
+    }
+
     private func installItemObservers(for item: AVPlayerItem) {
         itemObservers.forEach(NotificationCenter.default.removeObserver)
         itemObservers.removeAll()
@@ -578,15 +605,21 @@ final class AudioEngine: NSObject, ObservableObject {
             forName: .AVPlayerItemPlaybackStalled,
             object: item,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.schedulePlaybackRecovery() }
+        ) { [weak self] notification in
+            Task { @MainActor in
+                guard let self, self.player.currentItem === notification.object as? AVPlayerItem else { return }
+                self.schedulePlaybackRecovery()
+            }
         })
         itemObservers.append(center.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime,
             object: item,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.handlePlaybackFailure() }
+        ) { [weak self] notification in
+            Task { @MainActor in
+                guard let self, self.player.currentItem === notification.object as? AVPlayerItem else { return }
+                self.handlePlaybackFailure()
+            }
         })
     }
 
@@ -679,10 +712,11 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard self.player.currentItem != nil else { return }
                 let seconds = time.seconds
                 if seconds.isFinite { self.elapsed = max(0, seconds) }
-                if let itemDuration = self.player.currentItem?.duration.seconds,
-                   itemDuration.isFinite,
-                   itemDuration > 0 {
-                    self.duration = itemDuration
+                if let itemDuration = self.player.currentItem?.duration.seconds {
+                    self.updateDuration(using: itemDuration)
+                }
+                if self.duration > 0 {
+                    self.elapsed = min(self.elapsed, self.duration)
                 }
                 self.updateActiveLyric()
                 self.submitScrobbleIfNeeded()
@@ -696,8 +730,13 @@ final class AudioEngine: NSObject, ObservableObject {
             forName: .AVPlayerItemDidPlayToEndTime,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.next(isAutoAdvance: true) }
+        ) { [weak self] notification in
+            Task { @MainActor in
+                guard let self,
+                      let endedItem = notification.object as? AVPlayerItem,
+                      self.player.currentItem === endedItem else { return }
+                self.next(isAutoAdvance: true)
+            }
         }
     }
 
