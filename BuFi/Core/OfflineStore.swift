@@ -131,13 +131,22 @@ actor OfflineStore {
         let songGeneration = songGenerations[song.id, default: 0]
         let taskKey = scope + ":" + song.id
         if let existingTask = inFlight[taskKey] {
-            let result = try await existingTask.task.value
-            guard activeScope == scope,
-                  scopeGeneration == existingTask.scopeGeneration,
-                  songGenerations[song.id, default: 0] == existingTask.songGeneration else {
-                throw CancellationError()
+            do {
+                let result = try await existingTask.task.value
+                clearInFlight(
+                    taskKey: taskKey,
+                    scopeGeneration: existingTask.scopeGeneration,
+                    songGeneration: existingTask.songGeneration
+                )
+                return result.url
+            } catch {
+                clearInFlight(
+                    taskKey: taskKey,
+                    scopeGeneration: existingTask.scopeGeneration,
+                    songGeneration: existingTask.songGeneration
+                )
+                throw error
             }
-            return result.url
         }
 
         let remote = try await client.downloadURL(songID: song.id)
@@ -154,7 +163,7 @@ actor OfflineStore {
         let wifiOnly = UserDefaults.standard.object(forKey: "offline-wifi-only") as? Bool ?? true
         let session = wifiOnly ? wifiOnlySession : unrestrictedSession
 
-        let task = Task<DownloadResult, Error>(priority: .utility) {
+        let task = Task<DownloadResult, Error>(priority: .utility) { [weak self] in
             let (temporary, response) = try await session.download(from: remote)
             guard let http = response as? HTTPURLResponse else {
                 throw OpenSubsonicError.invalidResponse
@@ -170,16 +179,24 @@ actor OfflineStore {
             let bytes = Int64(values.fileSize ?? 0)
             guard bytes > 0 else { throw URLError(.zeroByteResource) }
 
-            let staging = destination.appendingPathExtension("partial")
-            try? FileManager.default.removeItem(at: staging)
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: temporary, to: staging)
-            try FileManager.default.moveItem(at: staging, to: destination)
-            try? FileManager.default.setAttributes(
-                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                ofItemAtPath: destination.path
+            let staging = directory.appendingPathComponent(
+                fileName + "." + UUID().uuidString + ".partial"
             )
-            return DownloadResult(url: destination, byteCount: bytes)
+            try? FileManager.default.removeItem(at: staging)
+            try FileManager.default.moveItem(at: temporary, to: staging)
+            guard let self else {
+                try? FileManager.default.removeItem(at: staging)
+                throw CancellationError()
+            }
+            return try await self.commitDownload(
+                staging: staging,
+                destination: destination,
+                byteCount: bytes,
+                song: song,
+                scope: scope,
+                scopeGeneration: generation,
+                songGeneration: songGeneration
+            )
         }
         inFlight[taskKey] = InFlightDownload(
             scopeGeneration: generation,
@@ -194,22 +211,6 @@ actor OfflineStore {
                 scopeGeneration: generation,
                 songGeneration: songGeneration
             )
-            guard activeScope == scope,
-                  scopeGeneration == generation,
-                  songGenerations[song.id, default: 0] == songGeneration else {
-                try? FileManager.default.removeItem(at: result.url)
-                throw CancellationError()
-            }
-            let now = Date()
-            entries[song.id] = Entry(
-                song: song,
-                fileName: fileName,
-                byteCount: result.byteCount,
-                downloadedAt: now,
-                lastAccessedAt: now
-            )
-            try enforceStorageLimit(keeping: song.id)
-            scheduleIndexPersistence()
             return result.url
         } catch {
             clearInFlight(
@@ -217,7 +218,48 @@ actor OfflineStore {
                 scopeGeneration: generation,
                 songGeneration: songGeneration
             )
-            try? FileManager.default.removeItem(at: destination.appendingPathExtension("partial"))
+            throw error
+        }
+    }
+
+    private func commitDownload(
+        staging: URL,
+        destination: URL,
+        byteCount: Int64,
+        song: Song,
+        scope: String,
+        scopeGeneration generation: UInt64,
+        songGeneration: UInt64
+    ) throws -> DownloadResult {
+        guard activeScope == scope,
+              scopeGeneration == generation,
+              songGenerations[song.id, default: 0] == songGeneration else {
+            try? FileManager.default.removeItem(at: staging)
+            throw CancellationError()
+        }
+
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: staging, to: destination)
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: destination.path
+            )
+            let now = Date()
+            entries[song.id] = Entry(
+                song: song,
+                fileName: destination.lastPathComponent,
+                byteCount: byteCount,
+                downloadedAt: now,
+                lastAccessedAt: now
+            )
+            try enforceStorageLimit(keeping: song.id)
+            scheduleIndexPersistence()
+            return DownloadResult(url: destination, byteCount: byteCount)
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
             throw error
         }
     }

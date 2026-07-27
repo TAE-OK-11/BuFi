@@ -14,7 +14,7 @@ final class AppModel: ObservableObject {
         let expiresAt: Date
     }
 
-    private struct DetailRequest<Value> {
+    private struct DetailRequest<Value: Sendable> {
         let token: UUID
         let task: Task<Value, Error>
     }
