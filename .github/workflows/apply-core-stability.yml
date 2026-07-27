@@ -22,13 +22,13 @@ jobs:
           ref: core/stability-optimization
           fetch-depth: 0
 
-      - name: Apply reviewed core fixes
+      - name: Apply atomic offline commit fix
         id: patch
         continue-on-error: true
         run: |
           set -o pipefail
           {
-            python3 Scripts/apply-core-review-fixes.py
+            python3 Scripts/apply-offline-commit-fix.py
             git diff --check
           } 2>&1 | tee .core-patch.log
 
@@ -39,12 +39,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ "${{ steps.patch.outcome }}" = "success" ]; then
             rm -f .core-patch.log
-            git add BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift
-            git commit -m "core: close reviewed request and download races"
+            git add BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift
+            git commit -m "core: commit offline downloads atomically"
           else
-            git restore BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift || true
+            git restore BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift || true
             git add .core-patch.log
-            git commit -m "ci: capture reviewed core patch failure"
+            git commit -m "ci: capture offline commit patch failure"
           fi
           git push origin HEAD:core/stability-optimization
 
