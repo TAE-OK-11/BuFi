@@ -156,9 +156,7 @@ struct MusicDetailView: View {
                     .accessibilityLabel(isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가")
                 }
 
-                Button {
-                    downloadAll()
-                } label: {
+                Button { downloadAll() } label: {
                     secondaryControl(
                         Image(systemName: "arrow.down.circle")
                             .font(.system(size: 19, weight: .semibold)),
@@ -171,24 +169,18 @@ struct MusicDetailView: View {
 
                 Menu {
                     Button {
-                        if let first = songs.first {
-                            audio.play(first, in: songs)
-                        }
+                        if let first = songs.first { audio.play(first, in: songs) }
                     } label: {
                         Label("모두 재생", systemImage: "play.fill")
                     }
                     Button {
                         guard !songs.isEmpty else { return }
                         let shuffled = songs.shuffled()
-                        if let first = shuffled.first {
-                            audio.play(first, in: shuffled)
-                        }
+                        if let first = shuffled.first { audio.play(first, in: shuffled) }
                     } label: {
                         Label("셔플 재생", systemImage: "shuffle")
                     }
-                    Button {
-                        downloadAll()
-                    } label: {
+                    Button { downloadAll() } label: {
                         Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
                     }
                 } label: {
@@ -207,9 +199,7 @@ struct MusicDetailView: View {
             Button {
                 guard !songs.isEmpty else { return }
                 let shuffled = songs.shuffled()
-                if let first = shuffled.first {
-                    audio.play(first, in: shuffled)
-                }
+                if let first = shuffled.first { audio.play(first, in: shuffled) }
             } label: {
                 secondaryControl(
                     Image(systemName: "shuffle")
@@ -222,9 +212,7 @@ struct MusicDetailView: View {
             .accessibilityLabel("셔플 재생")
 
             Button {
-                if let first = songs.first {
-                    audio.play(first, in: songs)
-                }
+                if let first = songs.first { audio.play(first, in: songs) }
             } label: {
                 Image(systemName: "play.fill")
                     .font(.system(size: 26, weight: .bold))
@@ -232,8 +220,10 @@ struct MusicDetailView: View {
                     .frame(width: 60, height: 60)
                     .background(BuFiTheme.accent, in: Circle())
                     .overlay {
-                        Circle()
-                            .stroke(.white.opacity(colorScheme == .dark ? 0.10 : 0.28), lineWidth: 0.8)
+                        Circle().stroke(
+                            .white.opacity(colorScheme == .dark ? 0.10 : 0.28),
+                            lineWidth: 0.8
+                        )
                     }
                     .shadow(color: BuFiTheme.accent.opacity(0.24), radius: 14, y: 7)
                     .offset(x: 1)
@@ -354,8 +344,10 @@ struct MusicDetailView: View {
             .frame(width: diameter, height: diameter)
             .background(detailControlFill, in: Circle())
             .overlay {
-                Circle()
-                    .stroke(detailControlStroke, lineWidth: colorScheme == .dark ? 0.7 : 1.0)
+                Circle().stroke(
+                    detailControlStroke,
+                    lineWidth: colorScheme == .dark ? 0.7 : 1.0
+                )
             }
             .shadow(
                 color: .black.opacity(colorScheme == .dark ? 0.12 : 0.045),
