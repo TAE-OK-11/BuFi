@@ -1,7 +1,6 @@
 import SwiftUI
 
 enum BuFiMotion {
-    // 빠르게 반응한 뒤 짧게 감쇠하도록 통일해 터치 지연감 없이 탄력만 남긴다.
     static let tap = Animation.interactiveSpring(
         response: 0.26,
         dampingFraction: 0.78,
@@ -17,17 +16,20 @@ enum BuFiMotion {
         dampingFraction: 0.86,
         blendDuration: 0.05
     )
-    static let fade = Animation.spring(
-        duration: 0.28,
-        bounce: 0.08
+    static let fade = Animation.interactiveSpring(
+        response: 0.30,
+        dampingFraction: 0.90,
+        blendDuration: 0.04
     )
-    static let text = Animation.spring(
-        duration: 0.32,
-        bounce: 0.12
+    static let text = Animation.interactiveSpring(
+        response: 0.34,
+        dampingFraction: 0.86,
+        blendDuration: 0.05
     )
     static let color = Animation.easeInOut(duration: 0.34)
-    static let lyrics = Animation.spring(
-        duration: 0.42,
-        bounce: 0.16
+    static let lyrics = Animation.interactiveSpring(
+        response: 0.40,
+        dampingFraction: 0.80,
+        blendDuration: 0.06
     )
 }
