@@ -46,18 +46,10 @@ struct RootView: View {
         .onAppear {
             if hapticsEnabled { tabHaptic.prepare() }
         }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: Notification.Name.NSProcessInfoPowerStateDidChange
-            )
-        ) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
             lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: ProcessInfo.thermalStateDidChangeNotification
-            )
-        ) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
             thermalState = ProcessInfo.processInfo.thermalState
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
@@ -155,11 +147,7 @@ struct RootView: View {
                         .frame(height: 60)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 6)
-                        .transition(
-                            effectiveMotion
-                                ? .move(edge: .bottom).combined(with: .opacity)
-                                : .opacity
-                        )
+                        .transition(effectiveMotion ? .move(edge: .bottom).combined(with: .opacity) : .opacity)
                 }
             }
             .animation(effectiveMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
