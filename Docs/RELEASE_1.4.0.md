@@ -24,3 +24,4 @@
 ## Verification
 
 - Pull requests are compiled with the Xcode 26 unsigned-device build and the Xcode 27 iOS SDK compatibility build before merge.
+- Concise Xcode failure logs are retained as CI artifacts so compiler regressions can be corrected without guessing.
