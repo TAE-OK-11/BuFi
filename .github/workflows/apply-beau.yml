@@ -1,8 +1,9 @@
 name: Apply Beau UI
 
 on:
-  push:
-    branches: [beau]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +11,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: github.head_ref == 'beau' && github.actor != 'github-actions[bot]'
     runs-on: macos-26-arm64
     steps:
       - uses: actions/checkout@v5
