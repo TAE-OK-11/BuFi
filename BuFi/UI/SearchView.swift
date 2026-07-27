@@ -24,7 +24,13 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    BuFiScreenHeader(
+                        eyebrow: "Discover",
+                        title: "검색",
+                        subtitle: "앨범, 아티스트, 플레이리스트와 좋아요 음악을 빠르게 찾아보세요.",
+                        symbol: "sparkle.magnifyingglass"
+                    )
                     searchField
                     Group {
                         if isSearchSession {
@@ -43,6 +49,7 @@ struct SearchView: View {
                 .padding(.bottom, 34)
             }
             .scrollDismissesKeyboard(.interactively)
+            .scrollIndicators(.hidden)
             .background(BuFiScreenBackground())
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
@@ -130,23 +137,18 @@ struct SearchView: View {
         )
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
-        .animation(.easeOut(duration: 0.22), value: focused)
+        .animation(BuFiMotion.selection, value: focused)
     }
 
     @ViewBuilder
     private var searchSessionContent: some View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                Text("검색어를 입력하세요")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 54)
+            BuFiEmptyState(
+                title: "검색어를 입력하세요",
+                message: "띄어쓰기와 대소문자를 자연스럽게 처리해 가장 가까운 결과를 보여드려요.",
+                symbol: "magnifyingglass"
+            )
         } else {
             results
         }
@@ -203,7 +205,7 @@ struct SearchView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(Array(categories.enumerated()), id: \.offset) { index, category in
                     Button {
-                        withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.82)) {
+                        withAnimation(BuFiMotion.page) {
                             browseMode = index == 0 ? .favoriteSongs : .favoriteAlbums
                         }
                     } label: {

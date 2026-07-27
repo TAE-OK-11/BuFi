@@ -8,13 +8,23 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+                LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
+                    BuFiScreenHeader(
+                        eyebrow: "Collection",
+                        title: "내 라이브러리",
+                        subtitle: "저장한 음악을 플레이리스트, 앨범, 아티스트와 곡으로 정리했어요.",
+                        symbol: "rectangle.stack.fill"
+                    )
                     filters
                     content
+                        .id(filter)
+                        .transition(.opacity.combined(with: .scale(scale: 0.99, anchor: .top)))
                 }
                 .padding(.top, 18)
+                .animation(BuFiMotion.selection, value: filter)
                 .padding(.bottom, audio.currentSong == nil ? 56 : 154)
             }
+            .scrollIndicators(.hidden)
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
             .navigationDestination(for: MusicRoute.self) { route in
@@ -199,8 +209,10 @@ struct LibraryView: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 17)
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 8)
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     @ViewBuilder

@@ -14,13 +14,20 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 28) {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    BuFiScreenHeader(
+                        eyebrow: "BuFi",
+                        title: "홈",
+                        subtitle: "최근 음악과 라이브러리 추천을 한곳에서 만나보세요.",
+                        symbol: "waveform.path"
+                    )
                     filterBar
                     filteredContent
                 }
-                .padding(.top, 24)
+                .padding(.top, 18)
                 .padding(.bottom, 34)
             }
+            .scrollIndicators(.hidden)
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
             .navigationDestination(for: MusicRoute.self) { route in
@@ -68,13 +75,9 @@ struct HomeView: View {
                 playlistSection(showEmpty: true)
             }
         }
-        // 필터가 바뀔 때 컨텐츠가 뚝 끊기지 않고 부드럽게
-        // 사라졌다 나타나도록 identity 전환 + transition을 부여.
-        // filterBar의 withAnimation(.interactiveSpring)이 그대로 이 전환에도 적용됨.
         .id(filter)
-        .transition(
-            .opacity.combined(with: .move(edge: .leading))
-        )
+        .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .top)))
+        .animation(BuFiMotion.selection, value: filter)
     }
 
     private var quickCarousel: some View {

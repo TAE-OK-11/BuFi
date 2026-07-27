@@ -168,6 +168,77 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
     }
 }
 
+struct BuFiScreenHeader: View {
+    let eyebrow: LocalizedStringKey
+    let title: LocalizedStringKey
+    let subtitle: LocalizedStringKey
+    var symbol: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(eyebrow)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(BuFiTheme.accentSoft)
+                    .textCase(.uppercase)
+                    .tracking(1.2)
+                Text(title)
+                    .font(.system(size: 32, weight: .bold))
+                    .tracking(-1.1)
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Image(systemName: symbol)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 48, height: 48)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.7)
+                }
+        }
+        .padding(.horizontal, 17)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct BuFiEmptyState: View {
+    let title: LocalizedStringKey
+    let message: LocalizedStringKey
+    let symbol: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(BuFiTheme.accentSoft)
+                .frame(width: 62, height: 62)
+                .background(BuFiTheme.elevated, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            Text(title)
+                .font(.system(size: 18, weight: .bold))
+            Text(message)
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 280)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 42)
+        .padding(.horizontal, 20)
+    }
+}
+
 struct BuFiScreenBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
