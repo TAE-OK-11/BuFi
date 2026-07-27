@@ -22,13 +22,13 @@ jobs:
           ref: core/stability-optimization
           fetch-depth: 0
 
-      - name: Apply atomic offline commit fix
+      - name: Apply final core race guards
         id: patch
         continue-on-error: true
         run: |
           set -o pipefail
           {
-            python3 Scripts/apply-offline-commit-fix.py
+            python3 Scripts/apply-final-core-race-fixes.py
             git diff --check
           } 2>&1 | tee .core-patch.log
 
@@ -40,11 +40,11 @@ jobs:
           if [ "${{ steps.patch.outcome }}" = "success" ]; then
             rm -f .core-patch.log
             git add BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift
-            git commit -m "core: commit offline downloads atomically"
+            git commit -m "core: reject stale detail and download results"
           else
             git restore BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift || true
             git add .core-patch.log
-            git commit -m "ci: capture offline commit patch failure"
+            git commit -m "ci: capture final core patch failure"
           fi
           git push origin HEAD:core/stability-optimization
 
