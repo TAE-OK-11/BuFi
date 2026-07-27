@@ -22,22 +22,12 @@ jobs:
           ref: playback/low-power-codecs
           fetch-depth: 0
 
-      - name: Execute embedded patch
+      - name: Execute codec patch
         id: patch
         continue-on-error: true
         run: |
           set -o pipefail
-          python3 <<'PY' 2>&1 | tee .codec-patch.log
-          from pathlib import Path
-          import textwrap
-
-          workflow = Path('.github/workflows/apply-low-power-codecs.yml').read_text()
-          marker = "python3 <<'PY'\n"
-          start = workflow.index(marker) + len(marker)
-          end = workflow.index("\n          PY", start)
-          script = textwrap.dedent(workflow[start:end])
-          exec(compile(script, 'low-power-codec-patch.py', 'exec'), {})
-          PY
+          python3 Scripts/apply-low-power-codecs.py 2>&1 | tee .codec-patch.log
           git diff --check
 
       - name: Commit result
