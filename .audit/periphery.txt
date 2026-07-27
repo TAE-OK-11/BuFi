@@ -57,9 +57,4 @@
    References to declarations identified as unused may reside in files that are members of other targets, e.g test targets.
  - Periphery is a very precise tool, false positives often turn out to be correct after further investigation.
  - If it really is a false positive, please report it - https://github.com/peripheryapp/periphery/issues.
-
-* Update Available
-Version 3.8.0 is now available, you are using version 2.21.2.
-Release notes: https://github.com/peripheryapp/periphery/releases/tag/3.8.0
-To disable update checks pass the --disable-update-check option to the scan command.
 exit_code=0
