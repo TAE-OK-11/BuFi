@@ -22,12 +22,21 @@ final class AudioEngine: NSObject, ObservableObject {
     @Published var isShuffleEnabled = false
     @Published var repeatMode: RepeatMode = .off
     @Published var quality: StreamQuality {
-        didSet { UserDefaults.standard.set(quality.rawValue, forKey: "stream-quality") }
+        didSet {
+            UserDefaults.standard.set(quality.rawValue, forKey: "stream-quality")
+            guard oldValue != quality, let song = currentSong else { return }
+            restartPlaybackPlan(for: song, resumeFrom: elapsed)
+        }
     }
 
     let player = AVPlayer()
 
     private static let iso8601Formatter = ISO8601DateFormatter()
+
+    private struct PlaybackResource {
+        let url: URL
+        let mimeType: String?
+    }
 
     private var nowPlayingSession: MPNowPlayingSession?
     private var client: OpenSubsonicClient?
@@ -39,7 +48,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var itemObservers: [NSObjectProtocol] = []
     private var systemObservers: [NSObjectProtocol] = []
     private var fallbackIndex = 0
-    private let fallbackFormats = ["aac", "mp3"]
+    private var fallbackFormats: [String] = []
     private var wantsPlayback = false
     private var scrobbled = false
     private var queueSaveTask: Task<Void, Never>?
@@ -115,7 +124,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         if let song = currentSong {
-            loadCurrentItem(resumeFrom: elapsed)
+            restartPlaybackPlan(for: song, resumeFrom: elapsed)
             loadLyrics(for: song)
         }
 
@@ -137,7 +146,7 @@ final class AudioEngine: NSObject, ObservableObject {
             self.duration = self.currentSong?.safeDuration ?? 0
             self.lyrics = .empty
             self.activeLyricIndex = -1
-            self.loadCurrentItem(resumeFrom: self.elapsed)
+            self.restartPlaybackPlan(for: self.currentSong!, resumeFrom: self.elapsed)
             if let song = self.currentSong { self.loadLyrics(for: song) }
             self.updateNowPlaying()
         }
@@ -172,8 +181,9 @@ final class AudioEngine: NSObject, ObservableObject {
         activeLyricIndex = -1
         lyrics = .empty
         fallbackIndex = 0
+        fallbackFormats = Self.fallbackFormats(for: quality)
         recoveryAttempt = 0
-        activeCompatibilityFormat = nil
+        activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
         playbackError = nil
         wantsPlayback = autoplay
         scrobbled = false
@@ -183,7 +193,10 @@ final class AudioEngine: NSObject, ObservableObject {
         if previousSongID != song.id {
             provideTrackChangeHaptic()
         }
-        loadCurrentItem(resumeFrom: 0)
+        loadCurrentItem(
+            compatibilityFormat: activeCompatibilityFormat,
+            resumeFrom: 0
+        )
         loadLyrics(for: song)
         scheduleOfflinePrefetch()
         scheduleQueueSave()
@@ -379,6 +392,80 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
+    private func playbackResource(
+        for song: Song,
+        compatibilityFormat: String?
+    ) async throws -> PlaybackResource {
+        // A downloaded source avoids radio use and is attempted once. If the
+        // system rejects it, later codec fallbacks bypass the local source.
+        if fallbackIndex == 0,
+           let local = await OfflineStore.shared.localURL(for: song.id) {
+            return PlaybackResource(
+                url: local,
+                mimeType: Self.sourceMIMEType(for: song)
+            )
+        }
+        guard let client else { throw OpenSubsonicError.invalidServerURL }
+        let url = try await client.streamURL(
+            songID: song.id,
+            quality: quality,
+            compatibilityFormat: compatibilityFormat
+        )
+        return PlaybackResource(
+            url: url,
+            mimeType: Self.mimeType(
+                for: compatibilityFormat,
+                sourceSong: song
+            )
+        )
+    }
+
+    private static func initialCompatibilityFormat(for quality: StreamQuality) -> String? {
+        switch quality {
+        case .automatic, .aac320: "aac"
+        case .opus160: "opus"
+        case .original: "raw"
+        }
+    }
+
+    private static func fallbackFormats(for quality: StreamQuality) -> [String] {
+        switch quality {
+        case .automatic, .aac320:
+            ["mp3", "raw"]
+        case .opus160:
+            ["aac", "mp3", "raw"]
+        case .original:
+            ["aac", "mp3"]
+        }
+    }
+
+    private static func mimeType(
+        for compatibilityFormat: String?,
+        sourceSong song: Song
+    ) -> String? {
+        switch compatibilityFormat?.lowercased() {
+        case "aac": "audio/aac"
+        case "mp3": "audio/mpeg"
+        case "opus": "audio/ogg; codecs=opus"
+        case "raw", nil: sourceMIMEType(for: song)
+        default: song.contentType
+        }
+    }
+
+    private static func sourceMIMEType(for song: Song) -> String? {
+        switch song.suffix?.lowercased() {
+        case "flac": "audio/flac"
+        case "opus": "audio/ogg; codecs=opus"
+        case "ogg", "oga": song.contentType ?? "audio/ogg"
+        case "mp3": "audio/mpeg"
+        case "aac": "audio/aac"
+        case "m4a", "m4b", "mp4", "alac": "audio/mp4"
+        case "wav", "wave": "audio/wav"
+        case "aif", "aiff": "audio/aiff"
+        default: song.contentType
+        }
+    }
+
     private func scheduleOfflinePrefetch() {
         offlinePrefetchTask?.cancel()
         guard let client, !queue.isEmpty, queue.indices.contains(queueIndex) else { return }
@@ -409,6 +496,16 @@ final class AudioEngine: NSObject, ObservableObject {
         return try await OfflineStore.shared.download(song: song, client: client)
     }
 
+    private func restartPlaybackPlan(for song: Song, resumeFrom: TimeInterval) {
+        fallbackIndex = 0
+        fallbackFormats = Self.fallbackFormats(for: quality)
+        activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
+        loadCurrentItem(
+            compatibilityFormat: activeCompatibilityFormat,
+            resumeFrom: resumeFrom
+        )
+    }
+
     private func loadCurrentItem(
         compatibilityFormat: String? = nil,
         resumeFrom requestedPosition: TimeInterval? = nil
@@ -421,20 +518,14 @@ final class AudioEngine: NSObject, ObservableObject {
         itemLoadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let url = try await self.localOrRemoteURL(
+                let resource = try await self.playbackResource(
                     for: song,
                     compatibilityFormat: compatibilityFormat
                 )
                 guard !Task.isCancelled, self.currentSong?.id == song.id else { return }
-                let mimeType: String?
-                switch compatibilityFormat {
-                case "aac": mimeType = "audio/aac"
-                case "mp3": mimeType = "audio/mpeg"
-                default: mimeType = song.contentType
-                }
                 self.replacePlayerItem(
-                    url: url,
-                    mimeType: mimeType,
+                    url: resource.url,
+                    mimeType: resource.mimeType,
                     resumePosition: resumePosition
                 )
             } catch is CancellationError {
@@ -460,8 +551,12 @@ final class AudioEngine: NSObject, ObservableObject {
             ["AVURLAssetOutOfBandMIMETypeKey": $0]
         } ?? [:]
         let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
-        item.preferredForwardBufferDuration = 20
-        item.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        // Fetch audio in larger contiguous bursts so the radio can return
+        // to idle sooner, and never extend the network buffer while paused.
+        item.preferredForwardBufferDuration = ProcessInfo.processInfo.isLowPowerModeEnabled
+            ? 45
+            : 30
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         installItemObservers(for: item)
 
         itemObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -695,8 +790,8 @@ final class AudioEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.configureAudioSession()
-                if self.currentSong != nil {
-                    self.loadCurrentItem(resumeFrom: self.elapsed)
+                if let song = self.currentSong {
+                    self.restartPlaybackPlan(for: song, resumeFrom: self.elapsed)
                 }
             }
         })

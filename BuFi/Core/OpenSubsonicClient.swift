@@ -390,8 +390,19 @@ actor OpenSubsonicClient {
     ) throws -> URL {
         let requestedFormat = compatibilityFormat ?? quality.parameters["format"]
         let requestedBitRate: Int?
-        if compatibilityFormat != nil {
-            requestedBitRate = 320
+        if let compatibilityFormat {
+            switch compatibilityFormat.lowercased() {
+            case "aac":
+                requestedBitRate = quality == .aac320 ? 320 : 256
+            case "opus":
+                requestedBitRate = 160
+            case "mp3":
+                requestedBitRate = 256
+            case "raw":
+                requestedBitRate = nil
+            default:
+                requestedBitRate = 256
+            }
         } else if let value = quality.parameters["maxBitRate"], let bitRate = Int(value), bitRate > 0 {
             requestedBitRate = bitRate
         } else {
