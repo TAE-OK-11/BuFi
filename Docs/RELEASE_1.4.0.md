@@ -20,3 +20,7 @@
 - Light-mode contrast fixes for artist, album, playlist controls and settings surfaces.
 - Album-image requests are resized for their actual display size instead of decoding oversized originals.
 - Image memory is bounded and reusable disk data is cached to reduce repeated network requests and battery use.
+
+## Verification
+
+- Pull requests are compiled with the Xcode 26 unsigned-device build and the Xcode 27 iOS SDK compatibility build before merge.
