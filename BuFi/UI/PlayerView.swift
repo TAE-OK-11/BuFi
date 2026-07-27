@@ -11,6 +11,7 @@ struct PlayerView: View {
     @State private var isScrubbing = false
     @State private var showQueue = false
     @State private var artworkPage = 0
+    @State private var transitionDirection: CGFloat = 1
     @Namespace private var lyricsMorph
     @AppStorage("motion-enabled") private var motionEnabled = true
 
@@ -23,8 +24,7 @@ struct PlayerView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(song)
-                            artwork(song, availableHeight: proxy.size.height)
-                            metadata(song)
+                            nowPlayingPager(song, availableHeight: proxy.size.height)
                             progress
                             transport
                             utilityRow(song)
@@ -70,7 +70,8 @@ struct PlayerView: View {
         .onChange(of: audio.elapsed) { _, value in
             if !isScrubbing { scrubValue = value }
         }
-        .onChange(of: audio.queueIndex) { _, index in
+        .onChange(of: audio.queueIndex) { oldIndex, index in
+            transitionDirection = index >= oldIndex ? 1 : -1
             syncArtworkPage(to: index, animated: true)
             prefetchUpcomingArtwork(after: index)
         }
@@ -106,7 +107,7 @@ struct PlayerView: View {
             }
         }
         .ignoresSafeArea()
-        .animation(.easeInOut(duration: 0.34), value: palette)
+        .animation(BuFiMotion.color, value: palette)
     }
 
     private func header(_ song: Song) -> some View {
@@ -137,10 +138,17 @@ struct PlayerView: View {
                         .lineLimit(1)
                 }
                 .id(song.id)
-                .transition(.opacity)
+                .transition(
+                    motionEnabled
+                        ? .asymmetric(
+                            insertion: .move(edge: transitionDirection > 0 ? .trailing : .leading).combined(with: .opacity),
+                            removal: .move(edge: transitionDirection > 0 ? .leading : .trailing).combined(with: .opacity)
+                        )
+                        : .opacity
+                )
             }
             .frame(maxWidth: 240)
-            .animation(.easeInOut(duration: 0.28), value: song.id)
+            .animation(BuFiMotion.text, value: song.id)
             Spacer()
 
             Menu {
@@ -168,6 +176,46 @@ struct PlayerView: View {
         }
         .buttonStyle(.plain)
         .frame(height: 58)
+    }
+
+    private func nowPlayingPager(_ song: Song, availableHeight: CGFloat) -> some View {
+        let edge = min(UIScreen.main.bounds.width - 44, max(264, availableHeight * 0.47))
+        let songs = audio.queue.isEmpty ? [song] : audio.queue
+
+        return TabView(selection: $artworkPage) {
+            ForEach(Array(songs.enumerated()), id: \.offset) { index, item in
+                VStack(spacing: 0) {
+                    ArtworkView(
+                        coverArt: item.coverArt,
+                        size: edge,
+                        cornerRadius: 14,
+                        onPalette: { nextPalette in
+                            guard index == artworkPage else { return }
+                            withAnimation(BuFiMotion.color) { palette = nextPalette }
+                        }
+                    )
+                    .frame(width: edge, height: edge)
+                    .shadow(color: .black.opacity(0.34), radius: 25, y: 15)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 13)
+                    .padding(.bottom, 26)
+
+                    metadataContent(item)
+                        .padding(.bottom, 18)
+                }
+                .tag(index)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(height: edge + 116)
+        .contentShape(Rectangle())
+        .onChange(of: artworkPage) { oldIndex, index in
+            transitionDirection = index >= oldIndex ? 1 : -1
+            guard index != audio.queueIndex,
+                  audio.queue.indices.contains(index) else { return }
+            audio.playQueueItem(at: index)
+        }
+        .animation(motionEnabled ? BuFiMotion.player : .none, value: artworkPage)
     }
 
     private func artwork(_ song: Song, availableHeight: CGFloat) -> some View {
@@ -409,7 +457,7 @@ struct PlayerView: View {
                     .frame(height: 205, alignment: .top)
                     .clipped()
                     .animation(
-                        motionEnabled ? .easeOut(duration: 0.30) : .none,
+                        motionEnabled ? BuFiMotion.fade : .none,
                         value: audio.activeLyricIndex
                     )
                 }
@@ -535,7 +583,7 @@ struct PlayerView: View {
         let resolved = audio.queue.indices.contains(index) ? index : 0
         guard artworkPage != resolved else { return }
         if animated && motionEnabled {
-            withAnimation(.easeInOut(duration: 0.36)) {
+            withAnimation(BuFiMotion.player) {
                 artworkPage = resolved
             }
         } else {
@@ -674,7 +722,7 @@ private struct FullLyricsView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                                 .animation(
-                                    motionEnabled ? .easeOut(duration: 0.30) : .none,
+                                    motionEnabled ? BuFiMotion.fade : .none,
                                     value: audio.activeLyricIndex
                                 )
                         }
@@ -687,7 +735,7 @@ private struct FullLyricsView: View {
             }
             .onChange(of: audio.activeLyricIndex) { _, index in
                 guard autoScroll, audio.lyrics.lines.indices.contains(index) else { return }
-                withAnimation(motionEnabled ? .easeOut(duration: 0.32) : .none) {
+                withAnimation(motionEnabled ? BuFiMotion.lyrics : .none) {
                     proxy.scrollTo(
                         audio.lyrics.lines[index].id,
                         anchor: UnitPoint(x: 0.5, y: 0.42)
