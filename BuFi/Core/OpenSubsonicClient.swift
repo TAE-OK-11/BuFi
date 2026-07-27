@@ -4,6 +4,7 @@ import SwiftSonic
 
 enum OpenSubsonicError: LocalizedError, Equatable {
     case invalidServerURL
+    case insecureServerURL
     case invalidResponse
     case server(code: Int?, message: String)
     case http(Int)
@@ -12,6 +13,8 @@ enum OpenSubsonicError: LocalizedError, Equatable {
         switch self {
         case .invalidServerURL:
             String(localized: "서버 주소가 올바르지 않습니다.")
+        case .insecureServerURL:
+            String(localized: "보안을 위해 HTTPS 서버 주소만 사용할 수 있습니다.")
         case .invalidResponse:
             String(localized: "OpenSubsonic 응답 형식이 올바르지 않습니다.")
         case .server(_, let message):
@@ -38,6 +41,9 @@ actor OpenSubsonicClient {
         guard let normalized = Self.normalizedBaseURL(credentials.serverURL) else {
             throw OpenSubsonicError.invalidServerURL
         }
+        guard normalized.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
+        }
         let username = credentials.username.trimmingCharacters(in: .whitespacesAndNewlines)
         self.credentials = ServerCredentials(
             serverURL: normalized.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
@@ -62,8 +68,6 @@ actor OpenSubsonicClient {
         configuration.timeoutIntervalForResource = 60
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
-        // home()이 최대 6개의 요청을 동시에 쏘므로, HTTP/2 멀티플렉싱을
-        // 지원하지 않는 서버에서도 큐잉되지 않도록 여유를 맞춰둠.
         configuration.httpMaximumConnectionsPerHost = 6
         configuration.waitsForConnectivity = true
         self.session = URLSession(configuration: configuration)
@@ -77,6 +81,10 @@ actor OpenSubsonicClient {
             text = "https://" + text
         }
         guard var components = URLComponents(string: text),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              components.user == nil,
+              components.password == nil,
               let host = components.host,
               !host.isEmpty else {
             return nil
@@ -144,9 +152,6 @@ actor OpenSubsonicClient {
         return try await decodeResponse(from: url)
     }
 
-    /// JSONDecoder가 `init(from:)` 안에서 넘겨주는 Decoder는 이미 파싱된
-    /// JSON 트리를 감싸고 있을 뿐이라, 이걸 캡처해두면 같은 데이터를
-    /// 여러 타입으로 "재파싱 없이" 다시 디코딩할 수 있다.
     private struct DecoderCapture: Decodable {
         let decoder: Decoder
         init(from decoder: Decoder) throws {
@@ -160,9 +165,6 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.http(http.statusCode)
         }
 
-        // 이전에는 같은 Data를 StatusEnvelope, APIEnvelope<Payload>로
-        // 각각 decode(_:from:)하면서 JSON을 두 번 파싱했음.
-        // 아래는 파싱을 한 번만 수행하고 결과를 재사용한다.
         let capture = try decoder.decode(DecoderCapture.self, from: data)
         let statusEnvelope = try StatusEnvelope(from: capture.decoder)
         guard statusEnvelope.response.status == "ok" else {
@@ -176,9 +178,6 @@ actor OpenSubsonicClient {
     }
 
     func ping() async throws -> StatusBody {
-        // SwiftSonic의 하드닝된 인증 검증과, 버전 메타데이터를 위한
-        // 자체 요청을 "동시에" 실행 — 이전에는 순차 await라 지연시간이
-        // 두 배로 들었음.
         async let hardenedPing: Void = swiftSonic.ping()
         let url = try endpointURL("ping")
         async let ownResponse = responseData(from: url, acceptsZstandard: true)
@@ -204,6 +203,9 @@ actor OpenSubsonicClient {
         from url: URL,
         acceptsZstandard: Bool
     ) async throws -> (Data, HTTPURLResponse) {
+        guard url.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
+        }
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -211,13 +213,14 @@ actor OpenSubsonicClient {
             acceptsZstandard ? "zstd, br, gzip" : "br, gzip",
             forHTTPHeaderField: "Accept-Encoding"
         )
-        if url.scheme?.lowercased() == "https" {
-            request.assumesHTTP3Capable = true
-        }
+        request.assumesHTTP3Capable = true
 
         let (encodedData, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw OpenSubsonicError.invalidResponse
+        }
+        guard http.url?.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
         }
         do {
             let data = try HTTPContentDecoder.decode(
@@ -399,22 +402,24 @@ actor OpenSubsonicClient {
             maxBitRate: requestedBitRate,
             format: requestedFormat,
             estimateContentLength: true
-        ) else {
-            throw OpenSubsonicError.invalidServerURL
+        ), url.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
         }
         return url
     }
 
     func coverURL(id: String, size: Int = 600) throws -> URL {
-        guard let url = swiftSonic.coverArtURL(id: id, size: size) else {
-            throw OpenSubsonicError.invalidServerURL
+        guard let url = swiftSonic.coverArtURL(id: id, size: size),
+              url.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
         }
         return url
     }
 
     func downloadURL(songID: String) throws -> URL {
-        guard let url = swiftSonic.downloadURL(id: songID) else {
-            throw OpenSubsonicError.invalidServerURL
+        guard let url = swiftSonic.downloadURL(id: songID),
+              url.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
         }
         return url
     }
