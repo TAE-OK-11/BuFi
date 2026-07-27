@@ -50,7 +50,9 @@ extension Color {
 extension TimeInterval {
     var playbackText: String {
         guard isFinite, self >= 0 else { return "0:00" }
-        let total = Int(self)
+        // Floor rather than round so the counter never jumps to the next second
+        // early. Clamp conversion to avoid malformed stream metadata overflowing.
+        let total = Int(min(floor(self), Double(Int.max)))
         return "\(total / 60):\(String(format: "%02d", total % 60))"
     }
 }
@@ -539,10 +541,7 @@ struct InteractiveSeekBar: View {
                         onEditingChanged(false)
                     }
             )
-            .animation(
-                .interactiveSpring(response: 0.26, dampingFraction: 0.78),
-                value: isEditing
-            )
+            .animation(BuFiMotion.selection, value: isEditing)
         }
         .frame(height: 28)
         .accessibilityElement()
