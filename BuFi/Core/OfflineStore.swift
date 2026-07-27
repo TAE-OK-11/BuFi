@@ -17,40 +17,51 @@ actor OfflineStore {
         let byteCount: Int64
     }
 
-    private let directory: URL
-    private let indexURL: URL
-    private var entries: [String: Entry]
+    private let rootDirectory: URL
+    private var directory: URL?
+    private var indexURL: URL?
+    private var activeScope: String?
+    private var entries: [String: Entry] = [:]
     private var inFlight: [String: Task<DownloadResult, Error>] = [:]
 
     init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let offlineDirectory = root.appendingPathComponent("OfflineMusic", isDirectory: true)
-        let offlineIndexURL = offlineDirectory.appendingPathComponent("index.json")
-
-        directory = offlineDirectory
-        indexURL = offlineIndexURL
-
+            .appendingPathComponent("OfflineMusic", isDirectory: true)
+        rootDirectory = root
         try? FileManager.default.createDirectory(
-            at: offlineDirectory,
+            at: root,
             withIntermediateDirectories: true,
             attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
         )
+        Self.removeLegacyUnscopedFiles(in: root)
+    }
 
-        let restoredEntries: [String: Entry]
-        if let data = try? Data(contentsOf: offlineIndexURL),
-           let decoded = try? JSONDecoder().decode([String: Entry].self, from: data) {
-            restoredEntries = decoded.filter { _, entry in
-                FileManager.default.fileExists(
-                    atPath: offlineDirectory.appendingPathComponent(entry.fileName).path
-                )
-            }
-        } else {
-            restoredEntries = [:]
-        }
-        entries = restoredEntries
+    func activate(accountScope: String) {
+        guard activeScope != accountScope else { return }
+
+        inFlight.values.forEach { $0.cancel() }
+        inFlight.removeAll()
+
+        let scopedDirectory = rootDirectory.appendingPathComponent(accountScope, isDirectory: true)
+        let scopedIndexURL = scopedDirectory.appendingPathComponent("index.json")
+        try? FileManager.default.createDirectory(
+            at: scopedDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        )
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: scopedDirectory.path
+        )
+
+        activeScope = accountScope
+        directory = scopedDirectory
+        indexURL = scopedIndexURL
+        entries = Self.loadEntries(indexURL: scopedIndexURL, directory: scopedDirectory)
     }
 
     func localURL(for songID: String) -> URL? {
+        guard let directory else { return nil }
         if var entry = entries[songID] {
             let url = directory.appendingPathComponent(entry.fileName)
             guard FileManager.default.fileExists(atPath: url.path) else {
@@ -66,7 +77,7 @@ actor OfflineStore {
             return url
         }
 
-        let legacy = legacyFileURL(songID: songID)
+        let legacy = legacyFileURL(songID: songID, directory: directory)
         return FileManager.default.fileExists(atPath: legacy.path) ? legacy : nil
     }
 
@@ -81,29 +92,47 @@ actor OfflineStore {
     }
 
     func download(song: Song, client: OpenSubsonicClient) async throws -> URL {
+        guard let scope = activeScope, let directory else {
+            throw OpenSubsonicError.invalidResponse
+        }
         if let existing = localURL(for: song.id) { return existing }
-        if let existingTask = inFlight[song.id] { return try await existingTask.value.url }
+
+        let taskKey = scope + ":" + song.id
+        if let existingTask = inFlight[taskKey] {
+            return try await existingTask.value.url
+        }
 
         let remote = try await client.downloadURL(songID: song.id)
+        guard remote.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
+        }
         let fileName = Self.fileName(for: song)
         let destination = directory.appendingPathComponent(fileName)
         let wifiOnly = UserDefaults.standard.object(forKey: "offline-wifi-only") as? Bool ?? true
 
         let task = Task<DownloadResult, Error>(priority: .utility) {
-            let configuration = URLSessionConfiguration.default
+            let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = 30
             configuration.timeoutIntervalForResource = 60 * 60
             configuration.waitsForConnectivity = true
             configuration.httpMaximumConnectionsPerHost = 2
             configuration.allowsExpensiveNetworkAccess = !wifiOnly
             configuration.allowsConstrainedNetworkAccess = !wifiOnly
-            let session = URLSession(configuration: configuration)
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            configuration.urlCache = nil
+
+            let session = URLSession(
+                configuration: configuration,
+                delegate: HTTPSOnlyDownloadDelegate(),
+                delegateQueue: nil
+            )
             defer { session.finishTasksAndInvalidate() }
 
             let (temporary, response) = try await session.download(from: remote)
             guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
-                throw URLError(.badServerResponse)
+                  (200..<300).contains(http.statusCode),
+                  http.url?.scheme?.lowercased() == "https" else {
+                throw OpenSubsonicError.insecureServerURL
             }
             let values = try temporary.resourceValues(forKeys: [.fileSizeKey])
             let bytes = Int64(values.fileSize ?? 0)
@@ -120,11 +149,15 @@ actor OfflineStore {
             )
             return DownloadResult(url: destination, byteCount: bytes)
         }
-        inFlight[song.id] = task
+        inFlight[taskKey] = task
 
         do {
             let result = try await task.value
-            inFlight[song.id] = nil
+            inFlight[taskKey] = nil
+            guard activeScope == scope else {
+                try? FileManager.default.removeItem(at: result.url)
+                throw CancellationError()
+            }
             let now = Date()
             entries[song.id] = Entry(
                 song: song,
@@ -137,20 +170,21 @@ actor OfflineStore {
             try enforceStorageLimit(keeping: song.id)
             return result.url
         } catch {
-            inFlight[song.id] = nil
+            inFlight[taskKey] = nil
             try? FileManager.default.removeItem(at: destination.appendingPathExtension("partial"))
             throw error
         }
     }
 
     func remove(songID: String) throws {
+        guard let directory else { return }
         if let entry = entries.removeValue(forKey: songID) {
             let url = directory.appendingPathComponent(entry.fileName)
             if FileManager.default.fileExists(atPath: url.path) {
                 try FileManager.default.removeItem(at: url)
             }
         }
-        let legacy = legacyFileURL(songID: songID)
+        let legacy = legacyFileURL(songID: songID, directory: directory)
         if FileManager.default.fileExists(atPath: legacy.path) {
             try FileManager.default.removeItem(at: legacy)
         }
@@ -158,6 +192,7 @@ actor OfflineStore {
     }
 
     func removeAll() throws {
+        guard let directory else { return }
         inFlight.values.forEach { $0.cancel() }
         inFlight.removeAll()
         let files = try FileManager.default.contentsOfDirectory(
@@ -171,6 +206,7 @@ actor OfflineStore {
     }
 
     func totalBytes() -> Int64 {
+        guard let directory else { return 0 }
         let indexed = entries.values.reduce(into: Int64(0)) { $0 += $1.byteCount }
         if indexed > 0 { return indexed }
         guard let files = try? FileManager.default.contentsOfDirectory(
@@ -185,6 +221,7 @@ actor OfflineStore {
     }
 
     private func enforceStorageLimit(keeping protectedID: String) throws {
+        guard let directory else { return }
         let configured = UserDefaults.standard.object(forKey: "offline-storage-limit-gb") as? Double ?? 10
         guard configured > 0 else { return }
         let limit = Int64(configured * 1_024 * 1_024 * 1_024)
@@ -204,6 +241,7 @@ actor OfflineStore {
     }
 
     private func persistIndex() throws {
+        guard let indexURL else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(entries)
@@ -213,15 +251,16 @@ actor OfflineStore {
         )
     }
 
-    private func legacyFileURL(songID: String) -> URL {
+    private func legacyFileURL(songID: String, directory: URL) -> URL {
         directory.appendingPathComponent(Self.digest(songID)).appendingPathExtension("audio")
     }
 
     private static func fileName(for song: Song) -> String {
-        let rawExtension = song.suffix?
+        let sanitized = song.suffix?
             .trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
             .lowercased()
-        let ext = (rawExtension?.isEmpty == false ? rawExtension : nil) ?? "audio"
+        let bounded = sanitized.map { String($0.prefix(12)) }
+        let ext = (bounded?.isEmpty == false ? bounded : nil) ?? "audio"
         return digest(song.id) + "." + ext
     }
 
@@ -229,5 +268,48 @@ actor OfflineStore {
         SHA256.hash(data: Data(value.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private static func loadEntries(indexURL: URL, directory: URL) -> [String: Entry] {
+        guard let data = try? Data(contentsOf: indexURL),
+              let decoded = try? JSONDecoder().decode([String: Entry].self, from: data) else {
+            return [:]
+        }
+        return decoded.filter { _, entry in
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(entry.fileName).path
+            )
+        }
+    }
+
+    private static func removeLegacyUnscopedFiles(in root: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        for file in files {
+            let isDirectory = (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if !isDirectory {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+}
+
+private final class HTTPSOnlyDownloadDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard request.url?.scheme?.lowercased() == "https" else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }
