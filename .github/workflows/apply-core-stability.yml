@@ -1,0 +1,51 @@
+name: Apply Core Stability Patch
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'core/stability-optimization' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: core/stability-optimization
+          fetch-depth: 0
+
+      - name: Apply core patch
+        id: patch
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 Scripts/apply-core-stability.py 2>&1 | tee .core-patch.log
+          git diff --check
+
+      - name: Commit result
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "${{ steps.patch.outcome }}" = "success" ]; then
+            rm -f .core-patch.log
+            git add BuFi/App/AppModel.swift BuFi/Core/ArtworkStore.swift BuFi/Core/HTTPContentDecoder.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift
+            git commit -m "core: stabilize concurrency, persistence, and networking"
+          else
+            git restore BuFi/App/AppModel.swift BuFi/Core/ArtworkStore.swift BuFi/Core/HTTPContentDecoder.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift || true
+            git add .core-patch.log
+            git commit -m "ci: capture core patch failure"
+          fi
+          git push origin HEAD:core/stability-optimization
+
+      - name: Fail when patch failed
+        if: steps.patch.outcome == 'failure'
+        run: exit 1
