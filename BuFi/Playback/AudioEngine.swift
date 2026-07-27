@@ -45,6 +45,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lyricsTask: Task<Void, Never>?
     private var serverQueueTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
+    private var offlinePrefetchTask: Task<Void, Never>?
     private var nowPlayingSongID: String?
     private var nowPlayingArtworkSongID: String?
     private var resumeAfterInterruption = false
@@ -81,6 +82,7 @@ final class AudioEngine: NSObject, ObservableObject {
         recoveryTask?.cancel()
         itemLoadTask?.cancel()
         nowPlayingArtworkTask?.cancel()
+        offlinePrefetchTask?.cancel()
     }
 
     func configure(
@@ -92,6 +94,7 @@ final class AudioEngine: NSObject, ObservableObject {
         self.songFavoriteChangeHandler = songFavoriteChangeHandler
         if client == nil {
             queueSaveTask?.cancel()
+            offlinePrefetchTask?.cancel()
             recoveryTask?.cancel()
             itemLoadTask?.cancel()
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
@@ -176,6 +179,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         loadCurrentItem(resumeFrom: 0)
         loadLyrics(for: song)
+        scheduleOfflinePrefetch()
         scheduleQueueSave()
         updateNowPlaying()
     }
@@ -363,6 +367,29 @@ final class AudioEngine: NSObject, ObservableObject {
             quality: quality,
             compatibilityFormat: compatibilityFormat
         )
+    }
+
+    private func scheduleOfflinePrefetch() {
+        offlinePrefetchTask?.cancel()
+        guard let client, !queue.isEmpty, queue.indices.contains(queueIndex) else { return }
+        let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
+        let defaultCount = UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil ? 1 : configured
+        let count = ProcessInfo.processInfo.isLowPowerModeEnabled ? min(defaultCount, 1) : defaultCount
+        guard count > 0 else { return }
+
+        let start = queueIndex + 1
+        let end = min(queue.count, start + count)
+        guard start < end else { return }
+        let candidates = Array(queue[start..<end])
+
+        offlinePrefetchTask = Task(priority: .utility) {
+            for song in candidates {
+                guard !Task.isCancelled else { return }
+                if await OfflineStore.shared.localURL(for: song.id) == nil {
+                    _ = try? await OfflineStore.shared.download(song: song, client: client)
+                }
+            }
+        }
     }
 
     func downloadCurrent() async throws -> URL {
