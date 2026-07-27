@@ -345,7 +345,9 @@ struct MusicDetailView: View {
             }
         }
         .ignoresSafeArea()
-        .animation(motionEnabled ? BuFiMotion.color : .none, value: palette)
+        // palette가 바뀌는 두 지점(artistHero/collectionHero의 onPalette)에서
+        // 이미 withAnimation으로 감싸고 있어서, 여기서 또 .animation(value:)를
+        // 걸면 같은 전환이 중복 적용됨 — 제거해서 한 번만 부드럽게 걸리도록 함.
     }
 
     private func secondaryControl<Content: View>(
@@ -422,10 +424,23 @@ struct MusicDetailView: View {
     private func downloadAll() {
         guard !songs.isEmpty else { return }
         let items = songs
+        // 순차 다운로드 → 동시 3개까지 병렬 다운로드로 변경.
+        // 곡이 많은 앨범/플레이리스트일수록 체감 속도 개선이 큼.
+        // 서버가 감당 가능한 수준에 맞춰 maxConcurrent 조절 가능.
         Task {
-            for song in items {
-                guard !Task.isCancelled else { return }
-                await model.download(song)
+            let maxConcurrent = 3
+            await withTaskGroup(of: Void.self) { group in
+                var iterator = items.makeIterator()
+
+                func addNext() {
+                    guard !Task.isCancelled, let song = iterator.next() else { return }
+                    group.addTask { await model.download(song) }
+                }
+
+                for _ in 0..<maxConcurrent { addNext() }
+                while await group.next() != nil {
+                    addNext()
+                }
             }
         }
     }
