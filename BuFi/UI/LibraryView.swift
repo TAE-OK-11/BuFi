@@ -4,7 +4,6 @@ struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @State private var filter = LibraryFilter.playlists
-    @Namespace private var filterSelection
 
     var body: some View {
         NavigationStack {
@@ -26,65 +25,12 @@ struct LibraryView: View {
     }
 
     private var filters: some View {
-        HStack(spacing: 4) {
-            ForEach(LibraryFilter.allCases) { item in
-                Button {
-                    withAnimation(
-                        .interactiveSpring(
-                            response: 0.34,
-                            dampingFraction: 0.80,
-                            blendDuration: 0.08
-                        )
-                    ) {
-                        filter = item
-                    }
-                } label: {
-                    Text(item.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(
-                            filter == item
-                                ? Color.white
-                                : Color.white.opacity(0.62)
-                        )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 42)
-                        .background {
-                            if filter == item {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(Color.white.opacity(0.14))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .stroke(Color.white.opacity(0.13), lineWidth: 0.7)
-                                    }
-                                    .matchedGeometryEffect(
-                                        id: "library-filter-selection",
-                                        in: filterSelection
-                                    )
-                            }
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityAddTraits(filter == item ? .isSelected : [])
-            }
-        }
-        .padding(4)
-        .frame(height: 50)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.black.opacity(0.58))
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.26)
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.09), lineWidth: 0.7)
-        }
-        .buFiGlass(cornerRadius: 16, interactive: true)
-        .padding(.horizontal, 16)
+        BuFiFilterBar(
+            items: LibraryFilter.allCases,
+            selection: $filter,
+            fontSize: 13,
+            title: { $0.title }
+        )
     }
 
     @ViewBuilder
@@ -348,14 +294,6 @@ private enum LibraryFilter: Int, CaseIterable, Identifiable {
         }
     }
 
-    var icon: String {
-        switch self {
-        case .playlists: "music.note.list"
-        case .albums: "square.stack"
-        case .artists: "person.2"
-        case .songs: "heart.fill"
-        }
-    }
 }
 
 private struct ArtistSection: Identifiable {

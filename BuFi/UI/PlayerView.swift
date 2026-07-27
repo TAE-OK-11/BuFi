@@ -478,7 +478,6 @@ struct PlayerView: View {
                 id: artistID,
                 name: song.artist,
                 coverArt: song.coverArt,
-                artistImageUrl: nil,
                 albumCount: nil,
                 starred: nil
             )

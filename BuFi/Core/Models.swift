@@ -49,14 +49,9 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
     var coverArt: String?
     var duration: Double?
     var track: Int?
-    var discNumber: Int?
-    var year: Int?
-    var genre: String?
-    var bitRate: Int?
     var suffix: String?
     var contentType: String?
     var starred: String?
-    var playCount: Int?
 
     var isStarred: Bool { starred != nil }
     var safeDuration: Double { max(0, duration ?? 0) }
@@ -66,16 +61,10 @@ struct Album: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var name: String
     var artist: String
-    var artistId: String?
     var coverArt: String?
-    var songCount: Int?
-    var duration: Double?
     var year: Int?
-    var genre: String?
     var starred: String?
-    var playCount: Int?
 
-    var title: String { name }
     var isStarred: Bool { starred != nil }
 }
 
@@ -83,7 +72,6 @@ struct Artist: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var name: String
     var coverArt: String?
-    var artistImageUrl: String?
     var albumCount: Int?
     var starred: String?
 
@@ -93,21 +81,12 @@ struct Artist: Codable, Identifiable, Hashable, Sendable {
 struct Playlist: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var name: String
-    var comment: String?
     var owner: String?
-    var publicValue: Bool?
     var songCount: Int?
-    var duration: Double?
     var coverArt: String?
-    var changed: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, comment, owner, songCount, duration, coverArt, changed
-        case publicValue = "public"
-    }
 }
 
-struct HomeSnapshot: Sendable {
+struct HomeSnapshot: Equatable, Sendable {
     var recentAlbums: [Album] = []
     var randomAlbums: [Album] = []
     var starredAlbums: [Album] = []
@@ -130,12 +109,10 @@ struct SearchResults: Sendable {
 }
 
 struct AlbumDetail: Sendable {
-    var album: Album
     var songs: [Song]
 }
 
 struct PlaylistDetail: Sendable {
-    var playlist: Playlist
     var songs: [Song]
 }
 
@@ -153,9 +130,6 @@ struct LyricLine: Identifiable, Hashable, Sendable {
 }
 
 struct LyricsDocument: Sendable {
-    var displayTitle: String?
-    var displayArtist: String?
-    var language: String?
     var synced: Bool
     var lines: [LyricLine]
 
@@ -184,9 +158,7 @@ struct StatusEnvelope: Decodable {
 struct StatusBody: Decodable {
     let status: String
     let version: String?
-    let type: String?
     let serverVersion: String?
-    let openSubsonic: Bool?
     let error: APIErrorBody?
 }
 
@@ -239,34 +211,7 @@ struct AlbumPayload: Decodable {
 }
 
 struct AlbumWithSongs: Decodable {
-    let id: String
-    let name: String
-    let artist: String
-    let artistId: String?
-    let coverArt: String?
-    let songCount: Int?
-    let duration: Double?
-    let year: Int?
-    let genre: String?
-    let starred: String?
-    let playCount: Int?
     let song: [Song]?
-
-    var albumValue: Album {
-        Album(
-            id: id,
-            name: name,
-            artist: artist,
-            artistId: artistId,
-            coverArt: coverArt,
-            songCount: songCount,
-            duration: duration,
-            year: year,
-            genre: genre,
-            starred: starred,
-            playCount: playCount
-        )
-    }
 }
 
 struct PlaylistPayload: Decodable {
@@ -274,35 +219,7 @@ struct PlaylistPayload: Decodable {
 }
 
 struct PlaylistWithSongs: Decodable {
-    let id: String
-    let name: String
-    let comment: String?
-    let owner: String?
-    let publicValue: Bool?
-    let songCount: Int?
-    let duration: Double?
-    let coverArt: String?
-    let changed: String?
     let entry: [Song]?
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, comment, owner, songCount, duration, coverArt, changed, entry
-        case publicValue = "public"
-    }
-
-    var playlistValue: Playlist {
-        Playlist(
-            id: id,
-            name: name,
-            comment: comment,
-            owner: owner,
-            publicValue: publicValue,
-            songCount: songCount,
-            duration: duration,
-            coverArt: coverArt,
-            changed: changed
-        )
-    }
 }
 
 struct SearchPayload: Decodable {
@@ -316,9 +233,6 @@ struct SearchContainer: Decodable {
     let song: [Song]?
 }
 
-struct ArtistPayload: Decodable {
-    let artist: Artist?
-}
 
 struct ArtistInfoPayload: Decodable {
     let artistInfo2: ArtistInfo?
@@ -326,11 +240,6 @@ struct ArtistInfoPayload: Decodable {
 
 struct ArtistInfo: Decodable, Sendable {
     let biography: String?
-    let musicBrainzId: String?
-    let lastFmUrl: String?
-    let smallImageUrl: String?
-    let mediumImageUrl: String?
-    let largeImageUrl: String?
 }
 
 struct ArtistAlbumsPayload: Decodable {
@@ -346,7 +255,6 @@ struct ArtistsContainer: Decodable {
 }
 
 struct ArtistIndex: Decodable {
-    let name: String?
     let artist: [Artist]?
 }
 
@@ -354,7 +262,6 @@ struct ArtistWithAlbums: Decodable {
     let id: String
     let name: String
     let coverArt: String?
-    let artistImageUrl: String?
     let albumCount: Int?
     let starred: String?
     let album: [Album]?
@@ -364,7 +271,6 @@ struct ArtistWithAlbums: Decodable {
             id: id,
             name: name,
             coverArt: coverArt,
-            artistImageUrl: artistImageUrl,
             albumCount: albumCount,
             starred: starred
         )
@@ -384,9 +290,6 @@ struct LyricsList: Decodable {
 }
 
 struct StructuredLyrics: Decodable {
-    let displayArtist: String?
-    let displayTitle: String?
-    let lang: String?
     let offset: Int?
     let synced: Bool?
     let line: [StructuredLyricLine]?
@@ -404,8 +307,5 @@ struct PlayQueuePayload: Decodable {
 struct PlayQueueContainer: Decodable {
     let current: String?
     let position: Int?
-    let username: String?
-    let changed: String?
-    let changedBy: String?
     let entry: [Song]?
 }

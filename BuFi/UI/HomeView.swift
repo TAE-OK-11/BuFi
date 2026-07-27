@@ -10,7 +10,6 @@ struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @State private var filter = HomeFilter.all
-    @Namespace private var filterSelection
 
     var body: some View {
         NavigationStack {
@@ -32,65 +31,12 @@ struct HomeView: View {
     }
 
     private var filterBar: some View {
-        HStack(spacing: 4) {
-            ForEach(HomeFilter.allCases) { item in
-                Button {
-                    withAnimation(
-                        .interactiveSpring(
-                            response: 0.34,
-                            dampingFraction: 0.80,
-                            blendDuration: 0.08
-                        )
-                    ) {
-                        filter = item
-                    }
-                } label: {
-                    Text(item.title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(
-                            filter == item
-                                ? Color.white
-                                : Color.white.opacity(0.62)
-                        )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 42)
-                        .background {
-                            if filter == item {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(Color.white.opacity(0.14))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .stroke(Color.white.opacity(0.13), lineWidth: 0.7)
-                                    }
-                                    .matchedGeometryEffect(
-                                        id: "home-filter-selection",
-                                        in: filterSelection
-                                    )
-                            }
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityAddTraits(filter == item ? .isSelected : [])
-            }
-        }
-        .padding(4)
-        .frame(height: 50)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.black.opacity(0.58))
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.26)
-            }
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.09), lineWidth: 0.7)
-        }
-        .buFiGlass(cornerRadius: 16, interactive: true)
-        .padding(.horizontal, 16)
+        BuFiFilterBar(
+            items: HomeFilter.allCases,
+            selection: $filter,
+            fontSize: 14,
+            title: { $0.title }
+        )
     }
 
     @ViewBuilder

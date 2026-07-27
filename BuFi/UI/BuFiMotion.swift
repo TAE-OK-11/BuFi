@@ -16,21 +16,6 @@ enum BuFiMotion {
         dampingFraction: 0.86,
         blendDuration: 0.05
     )
-    static let selection = Animation.interactiveSpring(
-        response: 0.30,
-        dampingFraction: 0.82,
-        blendDuration: 0.04
-    )
-    static let entrance = Animation.interactiveSpring(
-        response: 0.42,
-        dampingFraction: 0.88,
-        blendDuration: 0.06
-    )
-    static let list = Animation.interactiveSpring(
-        response: 0.32,
-        dampingFraction: 0.90,
-        blendDuration: 0.04
-    )
     static let fade = Animation.interactiveSpring(
         response: 0.30,
         dampingFraction: 0.90,
