@@ -1,0 +1,4 @@
+error: Unknown option '--color'
+Usage: periphery scan [<options>] [<build-arguments> ...]
+  See 'periphery scan --help' for more information.
+exit_code=64

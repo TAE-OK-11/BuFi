@@ -1,0 +1,220 @@
+Swift files: 24
+Total Swift lines: 7839
+
+== Largest files ==
+ 1169 BuFi/Playback/AudioEngine.swift
+  807 BuFi/UI/PlayerView.swift
+  586 BuFi/UI/MusicDetailView.swift
+  545 BuFi/Core/OpenSubsonicClient.swift
+  520 BuFi/UI/Components.swift
+  506 BuFi/Core/OfflineStore.swift
+  499 BuFi/App/AppModel.swift
+  414 BuFi/UI/LibraryView.swift
+  411 BuFi/Core/Models.swift
+  375 BuFi/UI/HomeView.swift
+  360 BuFi/UI/SearchView.swift
+  335 BuFi/Core/ArtworkStore.swift
+  308 BuFi/UI/SettingsView.swift
+  239 BuFi/UI/RootView.swift
+  167 BuFi/UI/LoginView.swift
+  128 BuFi/UI/LegacyMiniPlayerView.swift
+  116 BuFi/UI/MiniPlayerView.swift
+   82 BuFi/UI/ArtistHeroArtwork.swift
+   80 BuFi/Core/HTTPContentDecoder.swift
+   76 BuFi/Core/SecureStore.swift
+   50 BuFi/UI/BuFiMotion.swift
+   30 BuFi/Core/AccountScope.swift
+   20 BuFi/Core/HTTPSOnlyURLSessionDelegate.swift
+   16 BuFi/App/BuFiApp.swift
+
+== Longest functions ==
+ 125 lines  branches= 13  BuFi/Core/ArtworkStore.swift:181  private static func dominantColor(in image: UIImage) -> UIColor? {
+ 106 lines  branches= 15  BuFi/Core/OfflineStore.swift:124  func download(song: Song, client: OpenSubsonicClient) async throws -> URL {
+  84 lines  branches=  9  BuFi/Playback/AudioEngine.swift:910  private func installRemoteCommands() {
+  73 lines  branches=  7  BuFi/UI/MusicDetailView.swift:454  private func load() async {
+  61 lines  branches=  0  BuFi/UI/PlayerView.swift:108  private func header(_ song: Song) -> some View {
+  59 lines  branches= 12  BuFi/Core/HTTPContentDecoder.swift:21  private static func decompressZstandard(_ data: Data) throws -> Data {
+  55 lines  branches=  6  BuFi/Playback/AudioEngine.swift:1016  private func updateNowPlaying() {
+  54 lines  branches=  4  BuFi/Playback/AudioEngine.swift:769  private func installSystemObservers() {
+  53 lines  branches=  7  BuFi/Core/OpenSubsonicClient.swift:257  func home(from previous: HomeSnapshot? = nil) async throws -> HomeSnapshot {
+  53 lines  branches=  7  BuFi/App/AppModel.swift:446  private func connect(_ credentials: ServerCredentials, persist: Bool) async {
+  52 lines  branches=  9  BuFi/Playback/AudioEngine.swift:102  func configure(
+  49 lines  branches=  6  BuFi/Playback/AudioEngine.swift:671  private func installPlayerObservers() {
+  48 lines  branches=  9  BuFi/Playback/AudioEngine.swift:541  private func replacePlayerItem(
+  46 lines  branches=  6  BuFi/Playback/AudioEngine.swift:159  private func startPlayback(
+  45 lines  branches=  1  BuFi/UI/HomeView.swift:175  private func quickCategoryCard(
+  44 lines  branches=  2  BuFi/UI/HomeView.swift:237  private func playlistSection(showEmpty: Bool) -> some View {
+  41 lines  branches=  3  BuFi/Core/OfflineStore.swift:231  private func commitDownload(
+  40 lines  branches=  7  BuFi/App/AppModel.swift:275  func artist(id: String, name: String) async throws -> ArtistDetail {
+  40 lines  branches=  7  BuFi/App/AppModel.swift:234  func playlist(id: String) async throws -> PlaylistDetail {
+  40 lines  branches=  7  BuFi/App/AppModel.swift:193  func album(id: String) async throws -> AlbumDetail {
+  40 lines  branches=  2  BuFi/Core/OpenSubsonicClient.swift:41  init(credentials: ServerCredentials) throws {
+  39 lines  branches=  7  BuFi/Core/OpenSubsonicClient.swift:217  private func responseData(
+  39 lines  branches=  2  BuFi/UI/PlayerView.swift:209  private func metadataContent(_ song: Song) -> some View {
+  38 lines  branches=  8  BuFi/Core/ArtworkStore.swift:92  func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
+  38 lines  branches=  2  BuFi/UI/PlayerView.swift:170  private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
+  35 lines  branches= 15  BuFi/App/AppModel.swift:86  func refresh(forceFull: Bool = false, silent: Bool = false) async {
+  35 lines  branches=  8  BuFi/Core/OpenSubsonicClient.swift:443  func streamURL(
+  34 lines  branches=  6  BuFi/App/AppModel.swift:122  func search(_ rawQuery: String) {
+  34 lines  branches=  5  BuFi/Playback/AudioEngine.swift:1111  private func scheduleQueueSave(immediate: Bool = false) {
+  34 lines  branches=  1  BuFi/UI/LibraryView.swift:261  private func libraryArtwork(
+  32 lines  branches=  1  BuFi/UI/HomeView.swift:327  private func songSection(_ title: String, songs: [Song]) -> some View {
+  32 lines  branches=  0  BuFi/UI/LibraryView.swift:227  private func libraryRow(
+  31 lines  branches=  7  BuFi/Playback/AudioEngine.swift:509  private func loadCurrentItem(
+  31 lines  branches=  0  BuFi/UI/LibraryView.swift:182  private func artistRow(_ artist: Artist, favorite: Bool) -> some View {
+  30 lines  branches=  4  BuFi/UI/LoginView.swift:130  private func input(
+  28 lines  branches=  6  BuFi/Core/OfflineStore.swift:290  func removeAll() throws {
+  28 lines  branches=  5  BuFi/App/AppModel.swift:157  func searchImmediately(_ rawQuery: String) async {
+  28 lines  branches=  1  BuFi/UI/PlayerView.swift:445  private func control(
+  28 lines  branches=  1  BuFi/Core/OfflineStore.swift:54  func activate(accountScope: String) {
+  27 lines  branches=  8  BuFi/Playback/AudioEngine.swift:627  private func schedulePlaybackRecovery() {
+  27 lines  branches=  6  BuFi/Playback/AudioEngine.swift:395  private func playbackResource(
+  27 lines  branches=  6  BuFi/Core/OpenSubsonicClient.swift:311  func incrementalHome(from previous: HomeSnapshot) async throws -> HomeSnapshot {
+  27 lines  branches=  5  BuFi/UI/RootView.swift:212  private func runAutomaticSync() async {
+  26 lines  branches=  6  BuFi/Playback/AudioEngine.swift:865  private func handleAudioInterruption(_ notification: Notification) {
+  25 lines  branches=  6  BuFi/Core/OfflineStore.swift:364  private func enforceStorageLimit(keeping protectedID: String) throws {
+  25 lines  branches=  4  BuFi/Core/SecureStore.swift:25  func save(_ credentials: ServerCredentials) throws {
+  25 lines  branches=  2  BuFi/Core/OpenSubsonicClient.swift:417  func lyrics(songID: String) async throws -> LyricsDocument {
+  25 lines  branches=  2  BuFi/Core/AccountScope.swift:5  static func identifier(for credentials: ServerCredentials) -> String {
+  23 lines  branches=  8  BuFi/Playback/AudioEngine.swift:250  func next(isAutoAdvance: Bool = false) {
+  23 lines  branches=  4  BuFi/UI/MusicDetailView.swift:424  private func downloadAll() {
+  23 lines  branches=  4  BuFi/Core/ArtworkStore.swift:68  func prefetch(urls: [URL], pixelSize: CGFloat) async {
+  23 lines  branches=  0  BuFi/UI/PlayerView.swift:308  private func utilityRow(_ song: Song) -> some View {
+  22 lines  branches=  7  BuFi/Playback/AudioEngine.swift:469  private func scheduleOfflinePrefetch() {
+  21 lines  branches=  3  BuFi/UI/ArtistHeroArtwork.swift:61  private func loadImage() async {
+  21 lines  branches=  1  BuFi/UI/HomeView.swift:283  private func playlistArtwork(_ playlist: Playlist) -> some View {
+  21 lines  branches=  0  BuFi/UI/MusicDetailView.swift:353  private func secondaryControl<Content: View>(
+  20 lines  branches=  9  BuFi/Playback/AudioEngine.swift:995  private func updateRemoteCommands() {
+  20 lines  branches=  5  BuFi/Core/OfflineStore.swift:83  func localURL(for songID: String) -> URL? {
+  20 lines  branches=  3  BuFi/UI/PlayerView.swift:474  private func artistRoute(for song: Song) -> MusicRoute? {
+  19 lines  branches=  7  BuFi/Core/OfflineStore.swift:344  private func persistIndexIfNeeded(retryOnFailure: Bool) {
+  19 lines  branches=  3  BuFi/Core/ArtworkStore.swift:38  func activate(accountScope: String) async {
+  19 lines  branches=  1  BuFi/UI/HomeView.swift:306  private func albumSection(_ title: String, albums: [Album]) -> some View {
+  19 lines  branches=  1  BuFi/Playback/AudioEngine.swift:590  private func installItemObservers(for item: AVPlayerItem) {
+  19 lines  branches=  1  BuFi/Core/OpenSubsonicClient.swift:397  func artist(id: String, name: String) async throws -> ArtistDetail {
+  19 lines  branches=  0  BuFi/UI/SearchView.swift:263  private func browseCollectionHeader(_ title: String) -> some View {
+  18 lines  branches=  5  BuFi/UI/LibraryView.swift:377  static func title(for name: String) -> String {
+  18 lines  branches=  3  BuFi/Core/OpenSubsonicClient.swift:339  func search(_ query: String) async throws -> SearchResults {
+  18 lines  branches=  2  BuFi/Playback/AudioEngine.swift:750  private func configureAudioSession() -> Bool {
+  18 lines  branches=  2  BuFi/Playback/AudioEngine.swift:303  func excludeCurrentAndAdvance() {
+  18 lines  branches=  1  BuFi/UI/Components.swift:64  func body(content: Content) -> some View {
+  18 lines  branches=  0  BuFi/App/AppModel.swift:67  func logout() {
+  17 lines  branches=  5  BuFi/UI/PlayerView.swift:513  private func prefetchUpcomingArtwork(after index: Int) {
+  17 lines  branches=  5  BuFi/Playback/AudioEngine.swift:892  private func handleRouteChange(_ notification: Notification) {
+  17 lines  branches=  3  BuFi/Playback/AudioEngine.swift:338  func updateStarred(songID: String, enabled: Bool) {
+  17 lines  branches=  2  BuFi/UI/RootView.swift:155  private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
+  17 lines  branches=  2  BuFi/Core/OpenSubsonicClient.swift:199  func ping() async throws -> StatusBody {
+  17 lines  branches=  2  BuFi/Core/OpenSubsonicClient.swift:181  private func decodeResponse<Payload: Decodable>(from url: URL) async throws -> Payload {
+  17 lines  branches=  1  BuFi/Playback/AudioEngine.swift:70  override private init() {
+  16 lines  branches=  4  BuFi/Playback/AudioEngine.swift:824  private func handleDidEnterBackground() {
+  16 lines  branches=  4  BuFi/Core/OfflineStore.swift:390  private func scheduleIndexPersistence(
+
+== Highest branch density ==
+branches= 15   106 lines  BuFi/Core/OfflineStore.swift:124  func download(song: Song, client: OpenSubsonicClient) async throws -> URL {
+branches= 15    35 lines  BuFi/App/AppModel.swift:86  func refresh(forceFull: Bool = false, silent: Bool = false) async {
+branches= 13   125 lines  BuFi/Core/ArtworkStore.swift:181  private static func dominantColor(in image: UIImage) -> UIColor? {
+branches= 12    59 lines  BuFi/Core/HTTPContentDecoder.swift:21  private static func decompressZstandard(_ data: Data) throws -> Data {
+branches= 10    13 lines  BuFi/Playback/AudioEngine.swift:455  private static func sourceMIMEType(for song: Song) -> String? {
+branches=  9    84 lines  BuFi/Playback/AudioEngine.swift:910  private func installRemoteCommands() {
+branches=  9    52 lines  BuFi/Playback/AudioEngine.swift:102  func configure(
+branches=  9    48 lines  BuFi/Playback/AudioEngine.swift:541  private func replacePlayerItem(
+branches=  9    20 lines  BuFi/Playback/AudioEngine.swift:995  private func updateRemoteCommands() {
+branches=  8    38 lines  BuFi/Core/ArtworkStore.swift:92  func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
+branches=  8    35 lines  BuFi/Core/OpenSubsonicClient.swift:443  func streamURL(
+branches=  8    27 lines  BuFi/Playback/AudioEngine.swift:627  private func schedulePlaybackRecovery() {
+branches=  8    23 lines  BuFi/Playback/AudioEngine.swift:250  func next(isAutoAdvance: Bool = false) {
+branches=  8    14 lines  BuFi/Core/OpenSubsonicClient.swift:358  private static func shouldFallbackToSearch2(_ error: Error) -> Bool {
+branches=  7    73 lines  BuFi/UI/MusicDetailView.swift:454  private func load() async {
+branches=  7    53 lines  BuFi/App/AppModel.swift:446  private func connect(_ credentials: ServerCredentials, persist: Bool) async {
+branches=  7    53 lines  BuFi/Core/OpenSubsonicClient.swift:257  func home(from previous: HomeSnapshot? = nil) async throws -> HomeSnapshot {
+branches=  7    40 lines  BuFi/App/AppModel.swift:193  func album(id: String) async throws -> AlbumDetail {
+branches=  7    40 lines  BuFi/App/AppModel.swift:234  func playlist(id: String) async throws -> PlaylistDetail {
+branches=  7    40 lines  BuFi/App/AppModel.swift:275  func artist(id: String, name: String) async throws -> ArtistDetail {
+branches=  7    39 lines  BuFi/Core/OpenSubsonicClient.swift:217  private func responseData(
+branches=  7    31 lines  BuFi/Playback/AudioEngine.swift:509  private func loadCurrentItem(
+branches=  7    22 lines  BuFi/Playback/AudioEngine.swift:469  private func scheduleOfflinePrefetch() {
+branches=  7    19 lines  BuFi/Core/OfflineStore.swift:344  private func persistIndexIfNeeded(retryOnFailure: Bool) {
+branches=  7    12 lines  BuFi/Playback/AudioEngine.swift:442  private static func mimeType(
+branches=  7    10 lines  BuFi/App/AppModel.swift:435  private func homeChanged(_ next: HomeSnapshot) -> Bool {
+branches=  6    55 lines  BuFi/Playback/AudioEngine.swift:1016  private func updateNowPlaying() {
+branches=  6    49 lines  BuFi/Playback/AudioEngine.swift:671  private func installPlayerObservers() {
+branches=  6    46 lines  BuFi/Playback/AudioEngine.swift:159  private func startPlayback(
+branches=  6    34 lines  BuFi/App/AppModel.swift:122  func search(_ rawQuery: String) {
+branches=  6    28 lines  BuFi/Core/OfflineStore.swift:290  func removeAll() throws {
+branches=  6    27 lines  BuFi/Core/OpenSubsonicClient.swift:311  func incrementalHome(from previous: HomeSnapshot) async throws -> HomeSnapshot {
+branches=  6    27 lines  BuFi/Playback/AudioEngine.swift:395  private func playbackResource(
+branches=  6    26 lines  BuFi/Playback/AudioEngine.swift:865  private func handleAudioInterruption(_ notification: Notification) {
+branches=  6    25 lines  BuFi/Core/OfflineStore.swift:364  private func enforceStorageLimit(keeping protectedID: String) throws {
+branches=  5    34 lines  BuFi/Playback/AudioEngine.swift:1111  private func scheduleQueueSave(immediate: Bool = false) {
+branches=  5    28 lines  BuFi/App/AppModel.swift:157  func searchImmediately(_ rawQuery: String) async {
+branches=  5    27 lines  BuFi/UI/RootView.swift:212  private func runAutomaticSync() async {
+branches=  5    20 lines  BuFi/Core/OfflineStore.swift:83  func localURL(for songID: String) -> URL? {
+branches=  5    18 lines  BuFi/UI/LibraryView.swift:377  static func title(for name: String) -> String {
+branches=  5    17 lines  BuFi/Playback/AudioEngine.swift:892  private func handleRouteChange(_ notification: Notification) {
+branches=  5    17 lines  BuFi/UI/PlayerView.swift:513  private func prefetchUpcomingArtwork(after index: Int) {
+branches=  5    15 lines  BuFi/Playback/AudioEngine.swift:655  private func loadLyrics(for song: Song) {
+branches=  5    14 lines  BuFi/UI/HomeView.swift:221  private func quickCardColors(_ index: Int) -> [Color] {
+branches=  5    12 lines  BuFi/UI/MusicDetailView.swift:411  private func toggleFavorite() {
+branches=  5    10 lines  BuFi/Playback/AudioEngine.swift:431  private static func fallbackFormats(for quality: StreamQuality) -> [String] {
+branches=  5     7 lines  BuFi/Playback/AudioEngine.swift:423  private static func initialCompatibilityFormat(for quality: StreamQuality) -> String? {
+branches=  4    54 lines  BuFi/Playback/AudioEngine.swift:769  private func installSystemObservers() {
+branches=  4    30 lines  BuFi/UI/LoginView.swift:130  private func input(
+branches=  4    25 lines  BuFi/Core/SecureStore.swift:25  func save(_ credentials: ServerCredentials) throws {
+branches=  4    23 lines  BuFi/Core/ArtworkStore.swift:68  func prefetch(urls: [URL], pixelSize: CGFloat) async {
+branches=  4    23 lines  BuFi/UI/MusicDetailView.swift:424  private func downloadAll() {
+branches=  4    16 lines  BuFi/Core/OfflineStore.swift:273  func remove(songID: String) throws {
+branches=  4    16 lines  BuFi/Core/OfflineStore.swift:390  private func scheduleIndexPersistence(
+branches=  4    16 lines  BuFi/Playback/AudioEngine.swift:824  private func handleDidEnterBackground() {
+branches=  4    14 lines  BuFi/Core/OfflineStore.swift:319  func totalBytes() -> Int64 {
+branches=  4    11 lines  BuFi/App/AppModel.swift:366  func download(_ song: Song) async {
+branches=  4    11 lines  BuFi/Playback/AudioEngine.swift:383  func localOrRemoteURL(for song: Song, compatibilityFormat: String? = nil) async throws -> URL {
+branches=  4     9 lines  BuFi/Playback/AudioEngine.swift:328  func cycleRepeat() {
+branches=  3    41 lines  BuFi/Core/OfflineStore.swift:231  private func commitDownload(
+branches=  3    21 lines  BuFi/UI/ArtistHeroArtwork.swift:61  private func loadImage() async {
+branches=  3    20 lines  BuFi/UI/PlayerView.swift:474  private func artistRoute(for song: Song) -> MusicRoute? {
+branches=  3    19 lines  BuFi/Core/ArtworkStore.swift:38  func activate(accountScope: String) async {
+branches=  3    18 lines  BuFi/Core/OpenSubsonicClient.swift:339  func search(_ query: String) async throws -> SearchResults {
+branches=  3    17 lines  BuFi/Playback/AudioEngine.swift:338  func updateStarred(songID: String, enabled: Bool) {
+branches=  3    15 lines  BuFi/Core/ArtworkStore.swift:315  static func normalizedCacheKey(for url: URL) -> String {
+branches=  3    15 lines  BuFi/Core/OpenSubsonicClient.swift:130  private func endpointURL(
+branches=  3    14 lines  BuFi/App/AppModel.swift:321  func toggleStar(song: Song) async {
+branches=  3    14 lines  BuFi/App/AppModel.swift:336  func toggleStar(album: Album) async {
+branches=  3    14 lines  BuFi/App/AppModel.swift:351  func toggleStar(artist: Artist) async {
+branches=  3    14 lines  BuFi/Core/OfflineStore.swift:492  private static func removeLegacyUnscopedFiles(in root: URL) {
+branches=  3    12 lines  BuFi/Playback/AudioEngine.swift:290  func removeQueueItem(at index: Int) {
+branches=  3    11 lines  BuFi/UI/PlayerView.swift:501  private func syncArtworkPage(to index: Int, animated: Bool) {
+branches=  3     9 lines  BuFi/Core/ArtworkStore.swift:58  func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
+branches=  3     9 lines  BuFi/Playback/AudioEngine.swift:499  private func restartPlaybackPlan(for song: Song, resumeFrom: TimeInterval) {
+branches=  3     8 lines  BuFi/Playback/AudioEngine.swift:206  func togglePlayback() {
+branches=  3     6 lines  BuFi/Core/OpenSubsonicClient.swift:82  private static func normalizedBaseURL(_ value: String) -> URL? {
+branches=  3     5 lines  BuFi/Core/ArtworkStore.swift:309  func cacheKey(for request: ImageRequest, pipeline: ImagePipeline) -> String? {
+branches=  3     5 lines  BuFi/UI/PlayerView.swift:734  private func color(for index: Int) -> Color {
+branches=  2    44 lines  BuFi/UI/HomeView.swift:237  private func playlistSection(showEmpty: Bool) -> some View {
+
+== Cross-file duplicate 12-line windows ==
+copies=2  BuFi/UI/HomeView.swift:50, BuFi/UI/LibraryView.swift:44
+  .foregroundStyle(
+copies=2  BuFi/UI/HomeView.swift:51, BuFi/UI/LibraryView.swift:45
+  filter == item
+copies=2  BuFi/UI/HomeView.swift:52, BuFi/UI/LibraryView.swift:46
+  ? Color.white
+copies=2  BuFi/UI/HomeView.swift:53, BuFi/UI/LibraryView.swift:47
+  : Color.white.opacity(0.62)
+copies=2  BuFi/UI/HomeView.swift:67, BuFi/UI/LibraryView.swift:61
+  in: filterSelection
+copies=2  BuFi/UI/HomeView.swift:68, BuFi/UI/LibraryView.swift:62
+  )
+copies=2  BuFi/UI/HomeView.swift:71, BuFi/UI/LibraryView.swift:65
+  .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+copies=2  BuFi/UI/HomeView.swift:73, BuFi/UI/LibraryView.swift:67
+  .buttonStyle(BuFiPressStyle())
+copies=2  BuFi/UI/HomeView.swift:74, BuFi/UI/LibraryView.swift:68
+  .accessibilityAddTraits(filter == item ? .isSelected : [])
+copies=2  BuFi/UI/HomeView.swift:77, BuFi/UI/LibraryView.swift:71
+  .padding(4)
+copies=2  BuFi/UI/HomeView.swift:78, BuFi/UI/LibraryView.swift:72
+  .frame(height: 50)
+copies=2  BuFi/UI/HomeView.swift:79, BuFi/UI/LibraryView.swift:73
+  .background {
+copies=2  BuFi/UI/HomeView.swift:80, BuFi/UI/LibraryView.swift:74
+  ZStack {
