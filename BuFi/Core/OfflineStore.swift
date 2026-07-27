@@ -18,16 +18,22 @@ actor OfflineStore {
     }
 
     private let rootDirectory: URL
+    private let wifiOnlySession: URLSession
+    private let unrestrictedSession: URLSession
     private var directory: URL?
     private var indexURL: URL?
     private var activeScope: String?
     private var entries: [String: Entry] = [:]
     private var inFlight: [String: Task<DownloadResult, Error>] = [:]
+    private var indexSaveTask: Task<Void, Never>?
+    private var indexIsDirty = false
 
     init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("OfflineMusic", isDirectory: true)
         rootDirectory = root
+        wifiOnlySession = Self.makeDownloadSession(allowsExpensiveAccess: false)
+        unrestrictedSession = Self.makeDownloadSession(allowsExpensiveAccess: true)
         try? FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true,
@@ -39,6 +45,7 @@ actor OfflineStore {
     func activate(accountScope: String) {
         guard activeScope != accountScope else { return }
 
+        flushPendingWrites()
         inFlight.values.forEach { $0.cancel() }
         inFlight.removeAll()
 
@@ -58,6 +65,7 @@ actor OfflineStore {
         directory = scopedDirectory
         indexURL = scopedIndexURL
         entries = Self.loadEntries(indexURL: scopedIndexURL, directory: scopedDirectory)
+        indexIsDirty = false
     }
 
     func localURL(for songID: String) -> URL? {
@@ -66,13 +74,13 @@ actor OfflineStore {
             let url = directory.appendingPathComponent(entry.fileName)
             guard FileManager.default.fileExists(atPath: url.path) else {
                 entries[songID] = nil
-                try? persistIndex()
+                scheduleIndexPersistence()
                 return nil
             }
             if Date().timeIntervalSince(entry.lastAccessedAt) > 3_600 {
                 entry.lastAccessedAt = Date()
                 entries[songID] = entry
-                try? persistIndex()
+                scheduleIndexPersistence()
             }
             return url
         }
@@ -109,25 +117,9 @@ actor OfflineStore {
         let fileName = Self.fileName(for: song)
         let destination = directory.appendingPathComponent(fileName)
         let wifiOnly = UserDefaults.standard.object(forKey: "offline-wifi-only") as? Bool ?? true
+        let session = wifiOnly ? wifiOnlySession : unrestrictedSession
 
         let task = Task<DownloadResult, Error>(priority: .utility) {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.timeoutIntervalForRequest = 30
-            configuration.timeoutIntervalForResource = 60 * 60
-            configuration.waitsForConnectivity = true
-            configuration.httpMaximumConnectionsPerHost = 2
-            configuration.allowsExpensiveNetworkAccess = !wifiOnly
-            configuration.allowsConstrainedNetworkAccess = !wifiOnly
-            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-            configuration.urlCache = nil
-
-            let session = URLSession(
-                configuration: configuration,
-                delegate: HTTPSOnlyDownloadDelegate(),
-                delegateQueue: nil
-            )
-            defer { session.finishTasksAndInvalidate() }
-
             let (temporary, response) = try await session.download(from: remote)
             guard let http = response as? HTTPURLResponse else {
                 throw OpenSubsonicError.invalidResponse
@@ -171,8 +163,8 @@ actor OfflineStore {
                 downloadedAt: now,
                 lastAccessedAt: now
             )
-            try persistIndex()
             try enforceStorageLimit(keeping: song.id)
+            scheduleIndexPersistence()
             return result.url
         } catch {
             inFlight[taskKey] = nil
@@ -193,7 +185,7 @@ actor OfflineStore {
         if FileManager.default.fileExists(atPath: legacy.path) {
             try FileManager.default.removeItem(at: legacy)
         }
-        try persistIndex()
+        scheduleIndexPersistence(immediate: true)
     }
 
     func removeAll() throws {
@@ -207,7 +199,7 @@ actor OfflineStore {
         )
         for file in files { try FileManager.default.removeItem(at: file) }
         entries.removeAll()
-        try persistIndex()
+        scheduleIndexPersistence(immediate: true)
     }
 
     func totalBytes() -> Int64 {
@@ -222,6 +214,18 @@ actor OfflineStore {
         return files.reduce(into: Int64(0)) { total, url in
             if let indexURL, url == indexURL { return }
             total += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+    }
+
+    func flushPendingWrites() {
+        indexSaveTask?.cancel()
+        indexSaveTask = nil
+        guard indexIsDirty else { return }
+        do {
+            try persistIndex()
+            indexIsDirty = false
+        } catch {
+            // Keep the dirty flag so the next lifecycle or mutation retries.
         }
     }
 
@@ -242,7 +246,18 @@ actor OfflineStore {
             entries[id] = nil
             total -= entry.byteCount
         }
-        try persistIndex()
+    }
+
+    private func scheduleIndexPersistence(immediate: Bool = false) {
+        indexIsDirty = true
+        indexSaveTask?.cancel()
+        indexSaveTask = Task { [weak self] in
+            if !immediate {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            guard !Task.isCancelled else { return }
+            await self?.flushPendingWrites()
+        }
     }
 
     private func persistIndex() throws {
@@ -285,6 +300,23 @@ actor OfflineStore {
                 atPath: directory.appendingPathComponent(entry.fileName).path
             )
         }
+    }
+
+    private static func makeDownloadSession(allowsExpensiveAccess: Bool) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60 * 60
+        configuration.waitsForConnectivity = true
+        configuration.httpMaximumConnectionsPerHost = 2
+        configuration.allowsExpensiveNetworkAccess = allowsExpensiveAccess
+        configuration.allowsConstrainedNetworkAccess = allowsExpensiveAccess
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        return URLSession(
+            configuration: configuration,
+            delegate: HTTPSOnlyDownloadDelegate(),
+            delegateQueue: nil
+        )
     }
 
     private static func removeLegacyUnscopedFiles(in root: URL) {

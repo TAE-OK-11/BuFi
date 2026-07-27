@@ -44,7 +44,13 @@ struct RootView: View {
             await runAutomaticSync()
         }
         .onAppear {
-            if hapticsEnabled { tabHaptic.prepare() }
+            if hapticsEnabled && !lowPowerMode { tabHaptic.prepare() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active else { return }
+            Task(priority: .utility) {
+                await OfflineStore.shared.flushPendingWrites()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
             lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -91,8 +97,19 @@ struct RootView: View {
         }
     }
 
+    private var isThermallyConstrained: Bool {
+        switch thermalState {
+        case .serious, .critical:
+            true
+        case .nominal, .fair:
+            false
+        @unknown default:
+            true
+        }
+    }
+
     private var effectiveMotion: Bool {
-        motionEnabled && !reduceMotion
+        motionEnabled && !reduceMotion && !lowPowerMode && !isThermallyConstrained
     }
 
     private var appContent: some View {
@@ -119,7 +136,7 @@ struct RootView: View {
         }
         .tint(BuFiTheme.accent)
         .onChange(of: tab) { _, _ in
-            if hapticsEnabled {
+            if hapticsEnabled && !lowPowerMode {
                 tabHaptic.selectionChanged()
                 tabHaptic.prepare()
             }
@@ -154,7 +171,7 @@ struct RootView: View {
     }
 
     private var syncTaskID: String {
-        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)-\(audio.isPlaying)-\(tab)"
+        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)-\(audio.isPlaying)"
     }
 
     private var thermalKey: String {
@@ -172,41 +189,33 @@ struct RootView: View {
 
         switch thermalState {
         case .serious, .critical:
-            return max(selected, 300)
+            return max(selected, 900)
         case .fair:
-            return max(selected, audio.isPlaying ? 180 : 90)
+            return max(selected, audio.isPlaying ? 300 : 120)
         case .nominal:
             break
         @unknown default:
-            break
+            return max(selected, 900)
         }
 
-        if lowPowerMode {
-            return max(selected * 2, audio.isPlaying ? 300 : 120)
-        }
         if audio.isPlaying {
-            return max(selected, 120)
+            return max(selected, 180)
         }
         return selected
     }
 
     private func syncDelay(afterCompletedRounds rounds: Int) -> TimeInterval {
-        let maximum: TimeInterval
-        switch thermalState {
-        case .serious, .critical:
-            maximum = 900
-        case .fair:
-            maximum = 600
-        case .nominal:
-            maximum = lowPowerMode || audio.isPlaying ? 600 : 300
-        @unknown default:
-            maximum = 600
-        }
+        let maximum: TimeInterval = audio.isPlaying ? 900 : 600
         return min(baseSyncInterval * pow(2, Double(min(rounds, 4))), maximum)
     }
 
     private func runAutomaticSync() async {
-        guard model.sessionState == .ready, scenePhase == .active else { return }
+        guard model.sessionState == .ready,
+              scenePhase == .active,
+              !lowPowerMode,
+              !isThermallyConstrained else {
+            return
+        }
 
         var completedRounds = 0
         while !Task.isCancelled {
@@ -217,7 +226,12 @@ struct RootView: View {
                 return
             }
 
-            guard model.sessionState == .ready, scenePhase == .active else { return }
+            guard model.sessionState == .ready,
+                  scenePhase == .active,
+                  !lowPowerMode,
+                  !isThermallyConstrained else {
+                return
+            }
             await model.refresh(silent: true)
             completedRounds += 1
         }
