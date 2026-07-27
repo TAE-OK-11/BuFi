@@ -3,6 +3,7 @@ import SwiftUI
 struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
+    @Environment(\.colorScheme) private var colorScheme
 
     let route: MusicRoute
 
@@ -92,13 +93,13 @@ struct MusicDetailView: View {
                     )
                 )
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.78))
+                .foregroundStyle(.white.opacity(0.82))
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 22)
             .padding(.bottom, 20)
         }
-        .shadow(color: .black.opacity(0.22), radius: 20, y: 10)
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.13), radius: 20, y: 10)
         .padding(.horizontal, 16)
         .padding(.top, 6)
         .padding(.bottom, 18)
@@ -113,7 +114,11 @@ struct MusicDetailView: View {
                 onPalette: { palette = $0 }
             )
             .frame(width: 270, height: 270)
-            .shadow(color: .black.opacity(0.34), radius: 24, y: 14)
+            .shadow(
+                color: .black.opacity(colorScheme == .dark ? 0.34 : 0.18),
+                radius: 24,
+                y: 14
+            )
 
             VStack(spacing: 7) {
                 Text(title.isEmpty ? " " : title)
@@ -121,11 +126,11 @@ struct MusicDetailView: View {
                     .tracking(-0.7)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(collectionTitleColor)
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.72))
+                        .foregroundStyle(collectionSubtitleColor)
                         .multilineTextAlignment(.center)
                 }
             }
@@ -138,14 +143,14 @@ struct MusicDetailView: View {
 
     private var controls: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if canFavorite {
                     Button(action: toggleFavorite) {
-                        Image(systemName: isFavorite ? "checkmark" : "plus")
-                            .font(.system(size: 19, weight: .semibold))
-                            .frame(width: 42, height: 42)
-                            .background(.white.opacity(0.10), in: Circle())
-                            .buFiGlass(cornerRadius: 21, interactive: true)
+                        secondaryControl(
+                            Image(systemName: isFavorite ? "checkmark" : "plus")
+                                .font(.system(size: 19, weight: .semibold)),
+                            diameter: 42
+                        )
                     }
                     .buttonStyle(BuFiPressStyle())
                     .accessibilityLabel(isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가")
@@ -154,11 +159,11 @@ struct MusicDetailView: View {
                 Button {
                     downloadAll()
                 } label: {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 19, weight: .semibold))
-                        .frame(width: 42, height: 42)
-                        .background(.white.opacity(0.10), in: Circle())
-                        .buFiGlass(cornerRadius: 21, interactive: true)
+                    secondaryControl(
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 19, weight: .semibold)),
+                        diameter: 42
+                    )
                 }
                 .buttonStyle(BuFiPressStyle())
                 .disabled(songs.isEmpty)
@@ -187,11 +192,11 @@ struct MusicDetailView: View {
                         Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
                     }
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 20, weight: .semibold))
-                        .frame(width: 42, height: 42)
-                        .background(.white.opacity(0.10), in: Circle())
-                        .buFiGlass(cornerRadius: 21, interactive: true)
+                    secondaryControl(
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 20, weight: .semibold)),
+                        diameter: 42
+                    )
                 }
                 .buttonStyle(BuFiPressStyle())
                 .accessibilityLabel("더 보기")
@@ -206,12 +211,11 @@ struct MusicDetailView: View {
                     audio.play(first, in: shuffled)
                 }
             } label: {
-                Image(systemName: "shuffle")
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 52, height: 52)
-                    .background(.white.opacity(0.12), in: Circle())
-                    .buFiGlass(cornerRadius: 26, interactive: true)
+                secondaryControl(
+                    Image(systemName: "shuffle")
+                        .font(.system(size: 21, weight: .semibold)),
+                    diameter: 52
+                )
             }
             .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
@@ -227,13 +231,17 @@ struct MusicDetailView: View {
                     .foregroundStyle(.white)
                     .frame(width: 60, height: 60)
                     .background(BuFiTheme.accent, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(.white.opacity(colorScheme == .dark ? 0.10 : 0.28), lineWidth: 0.8)
+                    }
+                    .shadow(color: BuFiTheme.accent.opacity(0.24), radius: 14, y: 7)
                     .offset(x: 1)
             }
             .buttonStyle(BuFiPressStyle())
             .disabled(songs.isEmpty)
             .accessibilityLabel("모두 재생")
         }
-        .foregroundStyle(.white)
         .padding(.horizontal, 22)
         .padding(.top, 2)
         .padding(.bottom, 22)
@@ -257,8 +265,9 @@ struct MusicDetailView: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.38), lineWidth: 0.6)
+                .stroke(contrastSeparator, lineWidth: 0.8)
         }
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.08 : 0.035), radius: 12, y: 5)
         .padding(.horizontal, 16)
         .padding(.top, 28)
     }
@@ -312,15 +321,72 @@ struct MusicDetailView: View {
     }
 
     private var background: some View {
-        LinearGradient(
-            colors: [
-                Color(palette.top).opacity(0.92),
-                BuFiTheme.background
-            ],
-            startPoint: .top,
-            endPoint: .init(x: 0.5, y: 0.43)
-        )
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(palette.top).opacity(colorScheme == .dark ? 0.92 : 0.34),
+                    BuFiTheme.background
+                ],
+                startPoint: .top,
+                endPoint: .init(x: 0.5, y: 0.43)
+            )
+            if colorScheme == .light {
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.16),
+                        Color.white.opacity(0.70),
+                        BuFiTheme.background
+                    ],
+                    startPoint: .top,
+                    endPoint: .init(x: 0.5, y: 0.52)
+                )
+            }
+        }
         .ignoresSafeArea()
+    }
+
+    private func secondaryControl<Content: View>(
+        _ content: Content,
+        diameter: CGFloat
+    ) -> some View {
+        content
+            .foregroundStyle(detailControlForeground)
+            .frame(width: diameter, height: diameter)
+            .background(detailControlFill, in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(detailControlStroke, lineWidth: colorScheme == .dark ? 0.7 : 1.0)
+            }
+            .shadow(
+                color: .black.opacity(colorScheme == .dark ? 0.12 : 0.045),
+                radius: 8,
+                y: 4
+            )
+            .buFiGlass(cornerRadius: diameter / 2, interactive: true)
+    }
+
+    private var detailControlForeground: Color {
+        colorScheme == .dark ? .white.opacity(0.92) : .black.opacity(0.78)
+    }
+
+    private var detailControlFill: Color {
+        colorScheme == .dark ? .white.opacity(0.10) : .black.opacity(0.065)
+    }
+
+    private var detailControlStroke: Color {
+        colorScheme == .dark ? .white.opacity(0.16) : .black.opacity(0.16)
+    }
+
+    private var collectionTitleColor: Color {
+        colorScheme == .dark ? .white : .primary
+    }
+
+    private var collectionSubtitleColor: Color {
+        colorScheme == .dark ? .white.opacity(0.72) : .secondary
+    }
+
+    private var contrastSeparator: Color {
+        colorScheme == .dark ? .white.opacity(0.10) : .black.opacity(0.12)
     }
 
     private var isArtist: Bool {
