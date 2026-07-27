@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/home/runner/work/BuFi/BuFi/Scripts/apply-final-core-race-fixes.py", line 17, in <module>
+    replace_all_exact(
+  File "/home/runner/work/BuFi/BuFi/Scripts/apply-final-core-race-fixes.py", line 8, in replace_all_exact
+    raise RuntimeError(f"{path}: expected {expected} matches, found {count}: {old[:120]!r}")
+RuntimeError: BuFi/App/AppModel.swift: expected 3 matches, found 0: '        guard generation == sessionGeneration, self.client === client else {\n            throw CancellationError()\n     '
