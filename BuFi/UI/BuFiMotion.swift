@@ -1,8 +1,6 @@
 import SwiftUI
 
 enum BuFiMotion {
-    // 짧은 response와 적당한 damping으로 입력은 즉시 반응하고,
-    // 플레이어·가사는 한 번만 탄력 있게 감쇠하도록 공통 곡선을 사용한다.
     static let tap = Animation.interactiveSpring(
         response: 0.26,
         dampingFraction: 0.78,
@@ -17,6 +15,21 @@ enum BuFiMotion {
         response: 0.34,
         dampingFraction: 0.86,
         blendDuration: 0.05
+    )
+    static let selection = Animation.interactiveSpring(
+        response: 0.30,
+        dampingFraction: 0.82,
+        blendDuration: 0.04
+    )
+    static let entrance = Animation.interactiveSpring(
+        response: 0.42,
+        dampingFraction: 0.88,
+        blendDuration: 0.06
+    )
+    static let list = Animation.interactiveSpring(
+        response: 0.32,
+        dampingFraction: 0.90,
+        blendDuration: 0.04
     )
     static let fade = Animation.interactiveSpring(
         response: 0.30,
