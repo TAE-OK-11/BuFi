@@ -220,9 +220,10 @@ final class AppModel: ObservableObject {
         guard generation == sessionGeneration, self.client === client else {
             throw CancellationError()
         }
-        if albumDetailTasks[id]?.token == request.token {
-            albumDetailTasks[id] = nil
+        guard albumDetailTasks[id]?.token == request.token else {
+            throw CancellationError()
         }
+        albumDetailTasks[id] = nil
         albumDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(5 * 60)
@@ -260,9 +261,10 @@ final class AppModel: ObservableObject {
         guard generation == sessionGeneration, self.client === client else {
             throw CancellationError()
         }
-        if playlistDetailTasks[id]?.token == request.token {
-            playlistDetailTasks[id] = nil
+        guard playlistDetailTasks[id]?.token == request.token else {
+            throw CancellationError()
         }
+        playlistDetailTasks[id] = nil
         playlistDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(5 * 60)
@@ -300,9 +302,10 @@ final class AppModel: ObservableObject {
         guard generation == sessionGeneration, self.client === client else {
             throw CancellationError()
         }
-        if artistDetailTasks[id]?.token == request.token {
-            artistDetailTasks[id] = nil
+        guard artistDetailTasks[id]?.token == request.token else {
+            throw CancellationError()
         }
+        artistDetailTasks[id] = nil
         artistDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(15 * 60)

@@ -138,6 +138,12 @@ actor OfflineStore {
                     scopeGeneration: existingTask.scopeGeneration,
                     songGeneration: existingTask.songGeneration
                 )
+                guard activeScope == scope,
+                      scopeGeneration == existingTask.scopeGeneration,
+                      songGenerations[song.id, default: 0] == existingTask.songGeneration,
+                      FileManager.default.fileExists(atPath: result.url.path) else {
+                    throw CancellationError()
+                }
                 return result.url
             } catch {
                 clearInFlight(
