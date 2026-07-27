@@ -1,0 +1,155 @@
+name: Audit Dead Code and Complexity
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    if: github.head_ref == 'refactor/dead-code-lightweight' && github.actor != 'github-actions[bot]'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refactor/dead-code-lightweight
+          fetch-depth: 0
+
+      - name: Install analysis tools
+        run: |
+          brew install xcodegen
+          brew install peripheryapp/periphery/periphery
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Run dead code scan
+        run: |
+          mkdir -p .audit
+          set +e
+          periphery scan \
+            --project BuFi.xcodeproj \
+            --schemes BuFi \
+            --targets BuFi \
+            --format xcode \
+            --retain-public \
+            --retain-objc-annotated \
+            --retain-swift-ui-previews \
+            --color never \
+            > .audit/periphery.txt 2>&1
+          echo "exit_code=$?" >> .audit/periphery.txt
+          set -e
+
+      - name: Measure complexity and duplication
+        run: |
+          python3 <<'PY'
+          from __future__ import annotations
+          from collections import defaultdict
+          from pathlib import Path
+          import hashlib
+          import re
+
+          files = sorted(Path('BuFi').rglob('*.swift'))
+          out = []
+          out.append(f'Swift files: {len(files)}')
+          out.append(f'Total Swift lines: {sum(len(p.read_text().splitlines()) for p in files)}')
+          out.append('')
+          out.append('== Largest files ==')
+          sizes = sorted(((len(p.read_text().splitlines()), str(p)) for p in files), reverse=True)
+          out.extend(f'{count:5d} {path}' for count, path in sizes)
+
+          decl = re.compile(r'^\s*(?:@[A-Za-z0-9_()., :]+\s+)*(?:(?:public|private|fileprivate|internal|open|final|static|class|mutating|nonmutating|override|required|convenience|isolated|nonisolated)\s+)*(func|init|deinit|subscript)\b')
+          functions = []
+          for path in files:
+              lines = path.read_text().splitlines()
+              i = 0
+              while i < len(lines):
+                  if not decl.search(lines[i]):
+                      i += 1
+                      continue
+                  start = i
+                  signature = lines[i].strip()
+                  depth = 0
+                  saw_open = False
+                  j = i
+                  while j < len(lines):
+                      code = re.sub(r'//.*$', '', lines[j])
+                      opens = code.count('{')
+                      closes = code.count('}')
+                      if opens:
+                          saw_open = True
+                      depth += opens - closes
+                      if saw_open and depth <= 0:
+                          break
+                      if j - start > 1200:
+                          break
+                      j += 1
+                  length = max(1, j - start + 1)
+                  body = '\n'.join(lines[start:j + 1])
+                  branches = len(re.findall(r'\b(if|guard|switch|case|for|while|catch)\b|&&|\|\|', body))
+                  functions.append((length, branches, str(path), start + 1, signature[:140]))
+                  i = max(j + 1, i + 1)
+
+          out.append('')
+          out.append('== Longest functions ==')
+          for length, branches, path, line, sig in sorted(functions, reverse=True)[:80]:
+              out.append(f'{length:4d} lines  branches={branches:3d}  {path}:{line}  {sig}')
+
+          out.append('')
+          out.append('== Highest branch density ==')
+          ranked = sorted(functions, key=lambda x: (x[1], x[0]), reverse=True)[:80]
+          for length, branches, path, line, sig in ranked:
+              out.append(f'branches={branches:3d}  {length:4d} lines  {path}:{line}  {sig}')
+
+          windows = defaultdict(list)
+          width = 12
+          for path in files:
+              raw = path.read_text().splitlines()
+              normalized = []
+              source_lines = []
+              for number, line in enumerate(raw, 1):
+                  value = re.sub(r'//.*$', '', line).strip()
+                  value = re.sub(r'\s+', ' ', value)
+                  if not value or value in {'{', '}'}:
+                      continue
+                  normalized.append(value)
+                  source_lines.append(number)
+              for index in range(0, max(0, len(normalized) - width + 1)):
+                  block = '\n'.join(normalized[index:index + width])
+                  digest = hashlib.sha256(block.encode()).hexdigest()
+                  windows[digest].append((str(path), source_lines[index], block))
+
+          duplicates = []
+          for locations in windows.values():
+              unique_locations = {(p, line) for p, line, _ in locations}
+              if len(unique_locations) < 2:
+                  continue
+              paths = {p for p, _, _ in locations}
+              if len(paths) < 2:
+                  continue
+              duplicates.append(locations)
+
+          out.append('')
+          out.append('== Cross-file duplicate 12-line windows ==')
+          for locations in sorted(duplicates, key=lambda v: len(v), reverse=True)[:60]:
+              locs = ', '.join(f'{p}:{line}' for p, line, _ in locations[:8])
+              out.append(f'copies={len(locations)}  {locs}')
+              out.append('  ' + locations[0][2].splitlines()[0][:160])
+
+          Path('.audit/code-metrics.txt').write_text('\n'.join(out) + '\n')
+          PY
+
+      - name: Commit audit reports
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .audit/periphery.txt .audit/code-metrics.txt
+          git commit -m "audit: capture dead code and complexity report"
+          git push origin HEAD:refactor/dead-code-lightweight
