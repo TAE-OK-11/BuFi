@@ -1,0 +1,390 @@
+name: Apply Low Power Codec Routing
+
+on:
+  push:
+    branches:
+      - playback/low-power-codecs
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: playback/low-power-codecs
+          fetch-depth: 0
+
+      - name: Apply codec routing changes
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          audio = Path("BuFi/Playback/AudioEngine.swift")
+
+          replace_once(
+              audio,
+              '''    @Published var quality: StreamQuality {
+                  didSet { UserDefaults.standard.set(quality.rawValue, forKey: "stream-quality") }
+              }
+          ''',
+              '''    @Published var quality: StreamQuality {
+                  didSet {
+                      UserDefaults.standard.set(quality.rawValue, forKey: "stream-quality")
+                      guard oldValue != quality, let song = currentSong else { return }
+                      restartPlaybackPlan(for: song, resumeFrom: elapsed)
+                  }
+              }
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''    private static let iso8601Formatter = ISO8601DateFormatter()
+          ''',
+              '''    private static let iso8601Formatter = ISO8601DateFormatter()
+
+              private struct PlaybackResource {
+                  let url: URL
+                  let mimeType: String?
+              }
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''    private var fallbackIndex = 0
+              private let fallbackFormats = ["aac", "mp3"]
+          ''',
+              '''    private var fallbackIndex = 0
+              private var fallbackFormats: [String] = []
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''        if let song = currentSong {
+                  loadCurrentItem(resumeFrom: elapsed)
+                  loadLyrics(for: song)
+              }
+          ''',
+              '''        if let song = currentSong {
+                  restartPlaybackPlan(for: song, resumeFrom: elapsed)
+                  loadLyrics(for: song)
+              }
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''            self.loadCurrentItem(resumeFrom: self.elapsed)
+              if let song = self.currentSong { self.loadLyrics(for: song) }
+          ''',
+              '''            self.restartPlaybackPlan(for: self.currentSong!, resumeFrom: self.elapsed)
+              if let song = self.currentSong { self.loadLyrics(for: song) }
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''        fallbackIndex = 0
+              recoveryAttempt = 0
+              activeCompatibilityFormat = nil
+          ''',
+              '''        fallbackIndex = 0
+              fallbackFormats = Self.fallbackFormats(for: quality)
+              recoveryAttempt = 0
+              activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''        loadCurrentItem(resumeFrom: 0)
+              loadLyrics(for: song)
+          ''',
+              '''        loadCurrentItem(
+                  compatibilityFormat: activeCompatibilityFormat,
+                  resumeFrom: 0
+              )
+              loadLyrics(for: song)
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''    func localOrRemoteURL(for song: Song, compatibilityFormat: String? = nil) async throws -> URL {
+                  if let local = await OfflineStore.shared.localURL(for: song.id) {
+                      return local
+                  }
+                  guard let client else { throw OpenSubsonicError.invalidServerURL }
+                  return try await client.streamURL(
+                      songID: song.id,
+                      quality: quality,
+                      compatibilityFormat: compatibilityFormat
+                  )
+              }
+          ''',
+              '''    func localOrRemoteURL(for song: Song, compatibilityFormat: String? = nil) async throws -> URL {
+                  if let local = await OfflineStore.shared.localURL(for: song.id) {
+                      return local
+                  }
+                  guard let client else { throw OpenSubsonicError.invalidServerURL }
+                  return try await client.streamURL(
+                      songID: song.id,
+                      quality: quality,
+                      compatibilityFormat: compatibilityFormat
+                  )
+              }
+
+              private func playbackResource(
+                  for song: Song,
+                  compatibilityFormat: String?
+              ) async throws -> PlaybackResource {
+                  // An already-downloaded source avoids radio use and is attempted once.
+                  // If AVFoundation rejects it, codec fallbacks bypass the local source and
+                  // request a server-side AAC/MP3 transcode instead of repeatedly decoding it.
+                  if fallbackIndex == 0,
+                     let local = await OfflineStore.shared.localURL(for: song.id) {
+                      return PlaybackResource(
+                          url: local,
+                          mimeType: Self.sourceMIMEType(for: song)
+                      )
+                  }
+                  guard let client else { throw OpenSubsonicError.invalidServerURL }
+                  let url = try await client.streamURL(
+                      songID: song.id,
+                      quality: quality,
+                      compatibilityFormat: compatibilityFormat
+                  )
+                  return PlaybackResource(
+                      url: url,
+                      mimeType: Self.mimeType(
+                          for: compatibilityFormat,
+                          sourceSong: song
+                      )
+                  )
+              }
+
+              private static func initialCompatibilityFormat(for quality: StreamQuality) -> String? {
+                  switch quality {
+                  case .automatic, .aac320: "aac"
+                  case .opus160: "opus"
+                  case .original: "raw"
+                  }
+              }
+
+              private static func fallbackFormats(for quality: StreamQuality) -> [String] {
+                  switch quality {
+                  case .automatic, .aac320:
+                      ["mp3", "raw"]
+                  case .opus160:
+                      ["aac", "mp3", "raw"]
+                  case .original:
+                      ["aac", "mp3"]
+                  }
+              }
+
+              private static func mimeType(
+                  for compatibilityFormat: String?,
+                  sourceSong song: Song
+              ) -> String? {
+                  switch compatibilityFormat?.lowercased() {
+                  case "aac": "audio/aac"
+                  case "mp3": "audio/mpeg"
+                  case "opus": "audio/ogg; codecs=opus"
+                  case "raw", nil: sourceMIMEType(for: song)
+                  default: song.contentType
+                  }
+              }
+
+              private static func sourceMIMEType(for song: Song) -> String? {
+                  switch song.suffix?.lowercased() {
+                  case "flac": "audio/flac"
+                  case "opus": "audio/ogg; codecs=opus"
+                  case "ogg", "oga": song.contentType ?? "audio/ogg"
+                  case "mp3": "audio/mpeg"
+                  case "aac": "audio/aac"
+                  case "m4a", "m4b", "mp4", "alac": "audio/mp4"
+                  case "wav", "wave": "audio/wav"
+                  case "aif", "aiff": "audio/aiff"
+                  default: song.contentType
+                  }
+              }
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''    private func loadCurrentItem(
+                  compatibilityFormat: String? = nil,
+                  resumeFrom requestedPosition: TimeInterval? = nil
+              ) {
+          ''',
+              '''    private func restartPlaybackPlan(for song: Song, resumeFrom: TimeInterval) {
+                  fallbackIndex = 0
+                  fallbackFormats = Self.fallbackFormats(for: quality)
+                  activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
+                  loadCurrentItem(
+                      compatibilityFormat: activeCompatibilityFormat,
+                      resumeFrom: resumeFrom
+                  )
+              }
+
+              private func loadCurrentItem(
+                  compatibilityFormat: String? = nil,
+                  resumeFrom requestedPosition: TimeInterval? = nil
+              ) {
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''                let url = try await self.localOrRemoteURL(
+                      for: song,
+                      compatibilityFormat: compatibilityFormat
+                  )
+                  guard !Task.isCancelled, self.currentSong?.id == song.id else { return }
+                  let mimeType: String?
+                  switch compatibilityFormat {
+                  case "aac": mimeType = "audio/aac"
+                  case "mp3": mimeType = "audio/mpeg"
+                  default: mimeType = song.contentType
+                  }
+                  self.replacePlayerItem(
+                      url: url,
+                      mimeType: mimeType,
+                      resumePosition: resumePosition
+                  )
+          ''',
+              '''                let resource = try await self.playbackResource(
+                      for: song,
+                      compatibilityFormat: compatibilityFormat
+                  )
+                  guard !Task.isCancelled, self.currentSong?.id == song.id else { return }
+                  self.replacePlayerItem(
+                      url: resource.url,
+                      mimeType: resource.mimeType,
+                      resumePosition: resumePosition
+                  )
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''        item.preferredForwardBufferDuration = 20
+              item.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+          ''',
+              '''        // A larger contiguous buffer reduces radio wakeups. Paused playback
+              // must not spend power extending a network buffer.
+              item.preferredForwardBufferDuration = ProcessInfo.processInfo.isLowPowerModeEnabled
+                  ? 45
+                  : 30
+              item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+          '''
+          )
+
+          replace_once(
+              audio,
+              '''                if self.currentSong != nil {
+                      self.loadCurrentItem(resumeFrom: self.elapsed)
+                  }
+          ''',
+              '''                if let song = self.currentSong {
+                      self.restartPlaybackPlan(for: song, resumeFrom: self.elapsed)
+                  }
+          '''
+          )
+
+          client = Path("BuFi/Core/OpenSubsonicClient.swift")
+          replace_once(
+              client,
+              '''        let requestedBitRate: Int?
+              if compatibilityFormat != nil {
+                  requestedBitRate = 320
+              } else if let value = quality.parameters["maxBitRate"], let bitRate = Int(value), bitRate > 0 {
+                  requestedBitRate = bitRate
+              } else {
+                  requestedBitRate = nil
+              }
+          ''',
+              '''        let requestedBitRate: Int?
+              if let compatibilityFormat {
+                  switch compatibilityFormat.lowercased() {
+                  case "aac":
+                      requestedBitRate = quality == .aac320 ? 320 : 256
+                  case "opus":
+                      requestedBitRate = 160
+                  case "mp3":
+                      requestedBitRate = 256
+                  case "raw":
+                      requestedBitRate = nil
+                  default:
+                      requestedBitRate = 256
+                  }
+              } else if let value = quality.parameters["maxBitRate"], let bitRate = Int(value), bitRate > 0 {
+                  requestedBitRate = bitRate
+              } else {
+                  requestedBitRate = nil
+              }
+          '''
+          )
+
+          settings = Path("BuFi/UI/SettingsView.swift")
+          replace_once(
+              settings,
+              '''                    Picker("음질", selection: $audio.quality) {
+                          ForEach(StreamQuality.allCases) { quality in
+                              Text(quality.title).tag(quality)
+                          }
+                      }
+                      .tint(Color(uiColor: .secondaryLabel))
+          ''',
+              '''                    Picker("음질", selection: $audio.quality) {
+                          ForEach(StreamQuality.allCases) { quality in
+                              Text(quality.title).tag(quality)
+                          }
+                      }
+                      .tint(Color(uiColor: .secondaryLabel))
+                      Text("자동 음질은 FLAC·Opus·Vorbis 등 고부하 원본을 서버에서 AAC 256kbps로 변환해 기기 배터리 사용량을 줄입니다. 원본 무손실은 원본 재생을 먼저 시도하고 실패하면 AAC·MP3로 전환합니다.")
+                          .font(.footnote)
+                          .foregroundStyle(.secondary)
+          '''
+          )
+
+          translations = {
+              "ko": "자동 음질은 FLAC·Opus·Vorbis 등 고부하 원본을 서버에서 AAC 256kbps로 변환해 기기 배터리 사용량을 줄입니다. 원본 무손실은 원본 재생을 먼저 시도하고 실패하면 AAC·MP3로 전환합니다.",
+              "en": "Automatic quality asks the server to convert demanding FLAC, Opus, Vorbis, and similar sources to AAC 256 kbps to reduce device battery use. Original Lossless tries the source first, then falls back to AAC and MP3.",
+              "ja": "自動音質では、FLAC・Opus・Vorbis など負荷の高い原音をサーバー側で AAC 256kbps に変換し、端末のバッテリー消費を抑えます。オリジナルロスレスは原音を先に試し、失敗時は AAC・MP3 に切り替えます。",
+          }
+          key = translations["ko"]
+          for locale, value in translations.items():
+              path = Path(f"BuFi/Resources/{locale}.lproj/Localizable.strings")
+              text = path.read_text()
+              escaped_key = key.replace('"', '\\"')
+              escaped_value = value.replace('"', '\\"')
+              entry = f'"{escaped_key}" = "{escaped_value}";'
+              if entry not in text:
+                  path.write_text(text.rstrip() + "\n" + entry + "\n")
+          PY
+
+          git diff --check
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Playback/AudioEngine.swift BuFi/Core/OpenSubsonicClient.swift BuFi/UI/SettingsView.swift BuFi/Resources/*.lproj/Localizable.strings
+          git commit -m "playback: add low-power FLAC and Opus routing"
+          git push origin HEAD:playback/low-power-codecs
