@@ -24,7 +24,7 @@ struct PlayerView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(song)
-                            nowPlayingPager(song, availableHeight: proxy.size.height)
+                            nowPlayingPager(song, availableWidth: proxy.size.width, availableHeight: proxy.size.height)
                             progress
                             transport
                             utilityRow(song)
@@ -178,12 +178,16 @@ struct PlayerView: View {
         .frame(height: 58)
     }
 
-    private func nowPlayingPager(_ song: Song, availableHeight: CGFloat) -> some View {
-        let edge = min(UIScreen.main.bounds.width - 44, max(264, availableHeight * 0.47))
+    /// 앨범 아트 + 메타데이터를 함께 페이징하는 뷰. TabView 자체가 좌우 스와이프 전환을
+    /// 담당하므로, 여기에 별도의 `.animation(value: artworkPage)`를 얹지 않는다.
+    /// (제스처 기반 페이징 애니메이션과 암시적 애니메이션이 겹치면 전환이 두 번 겹쳐
+    /// 재생되며 끊기는 현상이 있었음 — 실제 버그였던 부분.)
+    private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
+        let edge = min(availableWidth - 44, max(264, availableHeight * 0.47))
         let songs = audio.queue.isEmpty ? [song] : audio.queue
 
         return TabView(selection: $artworkPage) {
-            ForEach(Array(songs.enumerated()), id: \.offset) { index, item in
+            ForEach(Array(songs.enumerated()), id: \.element.id) { index, item in
                 VStack(spacing: 0) {
                     ArtworkView(
                         coverArt: item.coverArt,
@@ -195,7 +199,6 @@ struct PlayerView: View {
                         }
                     )
                     .frame(width: edge, height: edge)
-                    .shadow(color: .black.opacity(0.34), radius: 25, y: 15)
                     .padding(.horizontal, 4)
                     .padding(.top, 13)
                     .padding(.bottom, 26)
@@ -215,66 +218,6 @@ struct PlayerView: View {
                   audio.queue.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
         }
-        .animation(motionEnabled ? BuFiMotion.player : .none, value: artworkPage)
-    }
-
-    private func artwork(_ song: Song, availableHeight: CGFloat) -> some View {
-        let edge = min(UIScreen.main.bounds.width - 44, max(264, availableHeight * 0.47))
-        let songs = audio.queue.isEmpty ? [song] : audio.queue
-
-        return TabView(selection: $artworkPage) {
-            ForEach(Array(songs.enumerated()), id: \.offset) { index, item in
-                ArtworkView(
-                    coverArt: item.coverArt,
-                    size: edge,
-                    cornerRadius: 14,
-                    onPalette: { nextPalette in
-                        guard index == artworkPage else { return }
-                        withAnimation(.easeInOut(duration: 0.34)) {
-                            palette = nextPalette
-                        }
-                    }
-                )
-                .frame(width: edge, height: edge)
-                .shadow(color: .black.opacity(0.38), radius: 28, y: 17)
-                .padding(.horizontal, 4)
-                .tag(index)
-            }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .frame(width: edge, height: edge)
-        .contentShape(Rectangle())
-        .onChange(of: artworkPage) { _, index in
-            guard index != audio.queueIndex,
-                  audio.queue.indices.contains(index) else { return }
-            audio.playQueueItem(at: index)
-        }
-        .padding(.top, 13)
-        .padding(.bottom, 28)
-        .animation(
-            motionEnabled ? .easeInOut(duration: 0.36) : .none,
-            value: artworkPage
-        )
-    }
-
-    private func metadata(_ song: Song) -> some View {
-        ZStack(alignment: .leading) {
-            metadataContent(song)
-                .id(song.id)
-                .transition(
-                    motionEnabled
-                        ? .asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .move(edge: .top).combined(with: .opacity)
-                        )
-                        : .opacity
-                )
-        }
-        .animation(
-            motionEnabled ? .easeInOut(duration: 0.32) : .none,
-            value: song.id
-        )
-        .padding(.bottom, 18)
     }
 
     private func metadataContent(_ song: Song) -> some View {
@@ -441,6 +384,8 @@ struct PlayerView: View {
                 Button {
                     openFullLyrics()
                 } label: {
+                    // 안쪽: 같은 곡 안에서 가사 줄이 넘어갈 때는 위/아래로.
+                    // 바깥쪽: 곡 자체가 바뀔 때는 앨범 아트와 같은 방향으로 좌/우 슬라이드.
                     ZStack(alignment: .topLeading) {
                         miniLyricsWindow
                             .id(audio.activeLyricIndex)
@@ -456,9 +401,22 @@ struct PlayerView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 205, alignment: .top)
                     .clipped()
+                    .id(audio.currentSong?.id)
+                    .transition(
+                        motionEnabled
+                            ? .asymmetric(
+                                insertion: .move(edge: transitionDirection > 0 ? .trailing : .leading).combined(with: .opacity),
+                                removal: .move(edge: transitionDirection > 0 ? .leading : .trailing).combined(with: .opacity)
+                            )
+                            : .opacity
+                    )
                     .animation(
                         motionEnabled ? BuFiMotion.fade : .none,
                         value: audio.activeLyricIndex
+                    )
+                    .animation(
+                        motionEnabled ? BuFiMotion.player : .none,
+                        value: audio.currentSong?.id
                     )
                 }
                 .buttonStyle(.plain)
@@ -874,7 +832,7 @@ private struct QueueView: View {
                     ContentUnavailableView("재생목록이 비어 있습니다", systemImage: "list.bullet")
                 } else {
                     List {
-                        ForEach(Array(audio.queue.enumerated()), id: \.offset) { index, song in
+                        ForEach(Array(audio.queue.enumerated()), id: \.element.id) { index, song in
                             Button {
                                 audio.playQueueItem(at: index)
                                 dismiss()
