@@ -24,23 +24,30 @@ actor OfflineStore {
 
     init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        directory = root.appendingPathComponent("OfflineMusic", isDirectory: true)
-        indexURL = directory.appendingPathComponent("index.json")
+        let offlineDirectory = root.appendingPathComponent("OfflineMusic", isDirectory: true)
+        let offlineIndexURL = offlineDirectory.appendingPathComponent("index.json")
+
+        directory = offlineDirectory
+        indexURL = offlineIndexURL
+
         try? FileManager.default.createDirectory(
-            at: directory,
+            at: offlineDirectory,
             withIntermediateDirectories: true,
             attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
         )
-        if let data = try? Data(contentsOf: indexURL),
+
+        let restoredEntries: [String: Entry]
+        if let data = try? Data(contentsOf: offlineIndexURL),
            let decoded = try? JSONDecoder().decode([String: Entry].self, from: data) {
-            entries = decoded.filter { _, entry in
+            restoredEntries = decoded.filter { _, entry in
                 FileManager.default.fileExists(
-                    atPath: directory.appendingPathComponent(entry.fileName).path
+                    atPath: offlineDirectory.appendingPathComponent(entry.fileName).path
                 )
             }
         } else {
-            entries = [:]
+            restoredEntries = [:]
         }
+        entries = restoredEntries
     }
 
     func localURL(for songID: String) -> URL? {
@@ -200,7 +207,10 @@ actor OfflineStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(entries)
-        try data.write(to: indexURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try data.write(
+            to: indexURL,
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        )
     }
 
     private func legacyFileURL(songID: String) -> URL {
