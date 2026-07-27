@@ -71,9 +71,10 @@ final class AppModel: ObservableObject {
         refreshInFlight = true
         if !silent { isRefreshing = true }
         defer {
-            guard generation == sessionGeneration else { return }
-            refreshInFlight = false
-            if !silent { isRefreshing = false }
+            if generation == sessionGeneration {
+                refreshInFlight = false
+                if !silent { isRefreshing = false }
+            }
         }
 
         do {
