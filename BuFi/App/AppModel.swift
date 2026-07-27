@@ -14,6 +14,11 @@ final class AppModel: ObservableObject {
         let expiresAt: Date
     }
 
+    private struct DetailRequest<Value: Sendable> {
+        let token: UUID
+        let task: Task<Value, Error>
+    }
+
     @Published private(set) var sessionState: SessionState = .signedOut
     @Published private(set) var home = HomeSnapshot.empty
     @Published private(set) var searchResults = SearchResults.empty
@@ -30,9 +35,13 @@ final class AppModel: ObservableObject {
     private var lastFullRefresh = Date.distantPast
     private var sessionGeneration = 0
     private var searchGeneration = 0
+    private var homeRevision = 0
     private var albumDetailCache: [String: CachedValue<AlbumDetail>] = [:]
     private var playlistDetailCache: [String: CachedValue<PlaylistDetail>] = [:]
     private var artistDetailCache: [String: CachedValue<ArtistDetail>] = [:]
+    private var albumDetailTasks: [String: DetailRequest<AlbumDetail>] = [:]
+    private var playlistDetailTasks: [String: DetailRequest<PlaylistDetail>] = [:]
+    private var artistDetailTasks: [String: DetailRequest<ArtistDetail>] = [:]
     private static let starDateFormatter = ISO8601DateFormatter()
 
     init() {
@@ -77,6 +86,8 @@ final class AppModel: ObservableObject {
     func refresh(forceFull: Bool = false, silent: Bool = false) async {
         guard let client, !refreshInFlight else { return }
         let generation = sessionGeneration
+        let revision = homeRevision
+        let previousHome = home
         refreshInFlight = true
         if !silent { isRefreshing = true }
         defer {
@@ -92,11 +103,12 @@ final class AppModel: ObservableObject {
                 isHomeEmpty
             let snapshot: HomeSnapshot
             if needsFullRefresh {
-                snapshot = try await client.home()
+                snapshot = try await client.home(from: isHomeEmpty ? nil : previousHome)
             } else {
-                snapshot = try await client.incrementalHome(from: home)
+                snapshot = try await client.incrementalHome(from: previousHome)
             }
             guard generation == sessionGeneration, self.client === client else { return }
+            guard revision == homeRevision else { return }
             if needsFullRefresh { lastFullRefresh = Date() }
             if homeChanged(snapshot) { home = snapshot }
         } catch is CancellationError {
@@ -183,8 +195,35 @@ final class AppModel: ObservableObject {
             return cached.value
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let value = try await client.album(id: id)
-        guard self.client === client else { throw CancellationError() }
+        let generation = sessionGeneration
+        let request: DetailRequest<AlbumDetail>
+        if let existing = albumDetailTasks[id] {
+            request = existing
+        } else {
+            let created = DetailRequest(
+                token: UUID(),
+                task: Task { try await client.album(id: id) }
+            )
+            albumDetailTasks[id] = created
+            request = created
+        }
+        let value: AlbumDetail
+        do {
+            value = try await request.task.value
+        } catch {
+            if generation == sessionGeneration,
+               albumDetailTasks[id]?.token == request.token {
+                albumDetailTasks[id] = nil
+            }
+            throw error
+        }
+        guard generation == sessionGeneration, self.client === client else {
+            throw CancellationError()
+        }
+        guard albumDetailTasks[id]?.token == request.token else {
+            throw CancellationError()
+        }
+        albumDetailTasks[id] = nil
         albumDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(5 * 60)
@@ -197,8 +236,35 @@ final class AppModel: ObservableObject {
             return cached.value
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let value = try await client.playlist(id: id)
-        guard self.client === client else { throw CancellationError() }
+        let generation = sessionGeneration
+        let request: DetailRequest<PlaylistDetail>
+        if let existing = playlistDetailTasks[id] {
+            request = existing
+        } else {
+            let created = DetailRequest(
+                token: UUID(),
+                task: Task { try await client.playlist(id: id) }
+            )
+            playlistDetailTasks[id] = created
+            request = created
+        }
+        let value: PlaylistDetail
+        do {
+            value = try await request.task.value
+        } catch {
+            if generation == sessionGeneration,
+               playlistDetailTasks[id]?.token == request.token {
+                playlistDetailTasks[id] = nil
+            }
+            throw error
+        }
+        guard generation == sessionGeneration, self.client === client else {
+            throw CancellationError()
+        }
+        guard playlistDetailTasks[id]?.token == request.token else {
+            throw CancellationError()
+        }
+        playlistDetailTasks[id] = nil
         playlistDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(5 * 60)
@@ -211,8 +277,35 @@ final class AppModel: ObservableObject {
             return cached.value
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let value = try await client.artist(id: id, name: name)
-        guard self.client === client else { throw CancellationError() }
+        let generation = sessionGeneration
+        let request: DetailRequest<ArtistDetail>
+        if let existing = artistDetailTasks[id] {
+            request = existing
+        } else {
+            let created = DetailRequest(
+                token: UUID(),
+                task: Task { try await client.artist(id: id, name: name) }
+            )
+            artistDetailTasks[id] = created
+            request = created
+        }
+        let value: ArtistDetail
+        do {
+            value = try await request.task.value
+        } catch {
+            if generation == sessionGeneration,
+               artistDetailTasks[id]?.token == request.token {
+                artistDetailTasks[id] = nil
+            }
+            throw error
+        }
+        guard generation == sessionGeneration, self.client === client else {
+            throw CancellationError()
+        }
+        guard artistDetailTasks[id]?.token == request.token else {
+            throw CancellationError()
+        }
+        artistDetailTasks[id] = nil
         artistDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(15 * 60)
@@ -244,6 +337,7 @@ final class AppModel: ObservableObject {
         guard let client else { return }
         let enabled = !album.isStarred
         albumDetailCache[album.id] = nil
+        albumDetailTasks.removeValue(forKey: album.id)?.task.cancel()
         updateStarredAlbum(album, enabled: enabled)
         do {
             try await client.star(id: album.id, target: .album, enabled: enabled)
@@ -258,6 +352,7 @@ final class AppModel: ObservableObject {
         guard let client else { return }
         let enabled = !artist.isStarred
         artistDetailCache[artist.id] = nil
+        artistDetailTasks.removeValue(forKey: artist.id)?.task.cancel()
         updateStarredArtist(artist, enabled: enabled)
         do {
             try await client.star(id: artist.id, target: .artist, enabled: enabled)
@@ -287,6 +382,7 @@ final class AppModel: ObservableObject {
         snapshot.starredSongs.removeAll { $0.id == song.id }
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
         snapshot.randomSongs = snapshot.randomSongs.map { $0.id == song.id ? updated : $0 }
+        homeRevision &+= 1
         home = snapshot
     }
 
@@ -298,6 +394,7 @@ final class AppModel: ObservableObject {
         if enabled { snapshot.starredAlbums.insert(updated, at: 0) }
         snapshot.recentAlbums = snapshot.recentAlbums.map { $0.id == album.id ? updated : $0 }
         snapshot.randomAlbums = snapshot.randomAlbums.map { $0.id == album.id ? updated : $0 }
+        homeRevision &+= 1
         home = snapshot
     }
 
@@ -308,10 +405,17 @@ final class AppModel: ObservableObject {
         snapshot.starredArtists.removeAll { $0.id == artist.id }
         if enabled { snapshot.starredArtists.insert(updated, at: 0) }
         snapshot.artists = snapshot.artists.map { $0.id == artist.id ? updated : $0 }
+        homeRevision &+= 1
         home = snapshot
     }
 
     private func clearDetailCaches() {
+        albumDetailTasks.values.forEach { $0.task.cancel() }
+        playlistDetailTasks.values.forEach { $0.task.cancel() }
+        artistDetailTasks.values.forEach { $0.task.cancel() }
+        albumDetailTasks.removeAll(keepingCapacity: false)
+        playlistDetailTasks.removeAll(keepingCapacity: false)
+        artistDetailTasks.removeAll(keepingCapacity: false)
         albumDetailCache.removeAll(keepingCapacity: false)
         playlistDetailCache.removeAll(keepingCapacity: false)
         artistDetailCache.removeAll(keepingCapacity: false)
@@ -345,6 +449,9 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         searchTask?.cancel()
         refreshTask?.cancel()
+        refreshInFlight = false
+        isRefreshing = false
+        isSearching = false
         clearDetailCaches()
         sessionState = .connecting
         errorMessage = nil
@@ -360,6 +467,7 @@ final class AppModel: ObservableObject {
             await OfflineStore.shared.activate(accountScope: accountScope)
             await ArtworkStore.shared.activate(accountScope: accountScope)
             guard generation == sessionGeneration else { return }
+            if persist { try secureStore.save(credentials) }
 
             self.client = client
             self.home = snapshot
@@ -372,12 +480,17 @@ final class AppModel: ObservableObject {
                     self?.updateStarredSong(song, enabled: enabled)
                 }
             )
-            if persist { try secureStore.save(credentials) }
         } catch is CancellationError {
             return
         } catch {
             guard generation == sessionGeneration else { return }
             client = nil
+            home = .empty
+            searchResults = .empty
+            serverVersion = ""
+            refreshInFlight = false
+            isRefreshing = false
+            isSearching = false
             sessionState = .signedOut
             errorMessage = error.localizedDescription
             AudioEngine.shared.configure(client: nil)

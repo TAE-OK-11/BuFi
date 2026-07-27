@@ -71,8 +71,12 @@ actor ArtworkStore {
               Self.allowsDiscretionaryWork else {
             return
         }
+        var seen = Set<String>()
+        let candidates = urls.filter { url in
+            seen.insert(ArtworkPipelineDelegate.normalizedCacheKey(for: url)).inserted
+        }.prefix(2)
         await withTaskGroup(of: Void.self) { group in
-            for url in urls.prefix(2) {
+            for url in candidates {
                 group.addTask(priority: .utility) { [pipeline] in
                     let request = ImageRequest(
                         url: url,

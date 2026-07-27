@@ -17,6 +17,12 @@ actor OfflineStore {
         let byteCount: Int64
     }
 
+    private struct InFlightDownload {
+        let scopeGeneration: UInt64
+        let songGeneration: UInt64
+        let task: Task<DownloadResult, Error>
+    }
+
     private let rootDirectory: URL
     private let wifiOnlySession: URLSession
     private let unrestrictedSession: URLSession
@@ -24,9 +30,12 @@ actor OfflineStore {
     private var indexURL: URL?
     private var activeScope: String?
     private var entries: [String: Entry] = [:]
-    private var inFlight: [String: Task<DownloadResult, Error>] = [:]
+    private var inFlight: [String: InFlightDownload] = [:]
+    private var scopeGeneration: UInt64 = 0
+    private var songGenerations: [String: UInt64] = [:]
     private var indexSaveTask: Task<Void, Never>?
     private var indexIsDirty = false
+    private var indexRetryCount = 0
 
     init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -45,9 +54,12 @@ actor OfflineStore {
     func activate(accountScope: String) {
         guard activeScope != accountScope else { return }
 
-        flushPendingWrites()
-        inFlight.values.forEach { $0.cancel() }
+        flushPendingWrites(retryOnFailure: false)
+        scopeGeneration &+= 1
+        inFlight.values.forEach { $0.task.cancel() }
         inFlight.removeAll()
+        songGenerations.removeAll(keepingCapacity: false)
+        indexRetryCount = 0
 
         let scopedDirectory = rootDirectory.appendingPathComponent(accountScope, isDirectory: true)
         let scopedIndexURL = scopedDirectory.appendingPathComponent("index.json")
@@ -94,7 +106,17 @@ actor OfflineStore {
     }
 
     func downloadedSongs() -> [Song] {
-        entries.values
+        guard let directory else { return [] }
+        let valid = entries.filter { _, entry in
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(entry.fileName).path
+            )
+        }
+        if valid.count != entries.count {
+            entries = valid
+            scheduleIndexPersistence()
+        }
+        return valid.values
             .sorted { $0.downloadedAt > $1.downloadedAt }
             .map(\.song)
     }
@@ -105,21 +127,49 @@ actor OfflineStore {
         }
         if let existing = localURL(for: song.id) { return existing }
 
+        let generation = scopeGeneration
+        let songGeneration = songGenerations[song.id, default: 0]
         let taskKey = scope + ":" + song.id
         if let existingTask = inFlight[taskKey] {
-            return try await existingTask.value.url
+            do {
+                let result = try await existingTask.task.value
+                clearInFlight(
+                    taskKey: taskKey,
+                    scopeGeneration: existingTask.scopeGeneration,
+                    songGeneration: existingTask.songGeneration
+                )
+                guard activeScope == scope,
+                      scopeGeneration == existingTask.scopeGeneration,
+                      songGenerations[song.id, default: 0] == existingTask.songGeneration,
+                      FileManager.default.fileExists(atPath: result.url.path) else {
+                    throw CancellationError()
+                }
+                return result.url
+            } catch {
+                clearInFlight(
+                    taskKey: taskKey,
+                    scopeGeneration: existingTask.scopeGeneration,
+                    songGeneration: existingTask.songGeneration
+                )
+                throw error
+            }
         }
 
         let remote = try await client.downloadURL(songID: song.id)
         guard remote.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
+        guard activeScope == scope,
+              scopeGeneration == generation,
+              songGenerations[song.id, default: 0] == songGeneration else {
+            throw CancellationError()
+        }
         let fileName = Self.fileName(for: song)
         let destination = directory.appendingPathComponent(fileName)
         let wifiOnly = UserDefaults.standard.object(forKey: "offline-wifi-only") as? Bool ?? true
         let session = wifiOnly ? wifiOnlySession : unrestrictedSession
 
-        let task = Task<DownloadResult, Error>(priority: .utility) {
+        let task = Task<DownloadResult, Error>(priority: .utility) { [weak self] in
             let (temporary, response) = try await session.download(from: remote)
             guard let http = response as? HTTPURLResponse else {
                 throw OpenSubsonicError.invalidResponse
@@ -135,71 +185,135 @@ actor OfflineStore {
             let bytes = Int64(values.fileSize ?? 0)
             guard bytes > 0 else { throw URLError(.zeroByteResource) }
 
-            let staging = destination.appendingPathExtension("partial")
+            let staging = directory.appendingPathComponent(
+                fileName + "." + UUID().uuidString + ".partial"
+            )
             try? FileManager.default.removeItem(at: staging)
-            try? FileManager.default.removeItem(at: destination)
             try FileManager.default.moveItem(at: temporary, to: staging)
+            guard let self else {
+                try? FileManager.default.removeItem(at: staging)
+                throw CancellationError()
+            }
+            return try await self.commitDownload(
+                staging: staging,
+                destination: destination,
+                byteCount: bytes,
+                song: song,
+                scope: scope,
+                scopeGeneration: generation,
+                songGeneration: songGeneration
+            )
+        }
+        inFlight[taskKey] = InFlightDownload(
+            scopeGeneration: generation,
+            songGeneration: songGeneration,
+            task: task
+        )
+
+        do {
+            let result = try await task.value
+            clearInFlight(
+                taskKey: taskKey,
+                scopeGeneration: generation,
+                songGeneration: songGeneration
+            )
+            return result.url
+        } catch {
+            clearInFlight(
+                taskKey: taskKey,
+                scopeGeneration: generation,
+                songGeneration: songGeneration
+            )
+            throw error
+        }
+    }
+
+    private func commitDownload(
+        staging: URL,
+        destination: URL,
+        byteCount: Int64,
+        song: Song,
+        scope: String,
+        scopeGeneration generation: UInt64,
+        songGeneration: UInt64
+    ) throws -> DownloadResult {
+        guard activeScope == scope,
+              scopeGeneration == generation,
+              songGenerations[song.id, default: 0] == songGeneration else {
+            try? FileManager.default.removeItem(at: staging)
+            throw CancellationError()
+        }
+
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
             try FileManager.default.moveItem(at: staging, to: destination)
             try? FileManager.default.setAttributes(
                 [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                 ofItemAtPath: destination.path
             )
-            return DownloadResult(url: destination, byteCount: bytes)
-        }
-        inFlight[taskKey] = task
-
-        do {
-            let result = try await task.value
-            inFlight[taskKey] = nil
-            guard activeScope == scope else {
-                try? FileManager.default.removeItem(at: result.url)
-                throw CancellationError()
-            }
             let now = Date()
             entries[song.id] = Entry(
                 song: song,
-                fileName: fileName,
-                byteCount: result.byteCount,
+                fileName: destination.lastPathComponent,
+                byteCount: byteCount,
                 downloadedAt: now,
                 lastAccessedAt: now
             )
             try enforceStorageLimit(keeping: song.id)
             scheduleIndexPersistence()
-            return result.url
+            return DownloadResult(url: destination, byteCount: byteCount)
         } catch {
-            inFlight[taskKey] = nil
-            try? FileManager.default.removeItem(at: destination.appendingPathExtension("partial"))
+            try? FileManager.default.removeItem(at: staging)
             throw error
         }
     }
 
     func remove(songID: String) throws {
         guard let directory else { return }
-        if let entry = entries.removeValue(forKey: songID) {
+        invalidateDownload(songID: songID)
+        defer { scheduleIndexPersistence(immediate: true) }
+        if let entry = entries[songID] {
             let url = directory.appendingPathComponent(entry.fileName)
             if FileManager.default.fileExists(atPath: url.path) {
                 try FileManager.default.removeItem(at: url)
             }
+            entries[songID] = nil
         }
         let legacy = legacyFileURL(songID: songID, directory: directory)
         if FileManager.default.fileExists(atPath: legacy.path) {
             try FileManager.default.removeItem(at: legacy)
         }
-        scheduleIndexPersistence(immediate: true)
     }
 
     func removeAll() throws {
         guard let directory else { return }
-        inFlight.values.forEach { $0.cancel() }
+        scopeGeneration &+= 1
+        inFlight.values.forEach { $0.task.cancel() }
         inFlight.removeAll()
+        songGenerations.removeAll(keepingCapacity: false)
         let files = try FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )
-        for file in files { try FileManager.default.removeItem(at: file) }
-        entries.removeAll()
+        var firstError: Error?
+        for file in files {
+            do {
+                try FileManager.default.removeItem(at: file)
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        entries = entries.reduce(into: [:]) { result, pair in
+            let url = directory.appendingPathComponent(pair.value.fileName)
+            if FileManager.default.fileExists(atPath: url.path) {
+                result[pair.key] = pair.value
+            }
+        }
         scheduleIndexPersistence(immediate: true)
+        if let firstError { throw firstError }
     }
 
     func totalBytes() -> Int64 {
@@ -218,14 +332,32 @@ actor OfflineStore {
     }
 
     func flushPendingWrites() {
+        flushPendingWrites(retryOnFailure: true)
+    }
+
+    private func flushPendingWrites(retryOnFailure: Bool) {
         indexSaveTask?.cancel()
         indexSaveTask = nil
+        persistIndexIfNeeded(retryOnFailure: retryOnFailure)
+    }
+
+    private func persistIndexIfNeeded(retryOnFailure: Bool) {
         guard indexIsDirty else { return }
         do {
             try persistIndex()
             indexIsDirty = false
+            indexRetryCount = 0
         } catch {
-            // Keep the dirty flag so the next lifecycle or mutation retries.
+            guard retryOnFailure else { return }
+            indexRetryCount += 1
+            guard indexRetryCount <= 3 else { return }
+            let delay: Duration
+            switch indexRetryCount {
+            case 1: delay = .seconds(1)
+            case 2: delay = .seconds(2)
+            default: delay = .seconds(4)
+            }
+            scheduleIndexPersistence(retryDelay: delay, resetRetry: false)
         }
     }
 
@@ -242,22 +374,60 @@ actor OfflineStore {
             .sorted { $0.value.lastAccessedAt < $1.value.lastAccessedAt }
         for (id, entry) in candidates where total > limit {
             let url = directory.appendingPathComponent(entry.fileName)
-            try? FileManager.default.removeItem(at: url)
-            entries[id] = nil
-            total -= entry.byteCount
+            do {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+                entries[id] = nil
+                total -= entry.byteCount
+            } catch {
+                // Keep the index entry when deletion fails so storage accounting
+                // remains truthful and a later cleanup can retry.
+            }
         }
     }
 
-    private func scheduleIndexPersistence(immediate: Bool = false) {
+    private func scheduleIndexPersistence(
+        immediate: Bool = false,
+        retryDelay: Duration? = nil,
+        resetRetry: Bool = true
+    ) {
         indexIsDirty = true
+        if resetRetry { indexRetryCount = 0 }
         indexSaveTask?.cancel()
+        let generation = scopeGeneration
+        let delay: Duration = retryDelay ?? (immediate ? .zero : .milliseconds(500))
         indexSaveTask = Task { [weak self] in
-            if !immediate {
-                try? await Task.sleep(for: .milliseconds(500))
-            }
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            await self?.flushPendingWrites()
+            await self?.flushScheduledIndex(for: generation)
         }
+    }
+
+    private func flushScheduledIndex(for generation: UInt64) {
+        guard generation == scopeGeneration else { return }
+        indexSaveTask = nil
+        persistIndexIfNeeded(retryOnFailure: true)
+    }
+
+    private func invalidateDownload(songID: String) {
+        songGenerations[songID, default: 0] &+= 1
+        guard let activeScope else { return }
+        let taskKey = activeScope + ":" + songID
+        inFlight.removeValue(forKey: taskKey)?.task.cancel()
+    }
+
+    private func clearInFlight(
+        taskKey: String,
+        scopeGeneration: UInt64,
+        songGeneration: UInt64
+    ) {
+        guard let current = inFlight[taskKey],
+              current.scopeGeneration == scopeGeneration,
+              current.songGeneration == songGeneration else {
+            return
+        }
+        inFlight[taskKey] = nil
     }
 
     private func persistIndex() throws {
@@ -314,7 +484,7 @@ actor OfflineStore {
         configuration.urlCache = nil
         return URLSession(
             configuration: configuration,
-            delegate: HTTPSOnlyDownloadDelegate(),
+            delegate: HTTPSOnlyURLSessionDelegate(),
             delegateQueue: nil
         )
     }
@@ -332,21 +502,5 @@ actor OfflineStore {
                 try? FileManager.default.removeItem(at: file)
             }
         }
-    }
-}
-
-private final class HTTPSOnlyDownloadDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        guard request.url?.scheme?.lowercased() == "https" else {
-            completionHandler(nil)
-            return
-        }
-        completionHandler(request)
     }
 }
