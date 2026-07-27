@@ -23,6 +23,8 @@ final class AppModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var lastFullRefresh = Date.distantPast
+    private var sessionGeneration = 0
+    private var searchGeneration = 0
     private static let starDateFormatter = ISO8601DateFormatter()
 
     init() {
@@ -46,12 +48,16 @@ final class AppModel: ObservableObject {
     }
 
     func logout() {
+        sessionGeneration += 1
+        searchGeneration += 1
         searchTask?.cancel()
         refreshTask?.cancel()
         secureStore.delete()
         client = nil
         home = .empty
         searchResults = .empty
+        isSearching = false
+        isRefreshing = false
         refreshInFlight = false
         lastFullRefresh = .distantPast
         sessionState = .signedOut
@@ -61,9 +67,11 @@ final class AppModel: ObservableObject {
 
     func refresh(forceFull: Bool = false, silent: Bool = false) async {
         guard let client, !refreshInFlight else { return }
+        let generation = sessionGeneration
         refreshInFlight = true
         if !silent { isRefreshing = true }
         defer {
+            guard generation == sessionGeneration else { return }
             refreshInFlight = false
             if !silent { isRefreshing = false }
         }
@@ -75,19 +83,23 @@ final class AppModel: ObservableObject {
             let snapshot: HomeSnapshot
             if needsFullRefresh {
                 snapshot = try await client.home()
-                lastFullRefresh = Date()
             } else {
                 snapshot = try await client.incrementalHome(from: home)
             }
-            if homeChanged(snapshot) {
-                home = snapshot
-            }
+            guard generation == sessionGeneration, self.client === client else { return }
+            if needsFullRefresh { lastFullRefresh = Date() }
+            if homeChanged(snapshot) { home = snapshot }
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == sessionGeneration else { return }
             if !silent { errorMessage = error.localizedDescription }
         }
     }
 
     func search(_ rawQuery: String) {
+        searchGeneration += 1
+        let generation = searchGeneration
         searchTask?.cancel()
         let query = rawQuery
             .precomposedStringWithCompatibilityMapping
@@ -102,42 +114,53 @@ final class AppModel: ObservableObject {
 
         isSearching = true
         searchTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(260))
-            guard !Task.isCancelled else { return }
             do {
+                try await Task.sleep(for: .milliseconds(260))
+                try Task.checkCancellation()
                 let value = try await client.search(query)
-                guard !Task.isCancelled else { return }
-                self?.searchResults = value
-                self?.isSearching = false
+                try Task.checkCancellation()
+                guard let self, generation == self.searchGeneration, self.client === client else { return }
+                self.searchResults = value
+                self.isSearching = false
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled else { return }
-                self?.isSearching = false
-                self?.errorMessage = error.localizedDescription
+                guard let self, generation == self.searchGeneration, self.client === client else { return }
+                self.isSearching = false
+                self.errorMessage = error.localizedDescription
             }
         }
     }
 
     func searchImmediately(_ rawQuery: String) async {
+        searchGeneration += 1
+        let generation = searchGeneration
         searchTask?.cancel()
         let query = rawQuery
             .precomposedStringWithCompatibilityMapping
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, let client else {
             searchResults = .empty
+            isSearching = false
             return
         }
         isSearching = true
-        defer { isSearching = false }
         do {
-            searchResults = try await client.search(query)
+            let value = try await client.search(query)
+            guard generation == searchGeneration, self.client === client else { return }
+            searchResults = value
+            isSearching = false
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == searchGeneration, self.client === client else { return }
+            isSearching = false
             errorMessage = error.localizedDescription
         }
     }
 
     func clearSearch() {
+        searchGeneration += 1
         searchTask?.cancel()
         isSearching = false
         searchResults = .empty
@@ -171,6 +194,7 @@ final class AppModel: ObservableObject {
         do {
             try await client.star(id: song.id, target: .song, enabled: enabled)
         } catch {
+            guard self.client === client else { return }
             updateStarredSong(song, enabled: !enabled)
             AudioEngine.shared.updateStarred(songID: song.id, enabled: !enabled)
             errorMessage = error.localizedDescription
@@ -184,6 +208,7 @@ final class AppModel: ObservableObject {
         do {
             try await client.star(id: album.id, target: .album, enabled: enabled)
         } catch {
+            guard self.client === client else { return }
             updateStarredAlbum(album, enabled: !enabled)
             errorMessage = error.localizedDescription
         }
@@ -196,6 +221,7 @@ final class AppModel: ObservableObject {
         do {
             try await client.star(id: artist.id, target: .artist, enabled: enabled)
         } catch {
+            guard self.client === client else { return }
             updateStarredArtist(artist, enabled: !enabled)
             errorMessage = error.localizedDescription
         }
@@ -205,7 +231,10 @@ final class AppModel: ObservableObject {
         guard let client else { return }
         do {
             _ = try await OfflineStore.shared.download(song: song, client: client)
+        } catch is CancellationError {
+            return
         } catch {
+            guard self.client === client else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -258,15 +287,26 @@ final class AppModel: ObservableObject {
     }
 
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
+        sessionGeneration += 1
+        let generation = sessionGeneration
+        searchGeneration += 1
+        searchTask?.cancel()
+        refreshTask?.cancel()
         sessionState = .connecting
         errorMessage = nil
         do {
             let client = try OpenSubsonicClient(credentials: credentials)
-            let status = try await client.ping()
-            let snapshot = try await client.home()
+            async let statusRequest = client.ping()
+            async let snapshotRequest = client.home()
+            let (status, snapshot) = try await (statusRequest, snapshotRequest)
+            try Task.checkCancellation()
+            guard generation == sessionGeneration else { return }
+
             let accountScope = AccountScope.identifier(for: credentials)
             await OfflineStore.shared.activate(accountScope: accountScope)
             await ArtworkStore.shared.activate(accountScope: accountScope)
+            guard generation == sessionGeneration else { return }
+
             self.client = client
             self.home = snapshot
             self.lastFullRefresh = Date()
@@ -279,7 +319,10 @@ final class AppModel: ObservableObject {
                 }
             )
             if persist { try secureStore.save(credentials) }
+        } catch is CancellationError {
+            return
         } catch {
+            guard generation == sessionGeneration else { return }
             client = nil
             sessionState = .signedOut
             errorMessage = error.localizedDescription
