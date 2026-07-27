@@ -35,18 +35,22 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
-      - name: Compile Release
+      - name: Compile cleaned sources
         id: build
         continue-on-error: true
         run: |
           set -o pipefail
           xcodebuild \
+            -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
+            SWIFT_LTO=NO \
+            LLVM_LTO=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build 2>&1 | tee .cleanup-build.log
 
       - name: Rescan unused code
@@ -78,7 +82,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ "${{ steps.build.outcome }}" = "success" ]; then
-            rm -f .cleanup-build.log
+            git rm -f .cleanup-build.log || true
             git add -A BuFi .audit/periphery-after.txt .audit/size-after.txt
             git commit -m "refactor: remove dead code and consolidate duplicated UI"
           else
