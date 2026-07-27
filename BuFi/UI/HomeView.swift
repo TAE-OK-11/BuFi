@@ -95,27 +95,40 @@ struct HomeView: View {
 
     @ViewBuilder
     private var filteredContent: some View {
-        switch filter {
-        case .all:
-            quickCarousel
-            albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
-            songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
-            playlistSection(showEmpty: false)
-            albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
-            if !model.home.starredAlbums.isEmpty {
-                albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+        Group {
+            switch filter {
+            case .all:
+                VStack(alignment: .leading, spacing: 28) {
+                    quickCarousel
+                    albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
+                    songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
+                    playlistSection(showEmpty: false)
+                    albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
+                    if !model.home.starredAlbums.isEmpty {
+                        albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+                    }
+                }
+            case .music:
+                VStack(alignment: .leading, spacing: 28) {
+                    quickCarousel
+                    albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
+                    songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
+                    albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
+                    if !model.home.starredAlbums.isEmpty {
+                        albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+                    }
+                }
+            case .playlists:
+                playlistSection(showEmpty: true)
             }
-        case .music:
-            quickCarousel
-            albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
-            songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
-            albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
-            if !model.home.starredAlbums.isEmpty {
-                albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
-            }
-        case .playlists:
-            playlistSection(showEmpty: true)
         }
+        // 필터가 바뀔 때 컨텐츠가 뚝 끊기지 않고 부드럽게
+        // 사라졌다 나타나도록 identity 전환 + transition을 부여.
+        // filterBar의 withAnimation(.interactiveSpring)이 그대로 이 전환에도 적용됨.
+        .id(filter)
+        .transition(
+            .opacity.combined(with: .move(edge: .leading))
+        )
     }
 
     private var quickCarousel: some View {
