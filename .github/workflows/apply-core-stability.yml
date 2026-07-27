@@ -22,25 +22,13 @@ jobs:
           ref: core/stability-optimization
           fetch-depth: 0
 
-      - name: Apply core patch
+      - name: Apply reviewed core fixes
         id: patch
         continue-on-error: true
         run: |
           set -o pipefail
           {
-            python3 Scripts/apply-core-stability.py
-            python3 <<'PY'
-          from pathlib import Path
-          for name in [
-              "BuFi/App/AppModel.swift",
-              "BuFi/Core/ArtworkStore.swift",
-              "BuFi/Core/HTTPContentDecoder.swift",
-              "BuFi/Core/OfflineStore.swift",
-              "BuFi/Core/OpenSubsonicClient.swift",
-          ]:
-              path = Path(name)
-              path.write_text(path.read_text().rstrip() + "\n")
-          PY
+            python3 Scripts/apply-core-review-fixes.py
             git diff --check
           } 2>&1 | tee .core-patch.log
 
@@ -50,13 +38,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ "${{ steps.patch.outcome }}" = "success" ]; then
-            git rm -f .core-patch.log || true
-            git add BuFi/App/AppModel.swift BuFi/Core/ArtworkStore.swift BuFi/Core/HTTPContentDecoder.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift
-            git commit -m "core: stabilize concurrency, persistence, and networking"
+            rm -f .core-patch.log
+            git add BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift
+            git commit -m "core: close reviewed request and download races"
           else
-            git restore BuFi/App/AppModel.swift BuFi/Core/ArtworkStore.swift BuFi/Core/HTTPContentDecoder.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift || true
+            git restore BuFi/App/AppModel.swift BuFi/Core/OfflineStore.swift BuFi/Core/OpenSubsonicClient.swift || true
             git add .core-patch.log
-            git commit -m "ci: capture core patch failure"
+            git commit -m "ci: capture reviewed core patch failure"
           fi
           git push origin HEAD:core/stability-optimization
 
