@@ -146,25 +146,37 @@ struct RootView: View {
     }
 
     private var syncTaskID: String {
-        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)"
+        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(tab)"
     }
 
-    private var effectiveSyncInterval: TimeInterval {
+    private var baseSyncInterval: TimeInterval {
         let selected = max(syncInterval, 30)
         guard lowPowerMode else { return selected }
         return max(selected * 2, 120)
     }
 
+    private func syncDelay(afterCompletedRounds rounds: Int) -> TimeInterval {
+        guard !lowPowerMode else {
+            return min(max(baseSyncInterval * pow(2, Double(min(rounds, 2))), 120), 600)
+        }
+        return min(baseSyncInterval * pow(2, Double(min(rounds, 4))), 300)
+    }
+
     private func runAutomaticSync() async {
         guard model.sessionState == .ready, scenePhase == .active else { return }
+
+        var completedRounds = 0
         while !Task.isCancelled {
+            let delay = syncDelay(afterCompletedRounds: completedRounds)
             do {
-                try await Task.sleep(for: .seconds(effectiveSyncInterval))
+                try await Task.sleep(for: .seconds(delay))
             } catch {
                 return
             }
+
             guard model.sessionState == .ready, scenePhase == .active else { return }
             await model.refresh(silent: true)
+            completedRounds += 1
         }
     }
 }
