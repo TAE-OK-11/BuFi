@@ -36,6 +36,8 @@ jobs:
         run: xcodegen generate
 
       - name: Compile Release
+        id: build
+        continue-on-error: true
         run: |
           set -o pipefail
           xcodebuild \
@@ -45,9 +47,10 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
-            build | xcpretty
+            build 2>&1 | tee .cleanup-build.log
 
       - name: Rescan unused code
+        if: steps.build.outcome == 'success'
         run: |
           mkdir -p .audit
           set +e
@@ -69,10 +72,23 @@ jobs:
             find BuFi -name '*.swift' -print0 | xargs -0 wc -l | sort -nr
           } > .audit/size-after.txt
 
-      - name: Commit cleanup
+      - name: Commit result
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A BuFi .audit/periphery-after.txt .audit/size-after.txt
-          git commit -m "refactor: remove dead code and consolidate duplicated UI"
+          if [ "${{ steps.build.outcome }}" = "success" ]; then
+            rm -f .cleanup-build.log
+            git add -A BuFi .audit/periphery-after.txt .audit/size-after.txt
+            git commit -m "refactor: remove dead code and consolidate duplicated UI"
+          else
+            git restore BuFi
+            git clean -fd BuFi
+            git add .cleanup-build.log
+            git commit -m "ci: capture dead code cleanup build failure"
+          fi
           git push origin HEAD:refactor/dead-code-lightweight
+
+      - name: Fail when build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
