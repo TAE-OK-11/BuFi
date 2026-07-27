@@ -49,8 +49,13 @@ jobs:
           git diff --check
       - name: Remove one-shot patch files
         run: |
+          rm -f .github/PR_NOTE_1_4_0.md
           rm -f .github/scripts/apply_light_contrast.py
           rm -f .github/scripts/apply_architecture_1_4.py
+          rm -f .github/scripts/trigger_1_4_0
+          rm -f .github/scripts/trigger_1_4_0.py
+          rm -f .github/scripts/README.tmp
+          rm -f .github/scripts/.keep
           rm -f .github/workflows/apply-1.4.0.yml
       - name: Commit generated source changes
         run: |
