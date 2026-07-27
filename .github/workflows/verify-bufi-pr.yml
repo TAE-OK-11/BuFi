@@ -38,8 +38,10 @@ jobs:
         run: xcodegen generate
       - name: Build unsigned app
         run: |
+          set -o pipefail
           rm -rf build
           xcodebuild \
+            -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
             -configuration Release \
@@ -49,7 +51,14 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
-            clean build
+            clean build 2>&1 | tee build/xcode26.log
+      - name: Upload Xcode 26 failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BuFi-1.4.0-xcode26-failure-log
+          path: build/xcode26.log
+          if-no-files-found: warn
       - name: Package unsigned IPA
         run: |
           APP_PATH=$(find build/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name 'BuFi.app' -print -quit)
@@ -85,7 +94,10 @@ jobs:
         run: xcodegen generate
       - name: Build with iOS 27 SDK
         run: |
+          set -o pipefail
+          mkdir -p build
           xcodebuild \
+            -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
             -configuration Release \
@@ -95,4 +107,11 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
-            clean build
+            clean build 2>&1 | tee build/xcode27.log
+      - name: Upload Xcode 27 failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BuFi-1.4.0-xcode27-failure-log
+          path: build/xcode27.log
+          if-no-files-found: warn
