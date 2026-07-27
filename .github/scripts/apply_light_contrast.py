@@ -1,22 +1,21 @@
 from pathlib import Path
 
 
-def replace_once(path: Path, old: str, new: str) -> None:
-    text = path.read_text()
-    if old not in text:
-        raise SystemExit(f"pattern missing in {path}: {old[:100]!r}")
-    path.write_text(text.replace(old, new, 1))
+def replace_if_present(text: str, old: str, new: str) -> str:
+    return text.replace(old, new, 1) if old in text else text
 
 
 detail = Path("BuFi/UI/MusicDetailView.swift")
-replace_once(
-    detail,
-    "    @EnvironmentObject private var audio: AudioEngine\n",
-    "    @EnvironmentObject private var audio: AudioEngine\n"
-    "    @Environment(\\.colorScheme) private var colorScheme\n",
-)
-replace_once(
-    detail,
+text = detail.read_text()
+if "@Environment(\\.colorScheme) private var colorScheme" not in text:
+    text = text.replace(
+        "    @EnvironmentObject private var audio: AudioEngine\n",
+        "    @EnvironmentObject private var audio: AudioEngine\n"
+        "    @Environment(\\.colorScheme) private var colorScheme\n",
+        1,
+    )
+text = replace_if_present(
+    text,
     "            .shadow(color: .black.opacity(0.22), radius: 20, y: 10)\n",
     """            .shadow(
                 color: .black.opacity(colorScheme == .dark ? 0.22 : 0.13),
@@ -25,8 +24,8 @@ replace_once(
             )
 """,
 )
-replace_once(
-    detail,
+text = replace_if_present(
+    text,
     "            .shadow(color: .black.opacity(0.34), radius: 24, y: 14)\n",
     """            .shadow(
                 color: .black.opacity(colorScheme == .dark ? 0.34 : 0.18),
@@ -35,18 +34,22 @@ replace_once(
             )
 """,
 )
-replace_once(
-    detail,
+
+collection_start = text.index("    private var collectionHero: some View {")
+collection_end = text.index("    private var controls: some View {", collection_start)
+collection = text[collection_start:collection_end]
+collection = replace_if_present(
+    collection,
     "                    .foregroundStyle(.white)\n",
     "                    .foregroundStyle(collectionTitleColor)\n",
 )
-replace_once(
-    detail,
+collection = replace_if_present(
+    collection,
     "                        .foregroundStyle(.white.opacity(0.72))\n",
     "                        .foregroundStyle(collectionSubtitleColor)\n",
 )
+text = text[:collection_start] + collection + text[collection_end:]
 
-text = detail.read_text()
 controls_start = text.index("    private var controls: some View {")
 controls_end = text.index("    private var artistAbout: some View {", controls_start)
 new_controls = '''    private var controls: some View {
@@ -146,10 +149,10 @@ new_controls = '''    private var controls: some View {
     }
 
 '''
-detail.write_text(text[:controls_start] + new_controls + text[controls_end:])
+text = text[:controls_start] + new_controls + text[controls_end:]
 
-replace_once(
-    detail,
+text = replace_if_present(
+    text,
     """        .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(BuFiTheme.separator.opacity(0.38), lineWidth: 0.6)
@@ -169,7 +172,6 @@ replace_once(
 """,
 )
 
-text = detail.read_text()
 background_start = text.index("    private var background: some View {")
 background_end = text.index("    private var isArtist: Bool {", background_start)
 new_helpers = '''    private var background: some View {
@@ -244,38 +246,26 @@ new_helpers = '''    private var background: some View {
     }
 
 '''
-detail.write_text(text[:background_start] + new_helpers + text[background_end:])
+text = text[:background_start] + new_helpers + text[background_end:]
+detail.write_text(text)
 
 settings = Path("BuFi/UI/SettingsView.swift")
-replace_once(
-    settings,
-    "                    .pickerStyle(.segmented)\n",
-    "                    .pickerStyle(.segmented)\n                    .tint(BuFiTheme.accent)\n",
-)
-replace_once(
-    settings,
-    """            .listStyle(.insetGrouped)
-            .navigationTitle("설정")
-""",
-    """            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            .background(BuFiScreenBackground())
-            .navigationTitle("설정")
-""",
-)
 text = settings.read_text()
-for old in ['?? "1.2.8"', '?? "1.3.0"', '?? "1.3.1"']:
-    text = text.replace(old, '?? "1.3.1"')
-for old in ['?? "12"', '?? "13"', '?? "14"']:
-    text = text.replace(old, '?? "14"')
+if ".pickerStyle(.segmented)\n                    .tint(BuFiTheme.accent)" not in text:
+    text = text.replace(
+        "                    .pickerStyle(.segmented)\n",
+        "                    .pickerStyle(.segmented)\n                    .tint(BuFiTheme.accent)\n",
+        1,
+    )
+if ".scrollContentBackground(.hidden)" not in text:
+    text = text.replace(
+        "            .listStyle(.insetGrouped)\n            .navigationTitle(\"설정\")\n",
+        "            .listStyle(.insetGrouped)\n"
+        "            .scrollContentBackground(.hidden)\n"
+        "            .background(BuFiScreenBackground())\n"
+        "            .navigationTitle(\"설정\")\n",
+        1,
+    )
 settings.write_text(text)
-
-project = Path("project.yml")
-text = project.read_text()
-text = text.replace('CFBundleShortVersionString: "1.3.0"', 'CFBundleShortVersionString: "1.3.1"')
-text = text.replace('CFBundleVersion: "13"', 'CFBundleVersion: "14"')
-text = text.replace('MARKETING_VERSION: "1.3.0"', 'MARKETING_VERSION: "1.3.1"')
-text = text.replace('CURRENT_PROJECT_VERSION: "13"', 'CURRENT_PROJECT_VERSION: "14"')
-project.write_text(text)
 
 print("light mode contrast patch applied")
