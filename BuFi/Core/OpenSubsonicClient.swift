@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import SwiftSonic
 
 enum OpenSubsonicError: LocalizedError, Equatable {
     case invalidServerURL
@@ -31,15 +32,29 @@ actor OpenSubsonicClient {
     let credentials: ServerCredentials
     private let session: URLSession
     private let decoder: JSONDecoder
+    private let swiftSonic: SwiftSonicClient
 
     init(credentials: ServerCredentials) throws {
         guard let normalized = Self.normalizedBaseURL(credentials.serverURL) else {
             throw OpenSubsonicError.invalidServerURL
         }
+        let username = credentials.username.trimmingCharacters(in: .whitespacesAndNewlines)
         self.credentials = ServerCredentials(
             serverURL: normalized.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-            username: credentials.username.trimmingCharacters(in: .whitespacesAndNewlines),
+            username: username,
             password: credentials.password
+        )
+        self.swiftSonic = SwiftSonicClient(
+            configuration: ServerConfiguration(
+                serverURL: normalized,
+                username: username,
+                password: credentials.password,
+                reusesSalt: false,
+                clientName: Self.clientName,
+                apiVersion: Self.apiVersion,
+                requestTimeout: 18,
+                resourceTimeout: 60
+            )
         )
 
         let configuration = URLSessionConfiguration.ephemeral
@@ -145,6 +160,9 @@ actor OpenSubsonicClient {
     }
 
     func ping() async throws -> StatusBody {
+        // SwiftSonic owns the hardened salted-token authentication and transient retry path.
+        // The lightweight BuFi decode below is kept only to preserve server version metadata.
+        try await swiftSonic.ping()
         let url = try endpointURL("ping")
         let (data, http) = try await responseData(from: url, acceptsZstandard: true)
         guard (200..<300).contains(http.statusCode) else {
@@ -346,26 +364,38 @@ actor OpenSubsonicClient {
         quality: StreamQuality,
         compatibilityFormat: String? = nil
     ) throws -> URL {
-        var parameters = quality.parameters
-        parameters["id"] = songID
-        parameters["estimateContentLength"] = "true"
-        if let compatibilityFormat {
-            parameters["format"] = compatibilityFormat
-            parameters["maxBitRate"] = "320"
+        let requestedFormat = compatibilityFormat ?? quality.parameters["format"]
+        let requestedBitRate: Int?
+        if compatibilityFormat != nil {
+            requestedBitRate = 320
+        } else if let value = quality.parameters["maxBitRate"], let bitRate = Int(value), bitRate > 0 {
+            requestedBitRate = bitRate
+        } else {
+            requestedBitRate = nil
         }
-        return try endpointURL("stream", parameters: parameters, json: false)
+        guard let url = swiftSonic.streamURL(
+            id: songID,
+            maxBitRate: requestedBitRate,
+            format: requestedFormat,
+            estimateContentLength: true
+        ) else {
+            throw OpenSubsonicError.invalidServerURL
+        }
+        return url
     }
 
     func coverURL(id: String, size: Int = 600) throws -> URL {
-        try endpointURL(
-            "getCoverArt",
-            parameters: ["id": id, "size": String(size)],
-            json: false
-        )
+        guard let url = swiftSonic.coverArtURL(id: id, size: size) else {
+            throw OpenSubsonicError.invalidServerURL
+        }
+        return url
     }
 
     func downloadURL(songID: String) throws -> URL {
-        try endpointURL("download", parameters: ["id": songID], json: false)
+        guard let url = swiftSonic.downloadURL(id: songID) else {
+            throw OpenSubsonicError.invalidServerURL
+        }
+        return url
     }
 
     enum StarTarget: Sendable {

@@ -1,6 +1,5 @@
-import CryptoKit
 import Foundation
-import ImageIO
+import Nuke
 import UIKit
 
 struct RGBAColor: Equatable, Sendable {
@@ -23,77 +22,49 @@ struct ArtworkPalette: Equatable, Sendable {
 actor ArtworkStore {
     static let shared = ArtworkStore()
 
-    private let memory = NSCache<NSString, UIImage>()
+    private let pipeline: ImagePipeline
     private let paletteMemory = NSCache<NSString, PaletteBox>()
-    private var inFlightImages: [NSString: Task<UIImage, Error>] = [:]
-    private let session: URLSession
-    private let directory: URL
 
     init() {
-        memory.totalCostLimit = 64 * 1_024 * 1_024
-        memory.countLimit = 140
-        paletteMemory.countLimit = 100
-
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCache = nil
-        configuration.httpMaximumConnectionsPerHost = 3
-        configuration.timeoutIntervalForRequest = 18
-        configuration.timeoutIntervalForResource = 45
-        session = URLSession(configuration: configuration)
-
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        directory = root.appendingPathComponent("Artwork", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var configuration = ImagePipeline.Configuration.withDataCache(
+            name: "cloud.tae00217.BuFi.Artwork",
+            sizeLimit: 384 * 1_024 * 1_024
+        )
+        configuration.isTaskCoalescingEnabled = true
+        configuration.isProgressiveDecodingEnabled = true
+        configuration.dataCachePolicy = .automatic
+        let delegate = ArtworkPipelineDelegate()
+        self.pipeline = ImagePipeline(configuration: configuration, delegate: delegate)
+        paletteMemory.countLimit = 160
     }
 
     func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
-        let dataKey = Self.cacheKey(for: url)
-        let requestedPixelSize = min(max(pixelSize, 64), 1_024)
-        let imageKey = "\(dataKey)#\(Int(requestedPixelSize.rounded()))" as NSString
-        if let cached = memory.object(forKey: imageKey) { return cached }
-        if let existing = inFlightImages[imageKey] { return try await existing.value }
+        let requestedPixelSize = min(max(pixelSize, 64), 1_536)
+        let request = ImageRequest(
+            url: url,
+            processors: [.resize(width: requestedPixelSize)]
+        )
+        return try await pipeline.image(for: request)
+    }
 
-        let diskURL = directory.appendingPathComponent(Self.hash(dataKey as String))
-        let task = Task(priority: .utility) { [session] () throws -> UIImage in
-            let data: Data
-            if let diskData = try? Data(contentsOf: diskURL, options: [.mappedIfSafe]),
-               !diskData.isEmpty {
-                data = diskData
-            } else {
-                let (downloaded, response) = try await session.data(from: url)
-                guard let http = response as? HTTPURLResponse,
-                      (200..<300).contains(http.statusCode),
-                      !downloaded.isEmpty else {
-                    throw URLError(.badServerResponse)
+    func prefetch(urls: [URL], pixelSize: CGFloat) async {
+        guard !urls.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for url in urls.prefix(6) {
+                group.addTask(priority: .utility) { [pipeline] in
+                    let request = ImageRequest(
+                        url: url,
+                        processors: [.resize(width: min(max(pixelSize, 64), 1_536))],
+                        priority: .low
+                    )
+                    _ = try? await pipeline.image(for: request)
                 }
-                data = downloaded
-                try? data.write(
-                    to: diskURL,
-                    options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
-                )
             }
-
-            guard let image = Self.downsample(data: data, pixelSize: requestedPixelSize) else {
-                throw URLError(.cannotDecodeContentData)
-            }
-            return image
-        }
-        inFlightImages[imageKey] = task
-
-        do {
-            let image = try await task.value
-            inFlightImages[imageKey] = nil
-            memory.setObject(image, forKey: imageKey, cost: Self.imageCost(image))
-            return image
-        } catch {
-            inFlightImages[imageKey] = nil
-            throw error
         }
     }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
-        let key = Self.cacheKey(for: url)
+        let key = ArtworkPipelineDelegate.normalizedCacheKey(for: url) as NSString
         if let cached = paletteMemory.object(forKey: key) { return cached.value }
 
         let source: UIImage
@@ -130,20 +101,14 @@ actor ArtworkStore {
         return value
     }
 
-    func clearMemory() {
-        inFlightImages.values.forEach { $0.cancel() }
-        inFlightImages.removeAll()
-        memory.removeAllObjects()
+    func clearMemory() async {
+        await pipeline.cache.removeAll(caches: [.memory])
         paletteMemory.removeAllObjects()
     }
 
-    func clearAll() {
-        clearMemory()
-        try? FileManager.default.removeItem(at: directory)
-        try? FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
+    func clearAll() async {
+        await pipeline.cache.removeAll(caches: [.all])
+        paletteMemory.removeAllObjects()
     }
 
     private static func components(_ color: UIColor) -> RGBAColor {
@@ -307,22 +272,29 @@ actor ArtworkStore {
         )
     }
 
-    private static func hash(_ value: String) -> String {
-        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+private final class ArtworkPipelineDelegate: ImagePipeline.Delegate, @unchecked Sendable {
+    func cacheKey(for request: ImageRequest, pipeline: ImagePipeline) -> String? {
+        guard let url = request.url else { return nil }
+        let processors = request.processors.map(\.identifier).joined(separator: "|")
+        return Self.normalizedCacheKey(for: url) + "#" + processors
     }
 
-    private static func cacheKey(for url: URL) -> NSString {
+    static func normalizedCacheKey(for url: URL) -> String {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url.absoluteString as NSString
+            return url.absoluteString
         }
-        let authenticationFields: Set<String> = ["u", "s", "t", "v", "c", "f"]
+        let authenticationFields: Set<String> = [
+            "u", "s", "t", "p", "apiKey", "v", "c", "f"
+        ]
         components.queryItems = components.queryItems?
             .filter { !authenticationFields.contains($0.name) }
             .sorted {
                 if $0.name == $1.name { return ($0.value ?? "") < ($1.value ?? "") }
                 return $0.name < $1.name
             }
-        return (components.string ?? url.absoluteString) as NSString
+        return components.string ?? url.absoluteString
     }
 }
 

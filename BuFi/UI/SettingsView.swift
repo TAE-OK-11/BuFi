@@ -14,6 +14,9 @@ struct SettingsView: View {
     @AppStorage("restore-play-queue") private var restorePlayQueue = true
     @AppStorage("keep-screen-awake") private var keepScreenAwake = false
     @AppStorage("server-sync-interval") private var syncInterval = 30.0
+    @AppStorage("offline-wifi-only") private var offlineWiFiOnly = true
+    @AppStorage("offline-prefetch-count") private var offlinePrefetchCount = 1
+    @AppStorage("offline-storage-limit-gb") private var offlineStorageLimitGB = 10.0
 
     var body: some View {
         NavigationStack {
@@ -113,7 +116,21 @@ struct SettingsView: View {
                 }
                 .listRowBackground(settingsRowBackground)
 
-                Section("저장 공간") {
+                Section("오프라인 및 저장 공간") {
+                    Toggle(isOn: $offlineWiFiOnly) {
+                        Label("Wi-Fi에서만 오프라인 저장", systemImage: "wifi")
+                    }
+                    Picker("다음 곡 선캐시", selection: $offlinePrefetchCount) {
+                        Text("끔").tag(0)
+                        Text("1곡").tag(1)
+                        Text("3곡").tag(3)
+                    }
+                    Picker("오프라인 용량 제한", selection: $offlineStorageLimitGB) {
+                        Text("5 GB").tag(5.0)
+                        Text("10 GB").tag(10.0)
+                        Text("25 GB").tag(25.0)
+                        Text("제한 없음").tag(0.0)
+                    }
                     LabeledContent("오프라인 저장 공간") {
                         Text(
                             ByteCountFormatter.string(
@@ -200,10 +217,10 @@ struct SettingsView: View {
     private var versionText: String {
         let version =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "1.3.1"
+            ?? "1.4.0"
         let build =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-            ?? "14"
+            ?? "15"
         return "\(version) (\(build))"
     }
 }
@@ -233,6 +250,39 @@ private struct OpenSourceNoticesView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Text("Subsonic 스트림 MIME 처리와 오디오 세션 패턴을 Amperfy의 GPLv3 구현에서 적용했습니다. 전체 대응 소스는 BuFi 공개 저장소에서 제공합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("SwiftSonic") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("SwiftSonic").font(.headline)
+                    Text("MIT License · Copyright © Mathieu Dubart and contributors")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("Subsonic/OpenSubsonic 인증, 재시도 및 미디어 URL 생성 경로에 사용합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("Nuke / NukeUI") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Nuke").font(.headline)
+                    Text("MIT License · Copyright © Alexander Grebenyuk and contributors")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("앨범 이미지 다운샘플링, 요청 병합, 메모리 및 디스크 캐싱에 사용합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("Cassette 참고 구조") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Cassette").font(.headline)
+                    Text("MPL-2.0 · 구조와 동작 방식 참고, 소스 파일 직접 복사 없음")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("독립 재생 매니저, 최소 UI 관찰 상태, 오프라인 우선 설계를 참고했습니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
