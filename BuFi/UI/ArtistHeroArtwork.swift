@@ -51,7 +51,7 @@ struct ArtistHeroArtwork: View {
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: "\(coverArt ?? "")-\(remoteURL ?? "")-\(Int(height))") {
+        .task(id: "\(coverArt ?? "")-\(Int(height))") {
             await loadImage()
         }
         .accessibilityHidden(true)
@@ -60,32 +60,23 @@ struct ArtistHeroArtwork: View {
     @MainActor
     private func loadImage() async {
         image = nil
-        var candidates: [URL] = []
 
-        if let remoteURL,
-           let url = URL(string: remoteURL),
-           url.scheme?.lowercased() == "https" {
-            candidates.append(url)
-        }
-
-        if let coverURL = await model.artworkURL(id: coverArt, size: 1200) {
-            candidates.append(coverURL)
-        }
-
-        for url in candidates {
-            guard !Task.isCancelled else { return }
-            guard let loaded = try? await ArtworkStore.shared.image(
-                for: url,
-                pixelSize: max(height * UIScreen.main.scale, 480)
-            ) else {
-                continue
-            }
-            guard !Task.isCancelled else { return }
-            image = loaded
-            onPalette?(await ArtworkStore.shared.palette(for: url, image: loaded))
+        // OpenSubsonic may include third-party artist-image URLs. Fetching those
+        // directly would disclose the user's IP address and viewing time to an
+        // unrelated image host, so artist art is loaded only through the user's
+        // authenticated OpenSubsonic server.
+        guard let coverURL = await model.artworkURL(id: coverArt, size: 1200),
+              !Task.isCancelled,
+              let loaded = try? await ArtworkStore.shared.image(
+                  for: coverURL,
+                  pixelSize: max(height * UIScreen.main.scale, 480)
+              ),
+              !Task.isCancelled else {
+            onPalette?(.fallback)
             return
         }
 
-        onPalette?(.fallback)
+        image = loaded
+        onPalette?(await ArtworkStore.shared.palette(for: coverURL, image: loaded))
     }
 }

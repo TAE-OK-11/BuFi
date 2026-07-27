@@ -22,23 +22,41 @@ struct ArtworkPalette: Equatable, Sendable {
 actor ArtworkStore {
     static let shared = ArtworkStore()
 
-    private let pipeline: ImagePipeline
+    private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
+
+    private var pipeline: ImagePipeline
+    private var pipelineScope: String?
+    private var activeScope: String?
+    private var didDiscardLegacyCache = false
     private let paletteMemory = NSCache<NSString, PaletteBox>()
 
     init() {
-        var configuration = ImagePipeline.Configuration.withDataCache(
-            name: "cloud.tae00217.BuFi.Artwork",
-            sizeLimit: 384 * 1_024 * 1_024
-        )
-        configuration.isTaskCoalescingEnabled = true
-        configuration.isProgressiveDecodingEnabled = true
-        configuration.dataCachePolicy = .automatic
-        let delegate = ArtworkPipelineDelegate()
-        self.pipeline = ImagePipeline(configuration: configuration, delegate: delegate)
+        pipeline = Self.makePipeline(name: Self.legacyCacheName)
         paletteMemory.countLimit = 160
     }
 
+    func activate(accountScope: String) async {
+        guard activeScope != accountScope else { return }
+
+        if !didDiscardLegacyCache {
+            await pipeline.cache.removeAll(caches: [.all])
+            didDiscardLegacyCache = true
+        } else {
+            await pipeline.cache.removeAll(caches: [.memory])
+        }
+
+        if pipelineScope != accountScope {
+            pipeline = Self.makePipeline(
+                name: Self.legacyCacheName + "." + accountScope
+            )
+            pipelineScope = accountScope
+        }
+        activeScope = accountScope
+        paletteMemory.removeAllObjects()
+    }
+
     func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
+        guard activeScope != nil else { throw URLError(.userAuthenticationRequired) }
         let requestedPixelSize = min(max(pixelSize, 64), 1_536)
         let request = ImageRequest(
             url: url,
@@ -48,7 +66,7 @@ actor ArtworkStore {
     }
 
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
-        guard !urls.isEmpty else { return }
+        guard activeScope != nil, !urls.isEmpty else { return }
         await withTaskGroup(of: Void.self) { group in
             for url in urls.prefix(6) {
                 group.addTask(priority: .utility) { [pipeline] in
@@ -64,6 +82,7 @@ actor ArtworkStore {
     }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
+        guard activeScope != nil else { return .fallback }
         let key = ArtworkPipelineDelegate.normalizedCacheKey(for: url) as NSString
         if let cached = paletteMemory.object(forKey: key) { return cached.value }
 
@@ -111,6 +130,20 @@ actor ArtworkStore {
         paletteMemory.removeAllObjects()
     }
 
+    private static func makePipeline(name: String) -> ImagePipeline {
+        var configuration = ImagePipeline.Configuration.withDataCache(
+            name: name,
+            sizeLimit: 384 * 1_024 * 1_024
+        )
+        configuration.isTaskCoalescingEnabled = true
+        configuration.isProgressiveDecodingEnabled = true
+        configuration.dataCachePolicy = .automatic
+        return ImagePipeline(
+            configuration: configuration,
+            delegate: ArtworkPipelineDelegate()
+        )
+    }
+
     private static func components(_ color: UIColor) -> RGBAColor {
         var red: CGFloat = 0
         var green: CGFloat = 0
@@ -123,27 +156,6 @@ actor ArtworkStore {
             blue: Double(blue),
             alpha: Double(alpha)
         )
-    }
-
-    private static func imageCost(_ image: UIImage) -> Int {
-        guard let cgImage = image.cgImage else {
-            return Int(image.size.width * image.size.height * image.scale * image.scale * 4)
-        }
-        return cgImage.width * cgImage.height * 4
-    }
-
-    private static func downsample(data: Data, pixelSize: CGFloat) -> UIImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: max(64, Int(pixelSize))
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-        return UIImage(cgImage: image)
     }
 
     private static func dominantColor(in image: UIImage) -> UIColor? {
@@ -271,7 +283,6 @@ actor ArtworkStore {
             alpha: 1
         )
     }
-
 }
 
 private final class ArtworkPipelineDelegate: ImagePipeline.Delegate, @unchecked Sendable {

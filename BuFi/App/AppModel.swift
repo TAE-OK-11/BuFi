@@ -264,6 +264,9 @@ final class AppModel: ObservableObject {
             let client = try OpenSubsonicClient(credentials: credentials)
             let status = try await client.ping()
             let snapshot = try await client.home()
+            let accountScope = AccountScope.identifier(for: credentials)
+            await OfflineStore.shared.activate(accountScope: accountScope)
+            await ArtworkStore.shared.activate(accountScope: accountScope)
             self.client = client
             self.home = snapshot
             self.lastFullRefresh = Date()
