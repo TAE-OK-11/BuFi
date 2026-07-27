@@ -1,0 +1,31 @@
+name: Apply BuFi 1.3 Motion Patch
+
+on:
+  push:
+    branches:
+      - feat/motion-system-1.3.0
+    paths:
+      - .github/scripts/apply-motion-1.3.py
+      - .github/workflows/apply-motion-1.3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feat/motion-system-1.3.0
+          fetch-depth: 0
+      - name: Apply motion patch
+        run: python3 .github/scripts/apply-motion-1.3.py
+      - name: Commit final source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Implement BuFi 1.3 motion system"
+          git push origin HEAD:feat/motion-system-1.3.0
