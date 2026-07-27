@@ -27,6 +27,8 @@ final class AudioEngine: NSObject, ObservableObject {
 
     let player = AVPlayer()
 
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     private var nowPlayingSession: MPNowPlayingSession?
     private var client: OpenSubsonicClient?
     private var songFavoriteChangeHandler: ((Song, Bool) -> Void)?
@@ -83,6 +85,9 @@ final class AudioEngine: NSObject, ObservableObject {
         itemLoadTask?.cancel()
         nowPlayingArtworkTask?.cancel()
         offlinePrefetchTask?.cancel()
+        lyricsTask?.cancel()
+        queueSaveTask?.cancel()
+        serverQueueTask?.cancel()
     }
 
     func configure(
@@ -97,6 +102,7 @@ final class AudioEngine: NSObject, ObservableObject {
             offlinePrefetchTask?.cancel()
             recoveryTask?.cancel()
             itemLoadTask?.cancel()
+            lyricsTask?.cancel()
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
             pause()
             currentSong = nil
@@ -224,9 +230,13 @@ final class AudioEngine: NSObject, ObservableObject {
         scheduleQueueSave()
     }
 
-    func next() {
+    /// `isAutoAdvance`는 곡이 자연 종료되어(`endObserver`) 호출된 경우에만 true.
+    /// 사용자가 다음곡 버튼/리모컨으로 직접 스킵한 경우는 false — 이 경우엔
+    /// "1곡 반복" 모드여도 같은 곡을 재시작하지 않고 실제로 다음 곡으로 넘어가야 함.
+    /// (이전에는 이 구분이 없어 수동 스킵도 같은 곡이 반복 재생되는 버그가 있었음.)
+    func next(isAutoAdvance: Bool = false) {
         guard !queue.isEmpty else { return }
-        if repeatMode == .one, let song = currentSong {
+        if isAutoAdvance, repeatMode == .one, let song = currentSong {
             startPlayback(song, in: queue, preferredIndex: queueIndex)
             return
         }
@@ -239,7 +249,7 @@ final class AudioEngine: NSObject, ObservableObject {
             queueIndex = nextIndex
         } else if queueIndex < queue.count - 1 {
             queueIndex += 1
-        } else if repeatMode == .all {
+        } else if repeatMode == .all || (isAutoAdvance && repeatMode == .one) {
             queueIndex = 0
         } else {
             pause()
@@ -313,7 +323,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func updateStarred(songID: String, enabled: Bool) {
-        let value = enabled ? ISO8601DateFormatter().string(from: Date()) : nil
+        let value = enabled ? Self.iso8601Formatter.string(from: Date()) : nil
         if currentSong?.id == songID { currentSong?.starred = value }
         queue = queue.map { song in
             guard song.id == songID else { return song }
@@ -609,7 +619,7 @@ final class AudioEngine: NSObject, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.next() }
+            Task { @MainActor in self?.next(isAutoAdvance: true) }
         }
     }
 
@@ -618,8 +628,27 @@ final class AudioEngine: NSObject, ObservableObject {
             activeLyricIndex = lyrics.lines.isEmpty ? -1 : 0
             return
         }
-        let index = lyrics.lines.lastIndex(where: { $0.start <= elapsed }) ?? -1
+        let index = Self.lastIndex(in: lyrics.lines, notAfter: elapsed)
         if activeLyricIndex != index { activeLyricIndex = index }
+    }
+
+    /// `lyrics.lines`는 OpenSubsonicClient.lyrics(songID:)에서 항상 시작 시간
+    /// 기준으로 정렬되어 반환되므로, 재생 중 0.25초마다 도는 이 탐색을
+    /// 선형(O(n)) 대신 이진 탐색(O(log n))으로 처리한다.
+    private static func lastIndex(in lines: [LyricLine], notAfter elapsed: TimeInterval) -> Int {
+        var low = 0
+        var high = lines.count - 1
+        var result = -1
+        while low <= high {
+            let mid = (low + high) / 2
+            if lines[mid].start <= elapsed {
+                result = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return result
     }
 
     @discardableResult
