@@ -15,6 +15,7 @@ struct RootView: View {
     @State private var tab: AppTab = .home
     @State private var pageOpacity = 1.0
     @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @State private var thermalState = ProcessInfo.processInfo.thermalState
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("motion-enabled") private var motionEnabled = true
@@ -45,6 +46,13 @@ struct RootView: View {
             )
         ) { _ in
             lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: ProcessInfo.thermalStateDidChangeNotification
+            )
+        ) { _ in
+            thermalState = ProcessInfo.processInfo.thermalState
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
             Task(priority: .utility) {
@@ -125,7 +133,7 @@ struct RootView: View {
                 return
             }
             pageOpacity = 0
-            withAnimation(.easeOut(duration: 0.18)) {
+            withAnimation(BuFiMotion.page) {
                 pageOpacity = 1
             }
         }
@@ -146,20 +154,45 @@ struct RootView: View {
     }
 
     private var syncTaskID: String {
-        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(tab)"
+        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalState.rawValue)-\(audio.isPlaying)-\(tab)"
     }
 
     private var baseSyncInterval: TimeInterval {
         let selected = max(syncInterval, 30)
-        guard lowPowerMode else { return selected }
-        return max(selected * 2, 120)
+
+        switch thermalState {
+        case .serious, .critical:
+            return max(selected, 300)
+        case .fair:
+            return max(selected, audio.isPlaying ? 180 : 90)
+        case .nominal:
+            break
+        @unknown default:
+            break
+        }
+
+        if lowPowerMode {
+            return max(selected * 2, audio.isPlaying ? 300 : 120)
+        }
+        if audio.isPlaying {
+            return max(selected, 120)
+        }
+        return selected
     }
 
     private func syncDelay(afterCompletedRounds rounds: Int) -> TimeInterval {
-        guard !lowPowerMode else {
-            return min(max(baseSyncInterval * pow(2, Double(min(rounds, 2))), 120), 600)
+        let maximum: TimeInterval
+        switch thermalState {
+        case .serious, .critical:
+            maximum = 900
+        case .fair:
+            maximum = 600
+        case .nominal:
+            maximum = lowPowerMode || audio.isPlaying ? 600 : 300
+        @unknown default:
+            maximum = 600
         }
-        return min(baseSyncInterval * pow(2, Double(min(rounds, 4))), 300)
+        return min(baseSyncInterval * pow(2, Double(min(rounds, 4))), maximum)
     }
 
     private func runAutomaticSync() async {
