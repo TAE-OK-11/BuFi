@@ -33,6 +33,11 @@ jobs:
       - name: Run dead code scan
         run: |
           mkdir -p .audit
+          {
+            periphery version
+            echo
+            periphery scan --help
+          } > .audit/periphery-help.txt 2>&1
           set +e
           periphery scan \
             --project BuFi.xcodeproj \
@@ -42,7 +47,6 @@ jobs:
             --retain-public \
             --retain-objc-annotated \
             --retain-swift-ui-previews \
-            --color never \
             > .audit/periphery.txt 2>&1
           echo "exit_code=$?" >> .audit/periphery.txt
           set -e
@@ -150,6 +154,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .audit/periphery.txt .audit/code-metrics.txt
-          git commit -m "audit: capture dead code and complexity report"
+          git add .audit/periphery.txt .audit/periphery-help.txt .audit/code-metrics.txt
+          git commit -m "audit: refresh dead code and complexity report"
           git push origin HEAD:refactor/dead-code-lightweight
