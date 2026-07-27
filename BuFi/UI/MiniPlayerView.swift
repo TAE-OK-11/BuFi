@@ -3,6 +3,7 @@ import SwiftUI
 struct MiniPlayerView: View {
     @EnvironmentObject private var audio: AudioEngine
     @State private var palette = ArtworkPalette.fallback
+    @State private var transitionDirection: CGFloat = 1
     @AppStorage("motion-enabled") private var motionEnabled = true
 
     var body: some View {
@@ -17,14 +18,17 @@ struct MiniPlayerView: View {
                                 coverArt: song.coverArt,
                                 size: 52,
                                 cornerRadius: 5,
-                                onPalette: { palette = $0 }
+                                onPalette: { nextPalette in
+                                    withAnimation(BuFiMotion.color) {
+                                        palette = nextPalette
+                                    }
+                                }
                             )
                             .frame(width: 52, height: 52)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(song.title)
                                     .font(.system(size: 15, weight: .semibold))
                                     .lineLimit(1)
-                                    .contentTransition(.interpolate)
                                 Text(song.artist)
                                     .font(.system(size: 13))
                                     .foregroundStyle(.white.opacity(0.72))
@@ -32,7 +36,17 @@ struct MiniPlayerView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+                        // 곡이 바뀔 때 아트워크+제목만 슬라이드되고, AirPlay/재생 버튼은
+                        // 고정된 채로 유지되도록 트랜지션 범위를 여기로 한정한다.
+                        .id(song.id)
+                        .transition(
+                            motionEnabled
+                                ? .asymmetric(
+                                    insertion: .move(edge: transitionDirection > 0 ? .trailing : .leading).combined(with: .opacity),
+                                    removal: .move(edge: transitionDirection > 0 ? .leading : .trailing).combined(with: .opacity)
+                                )
+                                : .opacity
+                        )
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -47,20 +61,18 @@ struct MiniPlayerView: View {
                         Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 22, weight: .semibold))
                             .frame(width: 42, height: 42)
+                            .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(BuFiPressStyle())
                     .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
                 }
                 .padding(.horizontal, 7)
                 .frame(height: 62)
-                .id(song.id)
-                .transition(
+                .animation(
                     motionEnabled
-                        ? .asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)
-                        )
-                        : .opacity
+                        ? .interactiveSpring(response: 0.46, dampingFraction: 0.82)
+                        : .none,
+                    value: song.id
                 )
 
                 GeometryReader { proxy in
@@ -75,12 +87,6 @@ struct MiniPlayerView: View {
                 }
                 .frame(height: 2)
             }
-            .animation(
-                motionEnabled
-                    ? .interactiveSpring(response: 0.46, dampingFraction: 0.82)
-                    : .none,
-                value: song.id
-            )
             .foregroundStyle(.white)
             .background(
                 ZStack {
@@ -92,6 +98,7 @@ struct MiniPlayerView: View {
                     )
                     .opacity(0.72)
                 }
+                .animation(BuFiMotion.color, value: palette)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -101,6 +108,9 @@ struct MiniPlayerView: View {
             .buFiGlass(cornerRadius: 16, interactive: true)
             .padding(.horizontal, 9)
             .padding(.bottom, 8)
+            .onChange(of: audio.queueIndex) { oldIndex, newIndex in
+                transitionDirection = newIndex >= oldIndex ? 1 : -1
+            }
         }
     }
 }
