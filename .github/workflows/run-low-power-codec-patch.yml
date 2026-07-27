@@ -23,8 +23,11 @@ jobs:
           fetch-depth: 0
 
       - name: Execute embedded patch
+        id: patch
+        continue-on-error: true
         run: |
-          python3 <<'PY'
+          set -o pipefail
+          python3 <<'PY' 2>&1 | tee .codec-patch.log
           from pathlib import Path
           import textwrap
 
@@ -37,10 +40,22 @@ jobs:
           PY
           git diff --check
 
-      - name: Commit changes
+      - name: Commit result
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add BuFi/Playback/AudioEngine.swift BuFi/Core/OpenSubsonicClient.swift BuFi/UI/SettingsView.swift BuFi/Resources/*.lproj/Localizable.strings
-          git commit -m "playback: add low-power FLAC and Opus routing"
+          if [ "${{ steps.patch.outcome }}" = "success" ]; then
+            rm -f .codec-patch.log
+            git add BuFi/Playback/AudioEngine.swift BuFi/Core/OpenSubsonicClient.swift BuFi/UI/SettingsView.swift BuFi/Resources/*.lproj/Localizable.strings
+            git commit -m "playback: add low-power FLAC and Opus routing"
+          else
+            git restore BuFi/Playback/AudioEngine.swift BuFi/Core/OpenSubsonicClient.swift BuFi/UI/SettingsView.swift BuFi/Resources/*.lproj/Localizable.strings || true
+            git add .codec-patch.log
+            git commit -m "ci: capture codec patch failure"
+          fi
           git push origin HEAD:playback/low-power-codecs
+
+      - name: Fail when patch failed
+        if: steps.patch.outcome == 'failure'
+        run: exit 1
