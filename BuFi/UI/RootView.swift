@@ -12,8 +12,9 @@ struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tab: AppTab = .home
-    @State private var pageOpacity = 1.0
+    @State private var pageProgress = 1.0
     @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
     @State private var thermalState = ProcessInfo.processInfo.thermalState
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
@@ -21,22 +22,29 @@ struct RootView: View {
     @AppStorage("motion-enabled") private var motionEnabled = true
     @AppStorage("server-sync-interval") private var syncInterval = 30.0
 
+    private let tabHaptic = UISelectionFeedbackGenerator()
+
     var body: some View {
         Group {
             switch model.sessionState {
             case .signedOut, .connecting:
                 LoginView()
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
             case .ready:
                 appContent
+                    .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: model.sessionState)
+        .animation(effectiveMotion ? BuFiMotion.fade : .none, value: model.sessionState)
         .preferredColorScheme(AppAppearance(rawValue: appearanceMode)?.colorScheme)
         .transaction { transaction in
-            if !motionEnabled { transaction.animation = nil }
+            if !effectiveMotion { transaction.animation = nil }
         }
         .task(id: syncTaskID) {
             await runAutomaticSync()
+        }
+        .onAppear {
+            if hapticsEnabled { tabHaptic.prepare() }
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -91,6 +99,10 @@ struct RootView: View {
         }
     }
 
+    private var effectiveMotion: Bool {
+        motionEnabled && !reduceMotion
+    }
+
     private var appContent: some View {
         tabs
     }
@@ -116,15 +128,16 @@ struct RootView: View {
         .tint(BuFiTheme.accent)
         .onChange(of: tab) { _, _ in
             if hapticsEnabled {
-                UISelectionFeedbackGenerator().selectionChanged()
+                tabHaptic.selectionChanged()
+                tabHaptic.prepare()
             }
-            guard motionEnabled else {
-                pageOpacity = 1
+            guard effectiveMotion else {
+                pageProgress = 1
                 return
             }
-            pageOpacity = 0
+            pageProgress = 0
             withAnimation(BuFiMotion.page) {
-                pageOpacity = 1
+                pageProgress = 1
             }
         }
     }
@@ -132,15 +145,23 @@ struct RootView: View {
     @ViewBuilder
     private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
         content
-            .opacity(tab == tag ? pageOpacity : 1)
+            .opacity(tab == tag ? pageProgress : 1)
+            .scaleEffect(tab == tag ? 0.992 + (0.008 * pageProgress) : 1)
+            .blur(radius: tab == tag ? (1 - pageProgress) * 1.2 : 0)
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if audio.currentSong != nil {
                     LegacyMiniPlayerView()
                         .frame(height: 60)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 6)
+                        .transition(
+                            effectiveMotion
+                                ? .move(edge: .bottom).combined(with: .opacity)
+                                : .opacity
+                        )
                 }
             }
+            .animation(effectiveMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
     }
 
     private var syncTaskID: String {
