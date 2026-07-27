@@ -19,6 +19,7 @@ struct MusicDetailView: View {
     @State private var artistImageURL: String?
     @State private var artistBiography = ""
     @State private var artistAlbumCount = 0
+    @AppStorage("motion-enabled") private var motionEnabled = true
 
     var body: some View {
         ScrollView {
@@ -28,6 +29,7 @@ struct MusicDetailView: View {
                     ProgressView("불러오는 중…")
                         .frame(maxWidth: .infinity)
                         .padding(.top, 60)
+                        .transition(.opacity)
                 } else {
                     controls
                     if !albums.isEmpty { albumRail }
@@ -36,6 +38,8 @@ struct MusicDetailView: View {
                 }
             }
             .padding(.bottom, audio.currentSong == nil ? 56 : 148)
+            .animation(motionEnabled ? BuFiMotion.fade : .none, value: isLoading)
+            .animation(motionEnabled ? BuFiMotion.player : .none, value: audio.currentSong?.id)
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)
@@ -65,7 +69,11 @@ struct MusicDetailView: View {
                 remoteURL: artistImageURL,
                 height: 360,
                 cornerRadius: 24,
-                onPalette: { palette = $0 }
+                onPalette: { nextPalette in
+                    withAnimation(motionEnabled ? BuFiMotion.color : .none) {
+                        palette = nextPalette
+                    }
+                }
             )
 
             LinearGradient(
@@ -111,7 +119,11 @@ struct MusicDetailView: View {
                 coverArt: coverArt,
                 size: 270,
                 cornerRadius: 10,
-                onPalette: { palette = $0 }
+                onPalette: { nextPalette in
+                    withAnimation(motionEnabled ? BuFiMotion.color : .none) {
+                        palette = nextPalette
+                    }
+                }
             )
             .frame(width: 270, height: 270)
             .shadow(
@@ -333,6 +345,7 @@ struct MusicDetailView: View {
             }
         }
         .ignoresSafeArea()
+        .animation(motionEnabled ? BuFiMotion.color : .none, value: palette)
     }
 
     private func secondaryControl<Content: View>(
@@ -417,6 +430,11 @@ struct MusicDetailView: View {
         }
     }
 
+    /// `.task(id: route)`는 라우트가 바뀌면 이전 로드 작업을 자동으로 취소한다.
+    /// 취소된 작업이 뒤늦게 catch 블록까지 도달하면 "정상적인 실패"처럼
+    /// `model.errorMessage`를 띄우거나, 새 라우트가 이미 로딩을 시작한 뒤에
+    /// `isLoading = false`를 덮어써서 스피너가 너무 일찍 사라지는 문제가 있었다.
+    /// 그래서 취소된 경우에는 상태를 건드리지 않고 바로 리턴한다.
     @MainActor
     private func load() async {
         isLoading = true
@@ -474,6 +492,7 @@ struct MusicDetailView: View {
                     detail.artist.artistImageUrl
                     ?? detail.info?.largeImageUrl
                     ?? detail.info?.mediumImageUrl
+                    ?? artistImageURL
                 artistBiography = (detail.info?.biography ?? "")
                     .replacingOccurrences(
                         of: "<[^>]+>",
@@ -484,8 +503,10 @@ struct MusicDetailView: View {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
         } catch {
+            guard !Task.isCancelled else { return }
             model.errorMessage = error.localizedDescription
         }
+        guard !Task.isCancelled else { return }
         isLoading = false
     }
 }
