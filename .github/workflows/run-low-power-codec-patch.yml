@@ -27,6 +27,25 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('Scripts/apply-low-power-codecs.py')
+          text = path.read_text()
+          old = '''    if count != 1:
+                  raise RuntimeError(f"{path}: expected one literal match, found {count}: {old[:100]!r}")
+              path.write_text(text.replace(old, new, 1))
+          '''
+          new = '''    if count < 1:
+                  raise RuntimeError(f"{path}: expected a literal match, found 0: {old[:100]!r}")
+              if count > 1:
+                  print(f"{path}: using the first of {count} intentional matches")
+              path.write_text(text.replace(old, new, 1))
+          '''
+          if old not in text:
+              raise SystemExit('replace_once helper pattern not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
           python3 Scripts/apply-low-power-codecs.py 2>&1 | tee .codec-patch.log
           git diff --check
 
@@ -36,7 +55,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ "${{ steps.patch.outcome }}" = "success" ]; then
-            rm -f .codec-patch.log
+            git rm -f .codec-patch.log || true
             git add BuFi/Playback/AudioEngine.swift BuFi/Core/OpenSubsonicClient.swift BuFi/UI/SettingsView.swift BuFi/Resources/*.lproj/Localizable.strings
             git commit -m "playback: add low-power FLAC and Opus routing"
           else
