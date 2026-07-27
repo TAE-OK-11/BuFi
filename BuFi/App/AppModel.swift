@@ -9,6 +9,11 @@ final class AppModel: ObservableObject {
         case ready
     }
 
+    private struct CachedValue<Value> {
+        let value: Value
+        let expiresAt: Date
+    }
+
     @Published private(set) var sessionState: SessionState = .signedOut
     @Published private(set) var home = HomeSnapshot.empty
     @Published private(set) var searchResults = SearchResults.empty
@@ -25,6 +30,9 @@ final class AppModel: ObservableObject {
     private var lastFullRefresh = Date.distantPast
     private var sessionGeneration = 0
     private var searchGeneration = 0
+    private var albumDetailCache: [String: CachedValue<AlbumDetail>] = [:]
+    private var playlistDetailCache: [String: CachedValue<PlaylistDetail>] = [:]
+    private var artistDetailCache: [String: CachedValue<ArtistDetail>] = [:]
     private static let starDateFormatter = ISO8601DateFormatter()
 
     init() {
@@ -60,6 +68,7 @@ final class AppModel: ObservableObject {
         isRefreshing = false
         refreshInFlight = false
         lastFullRefresh = .distantPast
+        clearDetailCaches()
         sessionState = .signedOut
         serverVersion = ""
         AudioEngine.shared.configure(client: nil)
@@ -139,6 +148,8 @@ final class AppModel: ObservableObject {
         searchTask?.cancel()
         let query = rawQuery
             .precomposedStringWithCompatibilityMapping
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, let client else {
             searchResults = .empty
@@ -168,18 +179,45 @@ final class AppModel: ObservableObject {
     }
 
     func album(id: String) async throws -> AlbumDetail {
+        if let cached = albumDetailCache[id], cached.expiresAt > Date() {
+            return cached.value
+        }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        return try await client.album(id: id)
+        let value = try await client.album(id: id)
+        guard self.client === client else { throw CancellationError() }
+        albumDetailCache[id] = CachedValue(
+            value: value,
+            expiresAt: Date().addingTimeInterval(5 * 60)
+        )
+        return value
     }
 
     func playlist(id: String) async throws -> PlaylistDetail {
+        if let cached = playlistDetailCache[id], cached.expiresAt > Date() {
+            return cached.value
+        }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        return try await client.playlist(id: id)
+        let value = try await client.playlist(id: id)
+        guard self.client === client else { throw CancellationError() }
+        playlistDetailCache[id] = CachedValue(
+            value: value,
+            expiresAt: Date().addingTimeInterval(5 * 60)
+        )
+        return value
     }
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
+        if let cached = artistDetailCache[id], cached.expiresAt > Date() {
+            return cached.value
+        }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        return try await client.artist(id: id, name: name)
+        let value = try await client.artist(id: id, name: name)
+        guard self.client === client else { throw CancellationError() }
+        artistDetailCache[id] = CachedValue(
+            value: value,
+            expiresAt: Date().addingTimeInterval(15 * 60)
+        )
+        return value
     }
 
     func artworkURL(id: String?, size: Int = 600) async -> URL? {
@@ -205,6 +243,7 @@ final class AppModel: ObservableObject {
     func toggleStar(album: Album) async {
         guard let client else { return }
         let enabled = !album.isStarred
+        albumDetailCache[album.id] = nil
         updateStarredAlbum(album, enabled: enabled)
         do {
             try await client.star(id: album.id, target: .album, enabled: enabled)
@@ -218,6 +257,7 @@ final class AppModel: ObservableObject {
     func toggleStar(artist: Artist) async {
         guard let client else { return }
         let enabled = !artist.isStarred
+        artistDetailCache[artist.id] = nil
         updateStarredArtist(artist, enabled: enabled)
         do {
             try await client.star(id: artist.id, target: .artist, enabled: enabled)
@@ -243,26 +283,38 @@ final class AppModel: ObservableObject {
     private func updateStarredSong(_ song: Song, enabled: Bool) {
         var updated = song
         updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
-        home.starredSongs.removeAll { $0.id == song.id }
-        if enabled { home.starredSongs.insert(updated, at: 0) }
-        home.randomSongs = home.randomSongs.map { $0.id == song.id ? updated : $0 }
+        var snapshot = home
+        snapshot.starredSongs.removeAll { $0.id == song.id }
+        if enabled { snapshot.starredSongs.insert(updated, at: 0) }
+        snapshot.randomSongs = snapshot.randomSongs.map { $0.id == song.id ? updated : $0 }
+        home = snapshot
     }
 
     private func updateStarredAlbum(_ album: Album, enabled: Bool) {
         var updated = album
         updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
-        home.starredAlbums.removeAll { $0.id == album.id }
-        if enabled { home.starredAlbums.insert(updated, at: 0) }
-        home.recentAlbums = home.recentAlbums.map { $0.id == album.id ? updated : $0 }
-        home.randomAlbums = home.randomAlbums.map { $0.id == album.id ? updated : $0 }
+        var snapshot = home
+        snapshot.starredAlbums.removeAll { $0.id == album.id }
+        if enabled { snapshot.starredAlbums.insert(updated, at: 0) }
+        snapshot.recentAlbums = snapshot.recentAlbums.map { $0.id == album.id ? updated : $0 }
+        snapshot.randomAlbums = snapshot.randomAlbums.map { $0.id == album.id ? updated : $0 }
+        home = snapshot
     }
 
     private func updateStarredArtist(_ artist: Artist, enabled: Bool) {
         var updated = artist
         updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
-        home.starredArtists.removeAll { $0.id == artist.id }
-        if enabled { home.starredArtists.insert(updated, at: 0) }
-        home.artists = home.artists.map { $0.id == artist.id ? updated : $0 }
+        var snapshot = home
+        snapshot.starredArtists.removeAll { $0.id == artist.id }
+        if enabled { snapshot.starredArtists.insert(updated, at: 0) }
+        snapshot.artists = snapshot.artists.map { $0.id == artist.id ? updated : $0 }
+        home = snapshot
+    }
+
+    private func clearDetailCaches() {
+        albumDetailCache.removeAll(keepingCapacity: false)
+        playlistDetailCache.removeAll(keepingCapacity: false)
+        artistDetailCache.removeAll(keepingCapacity: false)
     }
 
     private var isHomeEmpty: Bool {
@@ -293,6 +345,7 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         searchTask?.cancel()
         refreshTask?.cancel()
+        clearDetailCaches()
         sessionState = .connecting
         errorMessage = nil
         do {
