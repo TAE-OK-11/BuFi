@@ -29,6 +29,18 @@ jobs:
           set -o pipefail
           {
             python3 Scripts/apply-core-stability.py
+            python3 <<'PY'
+          from pathlib import Path
+          for name in [
+              "BuFi/App/AppModel.swift",
+              "BuFi/Core/ArtworkStore.swift",
+              "BuFi/Core/HTTPContentDecoder.swift",
+              "BuFi/Core/OfflineStore.swift",
+              "BuFi/Core/OpenSubsonicClient.swift",
+          ]:
+              path = Path(name)
+              path.write_text(path.read_text().rstrip() + "\n")
+          PY
             git diff --check
           } 2>&1 | tee .core-patch.log
 
