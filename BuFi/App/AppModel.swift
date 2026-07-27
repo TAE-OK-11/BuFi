@@ -231,7 +231,7 @@ final class AppModel: ObservableObject {
         var updated = artist
         updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
         home.starredArtists.removeAll { $0.id == artist.id }
-        if enabled { home.starredArtists.insert(updated, at: 0) }
+        if enabled { home.starredArtists.insert(artist, at: 0) }
         home.artists = home.artists.map { $0.id == artist.id ? updated : $0 }
     }
 
@@ -264,6 +264,9 @@ final class AppModel: ObservableObject {
             let client = try OpenSubsonicClient(credentials: credentials)
             let status = try await client.ping()
             let snapshot = try await client.home()
+            let accountScope = AccountScope.identifier(for: credentials)
+            await OfflineStore.shared.activate(accountScope: accountScope)
+            await ArtworkStore.shared.activate(accountScope: accountScope)
             self.client = client
             self.home = snapshot
             self.lastFullRefresh = Date()
