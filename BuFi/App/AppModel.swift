@@ -33,6 +33,9 @@ final class AppModel: ObservableObject {
     private var albumDetailCache: [String: CachedValue<AlbumDetail>] = [:]
     private var playlistDetailCache: [String: CachedValue<PlaylistDetail>] = [:]
     private var artistDetailCache: [String: CachedValue<ArtistDetail>] = [:]
+    private var albumDetailTasks: [String: Task<AlbumDetail, Error>] = [:]
+    private var playlistDetailTasks: [String: Task<PlaylistDetail, Error>] = [:]
+    private var artistDetailTasks: [String: Task<ArtistDetail, Error>] = [:]
     private static let starDateFormatter = ISO8601DateFormatter()
 
     init() {
@@ -92,7 +95,7 @@ final class AppModel: ObservableObject {
                 isHomeEmpty
             let snapshot: HomeSnapshot
             if needsFullRefresh {
-                snapshot = try await client.home()
+                snapshot = try await client.home(from: isHomeEmpty ? nil : home)
             } else {
                 snapshot = try await client.incrementalHome(from: home)
             }
@@ -183,8 +186,26 @@ final class AppModel: ObservableObject {
             return cached.value
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let value = try await client.album(id: id)
-        guard self.client === client else { throw CancellationError() }
+        let generation = sessionGeneration
+        let task: Task<AlbumDetail, Error>
+        if let existing = albumDetailTasks[id] {
+            task = existing
+        } else {
+            let created = Task { try await client.album(id: id) }
+            albumDetailTasks[id] = created
+            task = created
+        }
+        let value: AlbumDetail
+        do {
+            value = try await task.value
+        } catch {
+            if generation == sessionGeneration { albumDetailTasks[id] = nil }
+            throw error
+        }
+        guard generation == sessionGeneration, self.client === client else {
+            throw CancellationError()
+        }
+        albumDetailTasks[id] = nil
         albumDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(5 * 60)
@@ -197,8 +218,26 @@ final class AppModel: ObservableObject {
             return cached.value
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let value = try await client.playlist(id: id)
-        guard self.client === client else { throw CancellationError() }
+        let generation = sessionGeneration
+        let task: Task<PlaylistDetail, Error>
+        if let existing = playlistDetailTasks[id] {
+            task = existing
+        } else {
+            let created = Task { try await client.playlist(id: id) }
+            playlistDetailTasks[id] = created
+            task = created
+        }
+        let value: PlaylistDetail
+        do {
+            value = try await task.value
+        } catch {
+            if generation == sessionGeneration { playlistDetailTasks[id] = nil }
+            throw error
+        }
+        guard generation == sessionGeneration, self.client === client else {
+            throw CancellationError()
+        }
+        playlistDetailTasks[id] = nil
         playlistDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(5 * 60)
@@ -211,8 +250,26 @@ final class AppModel: ObservableObject {
             return cached.value
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let value = try await client.artist(id: id, name: name)
-        guard self.client === client else { throw CancellationError() }
+        let generation = sessionGeneration
+        let task: Task<ArtistDetail, Error>
+        if let existing = artistDetailTasks[id] {
+            task = existing
+        } else {
+            let created = Task { try await client.artist(id: id, name: name) }
+            artistDetailTasks[id] = created
+            task = created
+        }
+        let value: ArtistDetail
+        do {
+            value = try await task.value
+        } catch {
+            if generation == sessionGeneration { artistDetailTasks[id] = nil }
+            throw error
+        }
+        guard generation == sessionGeneration, self.client === client else {
+            throw CancellationError()
+        }
+        artistDetailTasks[id] = nil
         artistDetailCache[id] = CachedValue(
             value: value,
             expiresAt: Date().addingTimeInterval(15 * 60)
@@ -244,6 +301,7 @@ final class AppModel: ObservableObject {
         guard let client else { return }
         let enabled = !album.isStarred
         albumDetailCache[album.id] = nil
+        albumDetailTasks.removeValue(forKey: album.id)?.cancel()
         updateStarredAlbum(album, enabled: enabled)
         do {
             try await client.star(id: album.id, target: .album, enabled: enabled)
@@ -258,6 +316,7 @@ final class AppModel: ObservableObject {
         guard let client else { return }
         let enabled = !artist.isStarred
         artistDetailCache[artist.id] = nil
+        artistDetailTasks.removeValue(forKey: artist.id)?.cancel()
         updateStarredArtist(artist, enabled: enabled)
         do {
             try await client.star(id: artist.id, target: .artist, enabled: enabled)
@@ -312,6 +371,12 @@ final class AppModel: ObservableObject {
     }
 
     private func clearDetailCaches() {
+        albumDetailTasks.values.forEach { $0.cancel() }
+        playlistDetailTasks.values.forEach { $0.cancel() }
+        artistDetailTasks.values.forEach { $0.cancel() }
+        albumDetailTasks.removeAll(keepingCapacity: false)
+        playlistDetailTasks.removeAll(keepingCapacity: false)
+        artistDetailTasks.removeAll(keepingCapacity: false)
         albumDetailCache.removeAll(keepingCapacity: false)
         playlistDetailCache.removeAll(keepingCapacity: false)
         artistDetailCache.removeAll(keepingCapacity: false)
@@ -345,6 +410,9 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         searchTask?.cancel()
         refreshTask?.cancel()
+        refreshInFlight = false
+        isRefreshing = false
+        isSearching = false
         clearDetailCaches()
         sessionState = .connecting
         errorMessage = nil
@@ -360,6 +428,7 @@ final class AppModel: ObservableObject {
             await OfflineStore.shared.activate(accountScope: accountScope)
             await ArtworkStore.shared.activate(accountScope: accountScope)
             guard generation == sessionGeneration else { return }
+            if persist { try secureStore.save(credentials) }
 
             self.client = client
             self.home = snapshot
@@ -372,12 +441,17 @@ final class AppModel: ObservableObject {
                     self?.updateStarredSong(song, enabled: enabled)
                 }
             )
-            if persist { try secureStore.save(credentials) }
         } catch is CancellationError {
             return
         } catch {
             guard generation == sessionGeneration else { return }
             client = nil
+            home = .empty
+            searchResults = .empty
+            serverVersion = ""
+            refreshInFlight = false
+            isRefreshing = false
+            isSearching = false
             sessionState = .signedOut
             errorMessage = error.localizedDescription
             AudioEngine.shared.configure(client: nil)

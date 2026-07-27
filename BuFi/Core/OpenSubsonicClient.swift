@@ -31,6 +31,7 @@ enum OpenSubsonicError: LocalizedError, Equatable {
 actor OpenSubsonicClient {
     static let apiVersion = "1.16.1"
     static let clientName = "BuFi"
+    private static let maximumResponseBytes = 64 * 1_024 * 1_024
 
     let credentials: ServerCredentials
     private let session: URLSession
@@ -68,9 +69,13 @@ actor OpenSubsonicClient {
         configuration.timeoutIntervalForResource = 60
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
-        configuration.httpMaximumConnectionsPerHost = 6
+        configuration.httpMaximumConnectionsPerHost = 4
         configuration.waitsForConnectivity = true
-        self.session = URLSession(configuration: configuration)
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: HTTPSOnlyURLSessionDelegate(),
+            delegateQueue: nil
+        )
         self.decoder = JSONDecoder()
     }
 
@@ -115,7 +120,9 @@ actor OpenSubsonicClient {
     ) throws -> URL {
         try endpointURL(
             endpoint,
-            queryItems: parameters.map { URLQueryItem(name: $0.key, value: $0.value) },
+            queryItems: parameters
+                .sorted { $0.key < $1.key }
+                .map { URLQueryItem(name: $0.key, value: $0.value) },
             json: json
         )
     }
@@ -152,6 +159,18 @@ actor OpenSubsonicClient {
         return try await decodeResponse(from: url)
     }
 
+    private func bestEffortRequest<Payload: Decodable>(
+        _ endpoint: String,
+        parameters: [String: String] = [:]
+    ) async throws -> Payload? {
+        do {
+            return try await request(endpoint, parameters: parameters)
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            return nil
+        }
+    }
+
     private struct DecoderCapture: Decodable {
         let decoder: Decoder
         init(from decoder: Decoder) throws {
@@ -178,15 +197,11 @@ actor OpenSubsonicClient {
     }
 
     func ping() async throws -> StatusBody {
-        async let hardenedPing: Void = swiftSonic.ping()
         let url = try endpointURL("ping")
-        async let ownResponse = responseData(from: url, acceptsZstandard: true)
-
-        _ = try await hardenedPing
-        let (data, http) = try await ownResponse
+        let (data, http) = try await responseData(from: url, acceptsZstandard: true)
 
         guard (200..<300).contains(http.statusCode) else {
-            throw OpenSubsonicError.invalidResponse
+            throw OpenSubsonicError.http(http.statusCode)
         }
         let envelope = try decoder.decode(StatusEnvelope.self, from: data)
         guard envelope.response.status == "ok" else {
@@ -216,6 +231,10 @@ actor OpenSubsonicClient {
         request.assumesHTTP3Capable = true
 
         let (encodedData, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard encodedData.count <= Self.maximumResponseBytes else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
         guard let http = response as? HTTPURLResponse else {
             throw OpenSubsonicError.invalidResponse
         }
@@ -228,54 +247,72 @@ actor OpenSubsonicClient {
                 contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
             )
             return (data, http)
-        } catch where acceptsZstandard {
+        } catch let error as URLError
+            where acceptsZstandard && error.code == .cannotDecodeContentData {
+            try Task.checkCancellation()
             return try await responseData(from: url, acceptsZstandard: false)
         }
     }
 
-    func home() async throws -> HomeSnapshot {
-        async let recent: AlbumListPayload? = try? request(
+    func home(from previous: HomeSnapshot? = nil) async throws -> HomeSnapshot {
+        async let recent: AlbumListPayload? = bestEffortRequest(
             "getAlbumList2",
             parameters: ["type": "newest", "size": "16"]
         )
-        async let randomAlbums: AlbumListPayload? = try? request(
+        async let randomAlbums: AlbumListPayload? = bestEffortRequest(
             "getAlbumList2",
             parameters: ["type": "random", "size": "16"]
         )
-        async let starred: StarredPayload? = try? request("getStarred2")
-        async let artists: ArtistsPayload? = try? request("getArtists")
-        async let randomSongs: RandomSongsPayload? = try? request(
+        async let starred: StarredPayload? = bestEffortRequest("getStarred2")
+        async let artists: ArtistsPayload? = bestEffortRequest("getArtists")
+        async let randomSongs: RandomSongsPayload? = bestEffortRequest(
             "getRandomSongs",
             parameters: ["size": "24"]
         )
-        async let playlists: PlaylistsPayload? = try? request("getPlaylists")
+        async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
 
-        let values = await (recent, randomAlbums, starred, artists, randomSongs, playlists)
+        let values = try await (recent, randomAlbums, starred, artists, randomSongs, playlists)
         guard values.0 != nil || values.1 != nil || values.2 != nil ||
                 values.3 != nil || values.4 != nil || values.5 != nil else {
             throw OpenSubsonicError.invalidResponse
         }
+
+        let fallback = previous ?? .empty
+        let starredAlbums: [Album]
+        let starredSongs: [Song]
+        let starredArtists: [Artist]
+        if let value = values.2?.starred2 {
+            starredAlbums = value.album ?? []
+            starredSongs = value.song ?? []
+            starredArtists = value.artist ?? []
+        } else {
+            starredAlbums = fallback.starredAlbums
+            starredSongs = fallback.starredSongs
+            starredArtists = fallback.starredArtists
+        }
+
         return HomeSnapshot(
-            recentAlbums: values.0?.albumList2?.album ?? [],
-            randomAlbums: values.1?.albumList2?.album ?? [],
-            starredAlbums: values.2?.starred2?.album ?? [],
-            starredSongs: values.2?.starred2?.song ?? [],
-            starredArtists: values.2?.starred2?.artist ?? [],
-            artists: values.3?.artists?.index?.flatMap { $0.artist ?? [] } ?? [],
-            randomSongs: values.4?.randomSongs?.song ?? [],
-            playlists: values.5?.playlists?.playlist ?? []
+            recentAlbums: values.0?.albumList2?.album ?? fallback.recentAlbums,
+            randomAlbums: values.1?.albumList2?.album ?? fallback.randomAlbums,
+            starredAlbums: starredAlbums,
+            starredSongs: starredSongs,
+            starredArtists: starredArtists,
+            artists: values.3.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
+                ?? fallback.artists,
+            randomSongs: values.4?.randomSongs?.song ?? fallback.randomSongs,
+            playlists: values.5?.playlists?.playlist ?? fallback.playlists
         )
     }
 
     func incrementalHome(from previous: HomeSnapshot) async throws -> HomeSnapshot {
-        async let recent: AlbumListPayload? = try? request(
+        async let recent: AlbumListPayload? = bestEffortRequest(
             "getAlbumList2",
             parameters: ["type": "newest", "size": "16"]
         )
-        async let starred: StarredPayload? = try? request("getStarred2")
-        async let playlists: PlaylistsPayload? = try? request("getPlaylists")
+        async let starred: StarredPayload? = bestEffortRequest("getStarred2")
+        async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
 
-        let values = await (recent, starred, playlists)
+        let values = try await (recent, starred, playlists)
         guard values.0 != nil || values.1 != nil || values.2 != nil else {
             throw OpenSubsonicError.invalidResponse
         }
@@ -308,8 +345,24 @@ actor OpenSubsonicClient {
             return Self.deduplicatedSearch(result)
         } catch {
             guard !Task.isCancelled else { throw CancellationError() }
+            guard Self.shouldFallbackToSearch2(error) else { throw error }
             let payload: SearchPayload = try await request("search2", parameters: parameters)
             return Self.deduplicatedSearch(payload.searchResult2 ?? payload.searchResult3)
+        }
+    }
+
+    private static func shouldFallbackToSearch2(_ error: Error) -> Bool {
+        guard let error = error as? OpenSubsonicError else { return false }
+        switch error {
+        case .http(let status):
+            return status == 404 || status == 405
+        case .server(let code, let message):
+            return code == 70 ||
+                message.localizedCaseInsensitiveContains("search3") ||
+                message.localizedCaseInsensitiveContains("not found") ||
+                message.localizedCaseInsensitiveContains("unknown endpoint")
+        default:
+            return false
         }
     }
 
@@ -343,7 +396,7 @@ actor OpenSubsonicClient {
             "getTopSongs",
             parameters: ["artist": name, "count": "20"]
         )
-        async let infoPayload: ArtistInfoPayload? = try? request(
+        async let infoPayload: ArtistInfoPayload? = bestEffortRequest(
             "getArtistInfo2",
             parameters: ["id": id, "count": "8", "includeNotPresent": "false"]
         )

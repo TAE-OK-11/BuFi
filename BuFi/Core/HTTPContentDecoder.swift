@@ -7,7 +7,7 @@ enum HTTPContentDecoder {
 
     static func decode(_ data: Data, contentEncoding: String?) throws -> Data {
         guard data.count >= zstandardMagic.count,
-              Array(data.prefix(zstandardMagic.count)) == zstandardMagic else {
+              data.starts(with: zstandardMagic) else {
             // URLSession expands gzip and Brotli, and newer CFNetwork versions
             // may also expand zstd before returning the body.
             return data
@@ -31,6 +31,10 @@ enum HTTPContentDecoder {
 
         let outputCapacity = max(16_384, Int(ZSTD_DStreamOutSize()))
         var output = Data()
+        let estimatedCapacity = data.count > maximumDecodedBytes / 3
+            ? maximumDecodedBytes
+            : data.count * 3
+        output.reserveCapacity(max(outputCapacity, estimatedCapacity))
         var chunk = [UInt8](repeating: 0, count: outputCapacity)
 
         try data.withUnsafeBytes { source in
@@ -39,6 +43,7 @@ enum HTTPContentDecoder {
             var remaining = 1
 
             while input.pos < input.size {
+                let previousInputPosition = input.pos
                 var produced = 0
                 let result = chunk.withUnsafeMutableBytes { destination -> Int in
                     var buffer = ZSTD_outBuffer(
@@ -52,6 +57,9 @@ enum HTTPContentDecoder {
                 }
 
                 guard ZSTD_isError(result) == 0 else {
+                    throw URLError(.cannotDecodeContentData)
+                }
+                guard produced > 0 || input.pos > previousInputPosition || result == 0 else {
                     throw URLError(.cannotDecodeContentData)
                 }
                 if produced > 0 {
