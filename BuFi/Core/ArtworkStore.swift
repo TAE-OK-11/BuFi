@@ -66,13 +66,17 @@ actor ArtworkStore {
     }
 
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
-        guard activeScope != nil, !urls.isEmpty else { return }
+        guard activeScope != nil,
+              !urls.isEmpty,
+              Self.allowsDiscretionaryWork else {
+            return
+        }
         await withTaskGroup(of: Void.self) { group in
-            for url in urls.prefix(6) {
+            for url in urls.prefix(2) {
                 group.addTask(priority: .utility) { [pipeline] in
                     let request = ImageRequest(
                         url: url,
-                        processors: [.resize(width: min(max(pixelSize, 64), 1_536))],
+                        processors: [.resize(width: min(max(pixelSize, 64), 1_024))],
                         priority: .low
                     )
                     _ = try? await pipeline.image(for: request)
@@ -130,13 +134,25 @@ actor ArtworkStore {
         paletteMemory.removeAllObjects()
     }
 
+    private static var allowsDiscretionaryWork: Bool {
+        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal, .fair:
+            return true
+        case .serious, .critical:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
     private static func makePipeline(name: String) -> ImagePipeline {
         var configuration = ImagePipeline.Configuration.withDataCache(
             name: name,
-            sizeLimit: 384 * 1_024 * 1_024
+            sizeLimit: 256 * 1_024 * 1_024
         )
         configuration.isTaskCoalescingEnabled = true
-        configuration.isProgressiveDecodingEnabled = true
+        configuration.isProgressiveDecodingEnabled = false
         configuration.dataCachePolicy = .automatic
         return ImagePipeline(
             configuration: configuration,
