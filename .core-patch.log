@@ -2,3 +2,4 @@
   '''    func downloadedSongs() -> [Song] {
 /home/runner/work/BuFi/BuFi/Scripts/apply-core-stability.py:82: SyntaxWarning: invalid escape sequence '\.'
   '''    func downloadedSongs() -> [Song] {
+BuFi/Core/OfflineStore.swift:434: new blank line at EOF.
