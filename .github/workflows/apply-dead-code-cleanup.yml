@@ -25,6 +25,7 @@ jobs:
       - name: Apply cleanup
         run: |
           python3 Scripts/apply-dead-code-cleanup.py
+          python3 Scripts/apply-dead-code-cleanup-fixes.py
           git diff --check
 
       - name: Install build tools
