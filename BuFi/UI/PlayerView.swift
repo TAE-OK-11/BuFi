@@ -107,7 +107,7 @@ struct PlayerView: View {
             }
         }
         .ignoresSafeArea()
-        .animation(BuFiMotion.color, value: palette)
+        .animation(motionEnabled ? BuFiMotion.color : .none, value: palette)
     }
 
     private func header(_ song: Song) -> some View {
@@ -148,7 +148,7 @@ struct PlayerView: View {
                 )
             }
             .frame(maxWidth: 240)
-            .animation(BuFiMotion.text, value: song.id)
+            .animation(motionEnabled ? BuFiMotion.text : .none, value: song.id)
             Spacer()
 
             Menu {
@@ -195,7 +195,9 @@ struct PlayerView: View {
                         cornerRadius: 14,
                         onPalette: { nextPalette in
                             guard index == artworkPage else { return }
-                            withAnimation(BuFiMotion.color) { palette = nextPalette }
+                            withAnimation(motionEnabled ? BuFiMotion.color : .none) {
+                                palette = nextPalette
+                            }
                         }
                     )
                     .frame(width: edge, height: edge)
@@ -451,32 +453,30 @@ struct PlayerView: View {
 
     private var miniLyricsWindow: some View {
         VStack(alignment: .leading, spacing: 13) {
-            ForEach(visibleLyrics) { line in
-                Text(line.text)
+            ForEach(visibleLyrics, id: \.line.id) { item in
+                Text(item.line.text)
                     .font(.system(size: 23, weight: .bold))
                     .tracking(-0.55)
-                    .foregroundStyle(lyricColor(line))
+                    .foregroundStyle(lyricColor(index: item.index))
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
 
-    private var visibleLyrics: [LyricLine] {
+    /// 화면에 보여줄 가사 줄들을, 전체 가사 배열 안에서의 실제 인덱스와 함께 반환.
+    /// 이전에는 lyricColor에서 id로 firstIndex(where:) 재탐색을 했는데,
+    /// 여기서 이미 알고 있는 인덱스를 그대로 넘겨 O(1)로 만들었다.
+    private var visibleLyrics: [(index: Int, line: LyricLine)] {
         let lines = audio.lyrics.lines
         guard !lines.isEmpty else { return [] }
-        let active = audio.lyrics.lines.indices.contains(audio.activeLyricIndex)
-            ? audio.activeLyricIndex
-            : 0
-        return Array(lines[active..<min(lines.count, active + 4)])
+        let active = lines.indices.contains(audio.activeLyricIndex) ? audio.activeLyricIndex : 0
+        let end = min(lines.count, active + 4)
+        return (active..<end).map { (index: $0, line: lines[$0]) }
     }
 
-    private func lyricColor(_ line: LyricLine) -> Color {
-        guard let index = audio.lyrics.lines.firstIndex(where: { $0.id == line.id }) else {
-            return playerPrimary.opacity(0.76)
-        }
-        if index == audio.activeLyricIndex { return playerPrimary }
-        return playerPrimary.opacity(0.56)
+    private func lyricColor(index: Int) -> Color {
+        index == audio.activeLyricIndex ? playerPrimary : playerPrimary.opacity(0.56)
     }
 
     private func control(
@@ -624,7 +624,6 @@ private struct FullLyricsView: View {
         .offset(y: max(0, dragOffset))
         .scaleEffect(dragScale, anchor: .bottom)
         .opacity(dragOpacity)
-        .simultaneousGesture(dismissGesture)
         .onAppear { scrubValue = audio.elapsed }
         .onChange(of: audio.elapsed) { _, value in
             if !isScrubbing { scrubValue = value }
@@ -657,6 +656,10 @@ private struct FullLyricsView: View {
         .padding(.horizontal, 10)
         .padding(.top, 6)
         .contentShape(Rectangle())
+        // 드래그로 내려서 닫는 제스처는 헤더 영역에만 붙인다.
+        // 이전에는 body 전체(ZStack)에 걸려 있어서, 아래 가사 리스트를
+        // 스크롤할 때도 이 제스처가 같이 인식되며 배경이 흔들리는 문제가 있었다.
+        .simultaneousGesture(dismissGesture)
     }
 
     private var lyrics: some View {
