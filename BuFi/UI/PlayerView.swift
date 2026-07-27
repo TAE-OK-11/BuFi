@@ -53,12 +53,7 @@ struct PlayerView: View {
                         .zIndex(20)
                 }
             }
-            .animation(
-                motionEnabled
-                    ? .interactiveSpring(response: 0.42, dampingFraction: 0.86)
-                    : .none,
-                value: audio.showFullLyrics
-            )
+            .animation(motionEnabled ? BuFiMotion.player : .none, value: audio.showFullLyrics)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQueue) {
@@ -125,13 +120,9 @@ struct PlayerView: View {
             Spacer()
             ZStack {
                 VStack(spacing: 2) {
-                    Text(
-                        song.album.isEmpty
-                            ? String(localized: "지금 재생 중")
-                            : song.album
-                    )
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
+                    Text(song.album.isEmpty ? String(localized: "지금 재생 중") : song.album)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
                     Text(song.artist)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(playerSecondary)
@@ -156,9 +147,7 @@ struct PlayerView: View {
                     Task { await model.toggleStar(song: song) }
                 } label: {
                     Label(
-                        song.isStarred
-                            ? String(localized: "좋아요 취소")
-                            : String(localized: "좋아요 표시"),
+                        song.isStarred ? String(localized: "좋아요 취소") : String(localized: "좋아요 표시"),
                         systemImage: "heart"
                     )
                 }
@@ -178,10 +167,6 @@ struct PlayerView: View {
         .frame(height: 58)
     }
 
-    /// 앨범 아트 + 메타데이터를 함께 페이징하는 뷰. TabView 자체가 좌우 스와이프 전환을
-    /// 담당하므로, 여기에 별도의 `.animation(value: artworkPage)`를 얹지 않는다.
-    /// (제스처 기반 페이징 애니메이션과 암시적 애니메이션이 겹치면 전환이 두 번 겹쳐
-    /// 재생되며 끊기는 현상이 있었음 — 실제 버그였던 부분.)
     private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
         let edge = min(availableWidth - 44, max(264, availableHeight * 0.47))
         let songs = audio.queue.isEmpty ? [song] : audio.queue
@@ -216,8 +201,7 @@ struct PlayerView: View {
         .contentShape(Rectangle())
         .onChange(of: artworkPage) { oldIndex, index in
             transitionDirection = index >= oldIndex ? 1 : -1
-            guard index != audio.queueIndex,
-                  audio.queue.indices.contains(index) else { return }
+            guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
         }
     }
@@ -232,8 +216,7 @@ struct PlayerView: View {
                 if let route = artistRoute(for: song) {
                     NavigationLink(value: route) {
                         HStack(spacing: 5) {
-                            Text(song.artist)
-                                .lineLimit(1)
+                            Text(song.artist).lineLimit(1)
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 11, weight: .bold))
                         }
@@ -241,12 +224,7 @@ struct PlayerView: View {
                         .foregroundStyle(playerSecondary)
                     }
                     .buttonStyle(BuFiPressStyle())
-                    .accessibilityLabel(
-                        String(
-                            format: String(localized: "%@ 아티스트 페이지 열기"),
-                            song.artist
-                        )
-                    )
+                    .accessibilityLabel(String(format: String(localized: "%@ 아티스트 페이지 열기"), song.artist))
                 } else {
                     Text(song.artist)
                         .font(.system(size: 17, weight: .medium))
@@ -291,12 +269,7 @@ struct PlayerView: View {
 
     private var transport: some View {
         HStack {
-            control(
-                "shuffle",
-                size: 24,
-                active: audio.isShuffleEnabled,
-                label: "셔플"
-            ) { audio.toggleShuffle() }
+            control("shuffle", size: 24, active: audio.isShuffleEnabled, label: "셔플") { audio.toggleShuffle() }
             Spacer()
             control("backward.end.fill", size: 31, label: "이전 곡") { audio.previous() }
             Spacer()
@@ -312,10 +285,12 @@ struct PlayerView: View {
                             .font(.system(size: 27, weight: .bold))
                             .foregroundStyle(playerButtonForeground)
                             .offset(x: audio.isPlaying ? 0 : 2)
+                            .contentTransition(.symbolEffect(.replace))
                     }
                 }
             }
             .buttonStyle(BuFiPressStyle())
+            .animation(motionEnabled ? BuFiMotion.tap : .none, value: audio.isPlaying)
             .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
             Spacer()
             control("forward.end.fill", size: 31, label: "다음 곡") { audio.next() }
@@ -386,16 +361,14 @@ struct PlayerView: View {
                 Button {
                     openFullLyrics()
                 } label: {
-                    // 안쪽: 같은 곡 안에서 가사 줄이 넘어갈 때는 위/아래로.
-                    // 바깥쪽: 곡 자체가 바뀔 때는 앨범 아트와 같은 방향으로 좌/우 슬라이드.
                     ZStack(alignment: .topLeading) {
                         miniLyricsWindow
                             .id(audio.activeLyricIndex)
                             .transition(
                                 motionEnabled
                                     ? .asymmetric(
-                                        insertion: .offset(y: 10).combined(with: .opacity),
-                                        removal: .offset(y: -10).combined(with: .opacity)
+                                        insertion: .offset(y: 14).combined(with: .opacity),
+                                        removal: .offset(y: -8).combined(with: .opacity)
                                     )
                                     : .opacity
                             )
@@ -412,14 +385,8 @@ struct PlayerView: View {
                             )
                             : .opacity
                     )
-                    .animation(
-                        motionEnabled ? BuFiMotion.fade : .none,
-                        value: audio.activeLyricIndex
-                    )
-                    .animation(
-                        motionEnabled ? BuFiMotion.player : .none,
-                        value: audio.currentSong?.id
-                    )
+                    .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
+                    .animation(motionEnabled ? BuFiMotion.player : .none, value: audio.currentSong?.id)
                 }
                 .buttonStyle(.plain)
             }
@@ -429,10 +396,7 @@ struct PlayerView: View {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [
-                                playerPrimary.opacity(0.19),
-                                playerPrimary.opacity(0.10)
-                            ],
+                            colors: [playerPrimary.opacity(0.19), playerPrimary.opacity(0.10)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -458,15 +422,14 @@ struct PlayerView: View {
                     .font(.system(size: 23, weight: .bold))
                     .tracking(-0.55)
                     .foregroundStyle(lyricColor(index: item.index))
+                    .scaleEffect(item.index == audio.activeLyricIndex ? 1 : 0.975, anchor: .leading)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
     }
 
-    /// 화면에 보여줄 가사 줄들을, 전체 가사 배열 안에서의 실제 인덱스와 함께 반환.
-    /// 이전에는 lyricColor에서 id로 firstIndex(where:) 재탐색을 했는데,
-    /// 여기서 이미 알고 있는 인덱스를 그대로 넘겨 O(1)로 만들었다.
     private var visibleLyrics: [(index: Int, line: LyricLine)] {
         let lines = audio.lyrics.lines
         guard !lines.isEmpty else { return [] }
@@ -493,6 +456,7 @@ struct PlayerView: View {
                     .symbolRenderingMode(.monochrome)
                     .foregroundStyle(active ? BuFiTheme.accent : playerPrimary)
                     .frame(width: 48, height: 48)
+                    .contentTransition(.symbolEffect(.replace))
                 if active {
                     Circle()
                         .fill(BuFiTheme.accentSoft)
@@ -503,6 +467,7 @@ struct PlayerView: View {
             }
         }
         .buttonStyle(BuFiPressStyle())
+        .animation(motionEnabled ? BuFiMotion.tap : .none, value: active)
         .accessibilityLabel(label)
     }
 
@@ -528,11 +493,7 @@ struct PlayerView: View {
     }
 
     private func openFullLyrics() {
-        withAnimation(
-            motionEnabled
-                ? .interactiveSpring(response: 0.44, dampingFraction: 0.86)
-                : .none
-        ) {
+        withAnimation(motionEnabled ? BuFiMotion.player : .none) {
             audio.showFullLyrics = true
         }
     }
@@ -552,17 +513,17 @@ struct PlayerView: View {
     private func prefetchUpcomingArtwork(after index: Int) {
         guard !audio.queue.isEmpty else { return }
         let start = max(index + 1, 0)
-        let end = min(audio.queue.count, start + 3)
+        let end = min(audio.queue.count, start + 2)
         guard start < end else { return }
         let upcoming = Array(audio.queue[start..<end])
 
         Task(priority: .utility) {
             for song in upcoming {
                 guard !Task.isCancelled,
-                      let url = await model.artworkURL(id: song.coverArt, size: 1200) else {
+                      let url = await model.artworkURL(id: song.coverArt, size: 900) else {
                     continue
                 }
-                _ = try? await ArtworkStore.shared.image(for: url, pixelSize: 1200)
+                _ = try? await ArtworkStore.shared.image(for: url, pixelSize: 900)
             }
         }
     }
@@ -632,9 +593,7 @@ private struct FullLyricsView: View {
 
     private var header: some View {
         HStack {
-            Button {
-                closeLyrics()
-            } label: {
+            Button { closeLyrics() } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 23, weight: .semibold))
                     .frame(width: 44, height: 44)
@@ -656,16 +615,13 @@ private struct FullLyricsView: View {
         .padding(.horizontal, 10)
         .padding(.top, 6)
         .contentShape(Rectangle())
-        // 드래그로 내려서 닫는 제스처는 헤더 영역에만 붙인다.
-        // 이전에는 body 전체(ZStack)에 걸려 있어서, 아래 가사 리스트를
-        // 스크롤할 때도 이 제스처가 같이 인식되며 배경이 흔들리는 문제가 있었다.
         .simultaneousGesture(dismissGesture)
     }
 
     private var lyrics: some View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 25) {
+                LazyVStack(alignment: .leading, spacing: 25) {
                     Color.clear.frame(height: 22)
                     ForEach(Array(audio.lyrics.lines.enumerated()), id: \.element.id) { index, line in
                         Button {
@@ -676,16 +632,9 @@ private struct FullLyricsView: View {
                                 .tracking(-0.95)
                                 .multilineTextAlignment(.leading)
                                 .foregroundStyle(color(for: index))
-                                .scaleEffect(
-                                    index == audio.activeLyricIndex ? 1.045 : 1,
-                                    anchor: .leading
-                                )
+                                .scaleEffect(index == audio.activeLyricIndex ? 1.045 : 0.985, anchor: .leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
-                                .animation(
-                                    motionEnabled ? BuFiMotion.fade : .none,
-                                    value: audio.activeLyricIndex
-                                )
                         }
                         .buttonStyle(.plain)
                         .id(line.id)
@@ -693,6 +642,7 @@ private struct FullLyricsView: View {
                     Color.clear.frame(height: 180)
                 }
                 .padding(.horizontal, 24)
+                .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
             }
             .onChange(of: audio.activeLyricIndex) { _, index in
                 guard autoScroll, audio.lyrics.lines.indices.contains(index) else { return }
@@ -741,8 +691,10 @@ private struct FullLyricsView: View {
                     .foregroundStyle(playButtonForeground)
                     .frame(width: 72, height: 72)
                     .background(lyricsPrimary, in: Circle())
+                    .contentTransition(.symbolEffect(.replace))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
+            .animation(motionEnabled ? BuFiMotion.tap : .none, value: audio.isPlaying)
             .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
         }
         .padding(.horizontal, 24)
@@ -761,17 +713,11 @@ private struct FullLyricsView: View {
                 dragOffset = value.translation.height * 0.72
             }
             .onEnded { value in
-                let shouldDismiss =
-                    value.translation.height > 100 ||
-                    value.predictedEndTranslation.height > 180
+                let shouldDismiss = value.translation.height > 100 || value.predictedEndTranslation.height > 180
                 if shouldDismiss {
                     closeLyrics()
                 } else {
-                    withAnimation(
-                        motionEnabled
-                            ? .interactiveSpring(response: 0.38, dampingFraction: 0.86)
-                            : .none
-                    ) {
+                    withAnimation(motionEnabled ? BuFiMotion.player : .none) {
                         dragOffset = 0
                     }
                 }
@@ -779,11 +725,7 @@ private struct FullLyricsView: View {
     }
 
     private func closeLyrics() {
-        withAnimation(
-            motionEnabled
-                ? .interactiveSpring(response: 0.42, dampingFraction: 0.88)
-                : .none
-        ) {
+        withAnimation(motionEnabled ? BuFiMotion.player : .none) {
             dragOffset = 0
             audio.showFullLyrics = false
         }
@@ -795,33 +737,13 @@ private struct FullLyricsView: View {
         return lyricsPrimary.opacity(0.54)
     }
 
-    private var dragProgress: CGFloat {
-        min(max(dragOffset / 420, 0), 1)
-    }
-
-    private var dragScale: CGFloat {
-        1 - (dragProgress * 0.055)
-    }
-
-    private var dragOpacity: Double {
-        1 - Double(dragProgress * 0.16)
-    }
-
-    private var dragCornerRadius: CGFloat {
-        dragProgress * 28
-    }
-
-    private var lyricsPrimary: Color {
-        colorScheme == .dark ? .white : .black.opacity(0.86)
-    }
-
-    private var lyricsSecondary: Color {
-        lyricsPrimary.opacity(0.66)
-    }
-
-    private var playButtonForeground: Color {
-        colorScheme == .dark ? Color(palette.bottom) : .white
-    }
+    private var dragProgress: CGFloat { min(max(dragOffset / 420, 0), 1) }
+    private var dragScale: CGFloat { 1 - (dragProgress * 0.055) }
+    private var dragOpacity: Double { 1 - Double(dragProgress * 0.16) }
+    private var dragCornerRadius: CGFloat { dragProgress * 28 }
+    private var lyricsPrimary: Color { colorScheme == .dark ? .white : .black.opacity(0.86) }
+    private var lyricsSecondary: Color { lyricsPrimary.opacity(0.66) }
+    private var playButtonForeground: Color { colorScheme == .dark ? Color(palette.bottom) : .white }
 }
 
 private struct QueueView: View {
@@ -845,11 +767,7 @@ private struct QueueView: View {
                                         .frame(width: 48, height: 48)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
-                                            .foregroundStyle(
-                                                index == audio.queueIndex
-                                                    ? BuFiTheme.accentSoft
-                                                    : Color.primary
-                                            )
+                                            .foregroundStyle(index == audio.queueIndex ? BuFiTheme.accentSoft : Color.primary)
                                             .lineLimit(1)
                                         Text(song.artist)
                                             .font(.caption)
