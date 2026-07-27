@@ -62,7 +62,9 @@ actor OpenSubsonicClient {
         configuration.timeoutIntervalForResource = 60
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
-        configuration.httpMaximumConnectionsPerHost = 4
+        // home()이 최대 6개의 요청을 동시에 쏘므로, HTTP/2 멀티플렉싱을
+        // 지원하지 않는 서버에서도 큐잉되지 않도록 여유를 맞춰둠.
+        configuration.httpMaximumConnectionsPerHost = 6
         configuration.waitsForConnectivity = true
         self.session = URLSession(configuration: configuration)
         self.decoder = JSONDecoder()
@@ -142,13 +144,27 @@ actor OpenSubsonicClient {
         return try await decodeResponse(from: url)
     }
 
+    /// JSONDecoder가 `init(from:)` 안에서 넘겨주는 Decoder는 이미 파싱된
+    /// JSON 트리를 감싸고 있을 뿐이라, 이걸 캡처해두면 같은 데이터를
+    /// 여러 타입으로 "재파싱 없이" 다시 디코딩할 수 있다.
+    private struct DecoderCapture: Decodable {
+        let decoder: Decoder
+        init(from decoder: Decoder) throws {
+            self.decoder = decoder
+        }
+    }
+
     private func decodeResponse<Payload: Decodable>(from url: URL) async throws -> Payload {
         let (data, http) = try await responseData(from: url, acceptsZstandard: true)
         guard (200..<300).contains(http.statusCode) else {
             throw OpenSubsonicError.http(http.statusCode)
         }
 
-        let statusEnvelope = try decoder.decode(StatusEnvelope.self, from: data)
+        // 이전에는 같은 Data를 StatusEnvelope, APIEnvelope<Payload>로
+        // 각각 decode(_:from:)하면서 JSON을 두 번 파싱했음.
+        // 아래는 파싱을 한 번만 수행하고 결과를 재사용한다.
+        let capture = try decoder.decode(DecoderCapture.self, from: data)
+        let statusEnvelope = try StatusEnvelope(from: capture.decoder)
         guard statusEnvelope.response.status == "ok" else {
             throw OpenSubsonicError.server(
                 code: statusEnvelope.response.error?.code,
@@ -156,15 +172,20 @@ actor OpenSubsonicClient {
                     ?? String(localized: "서버 요청이 실패했습니다.")
             )
         }
-        return try decoder.decode(APIEnvelope<Payload>.self, from: data).response
+        return try APIEnvelope<Payload>(from: capture.decoder).response
     }
 
     func ping() async throws -> StatusBody {
-        // SwiftSonic owns the hardened salted-token authentication and transient retry path.
-        // The lightweight BuFi decode below is kept only to preserve server version metadata.
-        try await swiftSonic.ping()
+        // SwiftSonic의 하드닝된 인증 검증과, 버전 메타데이터를 위한
+        // 자체 요청을 "동시에" 실행 — 이전에는 순차 await라 지연시간이
+        // 두 배로 들었음.
+        async let hardenedPing: Void = swiftSonic.ping()
         let url = try endpointURL("ping")
-        let (data, http) = try await responseData(from: url, acceptsZstandard: true)
+        async let ownResponse = responseData(from: url, acceptsZstandard: true)
+
+        _ = try await hardenedPing
+        let (data, http) = try await ownResponse
+
         guard (200..<300).contains(http.statusCode) else {
             throw OpenSubsonicError.invalidResponse
         }
