@@ -90,12 +90,9 @@ extension View {
 struct BuFiPressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.965 : 1)
-            .brightness(configuration.isPressed ? -0.025 : 0)
-            .animation(
-                .interactiveSpring(response: 0.28, dampingFraction: 0.72, blendDuration: 0.08),
-                value: configuration.isPressed
-            )
+            .scaleEffect(configuration.isPressed ? 0.972 : 1)
+            .brightness(configuration.isPressed ? -0.018 : 0)
+            .animation(BuFiMotion.tap, value: configuration.isPressed)
     }
 }
 

@@ -95,7 +95,7 @@ struct LegacyMiniPlayerView: View {
             .clipped()
             .animation(
                 motionEnabled
-                    ? .interactiveSpring(response: 0.42, dampingFraction: 0.84)
+                    ? BuFiMotion.player
                     : .none,
                 value: song.id
             )
@@ -122,7 +122,7 @@ struct LegacyMiniPlayerView: View {
                     .stroke(.white.opacity(0.14), lineWidth: 0.6)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .shadow(color: .black.opacity(0.24), radius: 10, y: 5)
+            .shadow(color: .black.opacity(0.20), radius: 12, y: 6)
         }
     }
 }
