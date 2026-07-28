@@ -24,26 +24,34 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    searchField
-                    Group {
-                        if isSearchSession {
-                            searchSessionContent
-                        } else {
-                            browse
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        searchField
+                            .id(SearchScrollAnchor.top)
+                        Group {
+                            if isSearchSession {
+                                searchSessionContent
+                            } else {
+                                browse
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            focused = false
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 260, alignment: .top)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        focused = false
+                    .padding(.top, 20)
+                    .padding(.bottom, 34)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: browseMode) { _, _ in
+                    withAnimation(motionEnabled ? BuFiMotion.content : .none) {
+                        scrollProxy.scrollTo(SearchScrollAnchor.top, anchor: .top)
                     }
                 }
-                .padding(.top, 20)
-                .padding(.bottom, 34)
             }
-            .scrollDismissesKeyboard(.interactively)
             .background(BuFiScreenBackground())
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
@@ -74,6 +82,10 @@ struct SearchView: View {
                     .foregroundStyle(Color(uiColor: .secondaryLabel))
             )
             .focused($focused)
+            .font(.body)
+            .textFieldStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .layoutPriority(1)
             .foregroundStyle(.primary)
             .submitLabel(.search)
             .textInputAutocapitalization(.never)
@@ -377,4 +389,8 @@ private enum SearchBrowseMode {
     case main
     case favoriteSongs
     case favoriteAlbums
+}
+
+private enum SearchScrollAnchor: Hashable {
+    case top
 }

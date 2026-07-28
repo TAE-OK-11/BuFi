@@ -150,14 +150,15 @@ final class AppModel: ObservableObject {
             return
         }
 
-        isSearching = true
         searchTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(260))
                 try Task.checkCancellation()
+                guard let self, generation == self.searchGeneration, self.client === client else { return }
+                self.isSearching = true
                 let value = try await client.search(query)
                 try Task.checkCancellation()
-                guard let self, generation == self.searchGeneration, self.client === client else { return }
+                guard generation == self.searchGeneration, self.client === client else { return }
                 self.reconcileFavoriteStates(in: value)
                 self.searchResults = self.applyingFavoriteOverrides(to: value)
                 self.isSearching = false

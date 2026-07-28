@@ -13,6 +13,7 @@ struct PlayerView: View {
     @State private var isScrubbing = false
     @State private var showQueue = false
     @State private var artworkPage: Int?
+    @State private var artworkPalettes: [String: ArtworkPalette] = [:]
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
     @Namespace private var lyricsMorph
@@ -92,15 +93,21 @@ struct PlayerView: View {
         }
         .onChange(of: audio.queueIndex) { oldIndex, index in
             transitionDirection = index >= oldIndex ? 1 : -1
+            applyCachedPalette(at: index)
             syncArtworkPage(to: index, animated: true)
             prefetchUpcomingArtwork(after: index)
         }
+        .onChange(of: audio.currentSong?.id) { _, _ in
+            applyCachedPalette(at: audio.queueIndex)
+        }
         .onChange(of: audio.queue.map(\.id)) { _, _ in
+            pruneArtworkPalettes()
             syncArtworkPage(to: audio.queueIndex, animated: false)
             prefetchUpcomingArtwork(after: audio.queueIndex)
         }
         .onAppear {
             scrubValue = audio.elapsed
+            applyCachedPalette(at: audio.queueIndex)
             syncArtworkPage(to: audio.queueIndex, animated: false)
             prefetchUpcomingArtwork(after: audio.queueIndex)
         }
@@ -197,8 +204,11 @@ struct PlayerView: View {
                             size: edge,
                             cornerRadius: 14,
                             onPalette: { nextPalette in
-                                guard index == artworkPage else { return }
-                                palette = nextPalette
+                                receivePalette(
+                                    nextPalette,
+                                    for: item,
+                                    at: index
+                                )
                             }
                         )
                         .frame(width: edge, height: edge)
@@ -335,8 +345,11 @@ struct PlayerView: View {
                         size: edge,
                         cornerRadius: 14,
                         onPalette: { nextPalette in
-                            guard index == artworkPage else { return }
-                            palette = nextPalette
+                            receivePalette(
+                                nextPalette,
+                                for: item,
+                                at: index
+                            )
                         }
                     )
                     .frame(width: edge, height: edge)
@@ -643,30 +656,27 @@ struct PlayerView: View {
     }
 
     private var miniLyricsWindow: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            ForEach(visibleLyrics, id: \.line.id) { item in
-                Text(item.line.text)
-                    .font(.system(size: 23, weight: .bold))
-                    .tracking(-0.55)
-                    .foregroundStyle(lyricColor(index: item.index))
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(item.index == audio.activeLyricIndex ? 1 : 0)
-                    .scaleEffect(
-                        allowsMotion && item.index != audio.activeLyricIndex ? 0.975 : 1,
-                        anchor: .leading
-                    )
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .transition(
-                        allowsMotion
-                            ? .asymmetric(
-                                insertion: .offset(y: 12).combined(with: .opacity),
-                                removal: .offset(y: -8).combined(with: .opacity)
+        ZStack(alignment: .topLeading) {
+            VStack(alignment: .leading, spacing: 11) {
+                ForEach(visibleLyrics, id: \.line.id) { item in
+                    let distance = max(0, item.index - audio.activeLyricIndex)
+                    Text(item.line.text)
+                        .font(
+                            .system(
+                                size: distance == 0 ? 22 : 19,
+                                weight: distance == 0 ? .bold : .semibold
                             )
-                            : .opacity
-                    )
+                        )
+                        .tracking(distance == 0 ? -0.48 : -0.30)
+                        .foregroundStyle(lyricColor(distance: distance))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+            .id(audio.activeLyricIndex)
+            .transition(miniLyricsTransition)
         }
         .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
     }
@@ -675,12 +685,25 @@ struct PlayerView: View {
         let lines = audio.lyrics.lines
         guard !lines.isEmpty else { return [] }
         let active = lines.indices.contains(audio.activeLyricIndex) ? audio.activeLyricIndex : 0
-        let end = min(lines.count, active + 5)
+        let end = min(lines.count, active + 4)
         return (active..<end).map { (index: $0, line: lines[$0]) }
     }
 
-    private func lyricColor(index: Int) -> Color {
-        index == audio.activeLyricIndex ? playerPrimary : playerPrimary.opacity(0.56)
+    private func lyricColor(distance: Int) -> Color {
+        switch distance {
+        case 0: playerPrimary
+        case 1: playerPrimary.opacity(0.62)
+        case 2: playerPrimary.opacity(0.42)
+        default: playerPrimary.opacity(0.28)
+        }
+    }
+
+    private var miniLyricsTransition: AnyTransition {
+        guard allowsMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(y: 7).combined(with: .opacity),
+            removal: .offset(y: -4).combined(with: .opacity)
+        )
     }
 
     private func control(
@@ -747,6 +770,30 @@ struct PlayerView: View {
         } else {
             artworkPage = resolved
         }
+    }
+
+    private func receivePalette(
+        _ nextPalette: ArtworkPalette,
+        for song: Song,
+        at index: Int
+    ) {
+        artworkPalettes[song.id] = nextPalette
+        guard index == artworkPage || song.id == audio.currentSong?.id else { return }
+        if palette != nextPalette {
+            palette = nextPalette
+        }
+    }
+
+    private func applyCachedPalette(at index: Int) {
+        guard audio.queue.indices.contains(index) else { return }
+        let song = audio.queue[index]
+        guard let cached = artworkPalettes[song.id], palette != cached else { return }
+        palette = cached
+    }
+
+    private func pruneArtworkPalettes() {
+        let activeIDs = Set(audio.queue.map(\.id))
+        artworkPalettes = artworkPalettes.filter { activeIDs.contains($0.key) }
     }
 
     private func prefetchUpcomingArtwork(after index: Int) {
