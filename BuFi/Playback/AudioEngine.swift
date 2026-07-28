@@ -538,7 +538,7 @@ final class AudioEngine: NSObject, ObservableObject {
         song: Song
     ) -> [String] {
         if song.externalStreamURL != nil { return [] }
-        switch quality {
+        return switch quality {
         case .automatic:
             automaticCompatibilityFormat(for: song) == "raw"
                 ? ["aac", "mp3"]
