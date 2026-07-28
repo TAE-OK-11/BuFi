@@ -317,6 +317,11 @@ struct AlbumCard: View {
     }
 }
 
+enum SongRowLayout: Equatable {
+    case standard
+    case compactAlbum
+}
+
 struct SongRow: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
@@ -325,11 +330,13 @@ struct SongRow: View {
     let queue: [Song]
     var showsArtwork = true
     var artworkSize: CGFloat = 54
+    var layout: SongRowLayout = .standard
+    var fallbackTrackNumber: Int?
     var onMore: (() -> Void)?
 
     @ViewBuilder
     var body: some View {
-        if usesCompactAlbumLayout {
+        if layout == .compactAlbum {
             compactAlbumRow
         } else {
             standardRow
@@ -337,13 +344,15 @@ struct SongRow: View {
     }
 
     private var compactAlbumRow: some View {
+        let isCurrentSong = audio.currentSong?.id == song.id
+        let isStarred = model.isStarred(song)
         HStack(spacing: 0) {
             Button {
                 audio.play(song, in: queue)
             } label: {
                 HStack(spacing: 12) {
                     Group {
-                        if audio.currentSong?.id == song.id {
+                        if isCurrentSong {
                             Image(systemName: "speaker.wave.2.fill")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(BuFiTheme.accent)
@@ -359,7 +368,7 @@ struct SongRow: View {
                     Text(song.title)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(
-                            audio.currentSong?.id == song.id
+                            isCurrentSong
                                 ? BuFiTheme.accent
                                 : Color.primary
                         )
@@ -380,13 +389,13 @@ struct SongRow: View {
                 Button {
                     Task { await model.toggleStar(song: song) }
                 } label: {
-                    Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
+                    Image(systemName: isStarred ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : Color.secondary)
+                        .foregroundStyle(isStarred ? BuFiTheme.accent : Color.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+                .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
 
                 if let onMore {
                     Button(action: onMore) {
@@ -407,6 +416,8 @@ struct SongRow: View {
     }
 
     private var standardRow: some View {
+        let isCurrentSong = audio.currentSong?.id == song.id
+        let isStarred = model.isStarred(song)
         HStack(spacing: 0) {
             Button {
                 audio.play(song, in: queue)
@@ -424,7 +435,7 @@ struct SongRow: View {
                         Text(song.title)
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(
-                                audio.currentSong?.id == song.id
+                                isCurrentSong
                                     ? BuFiTheme.accent
                                     : Color.primary
                             )
@@ -444,13 +455,13 @@ struct SongRow: View {
                 Button {
                     Task { await model.toggleStar(song: song) }
                 } label: {
-                    Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
+                    Image(systemName: isStarred ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : Color.secondary)
+                        .foregroundStyle(isStarred ? BuFiTheme.accent : Color.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+                .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
 
                 if let onMore {
                     Button(action: onMore) {
@@ -468,29 +479,8 @@ struct SongRow: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var usesCompactAlbumLayout: Bool {
-        guard showsArtwork, artworkSize <= 44, !queue.isEmpty else { return false }
-
-        let albumIDs = Set(
-            queue.compactMap { item -> String? in
-                guard let id = item.albumId, !id.isEmpty else { return nil }
-                return id
-            }
-        )
-        let albumNames = Set(
-            queue.map { $0.album.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        )
-        let singleAlbum = albumIDs.count == 1 || albumNames.count == 1
-        let tracksWithNumbers = queue.reduce(into: 0) { count, item in
-            if item.track != nil { count += 1 }
-        }
-        let enoughTrackMetadata = tracksWithNumbers >= max(1, (queue.count * 2) / 3)
-        return singleAlbum && enoughTrackMetadata
-    }
-
     private var displayedTrackNumber: Int {
-        song.track ?? ((queue.firstIndex(where: { $0.id == song.id }) ?? 0) + 1)
+        song.track ?? fallbackTrackNumber ?? 1
     }
 
     private var durationText: String {

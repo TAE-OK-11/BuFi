@@ -303,13 +303,17 @@ struct MusicDetailView: View {
             .frame(maxWidth: .infinity)
             .padding(.top, 34)
         } else {
+            let rowLayout = preferredSongRowLayout
             LazyVStack(spacing: 0) {
-                ForEach(songs) { song in
+                ForEach(songs.indices, id: \.self) { index in
+                    let song = songs[index]
                     SongRow(
                         song: song,
                         queue: songs,
                         showsArtwork: true,
                         artworkSize: isArtist ? 54 : 44,
+                        layout: rowLayout,
+                        fallbackTrackNumber: index + 1,
                         onMore: { selectedSong = song }
                     )
                     .padding(.horizontal, 16)
@@ -398,6 +402,27 @@ struct MusicDetailView: View {
     private var isArtist: Bool {
         if case .artist = route { return true }
         return false
+    }
+
+    private var preferredSongRowLayout: SongRowLayout {
+        guard !isArtist, !songs.isEmpty else { return .standard }
+        if case .album = route { return .compactAlbum }
+
+        let firstAlbumID = songs.first?.albumId
+        let firstAlbumName = songs.first?.album
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSingleAlbum = songs.allSatisfy { song in
+            if let firstAlbumID, !firstAlbumID.isEmpty {
+                return song.albumId == firstAlbumID
+            }
+            guard let firstAlbumName, !firstAlbumName.isEmpty else { return false }
+            return song.album.trimmingCharacters(in: .whitespacesAndNewlines) == firstAlbumName
+        }
+        let tracksWithNumbers = songs.reduce(into: 0) { count, song in
+            if song.track != nil { count += 1 }
+        }
+        let enoughTrackMetadata = tracksWithNumbers >= max(1, (songs.count * 2) / 3)
+        return isSingleAlbum && enoughTrackMetadata ? .compactAlbum : .standard
     }
 
     private var canFavorite: Bool {

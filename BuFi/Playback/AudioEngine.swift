@@ -45,7 +45,6 @@ final class AudioEngine: NSObject, ObservableObject {
     private var itemBufferObservations: [NSKeyValueObservation] = []
     private var timeControlObservation: NSKeyValueObservation?
     private var timeObserver: Any?
-    private var endObserver: NSObjectProtocol?
     private var itemObservers: [NSObjectProtocol] = []
     private var systemObservers: [NSObjectProtocol] = []
     private var fallbackIndex = 0
@@ -86,21 +85,6 @@ final class AudioEngine: NSObject, ObservableObject {
         if queueRestorationEnabled {
             restoreLocalQueue()
         }
-    }
-
-    deinit {
-        if let timeObserver { player.removeTimeObserver(timeObserver) }
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
-        itemObservers.forEach(NotificationCenter.default.removeObserver)
-        itemBufferObservations.removeAll()
-        systemObservers.forEach(NotificationCenter.default.removeObserver)
-        recoveryTask?.cancel()
-        itemLoadTask?.cancel()
-        nowPlayingArtworkTask?.cancel()
-        offlinePrefetchTask?.cancel()
-        lyricsTask?.cancel()
-        queueSaveTask?.cancel()
-        serverQueueTask?.cancel()
     }
 
     func configure(
@@ -244,7 +228,7 @@ final class AudioEngine: NSObject, ObservableObject {
         playbackError = nil
         player.isMuted = false
         player.volume = 1
-        nowPlayingSession?.becomeActiveIfPossible()
+        activateNowPlayingSession()
         player.playImmediately(atRate: 1)
         updateNowPlaying()
     }
@@ -283,7 +267,7 @@ final class AudioEngine: NSObject, ObservableObject {
         if persistsQueue { scheduleQueueSave() }
     }
 
-    /// `isAutoAdvance`는 곡이 자연 종료되어(`endObserver`) 호출된 경우에만 true.
+    /// `isAutoAdvance`는 곡의 종료 알림으로 호출된 경우에만 true.
     /// 사용자가 다음곡 버튼/리모컨으로 직접 스킵한 경우는 false — 이 경우엔
     /// "1곡 반복" 모드여도 같은 곡을 재시작하지 않고 실제로 다음 곡으로 넘어가야 함.
     /// (이전에는 이 구분이 없어 수동 스킵도 같은 곡이 반복 재생되는 버그가 있었음.)
@@ -673,7 +657,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         self.configureAudioSession()
                         self.player.isMuted = false
                         self.player.volume = 1
-                        self.nowPlayingSession?.becomeActiveIfPossible()
+                        self.activateNowPlayingSession()
                         self.player.playImmediately(atRate: 1)
                     }
                 case .failed:
@@ -720,9 +704,9 @@ final class AudioEngine: NSObject, ObservableObject {
             forName: .AVPlayerItemPlaybackStalled,
             object: item,
             queue: .main
-        ) { [weak self] notification in
+        ) { [weak self, weak item] _ in
             Task { @MainActor in
-                guard let self, self.player.currentItem === notification.object as? AVPlayerItem else { return }
+                guard let self, let item, self.player.currentItem === item else { return }
                 self.schedulePlaybackRecovery()
             }
         })
@@ -730,14 +714,22 @@ final class AudioEngine: NSObject, ObservableObject {
             forName: .AVPlayerItemFailedToPlayToEndTime,
             object: item,
             queue: .main
-        ) { [weak self] notification in
+        ) { [weak self, weak item] _ in
             Task { @MainActor in
-                guard let self,
-                      let failedItem = notification.object as? AVPlayerItem,
-                      self.player.currentItem === failedItem else {
+                guard let self, let item, self.player.currentItem === item else {
                     return
                 }
-                self.handlePlaybackFailure(failedItem: failedItem)
+                self.handlePlaybackFailure(failedItem: item)
+            }
+        })
+        itemObservers.append(center.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self, weak item] _ in
+            Task { @MainActor in
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.next(isAutoAdvance: true)
             }
         })
     }
@@ -901,18 +893,6 @@ final class AudioEngine: NSObject, ObservableObject {
             }
         }
 
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            Task { @MainActor in
-                guard let self,
-                      let endedItem = notification.object as? AVPlayerItem,
-                      self.player.currentItem === endedItem else { return }
-                self.next(isAutoAdvance: true)
-            }
-        }
     }
 
     private func updateActiveLyric() {
@@ -970,14 +950,22 @@ final class AudioEngine: NSObject, ObservableObject {
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] notification in
-            Task { @MainActor in self?.handleAudioInterruption(notification) }
+            let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+            Task { @MainActor in
+                self?.handleAudioInterruption(
+                    typeRawValue: type,
+                    optionsRawValue: options
+                )
+            }
         })
         systemObservers.append(center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] notification in
-            Task { @MainActor in self?.handleRouteChange(notification) }
+            let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+            Task { @MainActor in self?.handleRouteChange(reasonRawValue: reason) }
         })
         systemObservers.append(center.addObserver(
             forName: AVAudioSession.mediaServicesWereResetNotification,
@@ -1059,8 +1047,11 @@ final class AudioEngine: NSObject, ObservableObject {
         backgroundTaskID = .invalid
     }
 
-    private func handleAudioInterruption(_ notification: Notification) {
-        guard let rawValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+    private func handleAudioInterruption(
+        typeRawValue: UInt?,
+        optionsRawValue: UInt?
+    ) {
+        guard let rawValue = typeRawValue,
               let type = AVAudioSession.InterruptionType(rawValue: rawValue) else {
             return
         }
@@ -1073,7 +1064,7 @@ final class AudioEngine: NSObject, ObservableObject {
             endBackgroundBridge()
             scheduleQueueSave(immediate: true)
         case .ended:
-            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let rawOptions = optionsRawValue ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
             guard resumeAfterInterruption, options.contains(.shouldResume) else {
                 resumeAfterInterruption = false
@@ -1088,8 +1079,8 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func handleRouteChange(_ notification: Notification) {
-        guard let rawValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+    private func handleRouteChange(reasonRawValue: UInt?) {
+        guard let rawValue = reasonRawValue,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawValue) else {
             return
         }
@@ -1249,7 +1240,7 @@ final class AudioEngine: NSObject, ObservableObject {
         info[MPNowPlayingInfoPropertyPlaybackQueueCount] = queue.count
         info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = max(0, queueIndex)
         nowPlayingInfoCenter.nowPlayingInfo = info
-        nowPlayingSession?.becomeActiveIfPossible()
+        activateNowPlayingSession()
         updateRemoteCommands()
 
         guard nowPlayingArtworkSongID != song.id,
@@ -1279,6 +1270,13 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private var nowPlayingInfoCenter: MPNowPlayingInfoCenter {
         nowPlayingSession?.nowPlayingInfoCenter ?? .default()
+    }
+
+    private func activateNowPlayingSession() {
+        guard let nowPlayingSession else { return }
+        Task {
+            _ = await nowPlayingSession.becomeActiveIfPossible()
+        }
     }
 
     private func persistentID(for value: String) -> NSNumber {

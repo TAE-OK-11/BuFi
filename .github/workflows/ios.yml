@@ -24,6 +24,12 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           xcodebuild -version
 
+      - name: Cache Swift packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/BuFiSourcePackages
+          key: ${{ runner.os }}-xcode26.6-spm-${{ hashFiles('project.yml') }}
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -43,6 +49,10 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/BuFiDerivedData" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
+            -parallelizeTargets \
+            -showBuildTimingSummary \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -84,6 +94,12 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Cache Swift packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/BuFi27SourcePackages
+          key: ${{ runner.os }}-xcode27-spm-${{ hashFiles('project.yml') }}
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -105,6 +121,10 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/BuFi27DerivedData" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFi27SourcePackages" \
+            -parallelizeTargets \
+            -showBuildTimingSummary \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \

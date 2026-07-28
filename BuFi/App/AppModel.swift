@@ -57,6 +57,9 @@ final class AppModel: ObservableObject {
     private var confirmedStarStates: [String: Bool] = [:]
     private var awaitingStarConfirmations: [String: Bool] = [:]
     private static let starDateFormatter = ISO8601DateFormatter()
+    private static let albumDetailCacheLimit = 48
+    private static let playlistDetailCacheLimit = 24
+    private static let artistDetailCacheLimit = 32
 
     init() {
         if let credentials = secureStore.load() {
@@ -127,7 +130,7 @@ final class AppModel: ObservableObject {
                 authoritative: loadResult.hasAuthoritativeStarredState
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
-            if homeChanged(resolvedSnapshot) { home = resolvedSnapshot }
+            if home != resolvedSnapshot { home = resolvedSnapshot }
         } catch is CancellationError {
             return
         } catch {
@@ -210,8 +213,8 @@ final class AppModel: ObservableObject {
     }
 
     func album(id: String) async throws -> AlbumDetail {
-        if let cached = albumDetailCache[id], cached.expiresAt > Date() {
-            return cached.value
+        if let cached = Self.cachedDetail(id: id, cache: &albumDetailCache) {
+            return cached
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
         let generation = sessionGeneration
@@ -250,9 +253,12 @@ final class AppModel: ObservableObject {
             resolvedValue = AlbumDetail(
                 songs: value.songs.map(applyingFavoriteOverride)
             )
-            albumDetailCache[id] = CachedValue(
-                value: resolvedValue,
-                expiresAt: Date().addingTimeInterval(5 * 60)
+            Self.storeDetail(
+                resolvedValue,
+                id: id,
+                lifetime: 5 * 60,
+                limit: Self.albumDetailCacheLimit,
+                cache: &albumDetailCache
             )
         } else if let cached = albumDetailCache[id] {
             resolvedValue = cached.value
@@ -264,8 +270,8 @@ final class AppModel: ObservableObject {
     }
 
     func playlist(id: String) async throws -> PlaylistDetail {
-        if let cached = playlistDetailCache[id], cached.expiresAt > Date() {
-            return cached.value
+        if let cached = Self.cachedDetail(id: id, cache: &playlistDetailCache) {
+            return cached
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
         let generation = sessionGeneration
@@ -304,9 +310,12 @@ final class AppModel: ObservableObject {
             resolvedValue = PlaylistDetail(
                 songs: value.songs.map(applyingFavoriteOverride)
             )
-            playlistDetailCache[id] = CachedValue(
-                value: resolvedValue,
-                expiresAt: Date().addingTimeInterval(5 * 60)
+            Self.storeDetail(
+                resolvedValue,
+                id: id,
+                lifetime: 5 * 60,
+                limit: Self.playlistDetailCacheLimit,
+                cache: &playlistDetailCache
             )
         } else if let cached = playlistDetailCache[id] {
             resolvedValue = cached.value
@@ -318,8 +327,8 @@ final class AppModel: ObservableObject {
     }
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
-        if let cached = artistDetailCache[id], cached.expiresAt > Date() {
-            return cached.value
+        if let cached = Self.cachedDetail(id: id, cache: &artistDetailCache) {
+            return cached
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
         let generation = sessionGeneration
@@ -365,9 +374,12 @@ final class AppModel: ObservableObject {
                 topSongs: value.topSongs.map(applyingFavoriteOverride),
                 info: value.info
             )
-            artistDetailCache[id] = CachedValue(
-                value: resolvedValue,
-                expiresAt: Date().addingTimeInterval(15 * 60)
+            Self.storeDetail(
+                resolvedValue,
+                id: id,
+                lifetime: 15 * 60,
+                limit: Self.artistDetailCacheLimit,
+                cache: &artistDetailCache
             )
         } else if let cached = artistDetailCache[id] {
             resolvedValue = cached.value
@@ -994,9 +1006,40 @@ final class AppModel: ObservableObject {
         artistDetailCache.removeAll(keepingCapacity: false)
     }
 
-    private var isHomeEmpty: Bool { home == .empty }
+    private static func cachedDetail<Value>(
+        id: String,
+        cache: inout [String: CachedValue<Value>]
+    ) -> Value? {
+        guard let cached = cache[id] else { return nil }
+        guard cached.expiresAt > Date() else {
+            cache[id] = nil
+            return nil
+        }
+        return cached.value
+    }
 
-    private func homeChanged(_ next: HomeSnapshot) -> Bool { home != next }
+    private static func storeDetail<Value>(
+        _ value: Value,
+        id: String,
+        lifetime: TimeInterval,
+        limit: Int,
+        cache: inout [String: CachedValue<Value>]
+    ) {
+        let now = Date()
+        cache = cache.filter { $0.value.expiresAt > now }
+        cache[id] = CachedValue(
+            value: value,
+            expiresAt: now.addingTimeInterval(lifetime)
+        )
+        while cache.count > limit,
+              let oldest = cache.min(by: {
+                  $0.value.expiresAt < $1.value.expiresAt
+              }) {
+            cache[oldest.key] = nil
+        }
+    }
+
+    private var isHomeEmpty: Bool { home == .empty }
 
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
         sessionGeneration += 1

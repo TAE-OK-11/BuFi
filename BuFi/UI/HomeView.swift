@@ -256,7 +256,7 @@ struct HomeView: View {
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
-                        ForEach(Array(albums.prefix(18))) { album in
+                        ForEach(albums.prefix(18)) { album in
                             NavigationLink(value: MusicRoute.album(album)) {
                                 AlbumCard(album: album)
                             }

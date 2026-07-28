@@ -22,9 +22,11 @@
   26+, with an automatic Classic fallback on iOS 17–25. Transport buttons and
   the rest of the player retain the existing Classic design.
 - Replaces edge-joined artwork paging with a separated, centered card carousel
-  that previews the neighboring cover and animates programmatic track changes.
+  that animates programmatic track changes while retaining the original
+  full-width artwork size.
 - Smooths compact lyric progression and the compact-to-full-screen surface
-  transition, while allowing long lyric lines to wrap instead of truncating.
+  transition, shows up to five compact lyric lines, and allows long lines to
+  wrap instead of truncating.
 - Centralizes motion policy so Reduce Motion, Low Power Mode, and serious or
   critical thermal pressure suppress nonessential transitions consistently.
 - Light-mode contrast fixes for artist, album, playlist controls and settings surfaces.
@@ -43,6 +45,9 @@
 - Coalesces concurrent detail, artwork, and offline-download work while
   preventing cancelled waiters or an old account scope from publishing stale
   results.
+- Bounds expired detail caches, removes quadratic album-row classification, and
+  clears the current Xcode 27 Swift concurrency warnings around player
+  notifications and now-playing activation.
 
 ## Verification
 

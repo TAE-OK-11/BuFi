@@ -179,14 +179,16 @@ struct PlayerView: View {
 
     private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
         let viewportWidth = max(240, availableWidth - 44)
-        let edge = max(220, min(viewportWidth * 0.86, max(264, availableHeight * 0.47)))
+        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
         let sideInset = max(0, (viewportWidth - edge) / 2)
         let songs = audio.queue.isEmpty ? [song] : audio.queue
+        let animatesArtworkTransition = allowsMotion
 
         return VStack(spacing: 0) {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 18) {
-                    ForEach(Array(songs.enumerated()), id: \.offset) { index, item in
+                    ForEach(songs.indices, id: \.self) { index in
+                        let item = songs[index]
                         ArtworkView(
                             coverArt: item.coverArt,
                             size: edge,
@@ -203,8 +205,8 @@ struct PlayerView: View {
                         .id(index)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
-                                .scaleEffect(phase.isIdentity || !allowsMotion ? 1 : 0.94)
-                                .opacity(phase.isIdentity || !allowsMotion ? 1 : 0.72)
+                                .scaleEffect(phase.isIdentity || !animatesArtworkTransition ? 1 : 0.94)
+                                .opacity(phase.isIdentity || !animatesArtworkTransition ? 1 : 0.72)
                         }
                     }
                 }
@@ -503,7 +505,7 @@ struct PlayerView: View {
         let lines = audio.lyrics.lines
         guard !lines.isEmpty else { return [] }
         let active = lines.indices.contains(audio.activeLyricIndex) ? audio.activeLyricIndex : 0
-        let end = min(lines.count, active + 3)
+        let end = min(lines.count, active + 5)
         return (active..<end).map { (index: $0, line: lines[$0]) }
     }
 

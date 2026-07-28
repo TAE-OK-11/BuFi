@@ -202,7 +202,8 @@ struct SearchView: View {
     private var browseMain: some View {
         VStack(alignment: .leading, spacing: 22) {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(Array(categories.enumerated()), id: \.offset) { index, category in
+                ForEach(categories.indices, id: \.self) { index in
+                    let category = categories[index]
                     Button {
                         withAnimation(motionEnabled ? BuFiMotion.page : .none) {
                             browseMode = index == 0 ? .favoriteSongs : .favoriteAlbums

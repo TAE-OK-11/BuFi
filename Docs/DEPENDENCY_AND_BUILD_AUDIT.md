@@ -60,8 +60,10 @@ a build-time project generator.
   potential data races as migration warnings without turning them into Swift 6
   errors.
 - Release retains speed optimization, whole-module compilation, documented
-  LLVM link-time optimization, dead-code stripping, dSYMs, and disabled
-  testability.
+  LLVM link-time optimization, dead-code stripping, dSYMs, disabled assertions,
+  stripped Swift symbols, and disabled testability. `-Ounchecked` is
+  intentionally not used because removing overflow and runtime safety checks is
+  unsuitable for a stabilization build.
 - The undocumented user-defined `SWIFT_LTO` setting and the C-only
   `GCC_OPTIMIZATION_LEVEL` override were removed. The app target is Swift, while
   the zstd C target is owned by SwiftPM.
@@ -81,6 +83,10 @@ Swift 6 in
   can be unstable.
 - Xcode 27 logs are uploaded on every run to retain new SDK and compiler
   warnings.
+- CI keeps a toolchain-specific Swift Package clone cache, disables the unused
+  compiler index store, explicitly parallelizes targets, and emits Xcode's
+  build-timing summary. DerivedData is intentionally not cached so verification
+  remains a clean Release build.
 - Pull requests run only the verification workflow; the artifact workflow runs
   after changes reach `main`, avoiding duplicate builds.
 
@@ -98,3 +104,23 @@ those runtime changes but does not replace measurement. See
 [Reducing your app's battery use](https://developer.apple.com/documentation/xcode/reducing-your-app-s-battery-use)
 and
 [Analyzing your app's battery use](https://developer.apple.com/documentation/xcode/analyzing-your-app-s-battery-use).
+
+## Runtime and dead-code audit
+
+- Album/playlist rows previously recomputed two sets and scanned the entire
+  queue inside every row render. The collection layout is now classified once
+  per detail render and each fallback track number is supplied by the parent,
+  removing the O(n²) path.
+- Expired detail responses previously stayed resident until logout. Album,
+  playlist, and artist caches now discard expired entries and enforce bounded
+  per-type limits.
+- Redundant temporary arrays were removed from static category, album-prefix,
+  and player artwork iteration where stable collection indices are available.
+- The `AudioEngine` singleton's destructor was unreachable during the app
+  lifetime and produced Swift 6 isolation warnings. It was removed, while
+  per-item end notifications now share the same explicit lifecycle as stall and
+  failure observers.
+- No complete view or OpenSubsonic response model was removed: the apparently
+  legacy mini player is still mounted by `RootView`, and low-reference payload
+  types are instantiated indirectly by `Decodable`. Removing either category
+  would be a functional regression rather than dead-code cleanup.
