@@ -8,6 +8,10 @@ struct SettingsView: View {
     @State private var confirmArtworkRemoval = false
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("motion-enabled") private var motionEnabled = true
+    @AppStorage("player-seekbar-appearance")
+    private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
+    @AppStorage("player-background-appearance")
+    private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("auto-open-player") private var autoOpenPlayer = false
     @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
@@ -65,9 +69,36 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Toggle(isOn: $motionEnabled) {
-                        Label("Liquid Glass 애니메이션", systemImage: "sparkles")
+                    Picker("플레이어 스타일", selection: $playerAppearance) {
+                        ForEach(PlayerAppearance.allCases) { appearance in
+                            Text(appearance.title).tag(appearance.rawValue)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .tint(BuFiTheme.accent)
+
+                    Text("Classic은 최초 플레이어 디자인을 유지합니다. Liquid Glass는 같은 배치에서 재생바만 Apple 디자인으로 변경합니다. Dynamic은 앨범 커버 아래 유리 카드에 곡 정보와 재생 제어를 모아 잠금화면처럼 표시합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Picker("플레이어 배경", selection: $playerBackgroundAppearance) {
+                        ForEach(PlayerBackgroundAppearance.allCases) { appearance in
+                            Text(appearance.title).tag(appearance.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(BuFiTheme.accent)
+
+                    Text("기존은 원래 대표색 명암에 앨범 보조색을 은은하게 섞습니다. 다중 컬러와 밝게는 서로 다른 대표색을 최대 3개 더 선명하게 사용해 잠금화면처럼 부드러운 그라데이션으로 표시합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Toggle(isOn: $motionEnabled) {
+                        Label("애니메이션 및 모션", systemImage: "sparkles")
+                    }
+                    Text("동작 줄이기, 저전력 모드 또는 기기 온도가 높을 때는 애니메이션을 자동으로 줄입니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Toggle(isOn: $hapticsEnabled) {
                         Label("햅틱 피드백", systemImage: "waveform.path")
                     }
@@ -95,7 +126,7 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Color(uiColor: .secondaryLabel))
-                    Text("자동 음질은 FLAC·Opus·Vorbis 등 고부하 원본을 서버에서 AAC 256kbps로 변환해 기기 배터리 사용량을 줄입니다. 원본 무손실은 원본 재생을 먼저 시도하고 실패하면 AAC·MP3로 전환합니다.")
+                    Text("자동 음질은 AAC·MP3·ALAC 등 iPhone이 직접 재생할 수 있는 형식은 원본으로 재생하고, FLAC·Opus·Vorbis 등은 서버에서 AAC 256kbps로 변환합니다. 원본 재생이 실패하면 AAC·MP3로 안전하게 전환합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Toggle(isOn: $autoOpenPlayer) {
@@ -260,15 +291,15 @@ private struct OpenSourceNoticesView: View {
             Section("SwiftSonic") {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("SwiftSonic").font(.headline)
-                    Text("MIT License · Copyright © Mathieu Dubart and contributors")
+                    Text("MIT License · Copyright © 2026 Mathieu Dubart")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Text("Subsonic/OpenSubsonic 인증, 재시도 및 미디어 URL 생성 경로에 사용합니다.")
+                    Text("인증된 스트림·아트워크·다운로드 URL 생성에 사용합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
-            Section("Nuke / NukeUI") {
+            Section("Nuke") {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Nuke").font(.headline)
                     Text("MIT License · Copyright © Alexander Grebenyuk and contributors")
@@ -301,8 +332,50 @@ private struct OpenSourceNoticesView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Section("라이선스 전문") {
+                NavigationLink {
+                    ThirdPartyLicensesView()
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("제3자 라이선스 전문", systemImage: "doc.text")
+                        Text("SwiftSonic, Nuke 및 Zstandard의 공식 라이선스 전문")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .navigationTitle("오픈소스")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct ThirdPartyLicensesView: View {
+    private let contents: String
+
+    init(bundle: Bundle = .main) {
+        if let url = bundle.url(
+            forResource: "ThirdPartyLicenses",
+            withExtension: "txt"
+        ),
+            let text = try? String(contentsOf: url, encoding: .utf8)
+        {
+            contents = text
+        } else {
+            contents = String(localized: "라이선스 파일을 불러오지 못했습니다.")
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            Text(verbatim: contents)
+                .font(.system(.footnote, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .padding()
+        }
+        .background(BuFiScreenBackground())
+        .navigationTitle("제3자 라이선스 전문")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

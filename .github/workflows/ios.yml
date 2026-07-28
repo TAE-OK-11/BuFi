@@ -3,7 +3,6 @@ name: iOS Build
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -17,16 +16,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - name: Show Xcode version
+      - name: Select stable Xcode 26.6
         run: |
-          if [ -d /Applications/Xcode_26.6.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
-          elif [ -d /Applications/Xcode_26.5.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
-          fi
+          test -d /Applications/Xcode_26.6.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           xcodebuild -version
+
+      - name: Cache Swift packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/BuFiSourcePackages
+          key: ${{ runner.os }}-xcode26.6-spm-${{ hashFiles('project.yml') }}
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -47,6 +49,10 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/BuFiDerivedData" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
+            -parallelizeTargets \
+            -showBuildTimingSummary \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -64,7 +70,7 @@ jobs:
           shasum -a 256 BuFi-unsigned.ipa > BuFi-unsigned.ipa.sha256
 
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BuFi-unsigned-${{ github.sha }}
           path: |
@@ -74,17 +80,25 @@ jobs:
           retention-days: 30
 
   ios-27-compatibility:
+    name: iOS 27 preview (advisory)
     runs-on: xcode-27
+    continue-on-error: true
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Show Xcode and iOS SDK
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Cache Swift packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/BuFi27SourcePackages
+          key: ${{ runner.os }}-xcode27-spm-${{ hashFiles('project.yml') }}
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -98,14 +112,29 @@ jobs:
       - name: Build with iOS 27 SDK
         run: |
           set -o pipefail
+          mkdir -p "$RUNNER_TEMP/BuFi27Logs"
           xcodebuild \
+            -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/BuFi27DerivedData" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFi27SourcePackages" \
+            -parallelizeTargets \
+            -showBuildTimingSummary \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            clean build
+            clean build 2>&1 | tee "$RUNNER_TEMP/BuFi27Logs/xcode27.log"
+
+      - name: Upload Xcode 27 preview log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: BuFi-xcode27-preview-${{ github.sha }}
+          path: ${{ runner.temp }}/BuFi27Logs/xcode27.log
+          if-no-files-found: warn
+          retention-days: 14

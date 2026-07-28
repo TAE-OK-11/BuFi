@@ -5,15 +5,20 @@ struct PlayerView: View {
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     @State private var palette = ArtworkPalette.fallback
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
     @State private var showQueue = false
-    @State private var artworkPage = 0
+    @State private var artworkPage: Int?
     @State private var transitionDirection: CGFloat = 1
+    @State private var artworkPrefetchTask: Task<Void, Never>?
     @Namespace private var lyricsMorph
-    @AppStorage("motion-enabled") private var motionEnabled = true
+    @AppStorage("player-seekbar-appearance")
+    private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
+    @AppStorage("player-background-appearance")
+    private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
 
     var body: some View {
         GeometryReader { proxy in
@@ -24,10 +29,22 @@ struct PlayerView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(song)
-                            nowPlayingPager(song, availableWidth: proxy.size.width, availableHeight: proxy.size.height)
-                            progress
-                            transport
-                            utilityRow(song)
+                            if resolvedPlayerAppearance == .dynamic {
+                                dynamicPlayer(
+                                    song,
+                                    availableWidth: proxy.size.width,
+                                    availableHeight: proxy.size.height
+                                )
+                            } else {
+                                nowPlayingPager(
+                                    song,
+                                    availableWidth: proxy.size.width,
+                                    availableHeight: proxy.size.height
+                                )
+                                progress
+                                transport
+                                utilityRow(song)
+                            }
                             lyricsCard
                         }
                         .padding(.horizontal, 22)
@@ -40,20 +57,22 @@ struct PlayerView: View {
                 }
 
                 if audio.showFullLyrics {
-                    FullLyricsView(palette: palette, namespace: lyricsMorph)
+                    FullLyricsView(
+                        palette: palette,
+                        namespace: lyricsMorph,
+                        seekBarAppearance: resolvedSeekBarAppearance,
+                        backgroundAppearance: resolvedBackgroundAppearance
+                    )
                         .environmentObject(audio)
                         .transition(
-                            motionEnabled
-                                ? .asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .move(edge: .bottom).combined(with: .opacity)
-                                )
+                            allowsMotion
+                                ? .scale(scale: 0.985, anchor: .bottom).combined(with: .opacity)
                                 : .opacity
                         )
                         .zIndex(20)
                 }
             }
-            .animation(motionEnabled ? BuFiMotion.player : .none, value: audio.showFullLyrics)
+            .animation(allowsMotion ? BuFiMotion.lyricsPanel : .none, value: audio.showFullLyrics)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQueue) {
@@ -70,39 +89,30 @@ struct PlayerView: View {
             syncArtworkPage(to: index, animated: true)
             prefetchUpcomingArtwork(after: index)
         }
-        .onChange(of: audio.queue.count) { _, _ in
+        .onChange(of: audio.queue.map(\.id)) { _, _ in
             syncArtworkPage(to: audio.queueIndex, animated: false)
+            prefetchUpcomingArtwork(after: audio.queueIndex)
         }
         .onAppear {
             scrubValue = audio.elapsed
             syncArtworkPage(to: audio.queueIndex, animated: false)
             prefetchUpcomingArtwork(after: audio.queueIndex)
         }
+        .onDisappear {
+            artworkPrefetchTask?.cancel()
+            artworkPrefetchTask = nil
+        }
     }
 
     private var background: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(palette.top), Color(palette.bottom)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            if colorScheme == .light {
-                LinearGradient(
-                    colors: [.white.opacity(0.46), .white.opacity(0.72)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            } else {
-                LinearGradient(
-                    colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-        }
+        PlayerPaletteBackground(
+            palette: palette,
+            appearance: resolvedBackgroundAppearance,
+            colorScheme: colorScheme
+        )
         .ignoresSafeArea()
-        .animation(motionEnabled ? BuFiMotion.color : .none, value: palette)
+        .animation(allowsMotion ? BuFiMotion.color : .none, value: palette)
+        .animation(allowsMotion ? BuFiMotion.color : .none, value: resolvedBackgroundAppearance)
     }
 
     private func header(_ song: Song) -> some View {
@@ -130,7 +140,7 @@ struct PlayerView: View {
                 }
                 .id(song.id)
                 .transition(
-                    motionEnabled
+                    allowsMotion
                         ? .asymmetric(
                             insertion: .move(edge: transitionDirection > 0 ? .trailing : .leading).combined(with: .opacity),
                             removal: .move(edge: transitionDirection > 0 ? .leading : .trailing).combined(with: .opacity)
@@ -139,7 +149,7 @@ struct PlayerView: View {
                 )
             }
             .frame(maxWidth: 240)
-            .animation(motionEnabled ? BuFiMotion.text : .none, value: song.id)
+            .animation(allowsMotion ? BuFiMotion.text : .none, value: song.id)
             Spacer()
 
             Menu {
@@ -147,7 +157,9 @@ struct PlayerView: View {
                     Task { await model.toggleStar(song: song) }
                 } label: {
                     Label(
-                        song.isStarred ? String(localized: "좋아요 취소") : String(localized: "좋아요 표시"),
+                        model.isStarred(song)
+                            ? String(localized: "좋아요 취소")
+                            : String(localized: "좋아요 표시"),
                         systemImage: "heart"
                     )
                 }
@@ -164,42 +176,72 @@ struct PlayerView: View {
             .accessibilityLabel("더 보기")
         }
         .buttonStyle(.plain)
+        .foregroundStyle(playerPrimary)
         .frame(height: 58)
     }
 
     private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
-        let edge = min(availableWidth - 44, max(264, availableHeight * 0.47))
+        let viewportWidth = max(240, availableWidth - 44)
+        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
+        let sideInset = max(0, (viewportWidth - edge) / 2)
         let songs = audio.queue.isEmpty ? [song] : audio.queue
+        let animatesTransition = allowsMotion
 
-        return TabView(selection: $artworkPage) {
-            ForEach(Array(songs.enumerated()), id: \.element.id) { index, item in
-                VStack(spacing: 0) {
-                    ArtworkView(
-                        coverArt: item.coverArt,
-                        size: edge,
-                        cornerRadius: 14,
-                        onPalette: { nextPalette in
-                            guard index == artworkPage else { return }
-                            withAnimation(motionEnabled ? BuFiMotion.color : .none) {
-                                palette = nextPalette
+        return VStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 18) {
+                    ForEach(songs.indices, id: \.self) { index in
+                        let item = songs[index]
+                        ArtworkView(
+                            coverArt: item.coverArt,
+                            size: edge,
+                            cornerRadius: 14,
+                            onPalette: { nextPalette in
+                                guard index == artworkPage else { return }
+                                withAnimation(allowsMotion ? BuFiMotion.color : .none) {
+                                    palette = nextPalette
+                                }
                             }
+                        )
+                        .frame(width: edge, height: edge)
+                        .id(index)
+                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                            content
+                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.94)
+                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.72)
                         }
-                    )
-                    .frame(width: edge, height: edge)
-                    .padding(.horizontal, 4)
-                    .padding(.top, 13)
-                    .padding(.bottom, 26)
-
-                    metadataContent(item)
-                        .padding(.bottom, 18)
+                    }
                 }
-                .tag(index)
+                .scrollTargetLayout()
             }
+            .scrollIndicators(.hidden)
+            .contentMargins(.horizontal, sideInset, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $artworkPage)
+            .frame(height: edge + 42)
+
+            metadataContent(song)
+                .id(song.id)
+                .transition(
+                    allowsMotion
+                        ? .asymmetric(
+                            insertion: .move(
+                                edge: transitionDirection > 0 ? .trailing : .leading
+                            ).combined(with: .opacity),
+                            removal: .move(
+                                edge: transitionDirection > 0 ? .leading : .trailing
+                            ).combined(with: .opacity)
+                        )
+                        : .opacity
+                )
+                .animation(allowsMotion ? BuFiMotion.text : .none, value: song.id)
+                .padding(.bottom, 18)
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(height: edge + 116)
         .contentShape(Rectangle())
-        .onChange(of: artworkPage) { oldIndex, index in
+        .onChange(of: artworkPage) { oldPage, page in
+            guard let index = page else { return }
+            let oldIndex = oldPage ?? audio.queueIndex
             transitionDirection = index >= oldIndex ? 1 : -1
             guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
@@ -236,13 +278,137 @@ struct PlayerView: View {
             Button {
                 Task { await model.toggleStar(song: song) }
             } label: {
-                Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
                     .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(song.isStarred ? BuFiTheme.accent : playerPrimary)
+                    .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : playerPrimary)
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(BuFiPressStyle())
-            .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
+            .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+        }
+    }
+
+    private func dynamicPlayer(
+        _ song: Song,
+        availableWidth: CGFloat,
+        availableHeight: CGFloat
+    ) -> some View {
+        VStack(spacing: 14) {
+            dynamicArtworkPager(
+                song,
+                availableWidth: availableWidth,
+                availableHeight: availableHeight
+            )
+
+            VStack(spacing: 4) {
+                dynamicMetadataContent(song)
+                    .padding(.bottom, 8)
+                progress
+                    .padding(.horizontal, 2)
+                transport
+                SystemVolumeSlider(tint: playerPrimary)
+                    .frame(height: 24)
+                    .accessibilityLabel("시스템 음량")
+                utilityRow(song, includesAirPlay: false)
+                    .padding(.vertical, 0)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 14)
+            .background {
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(Color.white.opacity(0.24))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 30, style: .continuous)
+                            .stroke(.white.opacity(0.30), lineWidth: 0.8)
+                    }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+            .buFiGlass(cornerRadius: 30, interactive: true)
+        }
+        .padding(.bottom, 8)
+    }
+
+    private func dynamicArtworkPager(
+        _ song: Song,
+        availableWidth: CGFloat,
+        availableHeight: CGFloat
+    ) -> some View {
+        let viewportWidth = max(240, availableWidth - 44)
+        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
+        let sideInset = max(0, (viewportWidth - edge) / 2)
+        let songs = audio.queue.isEmpty ? [song] : audio.queue
+        let animatesTransition = allowsMotion
+
+        return ScrollView(.horizontal) {
+            LazyHStack(spacing: 18) {
+                ForEach(songs.indices, id: \.self) { index in
+                    let item = songs[index]
+                    ArtworkView(
+                        coverArt: item.coverArt,
+                        size: edge,
+                        cornerRadius: 14,
+                        onPalette: { nextPalette in
+                            guard index == artworkPage else { return }
+                            withAnimation(allowsMotion ? BuFiMotion.color : .none) {
+                                palette = nextPalette
+                            }
+                        }
+                    )
+                    .frame(width: edge, height: edge)
+                    .id(index)
+                    .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                        content
+                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.94)
+                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.72)
+                    }
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollIndicators(.hidden)
+        .contentMargins(.horizontal, sideInset, for: .scrollContent)
+        .scrollTargetBehavior(.viewAligned)
+        .scrollPosition(id: $artworkPage)
+        .frame(height: edge + 26)
+        .contentShape(Rectangle())
+        .onChange(of: artworkPage) { oldPage, page in
+            guard let index = page else { return }
+            let oldIndex = oldPage ?? audio.queueIndex
+            transitionDirection = index >= oldIndex ? 1 : -1
+            guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
+            audio.playQueueItem(at: index)
+        }
+    }
+
+    private func dynamicMetadataContent(_ song: Song) -> some View {
+        ZStack {
+            VStack(spacing: 4) {
+                Text(song.title)
+                    .font(.system(size: 22, weight: .bold))
+                    .tracking(-0.55)
+                    .lineLimit(1)
+                Text(song.artist)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(playerSecondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 52)
+
+            HStack {
+                Spacer()
+                Button {
+                    Task { await model.toggleStar(song: song) }
+                } label: {
+                    Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : playerPrimary)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+            }
         }
     }
 
@@ -254,9 +420,10 @@ struct PlayerView: View {
         let remaining = max(0, duration - elapsed)
 
         return VStack(spacing: 0) {
-            InteractiveSeekBar(
+            PlayerSeekBar(
                 value: $scrubValue,
                 range: 0...seekUpperBound,
+                appearance: resolvedSeekBarAppearance,
                 tint: playerPrimary
             ) { editing in
                 isScrubbing = editing
@@ -271,37 +438,30 @@ struct PlayerView: View {
             .foregroundStyle(playerSecondary)
             .monospacedDigit()
             .contentTransition(.numericText())
-            .animation(motionEnabled ? BuFiMotion.micro : .none, value: Int(elapsed))
+            .animation(allowsMotion ? BuFiMotion.micro : .none, value: Int(elapsed))
         }
     }
 
     private var transport: some View {
+        classicTransport
+            .frame(height: 112)
+    }
+
+    private var classicTransport: some View {
         HStack {
-            control("shuffle", size: 24, active: audio.isShuffleEnabled, label: "셔플") { audio.toggleShuffle() }
-            Spacer()
-            control("backward.end.fill", size: 31, label: "이전 곡") { audio.previous() }
-            Spacer()
-            Button {
-                audio.togglePlayback()
-            } label: {
-                ZStack {
-                    Circle().fill(playerPrimary).frame(width: 70, height: 70)
-                    if audio.isBuffering {
-                        ProgressView().tint(playerButtonForeground)
-                    } else {
-                        Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 27, weight: .bold))
-                            .foregroundStyle(playerButtonForeground)
-                            .offset(x: audio.isPlaying ? 0 : 2)
-                            .contentTransition(.symbolEffect(.replace))
-                    }
-                }
+            control("shuffle", size: 24, active: audio.isShuffleEnabled, label: "셔플") {
+                audio.toggleShuffle()
             }
-            .buttonStyle(BuFiPressStyle())
-            .animation(motionEnabled ? BuFiMotion.tap : .none, value: audio.isPlaying)
-            .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
             Spacer()
-            control("forward.end.fill", size: 31, label: "다음 곡") { audio.next() }
+            control("backward.end.fill", size: 31, label: "이전 곡") {
+                audio.previous()
+            }
+            Spacer()
+            classicPlayButton
+            Spacer()
+            control("forward.end.fill", size: 31, label: "다음 곡") {
+                audio.next()
+            }
             Spacer()
             control(
                 audio.repeatMode == .one ? "repeat.1" : "repeat",
@@ -310,14 +470,37 @@ struct PlayerView: View {
                 label: "반복"
             ) { audio.cycleRepeat() }
         }
-        .frame(height: 112)
     }
 
-    private func utilityRow(_ song: Song) -> some View {
+    private var classicPlayButton: some View {
+        Button {
+            audio.togglePlayback()
+        } label: {
+            ZStack {
+                Circle().fill(playerPrimary).frame(width: 70, height: 70)
+                if audio.isBuffering {
+                    ProgressView().tint(playerButtonForeground)
+                } else {
+                    Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
+                        .font(.system(size: 27, weight: .bold))
+                        .foregroundStyle(playerButtonForeground)
+                        .offset(x: audio.wantsPlayback ? 0 : 2)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+        }
+        .buttonStyle(BuFiPressStyle())
+        .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.wantsPlayback)
+        .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
+    }
+
+    private func utilityRow(_ song: Song, includesAirPlay: Bool = true) -> some View {
         HStack(spacing: 25) {
-            AirPlayButton(lightContent: colorScheme == .dark)
-                .frame(width: 32, height: 32)
-                .accessibilityLabel("AirPlay")
+            if includesAirPlay {
+                AirPlayButton(lightContent: !usesDarkForeground)
+                    .frame(width: 32, height: 32)
+                    .accessibilityLabel("AirPlay")
+            }
             Spacer()
             ShareLink(item: "\(song.title) — \(song.artist)") {
                 Image(systemName: "square.and.arrow.up")
@@ -334,6 +517,7 @@ struct PlayerView: View {
             .accessibilityLabel("재생목록")
         }
         .buttonStyle(.plain)
+        .foregroundStyle(playerPrimary)
         .padding(.vertical, 8)
     }
 
@@ -371,30 +555,21 @@ struct PlayerView: View {
                 } label: {
                     ZStack(alignment: .topLeading) {
                         miniLyricsWindow
-                            .id(audio.activeLyricIndex)
-                            .transition(
-                                motionEnabled
-                                    ? .asymmetric(
-                                        insertion: .offset(y: 14).combined(with: .opacity),
-                                        removal: .offset(y: -8).combined(with: .opacity)
-                                    )
-                                    : .opacity
-                            )
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 205, alignment: .top)
                     .clipped()
                     .id(audio.currentSong?.id)
                     .transition(
-                        motionEnabled
+                        allowsMotion
                             ? .asymmetric(
                                 insertion: .move(edge: transitionDirection > 0 ? .trailing : .leading).combined(with: .opacity),
                                 removal: .move(edge: transitionDirection > 0 ? .leading : .trailing).combined(with: .opacity)
                             )
                             : .opacity
                     )
-                    .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
-                    .animation(motionEnabled ? BuFiMotion.player : .none, value: audio.currentSong?.id)
+                    .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
+                    .animation(allowsMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
                 }
                 .buttonStyle(.plain)
             }
@@ -409,7 +584,11 @@ struct PlayerView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                    .matchedGeometryEffect(id: "lyrics-surface", in: lyricsMorph)
+                    .matchedGeometryEffect(
+                        id: "lyrics-surface",
+                        in: lyricsMorph,
+                        isSource: !audio.showFullLyrics
+                    )
             }
             .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .buFiGlass(cornerRadius: 24, interactive: true)
@@ -430,19 +609,33 @@ struct PlayerView: View {
                     .font(.system(size: 23, weight: .bold))
                     .tracking(-0.55)
                     .foregroundStyle(lyricColor(index: item.index))
-                    .scaleEffect(item.index == audio.activeLyricIndex ? 1 : 0.975, anchor: .leading)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(item.index == audio.activeLyricIndex ? 1 : 0)
+                    .scaleEffect(
+                        allowsMotion && item.index != audio.activeLyricIndex ? 0.975 : 1,
+                        anchor: .leading
+                    )
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(
+                        allowsMotion
+                            ? .asymmetric(
+                                insertion: .offset(y: 12).combined(with: .opacity),
+                                removal: .offset(y: -8).combined(with: .opacity)
+                            )
+                            : .opacity
+                    )
             }
         }
-        .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
+        .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
     }
 
     private var visibleLyrics: [(index: Int, line: LyricLine)] {
         let lines = audio.lyrics.lines
         guard !lines.isEmpty else { return [] }
         let active = lines.indices.contains(audio.activeLyricIndex) ? audio.activeLyricIndex : 0
-        let end = min(lines.count, active + 4)
+        let end = min(lines.count, active + 5)
         return (active..<end).map { (index: $0, line: lines[$0]) }
     }
 
@@ -475,7 +668,7 @@ struct PlayerView: View {
             }
         }
         .buttonStyle(BuFiPressStyle())
-        .animation(motionEnabled ? BuFiMotion.tap : .none, value: active)
+        .animation(allowsMotion ? BuFiMotion.tap : .none, value: active)
         .accessibilityLabel(label)
     }
 
@@ -500,15 +693,14 @@ struct PlayerView: View {
     }
 
     private func openFullLyrics() {
-        withAnimation(motionEnabled ? BuFiMotion.player : .none) {
+        withAnimation(allowsMotion ? BuFiMotion.lyricsPanel : .none) {
             audio.showFullLyrics = true
         }
     }
 
     private func syncArtworkPage(to index: Int, animated: Bool) {
         let resolved = audio.queue.indices.contains(index) ? index : 0
-        guard artworkPage != resolved else { return }
-        if animated && motionEnabled {
+        if animated && allowsMotion {
             withAnimation(BuFiMotion.player) {
                 artworkPage = resolved
             }
@@ -518,13 +710,20 @@ struct PlayerView: View {
     }
 
     private func prefetchUpcomingArtwork(after index: Int) {
-        guard !audio.queue.isEmpty else { return }
+        artworkPrefetchTask?.cancel()
+        guard !audio.queue.isEmpty else {
+            artworkPrefetchTask = nil
+            return
+        }
         let start = max(index + 1, 0)
         let end = min(audio.queue.count, start + 2)
-        guard start < end else { return }
+        guard start < end else {
+            artworkPrefetchTask = nil
+            return
+        }
         let upcoming = Array(audio.queue[start..<end])
 
-        Task(priority: .utility) {
+        artworkPrefetchTask = Task(priority: .utility) {
             for song in upcoming {
                 guard !Task.isCancelled,
                       let url = await model.artworkURL(id: song.coverArt, size: 900) else {
@@ -535,8 +734,27 @@ struct PlayerView: View {
         }
     }
 
+    private var resolvedSeekBarAppearance: PlayerSeekBarAppearance {
+        resolvedPlayerAppearance.seekBarAppearance
+    }
+
+    private var resolvedPlayerAppearance: PlayerAppearance {
+        PlayerAppearance.resolved(playerAppearance)
+    }
+
+    private var resolvedBackgroundAppearance: PlayerBackgroundAppearance {
+        PlayerBackgroundAppearance.resolved(playerBackgroundAppearance)
+    }
+
+    private var allowsMotion: Bool { motionEnabled }
+
+    private var usesDarkForeground: Bool {
+        colorScheme == .light
+            || resolvedBackgroundAppearance == .bright
+    }
+
     private var playerPrimary: Color {
-        colorScheme == .dark ? .white : .black.opacity(0.86)
+        usesDarkForeground ? .black.opacity(0.86) : .white
     }
 
     private var playerSecondary: Color {
@@ -544,44 +762,35 @@ struct PlayerView: View {
     }
 
     private var playerButtonForeground: Color {
-        colorScheme == .dark ? Color(palette.bottom) : .white
+        usesDarkForeground ? .white : Color(palette.bottom)
     }
 }
 
 private struct FullLyricsView: View {
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let palette: ArtworkPalette
     let namespace: Namespace.ID
+    let seekBarAppearance: PlayerSeekBarAppearance
+    let backgroundAppearance: PlayerBackgroundAppearance
 
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
     @State private var dragOffset: CGFloat = 0
     @AppStorage("lyrics-auto-scroll") private var autoScroll = true
-    @AppStorage("motion-enabled") private var motionEnabled = true
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: dragCornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color(palette.top), Color(palette.bottom)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .matchedGeometryEffect(id: "lyrics-surface", in: namespace)
+            PlayerPaletteBackground(
+                palette: palette,
+                appearance: backgroundAppearance,
+                colorScheme: colorScheme
+            )
+                .clipShape(RoundedRectangle(cornerRadius: dragCornerRadius, style: .continuous))
+                .matchedGeometryEffect(id: "lyrics-surface", in: namespace, isSource: true)
                 .ignoresSafeArea()
-
-            if colorScheme == .light {
-                LinearGradient(
-                    colors: [.white.opacity(0.48), .white.opacity(0.73)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            }
 
             VStack(spacing: 0) {
                 header
@@ -621,6 +830,7 @@ private struct FullLyricsView: View {
         }
         .padding(.horizontal, 10)
         .padding(.top, 6)
+        .foregroundStyle(lyricsPrimary)
         .contentShape(Rectangle())
         .simultaneousGesture(dismissGesture)
     }
@@ -637,9 +847,16 @@ private struct FullLyricsView: View {
                             Text(line.text)
                                 .font(.system(size: 29, weight: .bold))
                                 .tracking(-0.95)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .multilineTextAlignment(.leading)
                                 .foregroundStyle(color(for: index))
-                                .scaleEffect(index == audio.activeLyricIndex ? 1.045 : 0.985, anchor: .leading)
+                                .scaleEffect(
+                                    allowsMotion
+                                        ? (index == audio.activeLyricIndex ? 1.045 : 0.985)
+                                        : 1,
+                                    anchor: .leading
+                                )
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                         }
@@ -649,11 +866,11 @@ private struct FullLyricsView: View {
                     Color.clear.frame(height: 180)
                 }
                 .padding(.horizontal, 24)
-                .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
+                .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
             }
             .onChange(of: audio.activeLyricIndex) { _, index in
                 guard autoScroll, audio.lyrics.lines.indices.contains(index) else { return }
-                withAnimation(motionEnabled ? BuFiMotion.lyrics : .none) {
+                withAnimation(allowsMotion ? BuFiMotion.lyrics : .none) {
                     proxy.scrollTo(
                         audio.lyrics.lines[index].id,
                         anchor: UnitPoint(x: 0.5, y: 0.42)
@@ -674,35 +891,49 @@ private struct FullLyricsView: View {
     }
 
     private var footer: some View {
-        VStack(spacing: 7) {
-            InteractiveSeekBar(
+        let duration = audio.duration.isFinite ? max(0, audio.duration) : 0
+        let rawElapsed = isScrubbing ? scrubValue : audio.elapsed
+        let elapsed = min(max(0, rawElapsed.isFinite ? rawElapsed : 0), duration)
+
+        return VStack(spacing: 7) {
+            PlayerSeekBar(
                 value: $scrubValue,
-                range: 0...max(audio.duration, 1),
+                range: 0...max(duration, 1),
+                appearance: seekBarAppearance,
                 tint: lyricsPrimary
             ) { editing in
                 isScrubbing = editing
-                if !editing { audio.seek(to: scrubValue) }
+                if !editing { audio.seek(to: min(scrubValue, duration)) }
             }
             HStack {
-                Text((isScrubbing ? scrubValue : audio.elapsed).playbackText)
+                Text(elapsed.playbackText)
                 Spacer()
-                Text("-\(max(0, audio.duration - (isScrubbing ? scrubValue : audio.elapsed)).playbackText)")
+                Text(duration > 0 ? "-\(max(0, duration - elapsed).playbackText)" : "--:--")
             }
             .font(.system(size: 12, weight: .medium))
             .foregroundStyle(lyricsSecondary)
             .monospacedDigit()
 
             Button { audio.togglePlayback() } label: {
-                Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 29, weight: .bold))
-                    .foregroundStyle(playButtonForeground)
-                    .frame(width: 72, height: 72)
-                    .background(lyricsPrimary, in: Circle())
-                    .contentTransition(.symbolEffect(.replace))
+                ZStack {
+                    Circle()
+                        .fill(lyricsPrimary)
+                        .frame(width: 72, height: 72)
+                    if audio.isBuffering {
+                        ProgressView()
+                            .tint(playButtonForeground)
+                    } else {
+                        Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
+                            .font(.system(size: 29, weight: .bold))
+                            .foregroundStyle(playButtonForeground)
+                            .offset(x: audio.wantsPlayback ? 0 : 2)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                }
             }
             .buttonStyle(BuFiPressStyle())
-            .animation(motionEnabled ? BuFiMotion.tap : .none, value: audio.isPlaying)
-            .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
+            .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.wantsPlayback)
+            .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
         }
         .padding(.horizontal, 24)
         .padding(.top, 10)
@@ -724,7 +955,7 @@ private struct FullLyricsView: View {
                 if shouldDismiss {
                     closeLyrics()
                 } else {
-                    withAnimation(motionEnabled ? BuFiMotion.player : .none) {
+                    withAnimation(allowsMotion ? BuFiMotion.lyricsPanel : .none) {
                         dragOffset = 0
                     }
                 }
@@ -732,7 +963,7 @@ private struct FullLyricsView: View {
     }
 
     private func closeLyrics() {
-        withAnimation(motionEnabled ? BuFiMotion.player : .none) {
+        withAnimation(allowsMotion ? BuFiMotion.lyricsPanel : .none) {
             dragOffset = 0
             audio.showFullLyrics = false
         }
@@ -745,12 +976,141 @@ private struct FullLyricsView: View {
     }
 
     private var dragProgress: CGFloat { min(max(dragOffset / 420, 0), 1) }
-    private var dragScale: CGFloat { 1 - (dragProgress * 0.055) }
-    private var dragOpacity: Double { 1 - Double(dragProgress * 0.16) }
-    private var dragCornerRadius: CGFloat { dragProgress * 28 }
-    private var lyricsPrimary: Color { colorScheme == .dark ? .white : .black.opacity(0.86) }
+    private var dragScale: CGFloat { allowsMotion ? 1 - (dragProgress * 0.055) : 1 }
+    private var dragOpacity: Double { allowsMotion ? 1 - Double(dragProgress * 0.16) : 1 }
+    private var dragCornerRadius: CGFloat { allowsMotion ? dragProgress * 28 : 0 }
+    private var allowsMotion: Bool { motionEnabled }
+    private var usesDarkForeground: Bool {
+        colorScheme == .light || backgroundAppearance == .bright
+    }
+    private var lyricsPrimary: Color { usesDarkForeground ? .black.opacity(0.86) : .white }
     private var lyricsSecondary: Color { lyricsPrimary.opacity(0.66) }
-    private var playButtonForeground: Color { colorScheme == .dark ? Color(palette.bottom) : .white }
+    private var playButtonForeground: Color { usesDarkForeground ? .white : Color(palette.bottom) }
+}
+
+private struct PlayerPaletteBackground: View {
+    let palette: ArtworkPalette
+    let appearance: PlayerBackgroundAppearance
+    let colorScheme: ColorScheme
+
+    @ViewBuilder
+    var body: some View {
+        switch appearance {
+        case .classic:
+            ZStack {
+                LinearGradient(
+                    colors: [Color(palette.top), Color(palette.bottom)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                RadialGradient(
+                    colors: [Color(palette.secondary).opacity(0.18), .clear],
+                    center: secondaryPoint,
+                    startRadius: 8,
+                    endRadius: 540
+                )
+                RadialGradient(
+                    colors: [Color(palette.accent).opacity(0.16), .clear],
+                    center: accentPoint,
+                    startRadius: 12,
+                    endRadius: 620
+                )
+                if colorScheme == .light {
+                    LinearGradient(
+                        colors: [.white.opacity(0.46), .white.opacity(0.72)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                } else {
+                    LinearGradient(
+                        colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
+        case .multicolor:
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(palette.secondary),
+                        Color(palette.top),
+                        Color(palette.accent)
+                    ],
+                    startPoint: secondaryPoint,
+                    endPoint: accentPoint
+                )
+                RadialGradient(
+                    colors: [Color(palette.secondary).opacity(0.82), .clear],
+                    center: secondaryPoint,
+                    startRadius: 12,
+                    endRadius: 520
+                )
+                RadialGradient(
+                    colors: [Color(palette.accent).opacity(0.76), .clear],
+                    center: accentPoint,
+                    startRadius: 18,
+                    endRadius: 590
+                )
+                readabilityOverlay
+            }
+        case .bright:
+            ZStack {
+                Color.white
+                LinearGradient(
+                    colors: [
+                        Color(palette.secondary).opacity(0.82),
+                        Color(palette.top).opacity(0.62),
+                        Color(palette.accent).opacity(0.74)
+                    ],
+                    startPoint: secondaryPoint,
+                    endPoint: accentPoint
+                )
+                RadialGradient(
+                    colors: [.white.opacity(0.62), .clear],
+                    center: .center,
+                    startRadius: 20,
+                    endRadius: 520
+                )
+                LinearGradient(
+                    colors: [.white.opacity(0.08), .white.opacity(0.26)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var readabilityOverlay: some View {
+        if colorScheme == .light {
+            LinearGradient(
+                colors: [.white.opacity(0.22), .white.opacity(0.48)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        } else {
+            LinearGradient(
+                colors: [.white.opacity(0.10), .clear, .black.opacity(0.28)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private var accentPoint: UnitPoint {
+        UnitPoint(
+            x: CGFloat(palette.accentPosition.x),
+            y: CGFloat(palette.accentPosition.y)
+        )
+    }
+
+    private var secondaryPoint: UnitPoint {
+        UnitPoint(
+            x: CGFloat(palette.secondaryPosition.x),
+            y: CGFloat(palette.secondaryPosition.y)
+        )
+    }
 }
 
 private struct QueueView: View {
@@ -764,7 +1124,7 @@ private struct QueueView: View {
                     ContentUnavailableView("재생목록이 비어 있습니다", systemImage: "list.bullet")
                 } else {
                     List {
-                        ForEach(Array(audio.queue.enumerated()), id: \.element.id) { index, song in
+                        ForEach(Array(audio.queue.enumerated()), id: \.offset) { index, song in
                             Button {
                                 audio.playQueueItem(at: index)
                                 dismiss()

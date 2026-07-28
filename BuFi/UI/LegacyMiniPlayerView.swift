@@ -2,8 +2,8 @@ import SwiftUI
 
 struct LegacyMiniPlayerView: View {
     @EnvironmentObject private var audio: AudioEngine
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var palette = ArtworkPalette.fallback
-    @AppStorage("motion-enabled") private var motionEnabled = true
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
@@ -54,12 +54,12 @@ struct LegacyMiniPlayerView: View {
                         Button {
                             audio.togglePlayback()
                         } label: {
-                            Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
+                            Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
                                 .font(.system(size: 21, weight: .semibold))
                                 .frame(width: 40, height: 40)
                         }
                         .buttonStyle(BuFiPressStyle())
-                        .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
+                        .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
                     }
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)

@@ -1,4 +1,5 @@
 import AVKit
+import MediaPlayer
 import SwiftUI
 import UIKit
 
@@ -32,6 +33,68 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         case .light: .light
         case .dark: .dark
         }
+    }
+}
+
+enum PlayerSeekBarAppearance: String, CaseIterable, Identifiable {
+    case classic
+    case liquidGlass
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .classic: "클래식"
+        case .liquidGlass: "Liquid Glass"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> PlayerSeekBarAppearance {
+        PlayerSeekBarAppearance(rawValue: rawValue) ?? .liquidGlass
+    }
+}
+
+enum PlayerAppearance: String, CaseIterable, Identifiable {
+    case classic
+    case liquidGlass
+    case dynamic
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .classic: "클래식"
+        case .liquidGlass: "Liquid Glass"
+        case .dynamic: "Dynamic"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> PlayerAppearance {
+        PlayerAppearance(rawValue: rawValue) ?? .liquidGlass
+    }
+
+    var seekBarAppearance: PlayerSeekBarAppearance {
+        self == .classic ? .classic : .liquidGlass
+    }
+}
+
+enum PlayerBackgroundAppearance: String, CaseIterable, Identifiable {
+    case classic
+    case multicolor
+    case bright
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .classic: "기존"
+        case .multicolor: "다중 컬러"
+        case .bright: "밝게"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> PlayerBackgroundAppearance {
+        PlayerBackgroundAppearance(rawValue: rawValue) ?? .classic
     }
 }
 
@@ -89,11 +152,13 @@ extension View {
 }
 
 struct BuFiPressStyle: ButtonStyle {
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.972 : 1)
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.972 : 1)
             .brightness(configuration.isPressed ? -0.018 : 0)
-            .animation(BuFiMotion.tap, value: configuration.isPressed)
+            .animation(motionEnabled ? BuFiMotion.tap : .none, value: configuration.isPressed)
     }
 }
 
@@ -103,6 +168,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
     var fontSize: CGFloat = 14
     let title: (Item) -> LocalizedStringKey
 
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Namespace private var selectionNamespace
 
     var body: some View {
@@ -110,11 +176,13 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
             ForEach(items) { item in
                 Button {
                     withAnimation(
-                        .interactiveSpring(
-                            response: 0.34,
-                            dampingFraction: 0.80,
-                            blendDuration: 0.08
-                        )
+                        motionEnabled
+                            ? .interactiveSpring(
+                                response: 0.34,
+                                dampingFraction: 0.80,
+                                blendDuration: 0.08
+                            )
+                            : .none
                     ) {
                         selection = item
                     }
@@ -190,6 +258,7 @@ struct BuFiScreenBackground: View {
 
 struct ArtworkView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let coverArt: String?
     var remoteURL: String?
@@ -214,7 +283,11 @@ struct ArtworkView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .transition(.opacity.animation(.easeOut(duration: 0.22)))
+                    .transition(
+                        .opacity.animation(
+                            motionEnabled ? .easeOut(duration: 0.22) : .none
+                        )
+                    )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -242,9 +315,12 @@ struct ArtworkView: View {
                 }
                 guard !Task.isCancelled else { return }
                 image = loaded
-                onPalette?(await ArtworkStore.shared.palette(for: url, image: loaded))
+                let palette = await ArtworkStore.shared.palette(for: url, image: loaded)
+                guard !Task.isCancelled else { return }
+                onPalette?(palette)
                 return
             }
+            guard !Task.isCancelled else { return }
             onPalette?(.fallback)
         }
         .accessibilityHidden(true)
@@ -254,7 +330,7 @@ struct ArtworkView: View {
 struct AlbumCard: View {
     let album: Album
     var width: CGFloat = 166
-    @AppStorage("motion-enabled") private var motionEnabled = true
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     @ViewBuilder
     var body: some View {
@@ -289,6 +365,11 @@ struct AlbumCard: View {
     }
 }
 
+enum SongRowLayout: Equatable {
+    case standard
+    case compactAlbum
+}
+
 struct SongRow: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
@@ -297,11 +378,13 @@ struct SongRow: View {
     let queue: [Song]
     var showsArtwork = true
     var artworkSize: CGFloat = 54
+    var layout: SongRowLayout = .standard
+    var fallbackTrackNumber: Int?
     var onMore: (() -> Void)?
 
     @ViewBuilder
     var body: some View {
-        if usesCompactAlbumLayout {
+        if layout == .compactAlbum {
             compactAlbumRow
         } else {
             standardRow
@@ -309,13 +392,15 @@ struct SongRow: View {
     }
 
     private var compactAlbumRow: some View {
-        HStack(spacing: 0) {
+        let isCurrentSong = audio.currentSong?.id == song.id
+        let isStarred = model.isStarred(song)
+        return HStack(spacing: 0) {
             Button {
                 audio.play(song, in: queue)
             } label: {
                 HStack(spacing: 12) {
                     Group {
-                        if audio.currentSong?.id == song.id {
+                        if isCurrentSong {
                             Image(systemName: "speaker.wave.2.fill")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(BuFiTheme.accent)
@@ -331,7 +416,7 @@ struct SongRow: View {
                     Text(song.title)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(
-                            audio.currentSong?.id == song.id
+                            isCurrentSong
                                 ? BuFiTheme.accent
                                 : Color.primary
                         )
@@ -352,13 +437,13 @@ struct SongRow: View {
                 Button {
                     Task { await model.toggleStar(song: song) }
                 } label: {
-                    Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                    Image(systemName: isStarred ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(song.isStarred ? BuFiTheme.accent : Color.secondary)
+                        .foregroundStyle(isStarred ? BuFiTheme.accent : Color.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
+                .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
 
                 if let onMore {
                     Button(action: onMore) {
@@ -379,7 +464,9 @@ struct SongRow: View {
     }
 
     private var standardRow: some View {
-        HStack(spacing: 0) {
+        let isCurrentSong = audio.currentSong?.id == song.id
+        let isStarred = model.isStarred(song)
+        return HStack(spacing: 0) {
             Button {
                 audio.play(song, in: queue)
             } label: {
@@ -396,7 +483,7 @@ struct SongRow: View {
                         Text(song.title)
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(
-                                audio.currentSong?.id == song.id
+                                isCurrentSong
                                     ? BuFiTheme.accent
                                     : Color.primary
                             )
@@ -416,13 +503,13 @@ struct SongRow: View {
                 Button {
                     Task { await model.toggleStar(song: song) }
                 } label: {
-                    Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                    Image(systemName: isStarred ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(song.isStarred ? BuFiTheme.accent : Color.secondary)
+                        .foregroundStyle(isStarred ? BuFiTheme.accent : Color.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
+                .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
 
                 if let onMore {
                     Button(action: onMore) {
@@ -440,29 +527,8 @@ struct SongRow: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var usesCompactAlbumLayout: Bool {
-        guard showsArtwork, artworkSize <= 44, !queue.isEmpty else { return false }
-
-        let albumIDs = Set(
-            queue.compactMap { item -> String? in
-                guard let id = item.albumId, !id.isEmpty else { return nil }
-                return id
-            }
-        )
-        let albumNames = Set(
-            queue.map { $0.album.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        )
-        let singleAlbum = albumIDs.count == 1 || albumNames.count == 1
-        let tracksWithNumbers = queue.reduce(into: 0) { count, item in
-            if item.track != nil { count += 1 }
-        }
-        let enoughTrackMetadata = tracksWithNumbers >= max(1, (queue.count * 2) / 3)
-        return singleAlbum && enoughTrackMetadata
-    }
-
     private var displayedTrackNumber: Int {
-        song.track ?? ((queue.firstIndex(where: { $0.id == song.id }) ?? 0) + 1)
+        song.track ?? fallbackTrackNumber ?? 1
     }
 
     private var durationText: String {
@@ -489,12 +555,91 @@ struct SectionTitle: View {
     }
 }
 
+struct PlayerSeekBar: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let appearance: PlayerSeekBarAppearance
+    var tint: Color = .white
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    @ViewBuilder
+    var body: some View {
+        if appearance == .liquidGlass {
+            if #available(iOS 26.0, *) {
+                NativeLiquidGlassSeekBar(
+                    value: $value,
+                    range: range,
+                    tint: tint,
+                    onEditingChanged: onEditingChanged
+                )
+            } else {
+                fallback
+            }
+        } else {
+            fallback
+        }
+    }
+
+    private var fallback: some View {
+        InteractiveSeekBar(
+            value: $value,
+            range: range,
+            tint: tint,
+            onEditingChanged: onEditingChanged
+        )
+    }
+}
+
+@available(iOS 26.0, *)
+private struct NativeLiquidGlassSeekBar: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let tint: Color
+    let onEditingChanged: (Bool) -> Void
+
+    var body: some View {
+        // Standard controls adopt Apple's Liquid Glass design automatically on
+        // iOS 26, including system interaction, accessibility, and contrast.
+        Slider(
+            value: clampedValue,
+            in: range,
+            onEditingChanged: onEditingChanged
+        )
+        .tint(tint)
+        .frame(height: 28)
+        .accessibilityLabel("재생 위치")
+        .accessibilityValue("\(Int(normalizedValue * 100))%")
+    }
+
+    private var clampedValue: Binding<Double> {
+        Binding(
+            get: {
+                clamped(value)
+            },
+            set: { newValue in
+                value = clamped(newValue)
+            }
+        )
+    }
+
+    private var normalizedValue: Double {
+        let length = max(range.upperBound - range.lowerBound, 0.0001)
+        return min(max((clamped(value) - range.lowerBound) / length, 0), 1)
+    }
+
+    private func clamped(_ candidate: Double) -> Double {
+        guard candidate.isFinite else { return range.lowerBound }
+        return min(max(candidate, range.lowerBound), range.upperBound)
+    }
+}
+
 struct InteractiveSeekBar: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     var tint: Color = .white
     var onEditingChanged: (Bool) -> Void = { _ in }
 
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var isEditing = false
 
     var body: some View {
@@ -541,7 +686,7 @@ struct InteractiveSeekBar: View {
                         onEditingChanged(false)
                     }
             )
-            .animation(BuFiMotion.selection, value: isEditing)
+            .animation(motionEnabled ? BuFiMotion.selection : .none, value: isEditing)
         }
         .frame(height: 28)
         .accessibilityElement()
@@ -563,10 +708,12 @@ struct InteractiveSeekBar: View {
 
     private func normalized(_ value: Double) -> CGFloat {
         let length = max(range.upperBound - range.lowerBound, 0.0001)
+        guard value.isFinite else { return 0 }
         return CGFloat(min(max((value - range.lowerBound) / length, 0), 1))
     }
 
     private func denormalized(_ fraction: CGFloat) -> Double {
+        guard fraction.isFinite else { return range.lowerBound }
         let clamped = min(max(Double(fraction), 0), 1)
         return range.lowerBound + (range.upperBound - range.lowerBound) * clamped
     }
@@ -585,5 +732,27 @@ struct AirPlayButton: UIViewRepresentable {
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
         uiView.tintColor = lightContent ? .white : .label
+    }
+}
+
+struct SystemVolumeSlider: UIViewRepresentable {
+    var tint: Color = .primary
+
+    func makeUIView(context: Context) -> MPVolumeView {
+        let volumeView = MPVolumeView(frame: .zero)
+        volumeView.showsVolumeSlider = true
+        updateSlider(in: volumeView)
+        return volumeView
+    }
+
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {
+        updateSlider(in: uiView)
+    }
+
+    private func updateSlider(in volumeView: MPVolumeView) {
+        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return }
+        slider.minimumTrackTintColor = UIColor(tint).withAlphaComponent(0.48)
+        slider.maximumTrackTintColor = UIColor(tint).withAlphaComponent(0.18)
+        slider.thumbTintColor = UIColor(tint)
     }
 }

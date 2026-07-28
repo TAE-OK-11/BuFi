@@ -1,5 +1,6 @@
 name: BuFi
 options:
+  minimumXcodeGenVersion: "2.46.0"
   bundleIdPrefix: cloud.tae00217
   developmentLanguage: ko
   knownRegions:
@@ -8,11 +9,13 @@ options:
     - ja
   deploymentTarget:
     iOS: "17.0"
-  xcodeVersion: "26.0"
+  xcodeVersion: "26.6"
+  projectFormat: xcode16_3
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.10"
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     TARGETED_DEVICE_FAMILY: "1"
     SUPPORTS_MACCATALYST: false
@@ -21,29 +24,32 @@ settings:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
       SWIFT_COMPILATION_MODE: incremental
-      SWIFT_LTO: NO
       LLVM_LTO: NO
       ONLY_ACTIVE_ARCH: YES
     Release:
       SWIFT_OPTIMIZATION_LEVEL: "-O"
       SWIFT_COMPILATION_MODE: wholemodule
-      SWIFT_LTO: YES
+      SWIFT_SERIALIZE_DEBUGGING_OPTIONS: NO
       LLVM_LTO: YES
-      GCC_OPTIMIZATION_LEVEL: "3"
       DEAD_CODE_STRIPPING: YES
+      ENABLE_NS_ASSERTIONS: NO
       ENABLE_TESTABILITY: NO
       ONLY_ACTIVE_ARCH: NO
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      ASSETCATALOG_COMPILER_OPTIMIZATION: space
+      COPY_PHASE_STRIP: YES
+      STRIP_INSTALLED_PRODUCT: YES
+      STRIP_SWIFT_SYMBOLS: YES
 packages:
   SwiftSonic:
     url: https://github.com/CassetteLab/swiftsonic.git
-    from: 0.8.3
+    exactVersion: 0.8.3
   Nuke:
     url: https://github.com/kean/Nuke.git
-    from: 13.0.0
+    exactVersion: 13.0.6
   Zstandard:
     url: https://github.com/facebook/zstd.git
-    from: 1.5.7
+    exactVersion: 1.5.7
 targets:
   BuFi:
     type: application
@@ -52,13 +58,14 @@ targets:
       - path: BuFi
         excludes:
           - Resources/Info.plist
+          - Resources/ThirdPartyLicenses.txt
+      - path: BuFi/Resources/ThirdPartyLicenses.txt
+        buildPhase: resources
     dependencies:
       - package: SwiftSonic
         product: SwiftSonic
       - package: Nuke
         product: Nuke
-      - package: Nuke
-        product: NukeUI
       - package: Zstandard
         product: libzstd
     info:

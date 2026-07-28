@@ -254,7 +254,7 @@ actor OpenSubsonicClient {
         }
     }
 
-    func home(from previous: HomeSnapshot? = nil) async throws -> HomeSnapshot {
+    func home(from previous: HomeSnapshot? = nil) async throws -> HomeLoadResult {
         async let recent: AlbumListPayload? = bestEffortRequest(
             "getAlbumList2",
             parameters: ["type": "newest", "size": "16"]
@@ -291,24 +291,27 @@ actor OpenSubsonicClient {
             starredArtists = fallback.starredArtists
         }
 
-        return HomeSnapshot(
-            recentAlbums: values.0.map { $0.albumList2?.album ?? [] }
-                ?? fallback.recentAlbums,
-            randomAlbums: values.1.map { $0.albumList2?.album ?? [] }
-                ?? fallback.randomAlbums,
-            starredAlbums: starredAlbums,
-            starredSongs: starredSongs,
-            starredArtists: starredArtists,
-            artists: values.3.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
-                ?? fallback.artists,
-            randomSongs: values.4.map { $0.randomSongs?.song ?? [] }
-                ?? fallback.randomSongs,
-            playlists: values.5.map { $0.playlists?.playlist ?? [] }
-                ?? fallback.playlists
+        return HomeLoadResult(
+            snapshot: HomeSnapshot(
+                recentAlbums: values.0.map { $0.albumList2?.album ?? [] }
+                    ?? fallback.recentAlbums,
+                randomAlbums: values.1.map { $0.albumList2?.album ?? [] }
+                    ?? fallback.randomAlbums,
+                starredAlbums: starredAlbums,
+                starredSongs: starredSongs,
+                starredArtists: starredArtists,
+                artists: values.3.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
+                    ?? fallback.artists,
+                randomSongs: values.4.map { $0.randomSongs?.song ?? [] }
+                    ?? fallback.randomSongs,
+                playlists: values.5.map { $0.playlists?.playlist ?? [] }
+                    ?? fallback.playlists
+            ),
+            hasAuthoritativeStarredState: values.2?.starred2 != nil
         )
     }
 
-    func incrementalHome(from previous: HomeSnapshot) async throws -> HomeSnapshot {
+    func incrementalHome(from previous: HomeSnapshot) async throws -> HomeLoadResult {
         async let recent: AlbumListPayload? = bestEffortRequest(
             "getAlbumList2",
             parameters: ["type": "newest", "size": "16"]
@@ -333,7 +336,10 @@ actor OpenSubsonicClient {
         if let playlists = values.2 {
             snapshot.playlists = playlists.playlists?.playlist ?? []
         }
-        return snapshot
+        return HomeLoadResult(
+            snapshot: snapshot,
+            hasAuthoritativeStarredState: values.1?.starred2 != nil
+        )
     }
 
     func search(_ query: String) async throws -> SearchResults {

@@ -10,10 +10,11 @@ actor OfflineStore {
         var lastAccessedAt: Date
     }
 
-    private struct InFlightDownload {
+    private struct InFlightDownload: Sendable {
         let token: UUID
         let scopeGeneration: UInt64
         let task: Task<URL, Error>
+        var waiters: Set<UUID>
     }
 
     private let rootDirectory: URL
@@ -93,6 +94,7 @@ actor OfflineStore {
     }
 
     func download(song: Song, client: OpenSubsonicClient) async throws -> URL {
+        try Task.checkCancellation()
         guard let scope = activeScope, let directory else {
             throw OpenSubsonicError.invalidResponse
         }
@@ -100,28 +102,16 @@ actor OfflineStore {
 
         let generation = scopeGeneration
         let taskKey = scope + ":" + song.id
-        if let existing = inFlight[taskKey] {
-            do {
-                let url = try await existing.task.value
-                clearInFlight(taskKey: taskKey, token: existing.token)
-                guard activeScope == scope,
-                      scopeGeneration == existing.scopeGeneration,
-                      FileManager.default.fileExists(atPath: url.path) else {
-                    throw CancellationError()
-                }
-                return url
-            } catch {
-                clearInFlight(taskKey: taskKey, token: existing.token)
-                throw error
-            }
-        }
-
-        let remote = try await client.downloadURL(songID: song.id)
-        guard remote.scheme?.lowercased() == "https" else {
-            throw OpenSubsonicError.insecureServerURL
-        }
-        guard activeScope == scope, scopeGeneration == generation else {
-            throw CancellationError()
+        if var existing = inFlight[taskKey] {
+            let waiter = UUID()
+            existing.waiters.insert(waiter)
+            inFlight[taskKey] = existing
+            return try await awaitDownload(
+                existing,
+                taskKey: taskKey,
+                waiter: waiter,
+                scope: scope
+            )
         }
 
         let fileName = Self.fileName(for: song)
@@ -129,8 +119,15 @@ actor OfflineStore {
         let wifiOnly = UserDefaults.standard.object(forKey: "offline-wifi-only") as? Bool ?? true
         let session = wifiOnly ? wifiOnlySession : unrestrictedSession
         let token = UUID()
+        let waiter = UUID()
         let task = Task<URL, Error>(priority: .utility) { [weak self] in
+            let remote = try await client.downloadURL(songID: song.id)
+            try Task.checkCancellation()
+            guard remote.scheme?.lowercased() == "https" else {
+                throw OpenSubsonicError.insecureServerURL
+            }
             let (temporary, response) = try await session.download(from: remote)
+            try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else {
                 throw OpenSubsonicError.invalidResponse
             }
@@ -149,6 +146,12 @@ actor OfflineStore {
                 fileName + "." + UUID().uuidString + ".partial"
             )
             try FileManager.default.moveItem(at: temporary, to: staging)
+            do {
+                try Task.checkCancellation()
+            } catch {
+                try? FileManager.default.removeItem(at: staging)
+                throw error
+            }
             guard let self else {
                 try? FileManager.default.removeItem(at: staging)
                 throw CancellationError()
@@ -162,18 +165,63 @@ actor OfflineStore {
                 scopeGeneration: generation
             )
         }
-        inFlight[taskKey] = InFlightDownload(
+        let download = InFlightDownload(
             token: token,
             scopeGeneration: generation,
-            task: task
+            task: task,
+            waiters: [waiter]
         )
+        inFlight[taskKey] = download
 
+        return try await awaitDownload(
+            download,
+            taskKey: taskKey,
+            waiter: waiter,
+            scope: scope
+        )
+    }
+
+    private func awaitDownload(
+        _ download: InFlightDownload,
+        taskKey: String,
+        waiter: UUID,
+        scope: String
+    ) async throws -> URL {
         do {
-            let url = try await task.value
-            clearInFlight(taskKey: taskKey, token: token)
+            let url = try await withTaskCancellationHandler {
+                let url = try await download.task.value
+                try Task.checkCancellation()
+                return url
+            } onCancel: {
+                Task {
+                    await self.cancelDownloadWaiter(
+                        taskKey: taskKey,
+                        token: download.token,
+                        waiter: waiter
+                    )
+                }
+            }
+            clearInFlight(taskKey: taskKey, token: download.token)
+            guard activeScope == scope,
+                  scopeGeneration == download.scopeGeneration,
+                  FileManager.default.fileExists(atPath: url.path) else {
+                throw CancellationError()
+            }
             return url
         } catch {
-            clearInFlight(taskKey: taskKey, token: token)
+            if Task.isCancelled {
+                // This caller no longer needs the shared transfer. Other
+                // waiters must keep the in-flight entry and task coalescing.
+                cancelDownloadWaiter(
+                    taskKey: taskKey,
+                    token: download.token,
+                    waiter: waiter
+                )
+            } else {
+                // A non-caller-cancellation error is the shared task's terminal
+                // result, so a future request may start a fresh transfer.
+                clearInFlight(taskKey: taskKey, token: download.token)
+            }
             throw error
         }
     }
@@ -186,6 +234,12 @@ actor OfflineStore {
         scope: String,
         scopeGeneration generation: UInt64
     ) throws -> URL {
+        do {
+            try Task.checkCancellation()
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
+        }
         guard activeScope == scope, scopeGeneration == generation else {
             try? FileManager.default.removeItem(at: staging)
             throw CancellationError()
@@ -338,6 +392,24 @@ actor OfflineStore {
 
     private func clearInFlight(taskKey: String, token: UUID) {
         guard inFlight[taskKey]?.token == token else { return }
+        inFlight[taskKey] = nil
+    }
+
+    private func cancelDownloadWaiter(
+        taskKey: String,
+        token: UUID,
+        waiter: UUID
+    ) {
+        guard var download = inFlight[taskKey],
+              download.token == token else {
+            return
+        }
+        download.waiters.remove(waiter)
+        guard download.waiters.isEmpty else {
+            inFlight[taskKey] = download
+            return
+        }
+        download.task.cancel()
         inFlight[taskKey] = nil
     }
 

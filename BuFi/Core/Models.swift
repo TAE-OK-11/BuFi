@@ -99,6 +99,11 @@ struct HomeSnapshot: Equatable, Sendable {
     static let empty = HomeSnapshot()
 }
 
+struct HomeLoadResult: Sendable {
+    var snapshot: HomeSnapshot
+    var hasAuthoritativeStarredState: Bool
+}
+
 struct SearchResults: Sendable {
     var artists: [Artist] = []
     var albums: [Album] = []

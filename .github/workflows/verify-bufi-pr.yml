@@ -21,25 +21,30 @@ concurrency:
 jobs:
   unsigned-ipa:
     name: unsigned-ipa
-    runs-on: macos-26-arm64
+    runs-on: macos-26
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - name: Select Xcode 26
+      - uses: actions/checkout@v7
+      - name: Select stable Xcode 26.6
         run: |
-          if [ -d /Applications/Xcode_26.6.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
-          elif [ -d /Applications/Xcode_26.5.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
-          fi
+          test -d /Applications/Xcode_26.6.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           xcodebuild -version
+      - name: Cache Swift packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/BuFiSourcePackages
+          key: ${{ runner.os }}-xcode26.6-spm-${{ hashFiles('project.yml') }}
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Prepare generated assets
+        run: sh Scripts/prepare-assets.sh
       - name: Generate project
         run: xcodegen generate
       - name: Build unsigned app
         run: |
           set -o pipefail
-          rm -rf build
+          mkdir -p build
           xcodebuild \
             -quiet \
             -project BuFi.xcodeproj \
@@ -48,13 +53,17 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
+            -parallelizeTargets \
+            -showBuildTimingSummary \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             clean build 2>&1 | tee build/xcode26.log
       - name: Upload Xcode 26 failure log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BuFi-1.4.0-xcode26-failure-log
           path: build/xcode26.log
@@ -70,7 +79,7 @@ jobs:
           /usr/bin/zip -qry BuFi-1.4.0-build15-unsigned.ipa Payload
           shasum -a 256 BuFi-1.4.0-build15-unsigned.ipa > BuFi-1.4.0-build15-unsigned.ipa.sha256
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BuFi-1.4.0-build15-unsigned
           path: |
@@ -80,16 +89,25 @@ jobs:
           retention-days: 14
 
   ios-27-compatibility:
-    name: ios-27-compatibility
+    name: iOS 27 preview (advisory)
     runs-on: xcode-27
+    continue-on-error: true
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Show Xcode and iOS SDK
         run: |
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
+      - name: Cache Swift packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/BuFi27SourcePackages
+          key: ${{ runner.os }}-xcode27-spm-${{ hashFiles('project.yml') }}
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Prepare generated assets
+        run: sh Scripts/prepare-assets.sh
       - name: Generate project
         run: xcodegen generate
       - name: Build with iOS 27 SDK
@@ -104,14 +122,19 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData-27 \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFi27SourcePackages" \
+            -parallelizeTargets \
+            -showBuildTimingSummary \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             clean build 2>&1 | tee build/xcode27.log
-      - name: Upload Xcode 27 failure log
-        if: failure()
-        uses: actions/upload-artifact@v4
+      - name: Upload Xcode 27 preview log
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: BuFi-1.4.0-xcode27-failure-log
+          name: BuFi-1.4.0-xcode27-preview-log
           path: build/xcode27.log
           if-no-files-found: warn
+          retention-days: 14
