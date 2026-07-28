@@ -11,7 +11,7 @@ struct PlayerView: View {
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
     @State private var showQueue = false
-    @State private var artworkPage = 0
+    @State private var artworkPage: Int?
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
     @Namespace private var lyricsMorph
@@ -51,16 +51,13 @@ struct PlayerView: View {
                         .environmentObject(audio)
                         .transition(
                             allowsMotion
-                                ? .asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .move(edge: .bottom).combined(with: .opacity)
-                                )
+                                ? .scale(scale: 0.985, anchor: .bottom).combined(with: .opacity)
                                 : .opacity
                         )
                         .zIndex(20)
                 }
             }
-            .animation(allowsMotion ? BuFiMotion.player : .none, value: audio.showFullLyrics)
+            .animation(allowsMotion ? BuFiMotion.lyricsPanel : .none, value: audio.showFullLyrics)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQueue) {
@@ -181,38 +178,68 @@ struct PlayerView: View {
     }
 
     private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
-        let edge = min(availableWidth - 44, max(264, availableHeight * 0.47))
+        let viewportWidth = max(240, availableWidth - 44)
+        let edge = max(220, min(viewportWidth * 0.86, max(264, availableHeight * 0.47)))
+        let sideInset = max(0, (viewportWidth - edge) / 2)
         let songs = audio.queue.isEmpty ? [song] : audio.queue
 
-        return TabView(selection: $artworkPage) {
-            ForEach(Array(songs.enumerated()), id: \.offset) { index, item in
-                VStack(spacing: 0) {
-                    ArtworkView(
-                        coverArt: item.coverArt,
-                        size: edge,
-                        cornerRadius: 14,
-                        onPalette: { nextPalette in
-                            guard index == artworkPage else { return }
-                            withAnimation(allowsMotion ? BuFiMotion.color : .none) {
-                                palette = nextPalette
+        return VStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 18) {
+                    ForEach(Array(songs.enumerated()), id: \.offset) { index, item in
+                        ArtworkView(
+                            coverArt: item.coverArt,
+                            size: edge,
+                            cornerRadius: 14,
+                            onPalette: { nextPalette in
+                                guard index == artworkPage else { return }
+                                withAnimation(allowsMotion ? BuFiMotion.color : .none) {
+                                    palette = nextPalette
+                                }
                             }
+                        )
+                        .frame(width: edge, height: edge)
+                        .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+                        .id(index)
+                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                            content
+                                .scaleEffect(phase.isIdentity || !allowsMotion ? 1 : 0.94)
+                                .opacity(phase.isIdentity || !allowsMotion ? 1 : 0.72)
                         }
-                    )
-                    .frame(width: edge, height: edge)
-                    .padding(.horizontal, 4)
-                    .padding(.top, 13)
-                    .padding(.bottom, 26)
-
-                    metadataContent(item)
-                        .padding(.bottom, 18)
+                    }
                 }
-                .tag(index)
+                .scrollTargetLayout()
             }
+            .scrollIndicators(.hidden)
+            .contentMargins(.horizontal, sideInset, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $artworkPage)
+            .frame(height: edge + 42)
+
+            ZStack {
+                metadataContent(song)
+                    .id(song.id)
+                    .transition(
+                        allowsMotion
+                            ? .asymmetric(
+                                insertion: .move(
+                                    edge: transitionDirection > 0 ? .trailing : .leading
+                                ).combined(with: .opacity),
+                                removal: .move(
+                                    edge: transitionDirection > 0 ? .leading : .trailing
+                                ).combined(with: .opacity)
+                            )
+                            : .opacity
+                    )
+            }
+            .animation(allowsMotion ? BuFiMotion.text : .none, value: song.id)
+            .padding(.bottom, 18)
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(height: edge + 116)
         .contentShape(Rectangle())
-        .onChange(of: artworkPage) { oldIndex, index in
+        .onChange(of: artworkPage) { oldPage, page in
+            guard let index = page else { return }
+            let oldIndex = oldPage ?? audio.queueIndex
             transitionDirection = index >= oldIndex ? 1 : -1
             guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
@@ -397,21 +424,9 @@ struct PlayerView: View {
                 Button {
                     openFullLyrics()
                 } label: {
-                    ZStack(alignment: .topLeading) {
-                        miniLyricsWindow
-                            .id(audio.activeLyricIndex)
-                            .transition(
-                                allowsMotion
-                                    ? .asymmetric(
-                                        insertion: .offset(y: 14).combined(with: .opacity),
-                                        removal: .offset(y: -8).combined(with: .opacity)
-                                    )
-                                    : .opacity
-                            )
-                    }
+                    miniLyricsWindow
                     .frame(maxWidth: .infinity)
-                    .frame(height: 205, alignment: .top)
-                    .clipped()
+                    .frame(minHeight: 205, alignment: .top)
                     .id(audio.currentSong?.id)
                     .transition(
                         allowsMotion
@@ -437,7 +452,11 @@ struct PlayerView: View {
                             endPoint: .bottomTrailing
                         )
                     )
-                    .matchedGeometryEffect(id: "lyrics-surface", in: lyricsMorph)
+                    .matchedGeometryEffect(
+                        id: "lyrics-surface",
+                        in: lyricsMorph,
+                        isSource: !audio.showFullLyrics
+                    )
             }
             .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .buFiGlass(cornerRadius: 24, interactive: true)
@@ -458,12 +477,23 @@ struct PlayerView: View {
                     .font(.system(size: 23, weight: .bold))
                     .tracking(-0.55)
                     .foregroundStyle(lyricColor(index: item.index))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(item.index == audio.activeLyricIndex ? 1 : 0)
                     .scaleEffect(
                         allowsMotion && item.index != audio.activeLyricIndex ? 0.975 : 1,
                         anchor: .leading
                     )
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(
+                        allowsMotion
+                            ? .asymmetric(
+                                insertion: .offset(y: 12).combined(with: .opacity),
+                                removal: .offset(y: -8).combined(with: .opacity)
+                            )
+                            : .opacity
+                    )
             }
         }
         .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
@@ -473,7 +503,7 @@ struct PlayerView: View {
         let lines = audio.lyrics.lines
         guard !lines.isEmpty else { return [] }
         let active = lines.indices.contains(audio.activeLyricIndex) ? audio.activeLyricIndex : 0
-        let end = min(lines.count, active + 4)
+        let end = min(lines.count, active + 3)
         return (active..<end).map { (index: $0, line: lines[$0]) }
     }
 
@@ -531,7 +561,7 @@ struct PlayerView: View {
     }
 
     private func openFullLyrics() {
-        withAnimation(allowsMotion ? BuFiMotion.player : .none) {
+        withAnimation(allowsMotion ? BuFiMotion.lyricsPanel : .none) {
             audio.showFullLyrics = true
         }
     }
@@ -616,7 +646,7 @@ private struct FullLyricsView: View {
                         endPoint: .bottom
                     )
                 )
-                .matchedGeometryEffect(id: "lyrics-surface", in: namespace)
+                .matchedGeometryEffect(id: "lyrics-surface", in: namespace, isSource: true)
                 .ignoresSafeArea()
 
             if colorScheme == .light {
@@ -682,6 +712,8 @@ private struct FullLyricsView: View {
                             Text(line.text)
                                 .font(.system(size: 29, weight: .bold))
                                 .tracking(-0.95)
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .multilineTextAlignment(.leading)
                                 .foregroundStyle(color(for: index))
                                 .scaleEffect(
@@ -779,7 +811,7 @@ private struct FullLyricsView: View {
                 if shouldDismiss {
                     closeLyrics()
                 } else {
-                    withAnimation(allowsMotion ? BuFiMotion.player : .none) {
+                    withAnimation(allowsMotion ? BuFiMotion.lyricsPanel : .none) {
                         dragOffset = 0
                     }
                 }
@@ -787,7 +819,7 @@ private struct FullLyricsView: View {
     }
 
     private func closeLyrics() {
-        withAnimation(allowsMotion ? BuFiMotion.player : .none) {
+        withAnimation(allowsMotion ? BuFiMotion.lyricsPanel : .none) {
             dragOffset = 0
             audio.showFullLyrics = false
         }

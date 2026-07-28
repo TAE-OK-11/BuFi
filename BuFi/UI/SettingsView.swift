@@ -112,7 +112,7 @@ struct SettingsView: View {
                         }
                     }
                     .tint(Color(uiColor: .secondaryLabel))
-                    Text("자동 음질은 FLAC·Opus·Vorbis 등 고부하 원본을 서버에서 AAC 256kbps로 변환해 기기 배터리 사용량을 줄입니다. 원본 무손실은 원본 재생을 먼저 시도하고 실패하면 AAC·MP3로 전환합니다.")
+                    Text("자동 음질은 AAC·MP3·ALAC 등 iPhone이 직접 재생할 수 있는 형식은 원본으로 재생하고, FLAC·Opus·Vorbis 등은 서버에서 AAC 256kbps로 변환합니다. 원본 재생이 실패하면 AAC·MP3로 안전하게 전환합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Toggle(isOn: $autoOpenPlayer) {

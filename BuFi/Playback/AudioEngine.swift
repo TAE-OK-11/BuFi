@@ -202,9 +202,12 @@ final class AudioEngine: NSObject, ObservableObject {
         activeLyricIndex = -1
         lyrics = .empty
         fallbackIndex = 0
-        fallbackFormats = Self.fallbackFormats(for: quality)
+        fallbackFormats = Self.fallbackFormats(for: quality, song: song)
         recoveryAttempt = 0
-        activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
+        activeCompatibilityFormat = Self.initialCompatibilityFormat(
+            for: quality,
+            song: song
+        )
         playbackError = nil
         wantsPlayback = autoplay
         scrobbled = false
@@ -448,6 +451,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // A downloaded source avoids radio use and is attempted once. If the
         // system rejects it, later codec fallbacks bypass the local source.
         if fallbackIndex == 0,
+           compatibilityFormat?.lowercased() == "raw",
            let local = await OfflineStore.shared.localURL(for: song.id) {
             return PlaybackResource(
                 url: local,
@@ -469,23 +473,64 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
-    private static func initialCompatibilityFormat(for quality: StreamQuality) -> String? {
+    private static func initialCompatibilityFormat(
+        for quality: StreamQuality,
+        song: Song
+    ) -> String {
         switch quality {
-        case .automatic, .aac320: "aac"
+        case .automatic:
+            automaticCompatibilityFormat(for: song)
+        case .aac320: "aac"
         case .opus160: "opus"
         case .original: "raw"
         }
     }
 
-    private static func fallbackFormats(for quality: StreamQuality) -> [String] {
+    private static func fallbackFormats(
+        for quality: StreamQuality,
+        song: Song
+    ) -> [String] {
         switch quality {
-        case .automatic, .aac320:
+        case .automatic:
+            automaticCompatibilityFormat(for: song) == "raw"
+                ? ["aac", "mp3"]
+                : ["mp3", "raw"]
+        case .aac320:
             ["mp3", "raw"]
         case .opus160:
             ["aac", "mp3", "raw"]
         case .original:
             ["aac", "mp3"]
         }
+    }
+
+    private static func automaticCompatibilityFormat(for song: Song) -> String {
+        let suffix = song.suffix?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let contentType = song.contentType?
+            .split(separator: ";", maxSplits: 1)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        let serverTranscodedSuffixes: Set<String> = [
+            "flac", "opus", "ogg", "oga", "vorbis", "webm"
+        ]
+        let serverTranscodedMIMETypes: Set<String> = [
+            "audio/flac", "audio/x-flac",
+            "audio/opus", "audio/ogg", "application/ogg",
+            "audio/vorbis", "audio/webm"
+        ]
+        if serverTranscodedSuffixes.contains(suffix) ||
+            serverTranscodedMIMETypes.contains(contentType) {
+            return "aac"
+        }
+
+        // AAC, MP3, ALAC/M4A, WAV, AIFF, CAF, AC-3, and other formats already
+        // accepted by AVFoundation stay bit-for-bit original. Unknown formats
+        // also try the source first, then use the AAC/MP3 fallback plan.
+        return "raw"
     }
 
     private static func mimeType(
@@ -543,10 +588,14 @@ final class AudioEngine: NSObject, ObservableObject {
 
 
     private func restartPlaybackPlan(resumeFrom: TimeInterval) {
+        guard let song = currentSong else { return }
         cancelPlaybackRecovery()
         fallbackIndex = 0
-        fallbackFormats = Self.fallbackFormats(for: quality)
-        activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
+        fallbackFormats = Self.fallbackFormats(for: quality, song: song)
+        activeCompatibilityFormat = Self.initialCompatibilityFormat(
+            for: quality,
+            song: song
+        )
         loadCurrentItem(
             compatibilityFormat: activeCompatibilityFormat,
             resumeFrom: resumeFrom

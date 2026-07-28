@@ -9,10 +9,10 @@ It is designed around the iOS media stack rather than a web view.
 - Home, search, albums, artists, playlists, starred music, and server diagnostics
 - Native `AVPlayer` playback with a persistent queue, shuffle, repeat, seeking, AirPlay, scrobbling, and background recovery
 - Control Center, Lock Screen, Dynamic Island, wired-headset, and Bluetooth media controls through `MPNowPlayingSession`
-- Automatic AAC/MP3 compatibility fallback when an original file cannot be decoded
+- Automatic original streaming for iPhone-native AAC, MP3, ALAC, and related formats, with server-side AAC 256 kbps conversion for FLAC, Opus, Vorbis, and WebM sources
 - Built-in speaker/route/interruption recovery and Subsonic MIME compatibility handling adapted from Amperfy
-- Synchronized OpenSubsonic lyrics with a full-screen lyrics view
-- Apple Music-led visual system with Spotify density, a subtle Deezer accent, and an optional native Liquid Glass seek bar on iOS 26+ while retaining Classic transport controls
+- Synchronized OpenSubsonic lyrics with smoothly morphing compact/full-screen views and multiline lyric wrapping
+- Apple Music-led visual system with Spotify-style separated artwork paging, a subtle Deezer accent, and an optional native Liquid Glass seek bar on iOS 26+ while retaining Classic transport controls
 - Core Graphics dominant-color clustering and an adaptive player background
 - Nuke-backed artwork request coalescing, caching, and downsampling
 - HTTP/3-capable API requests plus gzip, Brotli, and bounded Zstandard response decoding

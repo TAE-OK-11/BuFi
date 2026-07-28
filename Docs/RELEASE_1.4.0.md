@@ -21,6 +21,10 @@
 - Adds a selectable seek-bar style: Apple’s native Liquid Glass slider on iOS
   26+, with an automatic Classic fallback on iOS 17–25. Transport buttons and
   the rest of the player retain the existing Classic design.
+- Replaces edge-joined artwork paging with a separated, centered card carousel
+  that previews the neighboring cover and animates programmatic track changes.
+- Smooths compact lyric progression and the compact-to-full-screen surface
+  transition, while allowing long lyric lines to wrap instead of truncating.
 - Centralizes motion policy so Reduce Motion, Low Power Mode, and serious or
   critical thermal pressure suppress nonessential transitions consistently.
 - Light-mode contrast fixes for artist, album, playlist controls and settings surfaces.
@@ -29,6 +33,9 @@
 
 ## Stability
 
+- In Automatic quality, streams iPhone-native AAC, MP3, ALAC, and related
+  sources unchanged, while requesting server-side AAC 256 kbps for FLAC, Opus,
+  Vorbis, Ogg, and WebM sources; decode failures retain AAC/MP3 fallbacks.
 - Serializes rapid favorite mutations and protects confirmed server state from
   stale search, detail, and home responses.
 - Hardens playback recovery, queue restoration, logout cleanup, route changes,

@@ -28,7 +28,8 @@ enum BuFiMotion {
     static let color = Animation.easeInOut(duration: 0.35)
     static let page = Animation.spring(duration: 0.40, bounce: 0.10)
     static let player = Animation.spring(duration: 0.45, bounce: 0.12)
-    static let lyrics = Animation.spring(duration: 0.50, bounce: 0.10)
+    static let lyrics = Animation.smooth(duration: 0.46, extraBounce: 0.02)
+    static let lyricsPanel = Animation.smooth(duration: 0.56, extraBounce: 0.06)
 
     static func isEnabled(
         userPreference: Bool,
