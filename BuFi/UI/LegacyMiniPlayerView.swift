@@ -54,12 +54,12 @@ struct LegacyMiniPlayerView: View {
                         Button {
                             audio.togglePlayback()
                         } label: {
-                            Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
+                            Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
                                 .font(.system(size: 21, weight: .semibold))
                                 .frame(width: 40, height: 40)
                         }
                         .buttonStyle(BuFiPressStyle())
-                        .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
+                        .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
                     }
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)

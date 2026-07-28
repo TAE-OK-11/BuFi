@@ -58,6 +58,12 @@
 - Bounds expired detail caches, removes quadratic album-row classification, and
   clears the current Xcode 27 Swift concurrency warnings around player
   notifications and now-playing activation.
+- Uses generation-checked stream and lyric requests so cancelled rapid track
+  changes cannot publish stale player state, including repeated IDs.
+- Stabilizes seek completion, pending seeks during item loading, end-of-track
+  replay, buffering intent, pause-during-buffering, route/interruption resume,
+  queue replacement, artwork palette cancellation, and lock-screen artwork
+  refreshes.
 
 ## Verification
 

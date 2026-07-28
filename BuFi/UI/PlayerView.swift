@@ -89,8 +89,9 @@ struct PlayerView: View {
             syncArtworkPage(to: index, animated: true)
             prefetchUpcomingArtwork(after: index)
         }
-        .onChange(of: audio.queue.count) { _, _ in
+        .onChange(of: audio.queue.map(\.id)) { _, _ in
             syncArtworkPage(to: audio.queueIndex, animated: false)
+            prefetchUpcomingArtwork(after: audio.queueIndex)
         }
         .onAppear {
             scrubValue = audio.elapsed
@@ -479,17 +480,17 @@ struct PlayerView: View {
                 if audio.isBuffering {
                     ProgressView().tint(playerButtonForeground)
                 } else {
-                    Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
                         .font(.system(size: 27, weight: .bold))
                         .foregroundStyle(playerButtonForeground)
-                        .offset(x: audio.isPlaying ? 0 : 2)
+                        .offset(x: audio.wantsPlayback ? 0 : 2)
                         .contentTransition(.symbolEffect(.replace))
                 }
             }
         }
         .buttonStyle(BuFiPressStyle())
-        .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.isPlaying)
-        .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
+        .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.wantsPlayback)
+        .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
     }
 
     private func utilityRow(_ song: Song, includesAirPlay: Bool = true) -> some View {
@@ -912,7 +913,7 @@ private struct FullLyricsView: View {
             .monospacedDigit()
 
             Button { audio.togglePlayback() } label: {
-                Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
+                Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
                     .font(.system(size: 29, weight: .bold))
                     .foregroundStyle(playButtonForeground)
                     .frame(width: 72, height: 72)
@@ -920,8 +921,8 @@ private struct FullLyricsView: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(BuFiPressStyle())
-            .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.isPlaying)
-            .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
+            .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.wantsPlayback)
+            .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
         }
         .padding(.horizontal, 24)
         .padding(.top, 10)

@@ -108,7 +108,7 @@ actor ArtworkStore {
 
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
-        guard activeScope != nil else { return .fallback }
+        guard let scope = activeScope, !Task.isCancelled else { return .fallback }
         let key = ArtworkPipelineDelegate.normalizedCacheKey(for: url) as NSString
         if let cached = paletteMemory.object(forKey: key) { return cached.value }
 
@@ -176,6 +176,7 @@ actor ArtworkStore {
             accentPosition: accentSwatch?.position ?? .bottomLeading,
             secondaryPosition: secondarySwatch?.position ?? .topTrailing
         )
+        guard activeScope == scope, !Task.isCancelled else { return .fallback }
         paletteMemory.setObject(PaletteBox(value), forKey: key)
         return value
     }

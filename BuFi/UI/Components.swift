@@ -315,9 +315,12 @@ struct ArtworkView: View {
                 }
                 guard !Task.isCancelled else { return }
                 image = loaded
-                onPalette?(await ArtworkStore.shared.palette(for: url, image: loaded))
+                let palette = await ArtworkStore.shared.palette(for: url, image: loaded)
+                guard !Task.isCancelled else { return }
+                onPalette?(palette)
                 return
             }
+            guard !Task.isCancelled else { return }
             onPalette?(.fallback)
         }
         .accessibilityHidden(true)
