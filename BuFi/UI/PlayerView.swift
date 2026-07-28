@@ -176,6 +176,7 @@ struct PlayerView: View {
             .accessibilityLabel("더 보기")
         }
         .buttonStyle(.plain)
+        .foregroundStyle(playerPrimary)
         .frame(height: 58)
     }
 
@@ -516,6 +517,7 @@ struct PlayerView: View {
             .accessibilityLabel("재생목록")
         }
         .buttonStyle(.plain)
+        .foregroundStyle(playerPrimary)
         .padding(.vertical, 8)
     }
 
@@ -749,7 +751,6 @@ struct PlayerView: View {
     private var usesDarkForeground: Bool {
         colorScheme == .light
             || resolvedBackgroundAppearance == .bright
-            || resolvedPlayerAppearance == .dynamic
     }
 
     private var playerPrimary: Color {
@@ -829,6 +830,7 @@ private struct FullLyricsView: View {
         }
         .padding(.horizontal, 10)
         .padding(.top, 6)
+        .foregroundStyle(lyricsPrimary)
         .contentShape(Rectangle())
         .simultaneousGesture(dismissGesture)
     }
@@ -913,12 +915,21 @@ private struct FullLyricsView: View {
             .monospacedDigit()
 
             Button { audio.togglePlayback() } label: {
-                Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
-                    .font(.system(size: 29, weight: .bold))
-                    .foregroundStyle(playButtonForeground)
-                    .frame(width: 72, height: 72)
-                    .background(lyricsPrimary, in: Circle())
-                    .contentTransition(.symbolEffect(.replace))
+                ZStack {
+                    Circle()
+                        .fill(lyricsPrimary)
+                        .frame(width: 72, height: 72)
+                    if audio.isBuffering {
+                        ProgressView()
+                            .tint(playButtonForeground)
+                    } else {
+                        Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
+                            .font(.system(size: 29, weight: .bold))
+                            .foregroundStyle(playButtonForeground)
+                            .offset(x: audio.wantsPlayback ? 0 : 2)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                }
             }
             .buttonStyle(BuFiPressStyle())
             .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.wantsPlayback)
