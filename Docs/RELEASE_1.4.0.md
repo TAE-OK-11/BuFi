@@ -77,6 +77,14 @@
   preserving its sharing and queue actions.
 - Places multicolor fields at their sampled artwork positions and makes Bright
   lift the extracted colors themselves instead of applying a white appearance.
+- Removes full-screen blur, full-width filter slides, and whole-mini-player
+  track transitions; only changing artwork, metadata, and lyrics now animate
+  while playback controls remain stationary.
+- Consolidates navigation and content transitions on short zero-bounce motion
+  curves and removes duplicate palette and compact-lyrics animation
+  transactions to reduce dropped frames during rapid state changes.
+- Lets search categories, collection headers, artist names, album metadata, and
+  song metadata wrap safely without clipping, including at larger text sizes.
 
 ## Verification
 

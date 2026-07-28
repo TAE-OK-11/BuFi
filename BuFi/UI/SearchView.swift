@@ -96,7 +96,7 @@ struct SearchView: View {
         }
         .foregroundStyle(.primary)
         .padding(.horizontal, 16)
-        .frame(height: 56)
+        .frame(minHeight: 56)
         .background(
             BuFiTheme.elevated,
             in: RoundedRectangle(cornerRadius: 15, style: .continuous)
@@ -205,7 +205,7 @@ struct SearchView: View {
                 ForEach(categories.indices, id: \.self) { index in
                     let category = categories[index]
                     Button {
-                        withAnimation(motionEnabled ? BuFiMotion.page : .none) {
+                        withAnimation(motionEnabled ? BuFiMotion.content : .none) {
                             browseMode = index == 0 ? .favoriteSongs : .favoriteAlbums
                         }
                     } label: {
@@ -226,6 +226,9 @@ struct SearchView: View {
                                 .padding(13)
                             Text(LocalizedStringKey(category.0))
                                 .font(.system(size: 19, weight: .bold))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                                 .padding(15)
                         }
@@ -265,7 +268,7 @@ struct SearchView: View {
     private func browseCollectionHeader(_ title: String) -> some View {
         HStack(spacing: 10) {
             Button {
-                withAnimation(motionEnabled ? BuFiMotion.selection : .none) {
+                withAnimation(motionEnabled ? BuFiMotion.content : .none) {
                     browseMode = .main
                 }
             } label: {
@@ -279,6 +282,8 @@ struct SearchView: View {
             Text(LocalizedStringKey(title))
                 .font(.system(size: 27, weight: .bold))
                 .tracking(-0.7)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
         .padding(.horizontal, 16)
@@ -311,8 +316,10 @@ struct SearchView: View {
                                     .frame(width: 62, height: 62)
                                 Text(artist.name)
                                     .font(.system(size: 17, weight: .semibold))
-                                    .lineLimit(1)
-                                Spacer()
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .layoutPriority(1)
+                                Spacer(minLength: 8)
                                 Image(systemName: "chevron.right").foregroundStyle(.secondary)
                             }
                         }
@@ -327,13 +334,18 @@ struct SearchView: View {
                                 ArtworkView(coverArt: album.coverArt, size: 62, cornerRadius: 6)
                                     .frame(width: 62, height: 62)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(album.name).font(.system(size: 17, weight: .semibold)).lineLimit(1)
+                                    Text(album.name)
+                                        .font(.system(size: 17, weight: .semibold))
+                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
                                     Text("앨범 · \(album.artist)")
                                         .font(.system(size: 13))
                                         .foregroundStyle(.secondary)
-                                        .lineLimit(1)
+                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
-                                Spacer()
+                                .layoutPriority(1)
+                                Spacer(minLength: 8)
                             }
                         }
                         .buttonStyle(.plain)
@@ -342,7 +354,11 @@ struct SearchView: View {
                 if !model.searchResults.songs.isEmpty {
                     resultHeader("곡")
                     ForEach(model.searchResults.songs) { song in
-                        SongRow(song: song, queue: model.searchResults.songs)
+                        SongRow(
+                            song: song,
+                            queue: model.searchResults.songs,
+                            textLineLimit: 2
+                        )
                     }
                 }
             }

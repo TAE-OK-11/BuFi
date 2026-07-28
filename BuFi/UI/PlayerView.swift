@@ -198,9 +198,7 @@ struct PlayerView: View {
                             cornerRadius: 14,
                             onPalette: { nextPalette in
                                 guard index == artworkPage else { return }
-                                withAnimation(allowsMotion ? BuFiMotion.color : .none) {
-                                    palette = nextPalette
-                                }
+                                palette = nextPalette
                             }
                         )
                         .frame(width: edge, height: edge)
@@ -338,9 +336,7 @@ struct PlayerView: View {
                         cornerRadius: 14,
                         onPalette: { nextPalette in
                             guard index == artworkPage else { return }
-                            withAnimation(allowsMotion ? BuFiMotion.color : .none) {
-                                palette = nextPalette
-                            }
+                            palette = nextPalette
                         }
                     )
                     .frame(width: edge, height: edge)
@@ -613,7 +609,6 @@ struct PlayerView: View {
                     .clipped()
                     .id(audio.currentSong?.id)
                     .transition(trackTextTransition)
-                    .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
                     .animation(allowsMotion ? BuFiMotion.trackText : .none, value: audio.currentSong?.id)
                 }
                 .buttonStyle(.plain)

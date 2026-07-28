@@ -37,7 +37,10 @@ struct MusicDetailView: View {
             }
             .padding(.bottom, audio.currentSong == nil ? 56 : 148)
             .animation(allowsMotion ? BuFiMotion.fade : .none, value: isLoading)
-            .animation(allowsMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
+            .animation(
+                allowsMotion ? BuFiMotion.content : .none,
+                value: audio.currentSong != nil
+            )
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)

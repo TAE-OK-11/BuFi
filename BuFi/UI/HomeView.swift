@@ -68,12 +68,9 @@ struct HomeView: View {
                 playlistSection(showEmpty: true)
             }
         }
-        // 필터가 바뀔 때 컨텐츠가 뚝 끊기지 않고 부드럽게
-        // 사라졌다 나타나도록 identity 전환 + transition을 부여.
-        // filterBar의 withAnimation(.interactiveSpring)이 그대로 이 전환에도 적용됨.
         .id(filter)
         .transition(
-            .opacity.combined(with: .move(edge: .leading))
+            .opacity.combined(with: .scale(scale: 0.995))
         )
     }
 

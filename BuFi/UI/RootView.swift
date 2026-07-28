@@ -167,8 +167,7 @@ struct RootView: View {
         let activeProgress = tab == tag && effectiveMotion ? pageProgress : 1
         content
             .opacity(activeProgress)
-            .scaleEffect(0.992 + (0.008 * activeProgress))
-            .blur(radius: (1 - activeProgress) * 1.2)
+            .scaleEffect(0.996 + (0.004 * activeProgress))
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if audio.currentSong != nil {
                     LegacyMiniPlayerView()
@@ -178,7 +177,10 @@ struct RootView: View {
                         .transition(effectiveMotion ? .move(edge: .bottom).combined(with: .opacity) : .opacity)
                 }
             }
-            .animation(effectiveMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
+            .animation(
+                effectiveMotion ? BuFiMotion.content : .none,
+                value: audio.currentSong != nil
+            )
     }
 
     private var syncTaskID: String {

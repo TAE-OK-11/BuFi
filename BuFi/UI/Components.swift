@@ -174,15 +174,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
         HStack(spacing: 4) {
             ForEach(items) { item in
                 Button {
-                    withAnimation(
-                        motionEnabled
-                            ? .interactiveSpring(
-                                response: 0.34,
-                                dampingFraction: 0.80,
-                                blendDuration: 0.08
-                            )
-                            : .none
-                    ) {
+                    withAnimation(motionEnabled ? BuFiMotion.content : .none) {
                         selection = item
                     }
                 } label: {
@@ -380,6 +372,7 @@ struct SongRow: View {
     var layout: SongRowLayout = .standard
     var fallbackTrackNumber: Int?
     var onMore: (() -> Void)?
+    var textLineLimit = 1
 
     @ViewBuilder
     var body: some View {
@@ -486,12 +479,15 @@ struct SongRow: View {
                                     ? BuFiTheme.accent
                                     : Color.primary
                             )
-                            .lineLimit(1)
+                            .lineLimit(textLineLimit)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text([song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(textLineLimit)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    .layoutPriority(1)
                     Spacer(minLength: 6)
                 }
                 .contentShape(Rectangle())
