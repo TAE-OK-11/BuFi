@@ -37,6 +37,7 @@ struct RootView: View {
         }
         .animation(effectiveMotion ? BuFiMotion.fade : .none, value: model.sessionState)
         .preferredColorScheme(AppAppearance(rawValue: appearanceMode)?.colorScheme)
+        .environment(\.buFiMotionEnabled, effectiveMotion)
         .transaction { transaction in
             if !effectiveMotion { transaction.animation = nil }
         }
@@ -94,6 +95,7 @@ struct RootView: View {
             }
             .environmentObject(model)
             .environmentObject(audio)
+            .environment(\.buFiMotionEnabled, effectiveMotion)
         }
     }
 
@@ -109,7 +111,12 @@ struct RootView: View {
     }
 
     private var effectiveMotion: Bool {
-        motionEnabled && !reduceMotion && !lowPowerMode && !isThermallyConstrained
+        BuFiMotion.isEnabled(
+            userPreference: motionEnabled,
+            reduceMotion: reduceMotion,
+            lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        )
     }
 
     private var appContent: some View {

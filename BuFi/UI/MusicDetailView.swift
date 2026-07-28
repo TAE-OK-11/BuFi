@@ -4,6 +4,7 @@ struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let route: MusicRoute
 
@@ -15,10 +16,8 @@ struct MusicDetailView: View {
     @State private var isLoading = true
     @State private var selectedSong: Song?
     @State private var palette = ArtworkPalette.fallback
-    @State private var isFavorite = false
     @State private var artistBiography = ""
     @State private var artistAlbumCount = 0
-    @AppStorage("motion-enabled") private var motionEnabled = true
 
     var body: some View {
         ScrollView {
@@ -37,8 +36,8 @@ struct MusicDetailView: View {
                 }
             }
             .padding(.bottom, audio.currentSong == nil ? 56 : 148)
-            .animation(motionEnabled ? BuFiMotion.fade : .none, value: isLoading)
-            .animation(motionEnabled ? BuFiMotion.player : .none, value: audio.currentSong?.id)
+            .animation(allowsMotion ? BuFiMotion.fade : .none, value: isLoading)
+            .animation(allowsMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)
@@ -68,7 +67,7 @@ struct MusicDetailView: View {
                 height: 360,
                 cornerRadius: 24,
                 onPalette: { nextPalette in
-                    withAnimation(motionEnabled ? BuFiMotion.color : .none) {
+                    withAnimation(allowsMotion ? BuFiMotion.color : .none) {
                         palette = nextPalette
                     }
                 }
@@ -118,7 +117,7 @@ struct MusicDetailView: View {
                 size: 270,
                 cornerRadius: 10,
                 onPalette: { nextPalette in
-                    withAnimation(motionEnabled ? BuFiMotion.color : .none) {
+                    withAnimation(allowsMotion ? BuFiMotion.color : .none) {
                         palette = nextPalette
                     }
                 }
@@ -394,6 +393,8 @@ struct MusicDetailView: View {
         colorScheme == .dark ? .white.opacity(0.10) : .black.opacity(0.12)
     }
 
+    private var allowsMotion: Bool { motionEnabled }
+
     private var isArtist: Bool {
         if case .artist = route { return true }
         return false
@@ -406,14 +407,28 @@ struct MusicDetailView: View {
         }
     }
 
-    private func toggleFavorite() {
-        guard canFavorite else { return }
-        isFavorite.toggle()
+    private var isFavorite: Bool {
         switch route {
         case .album(let album):
-            Task { await model.toggleStar(album: album) }
+            model.isStarred(album)
         case .artist(let artist):
-            Task { await model.toggleStar(artist: artist) }
+            model.isStarred(artist)
+        case .playlist:
+            false
+        }
+    }
+
+    private func toggleFavorite() {
+        guard canFavorite else { return }
+        switch route {
+        case .album(let album):
+            Task {
+                await model.toggleStar(album: album)
+            }
+        case .artist(let artist):
+            Task {
+                await model.toggleStar(artist: artist)
+            }
         case .playlist:
             break
         }
@@ -458,7 +473,6 @@ struct MusicDetailView: View {
         do {
             switch route {
             case .album(let album):
-                isFavorite = album.isStarred
                 title = album.name
                 subtitle = [
                     String(localized: "앨범"),
@@ -472,7 +486,6 @@ struct MusicDetailView: View {
                 let detail = try await model.album(id: album.id)
                 songs = detail.songs
             case .playlist(let playlist):
-                isFavorite = false
                 title = playlist.name
                 subtitle = [
                     String(localized: "플레이리스트"),
@@ -488,13 +501,11 @@ struct MusicDetailView: View {
                 let detail = try await model.playlist(id: playlist.id)
                 songs = detail.songs
             case .artist(let artist):
-                isFavorite = artist.isStarred
                 title = artist.name
                 subtitle = String(localized: "아티스트")
                 coverArt = artist.coverArt
                 artistAlbumCount = artist.albumCount ?? 0
                 let detail = try await model.artist(id: artist.id, name: artist.name)
-                isFavorite = detail.artist.isStarred
                 coverArt = detail.artist.coverArt ?? coverArt
                 songs = detail.topSongs
                 albums = detail.albums
@@ -544,7 +555,10 @@ private struct SongActionsSheet: View {
             .padding(.horizontal, 18)
             .padding(.bottom, 7)
 
-            action(song.isStarred ? "좋아요 취소" : "좋아요 표시", icon: song.isStarred ? "heart.slash" : "heart") {
+            action(
+                model.isStarred(song) ? "좋아요 취소" : "좋아요 표시",
+                icon: model.isStarred(song) ? "heart.slash" : "heart"
+            ) {
                 Task { await model.toggleStar(song: song) }
                 dismiss()
             }

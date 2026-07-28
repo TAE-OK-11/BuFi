@@ -2,8 +2,8 @@ import SwiftUI
 
 struct LegacyMiniPlayerView: View {
     @EnvironmentObject private var audio: AudioEngine
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var palette = ArtworkPalette.fallback
-    @AppStorage("motion-enabled") private var motionEnabled = true
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10

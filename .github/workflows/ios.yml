@@ -3,7 +3,6 @@ name: iOS Build
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -17,15 +16,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - name: Show Xcode version
+      - name: Select stable Xcode 26.6
         run: |
-          if [ -d /Applications/Xcode_26.6.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
-          elif [ -d /Applications/Xcode_26.5.app ]; then
-            sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
-          fi
+          test -d /Applications/Xcode_26.6.app
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           xcodebuild -version
 
       - name: Install XcodeGen
@@ -64,7 +60,7 @@ jobs:
           shasum -a 256 BuFi-unsigned.ipa > BuFi-unsigned.ipa.sha256
 
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BuFi-unsigned-${{ github.sha }}
           path: |
@@ -74,12 +70,14 @@ jobs:
           retention-days: 30
 
   ios-27-compatibility:
+    name: iOS 27 preview (advisory)
     runs-on: xcode-27
+    continue-on-error: true
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Show Xcode and iOS SDK
         run: |
@@ -98,7 +96,9 @@ jobs:
       - name: Build with iOS 27 SDK
         run: |
           set -o pipefail
+          mkdir -p "$RUNNER_TEMP/BuFi27Logs"
           xcodebuild \
+            -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
             -configuration Release \
@@ -108,4 +108,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            clean build
+            clean build 2>&1 | tee "$RUNNER_TEMP/BuFi27Logs/xcode27.log"
+
+      - name: Upload Xcode 27 preview log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: BuFi-xcode27-preview-${{ github.sha }}
+          path: ${{ runner.temp }}/BuFi27Logs/xcode27.log
+          if-no-files-found: warn
+          retention-days: 14

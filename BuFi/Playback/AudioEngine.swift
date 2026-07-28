@@ -40,7 +40,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private var nowPlayingSession: MPNowPlayingSession?
     private var client: OpenSubsonicClient?
-    private var songFavoriteChangeHandler: ((Song, Bool) -> Void)?
+    private var songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)?
     private var itemObservation: NSKeyValueObservation?
     private var itemBufferObservations: [NSKeyValueObservation] = []
     private var timeControlObservation: NSKeyValueObservation?
@@ -63,6 +63,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryTask: Task<Void, Never>?
+    private var recoveryToken: UUID?
+    private weak var handledFailedItem: AVPlayerItem?
     private var recoveryAttempt = 0
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
@@ -103,19 +105,19 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func configure(
         client: OpenSubsonicClient?,
-        songFavoriteChangeHandler: ((Song, Bool) -> Void)? = nil
+        songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil
     ) {
         serverQueueTask?.cancel()
         self.client = client
-        self.songFavoriteChangeHandler = songFavoriteChangeHandler
+        self.songFavoriteMutationHandler = songFavoriteMutationHandler
         if client == nil {
             queueSaveTask?.cancel()
             offlinePrefetchTask?.cancel()
-            recoveryTask?.cancel()
+            cancelPlaybackRecovery()
             itemLoadTask?.cancel()
             lyricsTask?.cancel()
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
-            pause()
+            pausePlayback(persistsQueue: false)
             currentSong = nil
             queue = []
             queueIndex = -1
@@ -146,7 +148,8 @@ final class AudioEngine: NSObject, ObservableObject {
                   let serverQueue = try? await client?.playQueue(),
                   !Task.isCancelled,
                   !serverQueue.songs.isEmpty,
-                  !self.isPlaying else {
+                  !self.isPlaying,
+                  !self.wantsPlayback else {
                 return
             }
             self.queue = serverQueue.songs
@@ -175,6 +178,10 @@ final class AudioEngine: NSObject, ObservableObject {
         preferredIndex: Int?,
         autoplay: Bool = true
     ) {
+        // An explicit selection supersedes a pending server queue restore,
+        // including the interval before AVPlayer reaches the playing state.
+        serverQueueTask?.cancel()
+        cancelPlaybackRecovery()
         let previousSongID = currentSong?.id
         let normalizedQueue = sourceQueue.isEmpty ? [song] : sourceQueue
         queue = normalizedQueue
@@ -185,6 +192,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         player.pause()
         itemObservation = nil
+        itemBufferObservations.removeAll()
         itemObservers.forEach(NotificationCenter.default.removeObserver)
         itemObservers.removeAll()
         player.replaceCurrentItem(with: nil)
@@ -227,6 +235,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func resumePlayback() {
         guard currentSong != nil else { return }
+        serverQueueTask?.cancel()
         configureAudioSession()
         wantsPlayback = true
         playbackError = nil
@@ -238,12 +247,26 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func pause() {
+        pausePlayback(persistsQueue: true)
+    }
+
+    private func pausePlayback(persistsQueue: Bool) {
         wantsPlayback = false
+        cancelPlaybackRecovery()
         player.pause()
-        scheduleQueueSave(immediate: true)
+        endBackgroundBridge()
+        if persistsQueue { scheduleQueueSave(immediate: true) }
     }
 
     func seek(to seconds: TimeInterval) {
+        serverQueueTask?.cancel()
+        seekPlayer(to: seconds, persistsQueue: true)
+    }
+
+    private func seekPlayer(
+        to seconds: TimeInterval,
+        persistsQueue: Bool
+    ) {
         let target = max(0, min(seconds, duration))
         let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
         player.seek(
@@ -254,7 +277,7 @@ final class AudioEngine: NSObject, ObservableObject {
         elapsed = target
         updateActiveLyric()
         updateNowPlaying()
-        scheduleQueueSave()
+        if persistsQueue { scheduleQueueSave() }
     }
 
     /// `isAutoAdvance`는 곡이 자연 종료되어(`endObserver`) 호출된 경우에만 true.
@@ -320,10 +343,21 @@ final class AudioEngine: NSObject, ObservableObject {
         queue.remove(at: removedIndex)
         guard !queue.isEmpty else {
             pause()
+            itemLoadTask?.cancel()
+            cancelPlaybackRecovery()
+            lyricsTask?.cancel()
             currentSong = nil
             queueIndex = -1
+            elapsed = 0
+            duration = 0
+            isBuffering = false
             lyrics = .empty
             activeLyricIndex = -1
+            showFullLyrics = false
+            itemObservation = nil
+            itemBufferObservations.removeAll()
+            itemObservers.forEach(NotificationCenter.default.removeObserver)
+            itemObservers.removeAll()
             player.replaceCurrentItem(with: nil)
             updateNowPlaying()
             scheduleQueueSave(immediate: true)
@@ -350,18 +384,36 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func updateStarred(songID: String, enabled: Bool) {
-        let value = enabled ? Self.iso8601Formatter.string(from: Date()) : nil
-        if currentSong?.id == songID { currentSong?.starred = value }
-        queue = queue.map { song in
-            guard song.id == songID else { return song }
+        synchronizeStarredStates([songID: enabled])
+    }
+
+    func synchronizeStarredStates(_ states: [String: Bool]) {
+        guard !states.isEmpty else { return }
+
+        var updatedCurrentSong = currentSong
+        if var song = updatedCurrentSong,
+           let enabled = states[song.id],
+           song.isStarred != enabled {
+            song.starred = enabled ? Self.iso8601Formatter.string(from: Date()) : nil
+            updatedCurrentSong = song
+        }
+
+        let updatedQueue = queue.map { song in
+            guard let enabled = states[song.id],
+                  song.isStarred != enabled else {
+                return song
+            }
             var updated = song
-            updated.starred = value
+            updated.starred = enabled ? Self.iso8601Formatter.string(from: Date()) : nil
             return updated
         }
-        let updatedCurrent = currentSong?.id == songID ? currentSong : nil
-        if let updated = updatedCurrent ?? queue.first(where: { $0.id == songID }) {
-            songFavoriteChangeHandler?(updated, enabled)
-        }
+
+        let currentChanged = updatedCurrentSong != currentSong
+        let queueChanged = updatedQueue != queue
+        guard currentChanged || queueChanged else { return }
+
+        if currentChanged { currentSong = updatedCurrentSong }
+        if queueChanged { queue = updatedQueue }
         updateRemoteCommands()
         updateNowPlaying()
         scheduleQueueSave()
@@ -384,14 +436,8 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func toggleCurrentStar() async {
-        guard let song = currentSong, let client else { return }
-        let enabled = !song.isStarred
-        do {
-            try await client.star(id: song.id, target: .song, enabled: enabled)
-            updateStarred(songID: song.id, enabled: enabled)
-        } catch {
-            playbackError = error.localizedDescription
-        }
+        guard let song = currentSong, let songFavoriteMutationHandler else { return }
+        _ = await songFavoriteMutationHandler(song)
     }
 
 
@@ -476,7 +522,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let defaultCount = UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil ? 1 : configured
         let thermalState = ProcessInfo.processInfo.thermalState
         guard thermalState != .serious, thermalState != .critical else { return }
-        let cappedCount = min(max(defaultCount, 0), 2)
+        let cappedCount = min(max(defaultCount, 0), 3)
         let count = ProcessInfo.processInfo.isLowPowerModeEnabled ? min(cappedCount, 1) : cappedCount
         guard count > 0 else { return }
 
@@ -497,6 +543,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
 
     private func restartPlaybackPlan(resumeFrom: TimeInterval) {
+        cancelPlaybackRecovery()
         fallbackIndex = 0
         fallbackFormats = Self.fallbackFormats(for: quality)
         activeCompatibilityFormat = Self.initialCompatibilityFormat(for: quality)
@@ -543,6 +590,7 @@ final class AudioEngine: NSObject, ObservableObject {
         mimeType: String?,
         resumePosition: TimeInterval
     ) {
+        cancelPlaybackRecovery()
         // Amperfy uses an out-of-band MIME hint before handing Subsonic
         // streams to its player. Some servers omit or generalize Content-Type,
         // so applying the same GPLv3-covered compatibility pattern keeps
@@ -566,7 +614,12 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.isBuffering = false
                     self.recoveryAttempt = 0
                     self.updateDuration(using: item.duration.seconds)
-                    if resumePosition > 0 { self.seek(to: resumePosition) }
+                    if resumePosition > 0 {
+                        self.seekPlayer(
+                            to: resumePosition,
+                            persistsQueue: false
+                        )
+                    }
                     if self.wantsPlayback {
                         self.configureAudioSession()
                         self.player.isMuted = false
@@ -576,40 +629,38 @@ final class AudioEngine: NSObject, ObservableObject {
                     }
                 case .failed:
                     self.isBuffering = false
-                    self.handlePlaybackFailure()
+                    self.handlePlaybackFailure(failedItem: item)
                 default:
                     self.isBuffering = true
                 }
             }
         }
         player.replaceCurrentItem(with: item)
+        handledFailedItem = nil
     }
 
     private func updateDuration(using playerDuration: TimeInterval) {
         let metadataDuration = currentSong?.safeDuration ?? 0
         let validPlayerDuration = playerDuration.isFinite && playerDuration > 0
         let validMetadataDuration = metadataDuration.isFinite && metadataDuration > 0
-
-        guard validPlayerDuration || validMetadataDuration else {
-            duration = 0
-            return
+        let resolvedDuration: TimeInterval
+        if !validPlayerDuration, !validMetadataDuration {
+            resolvedDuration = 0
+        } else if !validPlayerDuration {
+            resolvedDuration = metadataDuration
+        } else if !validMetadataDuration {
+            resolvedDuration = playerDuration
+        } else {
+            // Transcoded and malformed streams can report an AVAsset duration
+            // based on an incomplete byte range. OpenSubsonic's metadata is
+            // stable; accept the player value only when they closely agree.
+            let tolerance = max(3, metadataDuration * 0.03)
+            resolvedDuration = abs(playerDuration - metadataDuration) <= tolerance
+                ? playerDuration
+                : metadataDuration
         }
-        guard validPlayerDuration else {
-            duration = metadataDuration
-            return
-        }
-        guard validMetadataDuration else {
-            duration = playerDuration
-            return
-        }
-
-        // Transcoded and malformed streams can report an AVAsset duration based
-        // on an incomplete byte range. OpenSubsonic's song duration is stable;
-        // accept the player value only when it closely agrees with metadata.
-        let tolerance = max(3, metadataDuration * 0.03)
-        duration = abs(playerDuration - metadataDuration) <= tolerance
-            ? playerDuration
-            : metadataDuration
+        guard abs(duration - resolvedDuration) > 0.05 else { return }
+        duration = resolvedDuration
     }
 
     private func installItemObservers(for item: AVPlayerItem) {
@@ -632,8 +683,12 @@ final class AudioEngine: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] notification in
             Task { @MainActor in
-                guard let self, self.player.currentItem === notification.object as? AVPlayerItem else { return }
-                self.handlePlaybackFailure()
+                guard let self,
+                      let failedItem = notification.object as? AVPlayerItem,
+                      self.player.currentItem === failedItem else {
+                    return
+                }
+                self.handlePlaybackFailure(failedItem: failedItem)
             }
         })
     }
@@ -653,8 +708,7 @@ final class AudioEngine: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self, self.player.currentItem === item else { return }
                 guard item.isPlaybackLikelyToKeepUp else { return }
-                self.recoveryTask?.cancel()
-                self.recoveryTask = nil
+                self.cancelPlaybackRecovery()
                 self.recoveryAttempt = 0
                 if self.wantsPlayback, self.player.timeControlStatus != .playing {
                     self.configureAudioSession()
@@ -665,12 +719,25 @@ final class AudioEngine: NSObject, ObservableObject {
         itemBufferObservations = [empty, likelyToKeepUp]
     }
 
-    private func handlePlaybackFailure() {
+    private func handlePlaybackFailure(failedItem: AVPlayerItem? = nil) {
         guard currentSong != nil else { return }
+        if let failedItem {
+            guard player.currentItem === failedItem,
+                  handledFailedItem !== failedItem else {
+                return
+            }
+            handledFailedItem = failedItem
+        }
+        cancelPlaybackRecovery()
         guard fallbackFormats.indices.contains(fallbackIndex) else {
             wantsPlayback = false
             isPlaying = false
             isBuffering = false
+            player.pause()
+            endBackgroundBridge()
+            refreshIdleTimerPreference()
+            updateNowPlaying()
+            scheduleQueueSave(immediate: true)
             playbackError = String(
                 localized: "이 음악을 재생하지 못했습니다. 서버의 스트리밍 형식과 네트워크 상태를 확인해 주세요."
             )
@@ -682,13 +749,26 @@ final class AudioEngine: NSObject, ObservableObject {
         loadCurrentItem(compatibilityFormat: format, resumeFrom: elapsed)
     }
 
+    private func cancelPlaybackRecovery() {
+        recoveryToken = nil
+        recoveryTask?.cancel()
+        recoveryTask = nil
+    }
+
     private func schedulePlaybackRecovery() {
         guard wantsPlayback, currentSong != nil, recoveryTask == nil else { return }
         isBuffering = true
+        let token = UUID()
+        recoveryToken = token
         recoveryTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(1_250))
             guard let self else { return }
-            defer { self.recoveryTask = nil }
+            defer {
+                if self.recoveryToken == token {
+                    self.recoveryToken = nil
+                    self.recoveryTask = nil
+                }
+            }
             guard !Task.isCancelled, self.wantsPlayback,
                   let item = self.player.currentItem else { return }
 
@@ -710,7 +790,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     resumeFrom: self.elapsed
                 )
             } else {
-                self.handlePlaybackFailure()
+                self.handlePlaybackFailure(failedItem: item)
             }
         }
     }
@@ -740,8 +820,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 self?.isPlaying = player.timeControlStatus == .playing
                 self?.isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
                 if player.timeControlStatus == .playing {
-                    self?.recoveryTask?.cancel()
-                    self?.recoveryTask = nil
+                    self?.cancelPlaybackRecovery()
                     self?.endBackgroundBridge()
                 }
                 self?.refreshIdleTimerPreference()
@@ -940,7 +1019,9 @@ final class AudioEngine: NSObject, ObservableObject {
         case .began:
             resumeAfterInterruption = isPlaying || wantsPlayback
             wantsPlayback = false
+            cancelPlaybackRecovery()
             player.pause()
+            endBackgroundBridge()
             scheduleQueueSave(immediate: true)
         case .ended:
             let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
@@ -964,7 +1045,11 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         switch reason {
-        case .oldDeviceUnavailable, .newDeviceAvailable, .routeConfigurationChange:
+        case .oldDeviceUnavailable:
+            // Avoid unexpectedly moving headphone or Bluetooth playback to
+            // the device speaker when the previous output disappears.
+            if isPlaying || wantsPlayback { pause() }
+        case .newDeviceAvailable, .routeConfigurationChange:
             let shouldContinue = isPlaying || wantsPlayback
             configureAudioSession()
             if shouldContinue {
@@ -1088,6 +1173,7 @@ final class AudioEngine: NSObject, ObservableObject {
             nowPlayingSongID = nil
             nowPlayingArtworkSongID = nil
             nowPlayingInfoCenter.nowPlayingInfo = nil
+            updateRemoteCommands()
             return
         }
         let songChanged = nowPlayingSongID != song.id

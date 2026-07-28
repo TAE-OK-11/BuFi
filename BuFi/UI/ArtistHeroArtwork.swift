@@ -3,6 +3,7 @@ import UIKit
 
 struct ArtistHeroArtwork: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let coverArt: String?
     var height: CGFloat = 360
@@ -42,7 +43,9 @@ struct ArtistHeroArtwork: View {
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.opacity.animation(.easeOut(duration: 0.24)))
+                    .transition(
+                        .opacity.animation(motionEnabled ? BuFiMotion.fade : .none)
+                    )
             }
         }
         .frame(maxWidth: .infinity)

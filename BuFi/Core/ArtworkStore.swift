@@ -56,13 +56,21 @@ actor ArtworkStore {
     }
 
     func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
-        guard activeScope != nil else { throw URLError(.userAuthenticationRequired) }
+        guard let scope = activeScope else {
+            throw URLError(.userAuthenticationRequired)
+        }
         let requestedPixelSize = min(max(pixelSize, 64), 1_536)
         let request = ImageRequest(
             url: url,
             processors: [.resize(width: requestedPixelSize)]
         )
-        return try await pipeline.image(for: request)
+        let scopedPipeline = pipeline
+        let image = try await scopedPipeline.image(for: request)
+        try Task.checkCancellation()
+        guard activeScope == scope, pipeline === scopedPipeline else {
+            throw CancellationError()
+        }
+        return image
     }
 
 

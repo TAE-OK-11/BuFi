@@ -3,6 +3,7 @@ import UIKit
 
 struct SearchView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
@@ -130,7 +131,7 @@ struct SearchView: View {
         )
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
-        .animation(.easeOut(duration: 0.22), value: focused)
+        .animation(motionEnabled ? BuFiMotion.fade : .none, value: focused)
     }
 
     @ViewBuilder
@@ -203,7 +204,7 @@ struct SearchView: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ForEach(Array(categories.enumerated()), id: \.offset) { index, category in
                     Button {
-                        withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.82)) {
+                        withAnimation(motionEnabled ? BuFiMotion.page : .none) {
                             browseMode = index == 0 ? .favoriteSongs : .favoriteAlbums
                         }
                     } label: {
@@ -263,7 +264,9 @@ struct SearchView: View {
     private func browseCollectionHeader(_ title: String) -> some View {
         HStack(spacing: 10) {
             Button {
-                withAnimation(.snappy(duration: 0.24)) { browseMode = .main }
+                withAnimation(motionEnabled ? BuFiMotion.selection : .none) {
+                    browseMode = .main
+                }
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .bold))

@@ -35,6 +35,24 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+enum PlayerControlAppearance: String, CaseIterable, Identifiable {
+    case classic
+    case liquidGlass
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .classic: "클래식"
+        case .liquidGlass: "Liquid Glass"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> PlayerControlAppearance {
+        PlayerControlAppearance(rawValue: rawValue) ?? .liquidGlass
+    }
+}
+
 extension Color {
     init(_ rgba: RGBAColor) {
         self.init(
@@ -89,11 +107,13 @@ extension View {
 }
 
 struct BuFiPressStyle: ButtonStyle {
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.972 : 1)
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.972 : 1)
             .brightness(configuration.isPressed ? -0.018 : 0)
-            .animation(BuFiMotion.tap, value: configuration.isPressed)
+            .animation(motionEnabled ? BuFiMotion.tap : .none, value: configuration.isPressed)
     }
 }
 
@@ -103,6 +123,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
     var fontSize: CGFloat = 14
     let title: (Item) -> LocalizedStringKey
 
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Namespace private var selectionNamespace
 
     var body: some View {
@@ -110,11 +131,13 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
             ForEach(items) { item in
                 Button {
                     withAnimation(
-                        .interactiveSpring(
-                            response: 0.34,
-                            dampingFraction: 0.80,
-                            blendDuration: 0.08
-                        )
+                        motionEnabled
+                            ? .interactiveSpring(
+                                response: 0.34,
+                                dampingFraction: 0.80,
+                                blendDuration: 0.08
+                            )
+                            : .none
                     ) {
                         selection = item
                     }
@@ -190,6 +213,7 @@ struct BuFiScreenBackground: View {
 
 struct ArtworkView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let coverArt: String?
     var remoteURL: String?
@@ -214,7 +238,11 @@ struct ArtworkView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .transition(.opacity.animation(.easeOut(duration: 0.22)))
+                    .transition(
+                        .opacity.animation(
+                            motionEnabled ? .easeOut(duration: 0.22) : .none
+                        )
+                    )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -254,7 +282,7 @@ struct ArtworkView: View {
 struct AlbumCard: View {
     let album: Album
     var width: CGFloat = 166
-    @AppStorage("motion-enabled") private var motionEnabled = true
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     @ViewBuilder
     var body: some View {
@@ -352,13 +380,13 @@ struct SongRow: View {
                 Button {
                     Task { await model.toggleStar(song: song) }
                 } label: {
-                    Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                    Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(song.isStarred ? BuFiTheme.accent : Color.secondary)
+                        .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : Color.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
+                .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
 
                 if let onMore {
                     Button(action: onMore) {
@@ -416,13 +444,13 @@ struct SongRow: View {
                 Button {
                     Task { await model.toggleStar(song: song) }
                 } label: {
-                    Image(systemName: song.isStarred ? "heart.fill" : "heart")
+                    Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(song.isStarred ? BuFiTheme.accent : Color.secondary)
+                        .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : Color.secondary)
                         .frame(width: 32, height: 32)
                 }
                 .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(song.isStarred ? "좋아요 취소" : "좋아요 표시")
+                .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
 
                 if let onMore {
                     Button(action: onMore) {
@@ -489,12 +517,91 @@ struct SectionTitle: View {
     }
 }
 
+struct PlayerSeekBar: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let appearance: PlayerControlAppearance
+    var tint: Color = .white
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    @ViewBuilder
+    var body: some View {
+        if appearance == .liquidGlass {
+            if #available(iOS 26.0, *) {
+                NativeLiquidGlassSeekBar(
+                    value: $value,
+                    range: range,
+                    tint: tint,
+                    onEditingChanged: onEditingChanged
+                )
+            } else {
+                fallback
+            }
+        } else {
+            fallback
+        }
+    }
+
+    private var fallback: some View {
+        InteractiveSeekBar(
+            value: $value,
+            range: range,
+            tint: tint,
+            onEditingChanged: onEditingChanged
+        )
+    }
+}
+
+@available(iOS 26.0, *)
+private struct NativeLiquidGlassSeekBar: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let tint: Color
+    let onEditingChanged: (Bool) -> Void
+
+    var body: some View {
+        // Standard controls adopt Apple's Liquid Glass design automatically on
+        // iOS 26, including system interaction, accessibility, and contrast.
+        Slider(
+            value: clampedValue,
+            in: range,
+            onEditingChanged: onEditingChanged
+        )
+        .tint(tint)
+        .frame(height: 28)
+        .accessibilityLabel("재생 위치")
+        .accessibilityValue("\(Int(normalizedValue * 100))%")
+    }
+
+    private var clampedValue: Binding<Double> {
+        Binding(
+            get: {
+                clamped(value)
+            },
+            set: { newValue in
+                value = clamped(newValue)
+            }
+        )
+    }
+
+    private var normalizedValue: Double {
+        let length = max(range.upperBound - range.lowerBound, 0.0001)
+        return min(max((clamped(value) - range.lowerBound) / length, 0), 1)
+    }
+
+    private func clamped(_ candidate: Double) -> Double {
+        guard candidate.isFinite else { return range.lowerBound }
+        return min(max(candidate, range.lowerBound), range.upperBound)
+    }
+}
+
 struct InteractiveSeekBar: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     var tint: Color = .white
     var onEditingChanged: (Bool) -> Void = { _ in }
 
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var isEditing = false
 
     var body: some View {
@@ -541,7 +648,7 @@ struct InteractiveSeekBar: View {
                         onEditingChanged(false)
                     }
             )
-            .animation(BuFiMotion.selection, value: isEditing)
+            .animation(motionEnabled ? BuFiMotion.selection : .none, value: isEditing)
         }
         .frame(height: 28)
         .accessibilityElement()
@@ -563,10 +670,12 @@ struct InteractiveSeekBar: View {
 
     private func normalized(_ value: Double) -> CGFloat {
         let length = max(range.upperBound - range.lowerBound, 0.0001)
+        guard value.isFinite else { return 0 }
         return CGFloat(min(max((value - range.lowerBound) / length, 0), 1))
     }
 
     private func denormalized(_ fraction: CGFloat) -> Double {
+        guard fraction.isFinite else { return range.lowerBound }
         let clamped = min(max(Double(fraction), 0), 1)
         return range.lowerBound + (range.upperBound - range.lowerBound) * clamped
     }
