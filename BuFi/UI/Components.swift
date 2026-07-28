@@ -346,7 +346,7 @@ struct SongRow: View {
     private var compactAlbumRow: some View {
         let isCurrentSong = audio.currentSong?.id == song.id
         let isStarred = model.isStarred(song)
-        HStack(spacing: 0) {
+        return HStack(spacing: 0) {
             Button {
                 audio.play(song, in: queue)
             } label: {
@@ -418,7 +418,7 @@ struct SongRow: View {
     private var standardRow: some View {
         let isCurrentSong = audio.currentSong?.id == song.id
         let isStarred = model.isStarred(song)
-        HStack(spacing: 0) {
+        return HStack(spacing: 0) {
             Button {
                 audio.play(song, in: queue)
             } label: {
