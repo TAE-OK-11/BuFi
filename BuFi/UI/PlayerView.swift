@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
@@ -19,6 +20,10 @@ struct PlayerView: View {
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
     private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
+
+    init(initialArtworkPage: Int? = nil) {
+        _artworkPage = State(initialValue: initialArtworkPage)
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -212,7 +217,7 @@ struct PlayerView: View {
             .scrollIndicators(.hidden)
             .contentMargins(.horizontal, sideInset, for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $artworkPage)
+            .scrollPosition(id: $artworkPage, anchor: .center)
             .frame(height: edge + 42)
 
             metadataContent(song)
@@ -280,37 +285,36 @@ struct PlayerView: View {
         availableWidth: CGFloat,
         availableHeight: CGFloat
     ) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 10) {
             dynamicArtworkPager(
                 song,
                 availableWidth: availableWidth,
                 availableHeight: availableHeight
             )
 
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 dynamicMetadataContent(song)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 4)
                 progress
                     .padding(.horizontal, 2)
-                transport
-                utilityRow(song, includesAirPlay: false)
-                    .padding(.vertical, 0)
+                dynamicTransport
+                utilityRow(song, includesAirPlay: false, compact: true)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 14)
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
             .background {
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(Color.white.opacity(0.24))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
                             .stroke(.white.opacity(0.30), lineWidth: 0.8)
                     }
             }
-            .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-            .buFiGlass(cornerRadius: 30, interactive: true)
+            .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .buFiGlass(cornerRadius: 26, interactive: true)
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, 6)
     }
 
     private func dynamicArtworkPager(
@@ -353,7 +357,7 @@ struct PlayerView: View {
         .scrollIndicators(.hidden)
         .contentMargins(.horizontal, sideInset, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
-        .scrollPosition(id: $artworkPage)
+        .scrollPosition(id: $artworkPage, anchor: .center)
         .frame(height: edge + 26)
         .contentShape(Rectangle())
         .onChange(of: artworkPage) { oldPage, page in
@@ -434,6 +438,34 @@ struct PlayerView: View {
             .frame(height: 112)
     }
 
+    private var dynamicTransport: some View {
+        HStack {
+            control("shuffle", size: 21, active: audio.isShuffleEnabled, label: "셔플") {
+                audio.toggleShuffle()
+            }
+            Spacer()
+            control("backward.end.fill", size: 28, label: "이전 곡") {
+                audio.previous()
+            }
+            Spacer()
+            dynamicPlayButton
+            Spacer()
+            control("forward.end.fill", size: 28, label: "다음 곡") {
+                audio.next()
+            }
+            Spacer()
+            control(
+                audio.repeatMode == .one ? "repeat.1" : "repeat",
+                size: 21,
+                active: audio.repeatMode != .off,
+                label: "반복"
+            ) {
+                audio.cycleRepeat()
+            }
+        }
+        .frame(height: 82)
+    }
+
     private var classicTransport: some View {
         HStack {
             control("shuffle", size: 24, active: audio.isShuffleEnabled, label: "셔플") {
@@ -481,8 +513,41 @@ struct PlayerView: View {
         .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
     }
 
-    private func utilityRow(_ song: Song, includesAirPlay: Bool = true) -> some View {
-        HStack(spacing: 25) {
+    private var dynamicPlayButton: some View {
+        Button {
+            audio.togglePlayback()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(playerPrimary)
+                    .frame(width: 62, height: 62)
+                if audio.isBuffering {
+                    ProgressView()
+                        .tint(playerButtonForeground)
+                } else {
+                    Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(playerButtonForeground)
+                        .offset(x: audio.wantsPlayback ? 0 : 2)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+        }
+        .buttonStyle(BuFiPressStyle())
+        .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.wantsPlayback)
+        .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
+    }
+
+    private func utilityRow(
+        _ song: Song,
+        includesAirPlay: Bool = true,
+        compact: Bool = false
+    ) -> some View {
+        let itemSize: CGFloat = compact ? 34 : 40
+        let shareSize: CGFloat = compact ? 20 : 22
+        let queueSize: CGFloat = compact ? 21 : 23
+
+        return HStack(spacing: compact ? 18 : 25) {
             if includesAirPlay {
                 AirPlayButton(lightContent: !usesDarkForeground)
                     .frame(width: 32, height: 32)
@@ -491,21 +556,21 @@ struct PlayerView: View {
             Spacer()
             ShareLink(item: "\(song.title) — \(song.artist)") {
                 Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 22, weight: .medium))
-                    .frame(width: 40, height: 40)
+                    .font(.system(size: shareSize, weight: .medium))
+                    .frame(width: itemSize, height: itemSize)
             }
             Button {
                 showQueue = true
             } label: {
                 Image(systemName: "list.bullet")
-                    .font(.system(size: 23, weight: .medium))
-                    .frame(width: 40, height: 40)
+                    .font(.system(size: queueSize, weight: .medium))
+                    .frame(width: itemSize, height: itemSize)
             }
             .accessibilityLabel("재생목록")
         }
         .buttonStyle(.plain)
         .foregroundStyle(playerPrimary)
-        .padding(.vertical, 8)
+        .padding(.vertical, compact ? 0 : 8)
     }
 
     @ViewBuilder
@@ -1038,52 +1103,61 @@ private struct PlayerPaletteBackground: View {
             }
         case .multicolor:
             ZStack {
-                LinearGradient(
-                    colors: [
-                        Color(palette.secondary),
-                        Color(palette.top),
-                        Color(palette.accent)
-                    ],
-                    startPoint: secondaryPoint,
-                    endPoint: accentPoint
+                Color(palette.bottom)
+                RadialGradient(
+                    colors: [Color(palette.top).opacity(0.86), .clear],
+                    center: UnitPoint(x: 0.50, y: 0.32),
+                    startRadius: 8,
+                    endRadius: 680
                 )
                 RadialGradient(
-                    colors: [Color(palette.secondary).opacity(0.82), .clear],
+                    colors: [Color(palette.secondary).opacity(0.96), .clear],
                     center: secondaryPoint,
-                    startRadius: 12,
-                    endRadius: 520
+                    startRadius: 6,
+                    endRadius: 460
                 )
                 RadialGradient(
-                    colors: [Color(palette.accent).opacity(0.76), .clear],
+                    colors: [Color(palette.accent).opacity(0.92), .clear],
                     center: accentPoint,
-                    startRadius: 18,
-                    endRadius: 590
+                    startRadius: 8,
+                    endRadius: 540
                 )
                 readabilityOverlay
             }
         case .bright:
             ZStack {
-                Color.white
-                LinearGradient(
+                brightenedColor(palette.bottom, brightnessFloor: 0.58)
+                RadialGradient(
                     colors: [
-                        Color(palette.secondary).opacity(0.82),
-                        Color(palette.top).opacity(0.62),
-                        Color(palette.accent).opacity(0.74)
+                        brightenedColor(palette.top, brightnessFloor: 0.68)
+                            .opacity(0.92),
+                        .clear
                     ],
-                    startPoint: secondaryPoint,
-                    endPoint: accentPoint
+                    center: UnitPoint(x: 0.50, y: 0.30),
+                    startRadius: 6,
+                    endRadius: 680
                 )
                 RadialGradient(
-                    colors: [.white.opacity(0.62), .clear],
-                    center: .center,
-                    startRadius: 20,
-                    endRadius: 520
+                    colors: [
+                        brightenedColor(palette.secondary, brightnessFloor: 0.66)
+                            .opacity(0.94),
+                        .clear
+                    ],
+                    center: secondaryPoint,
+                    startRadius: 6,
+                    endRadius: 460
                 )
-                LinearGradient(
-                    colors: [.white.opacity(0.08), .white.opacity(0.26)],
-                    startPoint: .top,
-                    endPoint: .bottom
+                RadialGradient(
+                    colors: [
+                        brightenedColor(palette.accent, brightnessFloor: 0.68)
+                            .opacity(0.90),
+                        .clear
+                    ],
+                    center: accentPoint,
+                    startRadius: 8,
+                    endRadius: 540
                 )
+                Color.white.opacity(0.05)
             }
         }
     }
@@ -1091,18 +1165,50 @@ private struct PlayerPaletteBackground: View {
     @ViewBuilder
     private var readabilityOverlay: some View {
         if colorScheme == .light {
-            LinearGradient(
-                colors: [.white.opacity(0.22), .white.opacity(0.48)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            Color.white.opacity(0.16)
         } else {
-            LinearGradient(
-                colors: [.white.opacity(0.10), .clear, .black.opacity(0.28)],
-                startPoint: .top,
-                endPoint: .bottom
+            Color.black.opacity(0.12)
+        }
+    }
+
+    private func brightenedColor(
+        _ color: RGBAColor,
+        brightnessFloor: CGFloat
+    ) -> Color {
+        let source = UIColor(
+            red: CGFloat(color.red),
+            green: CGFloat(color.green),
+            blue: CGFloat(color.blue),
+            alpha: CGFloat(color.alpha)
+        )
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 1
+
+        if source.getHue(
+            &hue,
+            saturation: &saturation,
+            brightness: &brightness,
+            alpha: &alpha
+        ) {
+            return Color(
+                hue: Double(hue),
+                saturation: Double(min(max(saturation * 1.08, 0.26), 0.82)),
+                brightness: Double(min(max(brightness * 1.16, brightnessFloor), 0.92)),
+                opacity: Double(alpha)
             )
         }
+
+        let red = min(max(CGFloat(color.red) * 1.12, brightnessFloor), 0.92)
+        let green = min(max(CGFloat(color.green) * 1.12, brightnessFloor), 0.92)
+        let blue = min(max(CGFloat(color.blue) * 1.12, brightnessFloor), 0.92)
+        return Color(
+            red: Double(red),
+            green: Double(green),
+            blue: Double(blue),
+            opacity: color.alpha
+        )
     }
 
     private var accentPoint: UnitPoint {

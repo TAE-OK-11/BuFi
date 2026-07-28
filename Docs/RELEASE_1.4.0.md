@@ -71,6 +71,12 @@
   lower row contains only actionable sharing and queue controls.
 - Keeps favorite controls stationary during track changes and limits title,
   artist, and header motion to a short, zero-bounce transition.
+- Seeds the artwork pager with the active queue index and uses an explicit
+  center anchor, preventing the first cover from appearing pinned to one side.
+- Compacts the Dynamic glass control card to Apple-like proportions while
+  preserving its sharing and queue actions.
+- Places multicolor fields at their sampled artwork positions and makes Bright
+  lift the extracted colors themselves instead of applying a white appearance.
 
 ## Verification
 

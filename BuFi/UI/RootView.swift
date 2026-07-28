@@ -88,7 +88,11 @@ struct RootView: View {
         }
         .fullScreenCover(isPresented: $audio.showPlayer) {
             NavigationStack {
-                PlayerView()
+                PlayerView(
+                    initialArtworkPage: audio.queue.indices.contains(audio.queueIndex)
+                        ? audio.queueIndex
+                        : 0
+                )
                     .navigationDestination(for: MusicRoute.self) { route in
                         MusicDetailView(route: route)
                     }
