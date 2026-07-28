@@ -89,7 +89,7 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Text("기존은 원래 대표색 명암에 앨범 보조색을 은은하게 섞습니다. 다중 컬러와 밝게는 서로 다른 대표색을 최대 3개 더 선명하게 사용해 잠금화면처럼 부드러운 그라데이션으로 표시합니다.")
+                    Text("기본은 Classic과 Liquid Glass에서 앨범 대표색을 단색으로 표시하고, Dynamic에서는 잠금화면 느낌의 그라데이션을 유지합니다. 다중 컬러와 밝게는 서로 다른 대표색을 최대 3개 사용합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
