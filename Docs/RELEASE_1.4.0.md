@@ -28,6 +28,9 @@
 - Adds Original, Multicolor, and Bright player-background choices. The two new
   modes extract and cache up to three distinct album colors, then render a
   static Lock Screen-style gradient without continuous image analysis.
+- Refines album palettes with deterministic OKLab clustering, perceptual color
+  separation, pastel-aware scoring, and artwork-relative color positions so
+  gradients preserve more of each cover’s actual color composition.
 - Smooths compact lyric progression and the compact-to-full-screen surface
   transition, shows up to five compact lyric lines, and allows long lines to
   wrap instead of truncating.

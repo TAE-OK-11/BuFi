@@ -1013,18 +1013,18 @@ private struct PlayerPaletteBackground: View {
                         Color(palette.top),
                         Color(palette.accent)
                     ],
-                    startPoint: .top,
-                    endPoint: .bottom
+                    startPoint: secondaryPoint,
+                    endPoint: accentPoint
                 )
                 RadialGradient(
                     colors: [Color(palette.secondary).opacity(0.82), .clear],
-                    center: .topTrailing,
+                    center: secondaryPoint,
                     startRadius: 12,
                     endRadius: 520
                 )
                 RadialGradient(
                     colors: [Color(palette.accent).opacity(0.76), .clear],
-                    center: .bottomLeading,
+                    center: accentPoint,
                     startRadius: 18,
                     endRadius: 590
                 )
@@ -1039,8 +1039,8 @@ private struct PlayerPaletteBackground: View {
                         Color(palette.top).opacity(0.62),
                         Color(palette.accent).opacity(0.74)
                     ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
+                    startPoint: secondaryPoint,
+                    endPoint: accentPoint
                 )
                 RadialGradient(
                     colors: [.white.opacity(0.62), .clear],
@@ -1072,6 +1072,20 @@ private struct PlayerPaletteBackground: View {
                 endPoint: .bottom
             )
         }
+    }
+
+    private var accentPoint: UnitPoint {
+        UnitPoint(
+            x: CGFloat(palette.accentPosition.x),
+            y: CGFloat(palette.accentPosition.y)
+        )
+    }
+
+    private var secondaryPoint: UnitPoint {
+        UnitPoint(
+            x: CGFloat(palette.secondaryPosition.x),
+            y: CGFloat(palette.secondaryPosition.y)
+        )
     }
 }
 
