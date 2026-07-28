@@ -737,7 +737,6 @@ struct SystemVolumeSlider: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MPVolumeView {
         let volumeView = MPVolumeView(frame: .zero)
-        volumeView.showsRouteButton = false
         volumeView.showsVolumeSlider = true
         updateSlider(in: volumeView)
         return volumeView

@@ -307,7 +307,7 @@ struct PlayerView: View {
                 SystemVolumeSlider(tint: playerPrimary)
                     .frame(height: 24)
                     .accessibilityLabel("시스템 음량")
-                utilityRow(song)
+                utilityRow(song, includesAirPlay: false)
                     .padding(.vertical, 0)
             }
             .padding(.horizontal, 20)
@@ -492,11 +492,13 @@ struct PlayerView: View {
         .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
     }
 
-    private func utilityRow(_ song: Song) -> some View {
+    private func utilityRow(_ song: Song, includesAirPlay: Bool = true) -> some View {
         HStack(spacing: 25) {
-            AirPlayButton(lightContent: !usesDarkForeground)
-                .frame(width: 32, height: 32)
-                .accessibilityLabel("AirPlay")
+            if includesAirPlay {
+                AirPlayButton(lightContent: !usesDarkForeground)
+                    .frame(width: 32, height: 32)
+                    .accessibilityLabel("AirPlay")
+            }
             Spacer()
             ShareLink(item: "\(song.title) — \(song.artist)") {
                 Image(systemName: "square.and.arrow.up")
