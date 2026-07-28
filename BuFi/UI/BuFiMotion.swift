@@ -25,6 +25,8 @@ enum BuFiMotion {
     static let selection = Animation.spring(duration: 0.25, bounce: 0.12)
     static let fade = Animation.easeInOut(duration: 0.25)
     static let text = Animation.spring(duration: 0.30, bounce: 0.08)
+    static let trackText = Animation.smooth(duration: 0.34, extraBounce: 0)
+    static let trackPage = Animation.smooth(duration: 0.42, extraBounce: 0.02)
     static let color = Animation.easeInOut(duration: 0.35)
     static let page = Animation.spring(duration: 0.40, bounce: 0.10)
     static let player = Animation.spring(duration: 0.45, bounce: 0.12)

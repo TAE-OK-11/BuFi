@@ -141,17 +141,10 @@ struct PlayerView: View {
                         .lineLimit(1)
                 }
                 .id(song.id)
-                .transition(
-                    allowsMotion
-                        ? .asymmetric(
-                            insertion: .move(edge: transitionDirection > 0 ? .trailing : .leading).combined(with: .opacity),
-                            removal: .move(edge: transitionDirection > 0 ? .leading : .trailing).combined(with: .opacity)
-                        )
-                        : .opacity
-                )
+                .transition(trackTextTransition)
             }
             .frame(maxWidth: 240)
-            .animation(allowsMotion ? BuFiMotion.text : .none, value: song.id)
+            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: song.id)
             Spacer()
 
             Menu {
@@ -209,8 +202,8 @@ struct PlayerView: View {
                         .id(index)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
-                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.94)
-                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.72)
+                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.97)
+                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.86)
                         }
                     }
                 }
@@ -223,20 +216,6 @@ struct PlayerView: View {
             .frame(height: edge + 42)
 
             metadataContent(song)
-                .id(song.id)
-                .transition(
-                    allowsMotion
-                        ? .asymmetric(
-                            insertion: .move(
-                                edge: transitionDirection > 0 ? .trailing : .leading
-                            ).combined(with: .opacity),
-                            removal: .move(
-                                edge: transitionDirection > 0 ? .leading : .trailing
-                            ).combined(with: .opacity)
-                        )
-                        : .opacity
-                )
-                .animation(allowsMotion ? BuFiMotion.text : .none, value: song.id)
                 .padding(.bottom, 18)
         }
         .frame(height: edge + 116)
@@ -252,30 +231,36 @@ struct PlayerView: View {
 
     private func metadataContent(_ song: Song) -> some View {
         HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(song.title)
-                    .font(.system(size: 25, weight: .bold))
-                    .tracking(-0.7)
-                    .lineLimit(1)
-                if let route = artistRoute(for: song) {
-                    NavigationLink(value: route) {
-                        HStack(spacing: 5) {
-                            Text(song.artist).lineLimit(1)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 11, weight: .bold))
-                        }
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(playerSecondary)
-                    }
-                    .buttonStyle(BuFiPressStyle())
-                    .accessibilityLabel(String(format: String(localized: "%@ 아티스트 페이지 열기"), song.artist))
-                } else {
-                    Text(song.artist)
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(playerSecondary)
+            ZStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(song.title)
+                        .font(.system(size: 25, weight: .bold))
+                        .tracking(-0.7)
                         .lineLimit(1)
+                    if let route = artistRoute(for: song) {
+                        NavigationLink(value: route) {
+                            HStack(spacing: 5) {
+                                Text(song.artist).lineLimit(1)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(playerSecondary)
+                        }
+                        .buttonStyle(BuFiPressStyle())
+                        .accessibilityLabel(String(format: String(localized: "%@ 아티스트 페이지 열기"), song.artist))
+                    } else {
+                        Text(song.artist)
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(playerSecondary)
+                            .lineLimit(1)
+                    }
                 }
+                .id(song.id)
+                .transition(trackTextTransition)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: song.id)
             Spacer(minLength: 4)
             Button {
                 Task { await model.toggleStar(song: song) }
@@ -358,8 +343,8 @@ struct PlayerView: View {
                     .id(index)
                     .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                         content
-                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.94)
-                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.72)
+                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.97)
+                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.86)
                     }
                 }
             }
@@ -392,7 +377,10 @@ struct PlayerView: View {
                     .foregroundStyle(playerSecondary)
                     .lineLimit(1)
             }
+            .id(song.id)
+            .transition(trackTextTransition)
             .padding(.horizontal, 52)
+            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: song.id)
 
             HStack {
                 Spacer()
@@ -559,16 +547,9 @@ struct PlayerView: View {
                     .frame(height: 205, alignment: .top)
                     .clipped()
                     .id(audio.currentSong?.id)
-                    .transition(
-                        allowsMotion
-                            ? .asymmetric(
-                                insertion: .move(edge: transitionDirection > 0 ? .trailing : .leading).combined(with: .opacity),
-                                removal: .move(edge: transitionDirection > 0 ? .leading : .trailing).combined(with: .opacity)
-                            )
-                            : .opacity
-                    )
+                    .transition(trackTextTransition)
                     .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
-                    .animation(allowsMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
+                    .animation(allowsMotion ? BuFiMotion.trackText : .none, value: audio.currentSong?.id)
                 }
                 .buttonStyle(.plain)
             }
@@ -700,7 +681,7 @@ struct PlayerView: View {
     private func syncArtworkPage(to index: Int, animated: Bool) {
         let resolved = audio.queue.indices.contains(index) ? index : 0
         if animated && allowsMotion {
-            withAnimation(BuFiMotion.player) {
+            withAnimation(BuFiMotion.trackPage) {
                 artworkPage = resolved
             }
         } else {
@@ -743,6 +724,19 @@ struct PlayerView: View {
 
     private var resolvedBackgroundAppearance: PlayerBackgroundAppearance {
         PlayerBackgroundAppearance.resolved(playerBackgroundAppearance)
+    }
+
+    private var trackTextTransition: AnyTransition {
+        guard allowsMotion else { return .opacity }
+        let distance: CGFloat = 10
+        return .asymmetric(
+            insertion: .offset(
+                x: transitionDirection > 0 ? distance : -distance
+            ).combined(with: .opacity),
+            removal: .offset(
+                x: transitionDirection > 0 ? -distance : distance
+            ).combined(with: .opacity)
+        )
     }
 
     private var allowsMotion: Bool { motionEnabled }

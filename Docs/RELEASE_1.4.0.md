@@ -69,6 +69,8 @@
   keeps its Lock Screen-style gradient.
 - Removes the redundant system-volume bar from the Dynamic control card so the
   lower row contains only actionable sharing and queue controls.
+- Keeps favorite controls stationary during track changes and limits title,
+  artist, and header motion to a short, zero-bounce transition.
 
 ## Verification
 
