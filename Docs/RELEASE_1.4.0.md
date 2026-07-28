@@ -21,9 +21,11 @@
 - Adds a selectable seek-bar style: Apple’s native Liquid Glass slider on iOS
   26+, with an automatic Classic fallback on iOS 17–25. Transport buttons and
   the rest of the player retain the existing Classic design.
-- Replaces edge-joined artwork paging with a separated, centered card carousel
-  that animates programmatic track changes while retaining the original
-  full-width artwork size.
+- Keeps the original full-width artwork pager, spacing, and player layout, and
+  removes the added artwork drop shadow.
+- Adds Original, Multicolor, and Bright player-background choices. The two new
+  modes extract and cache up to three distinct album colors, then render a
+  static Lock Screen-style gradient without continuous image analysis.
 - Smooths compact lyric progression and the compact-to-full-screen surface
   transition, shows up to five compact lyric lines, and allows long lines to
   wrap instead of truncating.

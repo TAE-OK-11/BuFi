@@ -10,6 +10,8 @@ struct SettingsView: View {
     @AppStorage("motion-enabled") private var motionEnabled = true
     @AppStorage("player-seekbar-appearance")
     private var playerSeekBarAppearance = PlayerSeekBarAppearance.liquidGlass.rawValue
+    @AppStorage("player-background-appearance")
+    private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("auto-open-player") private var autoOpenPlayer = false
     @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
@@ -76,6 +78,18 @@ struct SettingsView: View {
                     .tint(BuFiTheme.accent)
 
                     Text("Liquid Glass는 iOS 26 이상에서 재생 막대만 Apple 기본 디자인으로 변경합니다. 나머지 플레이어 버튼과 배치는 기존 클래식 디자인을 유지하며, 이전 iOS에서는 클래식 재생바로 자동 전환됩니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Picker("플레이어 배경", selection: $playerBackgroundAppearance) {
+                        ForEach(PlayerBackgroundAppearance.allCases) { appearance in
+                            Text(appearance.title).tag(appearance.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(BuFiTheme.accent)
+
+                    Text("기존은 한 가지 대표색의 명암을 사용합니다. 다중 컬러와 밝게는 앨범에서 서로 다른 대표색을 최대 3개 추출해 잠금화면처럼 부드러운 그라데이션으로 표시합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 

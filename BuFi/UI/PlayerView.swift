@@ -17,6 +17,8 @@ struct PlayerView: View {
     @Namespace private var lyricsMorph
     @AppStorage("player-seekbar-appearance")
     private var playerSeekBarAppearance = PlayerSeekBarAppearance.liquidGlass.rawValue
+    @AppStorage("player-background-appearance")
+    private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
 
     var body: some View {
         GeometryReader { proxy in
@@ -46,7 +48,8 @@ struct PlayerView: View {
                     FullLyricsView(
                         palette: palette,
                         namespace: lyricsMorph,
-                        seekBarAppearance: resolvedSeekBarAppearance
+                        seekBarAppearance: resolvedSeekBarAppearance,
+                        backgroundAppearance: resolvedBackgroundAppearance
                     )
                         .environmentObject(audio)
                         .transition(
@@ -89,28 +92,14 @@ struct PlayerView: View {
     }
 
     private var background: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(palette.top), Color(palette.bottom)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            if colorScheme == .light {
-                LinearGradient(
-                    colors: [.white.opacity(0.46), .white.opacity(0.72)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            } else {
-                LinearGradient(
-                    colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-        }
+        PlayerPaletteBackground(
+            palette: palette,
+            appearance: resolvedBackgroundAppearance,
+            colorScheme: colorScheme
+        )
         .ignoresSafeArea()
         .animation(allowsMotion ? BuFiMotion.color : .none, value: palette)
+        .animation(allowsMotion ? BuFiMotion.color : .none, value: resolvedBackgroundAppearance)
     }
 
     private func header(_ song: Song) -> some View {
@@ -340,7 +329,7 @@ struct PlayerView: View {
 
     private func utilityRow(_ song: Song) -> some View {
         HStack(spacing: 25) {
-            AirPlayButton(lightContent: colorScheme == .dark)
+            AirPlayButton(lightContent: !usesDarkForeground)
                 .frame(width: 32, height: 32)
                 .accessibilityLabel("AirPlay")
             Spacer()
@@ -580,10 +569,18 @@ struct PlayerView: View {
         PlayerSeekBarAppearance.resolved(playerSeekBarAppearance)
     }
 
+    private var resolvedBackgroundAppearance: PlayerBackgroundAppearance {
+        PlayerBackgroundAppearance.resolved(playerBackgroundAppearance)
+    }
+
     private var allowsMotion: Bool { motionEnabled }
 
+    private var usesDarkForeground: Bool {
+        colorScheme == .light || resolvedBackgroundAppearance == .bright
+    }
+
     private var playerPrimary: Color {
-        colorScheme == .dark ? .white : .black.opacity(0.86)
+        usesDarkForeground ? .black.opacity(0.86) : .white
     }
 
     private var playerSecondary: Color {
@@ -591,7 +588,7 @@ struct PlayerView: View {
     }
 
     private var playerButtonForeground: Color {
-        colorScheme == .dark ? Color(palette.bottom) : .white
+        usesDarkForeground ? .white : Color(palette.bottom)
     }
 }
 
@@ -603,6 +600,7 @@ private struct FullLyricsView: View {
     let palette: ArtworkPalette
     let namespace: Namespace.ID
     let seekBarAppearance: PlayerSeekBarAppearance
+    let backgroundAppearance: PlayerBackgroundAppearance
 
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
@@ -611,25 +609,14 @@ private struct FullLyricsView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: dragCornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color(palette.top), Color(palette.bottom)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+            PlayerPaletteBackground(
+                palette: palette,
+                appearance: backgroundAppearance,
+                colorScheme: colorScheme
+            )
+                .clipShape(RoundedRectangle(cornerRadius: dragCornerRadius, style: .continuous))
                 .matchedGeometryEffect(id: "lyrics-surface", in: namespace, isSource: true)
                 .ignoresSafeArea()
-
-            if colorScheme == .light {
-                LinearGradient(
-                    colors: [.white.opacity(0.48), .white.opacity(0.73)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            }
 
             VStack(spacing: 0) {
                 header
@@ -809,9 +796,111 @@ private struct FullLyricsView: View {
     private var dragOpacity: Double { allowsMotion ? 1 - Double(dragProgress * 0.16) : 1 }
     private var dragCornerRadius: CGFloat { allowsMotion ? dragProgress * 28 : 0 }
     private var allowsMotion: Bool { motionEnabled }
-    private var lyricsPrimary: Color { colorScheme == .dark ? .white : .black.opacity(0.86) }
+    private var usesDarkForeground: Bool {
+        colorScheme == .light || backgroundAppearance == .bright
+    }
+    private var lyricsPrimary: Color { usesDarkForeground ? .black.opacity(0.86) : .white }
     private var lyricsSecondary: Color { lyricsPrimary.opacity(0.66) }
-    private var playButtonForeground: Color { colorScheme == .dark ? Color(palette.bottom) : .white }
+    private var playButtonForeground: Color { usesDarkForeground ? .white : Color(palette.bottom) }
+}
+
+private struct PlayerPaletteBackground: View {
+    let palette: ArtworkPalette
+    let appearance: PlayerBackgroundAppearance
+    let colorScheme: ColorScheme
+
+    @ViewBuilder
+    var body: some View {
+        switch appearance {
+        case .classic:
+            ZStack {
+                LinearGradient(
+                    colors: [Color(palette.top), Color(palette.bottom)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                if colorScheme == .light {
+                    LinearGradient(
+                        colors: [.white.opacity(0.46), .white.opacity(0.72)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                } else {
+                    LinearGradient(
+                        colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
+        case .multicolor:
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(palette.secondary),
+                        Color(palette.top),
+                        Color(palette.accent)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                RadialGradient(
+                    colors: [Color(palette.secondary).opacity(0.82), .clear],
+                    center: .topTrailing,
+                    startRadius: 12,
+                    endRadius: 520
+                )
+                RadialGradient(
+                    colors: [Color(palette.accent).opacity(0.76), .clear],
+                    center: .bottomLeading,
+                    startRadius: 18,
+                    endRadius: 590
+                )
+                readabilityOverlay
+            }
+        case .bright:
+            ZStack {
+                Color.white
+                LinearGradient(
+                    colors: [
+                        Color(palette.secondary).opacity(0.82),
+                        Color(palette.top).opacity(0.62),
+                        Color(palette.accent).opacity(0.74)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                RadialGradient(
+                    colors: [.white.opacity(0.62), .clear],
+                    center: .center,
+                    startRadius: 20,
+                    endRadius: 520
+                )
+                LinearGradient(
+                    colors: [.white.opacity(0.08), .white.opacity(0.26)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var readabilityOverlay: some View {
+        if colorScheme == .light {
+            LinearGradient(
+                colors: [.white.opacity(0.22), .white.opacity(0.48)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        } else {
+            LinearGradient(
+                colors: [.white.opacity(0.10), .clear, .black.opacity(0.28)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
 }
 
 private struct QueueView: View {

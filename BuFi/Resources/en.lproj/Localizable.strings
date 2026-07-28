@@ -143,3 +143,8 @@
 "애니메이션 및 모션" = "Animations & Motion";
 "동작 줄이기, 저전력 모드 또는 기기 온도가 높을 때는 애니메이션을 자동으로 줄입니다." = "Animations are automatically reduced when Reduce Motion or Low Power Mode is on, or when the device is running hot.";
 "인증된 스트림·아트워크·다운로드 URL 생성에 사용합니다." = "Used to generate authenticated stream, artwork, and download URLs.";
+"플레이어 배경" = "Player Background";
+"기존" = "Original";
+"다중 컬러" = "Multicolor";
+"밝게" = "Bright";
+"기존은 한 가지 대표색의 명암을 사용합니다. 다중 컬러와 밝게는 앨범에서 서로 다른 대표색을 최대 3개 추출해 잠금화면처럼 부드러운 그라데이션으로 표시합니다." = "Original uses shades of one representative color. Multicolor and Bright extract up to three distinct album colors and blend them into a smooth Lock Screen-style gradient.";

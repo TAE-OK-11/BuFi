@@ -15,8 +15,27 @@ struct RGBAColor: Equatable, Sendable {
 struct ArtworkPalette: Equatable, Sendable {
     let top: RGBAColor
     let bottom: RGBAColor
+    let accent: RGBAColor
+    let secondary: RGBAColor
 
-    static let fallback = ArtworkPalette(top: .fallbackTop, bottom: .fallbackBottom)
+    init(
+        top: RGBAColor,
+        bottom: RGBAColor,
+        accent: RGBAColor? = nil,
+        secondary: RGBAColor? = nil
+    ) {
+        self.top = top
+        self.bottom = bottom
+        self.accent = accent ?? top
+        self.secondary = secondary ?? bottom
+    }
+
+    static let fallback = ArtworkPalette(
+        top: .fallbackTop,
+        bottom: .fallbackBottom,
+        accent: RGBAColor(red: 0.36, green: 0.48, blue: 0.42, alpha: 1),
+        secondary: RGBAColor(red: 0.18, green: 0.27, blue: 0.34, alpha: 1)
+    )
 }
 
 actor ArtworkStore {
@@ -88,7 +107,8 @@ actor ArtworkStore {
             source = loadedImage
         }
 
-        guard let base = Self.dominantColor(in: source) else { return .fallback }
+        let prominentColors = Self.prominentColors(in: source)
+        guard let base = prominentColors.first else { return .fallback }
         var hue: CGFloat = 0
         var saturation: CGFloat = 0
         var brightness: CGFloat = 0
@@ -107,8 +127,25 @@ actor ArtworkStore {
             brightness: min(max(brightness * 0.30, 0.065), 0.20),
             alpha: 1
         )
+        let accent = Self.gradientColor(
+            from: prominentColors.dropFirst().first ?? base,
+            fallbackHueOffset: 0.08,
+            saturationRange: 0.34...0.88,
+            brightnessRange: 0.42...0.78
+        )
+        let secondary = Self.gradientColor(
+            from: prominentColors.dropFirst(2).first ?? prominentColors.dropFirst().first ?? base,
+            fallbackHueOffset: -0.10,
+            saturationRange: 0.28...0.80,
+            brightnessRange: 0.32...0.68
+        )
 
-        let value = ArtworkPalette(top: Self.components(top), bottom: Self.components(bottom))
+        let value = ArtworkPalette(
+            top: Self.components(top),
+            bottom: Self.components(bottom),
+            accent: Self.components(accent),
+            secondary: Self.components(secondary)
+        )
         paletteMemory.setObject(PaletteBox(value), forKey: key)
         return value
     }
@@ -152,8 +189,30 @@ actor ArtworkStore {
         )
     }
 
-    private static func dominantColor(in image: UIImage) -> UIColor? {
-        guard let source = image.cgImage else { return nil }
+    private static func gradientColor(
+        from color: UIColor,
+        fallbackHueOffset: CGFloat,
+        saturationRange: ClosedRange<CGFloat>,
+        brightnessRange: ClosedRange<CGFloat>
+    ) -> UIColor {
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 1
+        color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        if saturation < 0.14 {
+            hue = (hue + fallbackHueOffset + 1).truncatingRemainder(dividingBy: 1)
+        }
+        return UIColor(
+            hue: hue,
+            saturation: min(max(saturation * 1.16, saturationRange.lowerBound), saturationRange.upperBound),
+            brightness: min(max(brightness * 0.96, brightnessRange.lowerBound), brightnessRange.upperBound),
+            alpha: 1
+        )
+    }
+
+    private static func prominentColors(in image: UIImage) -> [UIColor] {
+        guard let source = image.cgImage else { return [] }
         let width = 36
         let height = 36
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
@@ -174,7 +233,7 @@ actor ArtworkStore {
             context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
-        guard didDraw else { return nil }
+        guard didDraw else { return [] }
 
         struct Bucket {
             var red = 0.0
@@ -246,12 +305,14 @@ actor ArtworkStore {
             let next = buckets[(index + 1) % buckets.count]
             return bucket.weight + (previous.weight + next.weight) * 0.34
         }
-        let selectedIndex = buckets.indices.max { lhs, rhs in
-            clusterScore(lhs) < clusterScore(rhs)
+        let rankedIndices = buckets.indices.sorted {
+            clusterScore($0) > clusterScore($1)
         }
+        let bestScore = rankedIndices.first.map(clusterScore) ?? 0
+        var selectedColors: [UIColor] = []
+        var selectedHues: [Double] = []
 
-        if let selectedIndex,
-           clusterScore(selectedIndex) > max(0.9, neutral.weight * 0.18) {
+        func mergedColor(at selectedIndex: Int) -> UIColor? {
             var selected = buckets[selectedIndex]
             for neighbor in [
                 (selectedIndex + buckets.count - 1) % buckets.count,
@@ -262,6 +323,7 @@ actor ArtworkStore {
                 selected.blue += buckets[neighbor].blue * 0.38
                 selected.weight += buckets[neighbor].weight * 0.38
             }
+            guard selected.weight > 0 else { return nil }
             return UIColor(
                 red: selected.red / selected.weight,
                 green: selected.green / selected.weight,
@@ -269,13 +331,38 @@ actor ArtworkStore {
                 alpha: 1
             )
         }
-        guard neutral.weight > 0 else { return nil }
-        return UIColor(
-            red: neutral.red / neutral.weight,
-            green: neutral.green / neutral.weight,
-            blue: neutral.blue / neutral.weight,
-            alpha: 1
-        )
+
+        // Preserve the exact primary-color choice used by the original
+        // two-color player background.
+        if let dominantIndex = rankedIndices.first,
+           clusterScore(dominantIndex) > max(0.9, neutral.weight * 0.18),
+           let dominantColor = mergedColor(at: dominantIndex) {
+            selectedColors.append(dominantColor)
+            selectedHues.append((Double(dominantIndex) + 0.5) / Double(buckets.count))
+        } else if neutral.weight > 0 {
+            selectedColors.append(UIColor(
+                red: neutral.red / neutral.weight,
+                green: neutral.green / neutral.weight,
+                blue: neutral.blue / neutral.weight,
+                alpha: 1
+            ))
+        }
+
+        for selectedIndex in rankedIndices {
+            guard selectedColors.count < 3 else { break }
+            let score = clusterScore(selectedIndex)
+            guard score > max(0.62, max(bestScore * 0.14, neutral.weight * 0.08)) else { continue }
+            let selectedHue = (Double(selectedIndex) + 0.5) / Double(buckets.count)
+            let isDistinct = selectedHues.allSatisfy { existingHue in
+                let distance = abs(selectedHue - existingHue)
+                return min(distance, 1 - distance) >= 0.075
+            }
+            guard isDistinct else { continue }
+            guard let color = mergedColor(at: selectedIndex) else { continue }
+            selectedColors.append(color)
+            selectedHues.append(selectedHue)
+        }
+        return selectedColors
     }
 }
 

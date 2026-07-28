@@ -53,6 +53,26 @@ enum PlayerSeekBarAppearance: String, CaseIterable, Identifiable {
     }
 }
 
+enum PlayerBackgroundAppearance: String, CaseIterable, Identifiable {
+    case classic
+    case multicolor
+    case bright
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .classic: "기존"
+        case .multicolor: "다중 컬러"
+        case .bright: "밝게"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> PlayerBackgroundAppearance {
+        PlayerBackgroundAppearance(rawValue: rawValue) ?? .classic
+    }
+}
+
 extension Color {
     init(_ rgba: RGBAColor) {
         self.init(
