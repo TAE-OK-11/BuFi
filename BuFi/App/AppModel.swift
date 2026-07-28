@@ -252,7 +252,8 @@ final class AppModel: ObservableObject {
 
     func playRadio(from seed: Song) async {
         guard let client else { return }
-        let values = await client.radioQueue(seed: seed)
+        let radioSongs = await client.radioQueue(seed: seed)
+        let values = radioSongs.map(applyingFavoriteOverride)
         guard !values.isEmpty else {
             errorMessage = String(localized: "이 곡과 비슷한 음악을 서버에서 찾지 못했습니다.")
             return

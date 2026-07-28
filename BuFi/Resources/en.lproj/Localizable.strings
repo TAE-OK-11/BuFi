@@ -176,3 +176,13 @@
 "ListenBrainz 설정 저장" = "Save ListenBrainz Settings";
 "ListenBrainz 연동 해제" = "Disconnect ListenBrainz";
 "협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 존재하는 곡만 매칭합니다." = "Fetches collaborative-filtering recommendation MBIDs and matches only tracks available in your server library.";
+"맞춤 추천" = "Made for You";
+"최근 들은 앨범" = "Recently Played Albums";
+"많이 들은 곡 순위" = "Most-Played Ranking";
+"랜덤 앨범" = "Random Albums";
+"자주 들은 앨범" = "Frequently Played Albums";
+"인터넷 라디오" = "Internet Radio";
+"라이브 스트림" = "Live Stream";
+"곡으로 라디오 시작" = "Start Track Radio";
+"이 곡과 비슷한 음악을 서버에서 찾지 못했습니다." = "The server could not find music similar to this track.";
+"HTTPS 인터넷 라디오만 안전하게 재생할 수 있습니다." = "Only HTTPS internet radio streams can be played securely.";

@@ -45,25 +45,12 @@ struct HomeView: View {
             switch filter {
             case .all:
                 VStack(alignment: .leading, spacing: 28) {
-                    quickCarousel
-                    albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
-                    songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
+                    musicOverview
                     playlistSection(showEmpty: false)
-                    albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
-                    if !model.home.starredAlbums.isEmpty {
-                        albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
-                    }
+                    radioSection
                 }
             case .music:
-                VStack(alignment: .leading, spacing: 28) {
-                    quickCarousel
-                    albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
-                    songSection("다시 들어보세요", songs: Array(model.home.randomSongs.prefix(12)))
-                    albumSection("내 라이브러리 추천", albums: model.home.randomAlbums)
-                    if !model.home.starredAlbums.isEmpty {
-                        albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
-                    }
-                }
+                musicOverview
             case .playlists:
                 playlistSection(showEmpty: true)
             }
@@ -74,42 +61,73 @@ struct HomeView: View {
         )
     }
 
+    private var musicOverview: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            quickCarousel
+            songSection(
+                "맞춤 추천",
+                songs: Array(model.home.recommendedSongs.prefix(12))
+            )
+            albumSection(
+                "최근 들은 앨범",
+                albums: model.home.recentlyPlayedAlbums
+            )
+            rankedSongSection(
+                "많이 들은 곡 순위",
+                songs: Array(model.home.mostPlayedSongs.prefix(12))
+            )
+            artistSection(
+                "좋아요 표시한 아티스트",
+                artists: model.home.starredArtists
+            )
+            albumSection("랜덤 앨범", albums: model.home.randomAlbums)
+            albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+            albumSection("자주 들은 앨범", albums: model.home.frequentAlbums)
+            albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
+        }
+    }
+
     private var quickCarousel: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 11) {
-                if !model.home.starredSongs.isEmpty {
-                    Button {
-                        if let first = model.home.starredSongs.first {
-                            audio.play(first, in: model.home.starredSongs)
-                        }
-                    } label: {
-                        quickCategoryCard(
-                            title: "좋아요 표시한 곡",
-                            coverArt: nil,
-                            icon: "heart.fill",
-                            colors: [
-                                Color(red: 0.78, green: 0.16, blue: 0.27),
-                                Color(red: 0.47, green: 0.14, blue: 0.45)
-                            ]
-                        )
+                Button {
+                    if let first = model.home.starredSongs.first {
+                        audio.play(first, in: model.home.starredSongs)
                     }
-                    .buttonStyle(BuFiPressStyle())
+                } label: {
+                    quickCategoryCard(
+                        title: "좋아요 표시한 곡",
+                        count: model.home.starredSongs.count,
+                        songs: model.home.starredSongs,
+                        icon: "heart.fill",
+                        colors: [
+                            Color(red: 0.78, green: 0.16, blue: 0.27),
+                            Color(red: 0.47, green: 0.14, blue: 0.45)
+                        ]
+                    )
                 }
+                .buttonStyle(BuFiPressStyle())
+                .disabled(model.home.starredSongs.isEmpty)
 
-                ForEach(
-                    Array(model.home.recentAlbums.prefix(5).enumerated()),
-                    id: \.element.id
-                ) { index, album in
-                    NavigationLink(value: MusicRoute.album(album)) {
-                        quickCategoryCard(
-                            title: album.name,
-                            coverArt: album.coverArt,
-                            icon: "square.stack.fill",
-                            colors: quickCardColors(index)
-                        )
+                Button {
+                    if let first = model.home.mostPlayedSongs.first {
+                        audio.play(first, in: model.home.mostPlayedSongs)
                     }
-                    .buttonStyle(BuFiPressStyle())
+                } label: {
+                    quickCategoryCard(
+                        title: "많이 들은 곡 순위",
+                        count: model.home.mostPlayedSongs.count,
+                        songs: model.home.mostPlayedSongs,
+                        icon: "chart.bar.fill",
+                        colors: [
+                            Color(red: 0.15, green: 0.46, blue: 0.64),
+                            Color(red: 0.20, green: 0.17, blue: 0.48)
+                        ],
+                        showsRank: true
+                    )
                 }
+                .buttonStyle(BuFiPressStyle())
+                .disabled(model.home.mostPlayedSongs.isEmpty)
             }
             .padding(.horizontal, 16)
         }
@@ -117,9 +135,11 @@ struct HomeView: View {
 
     private func quickCategoryCard(
         title: String,
-        coverArt: String?,
+        count: Int,
+        songs: [Song],
         icon: String,
-        colors: [Color]
+        colors: [Color],
+        showsRank: Bool = false
     ) -> some View {
         ZStack(alignment: .bottomTrailing) {
             LinearGradient(
@@ -128,30 +148,44 @@ struct HomeView: View {
                 endPoint: .bottomTrailing
             )
 
-            if let coverArt, !coverArt.isEmpty {
-                ArtworkView(coverArt: coverArt, size: 66, cornerRadius: 8)
-                    .frame(width: 66, height: 66)
-                    .rotationEffect(.degrees(6))
-                    .shadow(color: .black.opacity(0.28), radius: 8, y: 5)
-                    .offset(x: 10, y: 12)
-            } else {
-                Image(systemName: icon)
-                    .font(.system(size: 44, weight: .bold))
-                    .foregroundStyle(Color.white.opacity(0.19))
-                    .rotationEffect(.degrees(8))
-                    .padding(12)
-            }
+            Image(systemName: icon)
+                .font(.system(size: 52, weight: .bold))
+                .foregroundStyle(Color.white.opacity(0.16))
+                .rotationEffect(.degrees(8))
+                .padding(12)
 
-            Text(LocalizedStringKey(title))
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: 118, maxHeight: .infinity, alignment: .topLeading)
-                .padding(13)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(LocalizedStringKey(title))
+                    .font(.system(size: 17, weight: .bold))
+                    .lineLimit(2)
+                Text(
+                    String(
+                        format: String(localized: "%d곡"),
+                        count
+                    )
+                )
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.72))
+
+                Spacer(minLength: 2)
+
+                ForEach(Array(songs.prefix(2).enumerated()), id: \.element.id) {
+                    index, song in
+                    Text(
+                        showsRank
+                            ? "\(index + 1). \(song.title)"
+                            : song.title
+                    )
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .foregroundStyle(.white.opacity(0.88))
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(14)
         }
-        .frame(width: 176, height: 92)
+        .frame(width: 176, height: 132)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -159,21 +193,6 @@ struct HomeView: View {
         }
         .shadow(color: colors.first?.opacity(0.16) ?? .clear, radius: 12, y: 6)
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    private func quickCardColors(_ index: Int) -> [Color] {
-        switch index % 5 {
-        case 0:
-            [Color(red: 0.18, green: 0.37, blue: 0.58), Color(red: 0.20, green: 0.18, blue: 0.44)]
-        case 1:
-            [Color(red: 0.10, green: 0.48, blue: 0.43), Color(red: 0.08, green: 0.27, blue: 0.34)]
-        case 2:
-            [Color(red: 0.64, green: 0.31, blue: 0.20), Color(red: 0.39, green: 0.18, blue: 0.29)]
-        case 3:
-            [Color(red: 0.43, green: 0.25, blue: 0.61), Color(red: 0.25, green: 0.16, blue: 0.42)]
-        default:
-            [Color(red: 0.34, green: 0.39, blue: 0.43), Color(red: 0.18, green: 0.22, blue: 0.28)]
-        }
     }
 
     @ViewBuilder
@@ -246,6 +265,140 @@ struct HomeView: View {
     }
 
     @ViewBuilder
+    private func artistSection(_ title: String, artists: [Artist]) -> some View {
+        if !artists.isEmpty {
+            VStack(alignment: .leading, spacing: 15) {
+                SectionTitle(title: title, trailing: "라이브러리")
+                    .padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 16) {
+                        ForEach(artists.prefix(12)) { artist in
+                            NavigationLink(value: MusicRoute.artist(artist)) {
+                                VStack(spacing: 9) {
+                                    ArtworkView(
+                                        coverArt: artist.coverArt,
+                                        size: 132,
+                                        cornerRadius: 66
+                                    )
+                                    .frame(width: 132, height: 132)
+                                    Text(artist.name)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.center)
+                                }
+                                .frame(width: 132)
+                            }
+                            .buttonStyle(BuFiPressStyle())
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func rankedSongSection(_ title: String, songs: [Song]) -> some View {
+        if !songs.isEmpty {
+            VStack(alignment: .leading, spacing: 15) {
+                SectionTitle(title: title)
+                    .padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 15) {
+                        ForEach(Array(songs.enumerated()), id: \.element.id) {
+                            index, song in
+                            Button {
+                                audio.play(song, in: songs)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ZStack(alignment: .bottomLeading) {
+                                        ArtworkView(
+                                            coverArt: song.coverArt,
+                                            size: 166,
+                                            cornerRadius: 8
+                                        )
+                                        .frame(width: 166, height: 166)
+                                        Text("\(index + 1)")
+                                            .font(.system(size: 32, weight: .black, design: .rounded))
+                                            .foregroundStyle(.white)
+                                            .shadow(color: .black.opacity(0.55), radius: 5, y: 2)
+                                            .padding(10)
+                                    }
+                                    Text(song.title)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    Text(song.artist)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(width: 166, alignment: .leading)
+                            }
+                            .buttonStyle(BuFiPressStyle())
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var radioSection: some View {
+        if !model.home.radioStations.isEmpty {
+            VStack(alignment: .leading, spacing: 15) {
+                SectionTitle(title: "인터넷 라디오")
+                    .padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 15) {
+                        ForEach(model.home.radioStations.prefix(12)) { station in
+                            Button {
+                                model.playInternetRadio(station)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ZStack {
+                                        LinearGradient(
+                                            colors: [
+                                                BuFiTheme.accent.opacity(0.88),
+                                                BuFiTheme.deezerGlow.opacity(0.76),
+                                                Color.black.opacity(0.76)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                        Image(systemName: "radio.fill")
+                                            .font(.system(size: 42, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.9))
+                                    }
+                                    .frame(width: 166, height: 112)
+                                    .clipShape(
+                                        RoundedRectangle(
+                                            cornerRadius: 12,
+                                            style: .continuous
+                                        )
+                                    )
+                                    Text(station.name)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    Text("라이브 스트림")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(width: 166, alignment: .leading)
+                            }
+                            .buttonStyle(BuFiPressStyle())
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private func albumSection(_ title: String, albums: [Album]) -> some View {
         if !albums.isEmpty {
             VStack(alignment: .leading, spacing: 15) {
@@ -253,7 +406,7 @@ struct HomeView: View {
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
-                        ForEach(albums.prefix(18)) { album in
+                        ForEach(albums.prefix(12)) { album in
                             NavigationLink(value: MusicRoute.album(album)) {
                                 AlbumCard(album: album)
                             }

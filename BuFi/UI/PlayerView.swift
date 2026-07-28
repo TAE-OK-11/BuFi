@@ -175,6 +175,11 @@ struct PlayerView: View {
                 } label: {
                     Label("오프라인 저장", systemImage: "arrow.down.circle")
                 }
+                Button {
+                    Task { await model.playRadio(from: song) }
+                } label: {
+                    Label("곡으로 라디오 시작", systemImage: "dot.radiowaves.left.and.right")
+                }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 22, weight: .semibold))
