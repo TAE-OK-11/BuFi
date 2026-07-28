@@ -490,6 +490,11 @@ final class AudioEngine: NSObject, ObservableObject {
         for song: Song,
         compatibilityFormat: String?
     ) async throws -> PlaybackResource {
+        if let value = song.externalStreamURL,
+           let url = URL(string: value),
+           url.scheme?.lowercased() == "https" {
+            return PlaybackResource(url: url, mimeType: song.contentType)
+        }
         // A downloaded source avoids radio use and is attempted once. If the
         // system rejects it, later codec fallbacks bypass the local source.
         if fallbackIndex == 0,
@@ -532,6 +537,7 @@ final class AudioEngine: NSObject, ObservableObject {
         for quality: StreamQuality,
         song: Song
     ) -> [String] {
+        if song.externalStreamURL != nil { return [] }
         switch quality {
         case .automatic:
             automaticCompatibilityFormat(for: song) == "raw"
@@ -547,6 +553,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private static func automaticCompatibilityFormat(for song: Song) -> String {
+        if song.externalStreamURL != nil { return "raw" }
         let suffix = song.suffix?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
@@ -912,6 +919,11 @@ final class AudioEngine: NSObject, ObservableObject {
         lyricsTask?.cancel()
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
+        guard song.externalStreamURL == nil else {
+            lyrics = .empty
+            activeLyricIndex = -1
+            return
+        }
         guard let client else { return }
         lyricsTask = Task { [weak self] in
             do {
@@ -1396,12 +1408,16 @@ final class AudioEngine: NSObject, ObservableObject {
     private func submitScrobbleIfNeeded() {
         guard !scrobbled,
               let song = currentSong,
+              song.externalStreamURL == nil,
               elapsed >= min(max(30, duration * 0.5), 240),
               let client else {
             return
         }
         scrobbled = true
-        Task { try? await client.scrobble(id: song.id, submission: true) }
+        Task {
+            await ListeningHistoryStore.shared.record(song)
+            try? await client.scrobble(id: song.id, submission: true)
+        }
     }
 
     private func scheduleQueueSave(immediate: Bool = false) {
@@ -1428,7 +1444,8 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             guard let client,
                   let current = snapshot.currentID,
-                  !snapshot.queue.isEmpty else {
+                  !snapshot.queue.isEmpty,
+                  snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }) else {
                 return
             }
             try? await client.savePlayQueue(

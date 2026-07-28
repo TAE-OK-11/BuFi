@@ -52,6 +52,11 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
     var suffix: String?
     var contentType: String?
     var starred: String?
+    var playCount: Int? = nil
+    var played: String? = nil
+    var genre: String? = nil
+    var musicBrainzId: String? = nil
+    var externalStreamURL: String? = nil
 
     var isStarred: Bool { starred != nil }
     var safeDuration: Double { max(0, duration ?? 0) }
@@ -64,6 +69,11 @@ struct Album: Codable, Identifiable, Hashable, Sendable {
     var coverArt: String?
     var year: Int?
     var starred: String?
+    var playCount: Int? = nil
+    var played: String? = nil
+    var artistId: String? = nil
+    var genre: String? = nil
+    var musicBrainzId: String? = nil
 
     var isStarred: Bool { starred != nil }
 }
@@ -74,6 +84,7 @@ struct Artist: Codable, Identifiable, Hashable, Sendable {
     var coverArt: String?
     var albumCount: Int?
     var starred: String?
+    var musicBrainzId: String? = nil
 
     var isStarred: Bool { starred != nil }
 }
@@ -86,15 +97,46 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var coverArt: String?
 }
 
+struct InternetRadioStation: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    var name: String
+    var streamUrl: String
+    var homePageUrl: String?
+    var coverArt: String?
+
+    var playableSong: Song {
+        Song(
+            id: "radio:\(id)",
+            title: name,
+            artist: String(localized: "인터넷 라디오"),
+            album: "",
+            artistId: nil,
+            albumId: nil,
+            coverArt: coverArt,
+            duration: nil,
+            track: nil,
+            suffix: nil,
+            contentType: nil,
+            starred: nil,
+            externalStreamURL: streamUrl
+        )
+    }
+}
+
 struct HomeSnapshot: Equatable, Sendable {
     var recentAlbums: [Album] = []
+    var recentlyPlayedAlbums: [Album] = []
+    var frequentAlbums: [Album] = []
     var randomAlbums: [Album] = []
     var starredAlbums: [Album] = []
     var starredSongs: [Song] = []
     var starredArtists: [Artist] = []
     var artists: [Artist] = []
     var randomSongs: [Song] = []
+    var recommendedSongs: [Song] = []
+    var mostPlayedSongs: [Song] = []
     var playlists: [Playlist] = []
+    var radioStations: [InternetRadioStation] = []
 
     static let empty = HomeSnapshot()
 }
@@ -187,6 +229,28 @@ struct AlbumListContainer: Decodable {
 
 struct RandomSongsPayload: Decodable {
     let randomSongs: SongContainer?
+}
+
+struct SimilarSongsPayload: Decodable {
+    let similarSongs2: SongContainer?
+    let similarSongs: SongContainer?
+}
+
+struct SonicSimilarPayload: Decodable {
+    let sonicMatch: [SonicMatch]?
+}
+
+struct SonicMatch: Decodable {
+    let entry: Song
+    let similarity: Double?
+}
+
+struct InternetRadioStationsPayload: Decodable {
+    let internetRadioStations: InternetRadioStationContainer?
+}
+
+struct InternetRadioStationContainer: Decodable {
+    let internetRadioStation: [InternetRadioStation]?
 }
 
 struct SongContainer: Decodable {

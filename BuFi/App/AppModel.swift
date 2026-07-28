@@ -79,10 +79,20 @@ final class AppModel: ObservableObject {
 
     func logout() {
         sessionGeneration += 1
+        let accountScope = client.map {
+            AccountScope.identifier(for: $0.credentials)
+        }
         searchGeneration += 1
         searchTask?.cancel()
         clearFavoriteState()
         secureStore.delete()
+        if let accountScope {
+            Task {
+                await ListeningHistoryStore.shared.deactivate(
+                    accountScope: accountScope
+                )
+            }
+        }
         client = nil
         home = .empty
         searchResults = .empty
@@ -120,7 +130,7 @@ final class AppModel: ObservableObject {
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
-            let snapshot = loadResult.snapshot
+            let snapshot = await mergingListeningHistory(into: loadResult.snapshot)
             guard generation == sessionGeneration, self.client === client else { return }
             guard revision == homeRevision else { return }
             guard starRequests.isEmpty else { return }
@@ -211,6 +221,26 @@ final class AppModel: ObservableObject {
         searchTask?.cancel()
         isSearching = false
         searchResults = .empty
+    }
+
+    func playRadio(from seed: Song) async {
+        guard let client else { return }
+        let values = await client.radioQueue(seed: seed)
+        guard !values.isEmpty else {
+            errorMessage = String(localized: "이 곡과 비슷한 음악을 서버에서 찾지 못했습니다.")
+            return
+        }
+        AudioEngine.shared.play(values[0], in: values)
+    }
+
+    func playInternetRadio(_ station: InternetRadioStation) {
+        guard let url = URL(string: station.streamUrl),
+              url.scheme?.lowercased() == "https" else {
+            errorMessage = String(localized: "HTTPS 인터넷 라디오만 안전하게 재생할 수 있습니다.")
+            return
+        }
+        let song = station.playableSong
+        AudioEngine.shared.play(song, in: [song])
     }
 
     func album(id: String) async throws -> AlbumDetail {
@@ -629,6 +659,8 @@ final class AppModel: ObservableObject {
     private func applyingFavoriteOverrides(to snapshot: HomeSnapshot) -> HomeSnapshot {
         var value = snapshot
         value.recentAlbums = value.recentAlbums.map(applyingFavoriteOverride)
+        value.recentlyPlayedAlbums = value.recentlyPlayedAlbums.map(applyingFavoriteOverride)
+        value.frequentAlbums = value.frequentAlbums.map(applyingFavoriteOverride)
         value.randomAlbums = value.randomAlbums.map(applyingFavoriteOverride)
         let resolvedAlbums = value.starredAlbums
             .map(applyingFavoriteOverride)
@@ -671,6 +703,8 @@ final class AppModel: ObservableObject {
 
         value.artists = value.artists.map(applyingFavoriteOverride)
         value.randomSongs = value.randomSongs.map(applyingFavoriteOverride)
+        value.recommendedSongs = value.recommendedSongs.map(applyingFavoriteOverride)
+        value.mostPlayedSongs = value.mostPlayedSongs.map(applyingFavoriteOverride)
         return value
     }
 
@@ -754,8 +788,10 @@ final class AppModel: ObservableObject {
         switch target {
         case .song:
             let visibleSongs =
-                home.starredSongs + home.randomSongs +
-                snapshot.starredSongs + snapshot.randomSongs +
+                home.starredSongs + home.randomSongs + home.recommendedSongs +
+                home.mostPlayedSongs + snapshot.starredSongs +
+                snapshot.randomSongs + snapshot.recommendedSongs +
+                snapshot.mostPlayedSongs +
                 searchResults.songs
             ids.formUnion(visibleSongs.lazy.filter(\.isStarred).map(\.id))
             ids.formUnion(
@@ -781,8 +817,11 @@ final class AppModel: ObservableObject {
             }
         case .album:
             let visibleAlbums =
-                home.starredAlbums + home.recentAlbums + home.randomAlbums +
-                snapshot.starredAlbums + snapshot.recentAlbums + snapshot.randomAlbums +
+                home.starredAlbums + home.recentAlbums + home.recentlyPlayedAlbums +
+                home.frequentAlbums + home.randomAlbums +
+                snapshot.starredAlbums + snapshot.recentAlbums +
+                snapshot.recentlyPlayedAlbums + snapshot.frequentAlbums +
+                snapshot.randomAlbums +
                 searchResults.albums
             ids.formUnion(visibleAlbums.lazy.filter(\.isStarred).map(\.id))
             for cached in artistDetailCache.values {
@@ -897,6 +936,12 @@ final class AppModel: ObservableObject {
         snapshot.starredSongs.removeAll { $0.id == song.id }
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
         snapshot.randomSongs = snapshot.randomSongs.map { $0.id == song.id ? updated : $0 }
+        snapshot.recommendedSongs = snapshot.recommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
         homeRevision &+= 1
         home = snapshot
 
@@ -941,6 +986,12 @@ final class AppModel: ObservableObject {
         snapshot.starredAlbums.removeAll { $0.id == album.id }
         if enabled { snapshot.starredAlbums.insert(updated, at: 0) }
         snapshot.recentAlbums = snapshot.recentAlbums.map { $0.id == album.id ? updated : $0 }
+        snapshot.recentlyPlayedAlbums = snapshot.recentlyPlayedAlbums.map {
+            $0.id == album.id ? updated : $0
+        }
+        snapshot.frequentAlbums = snapshot.frequentAlbums.map {
+            $0.id == album.id ? updated : $0
+        }
         snapshot.randomAlbums = snapshot.randomAlbums.map { $0.id == album.id ? updated : $0 }
         homeRevision &+= 1
         home = snapshot
@@ -1042,6 +1093,63 @@ final class AppModel: ObservableObject {
 
     private var isHomeEmpty: Bool { home == .empty }
 
+    private func mergingListeningHistory(
+        into snapshot: HomeSnapshot
+    ) async -> HomeSnapshot {
+        let history = await ListeningHistoryStore.shared.snapshot()
+        var value = snapshot
+        value.mostPlayedSongs = Self.uniqueSongs(
+            history.mostPlayedSongs + snapshot.mostPlayedSongs
+        )
+
+        let albums = snapshot.recentlyPlayedAlbums +
+            snapshot.frequentAlbums +
+            snapshot.recentAlbums +
+            snapshot.randomAlbums +
+            snapshot.starredAlbums
+        var albumsByID: [String: Album] = [:]
+        for album in albums where albumsByID[album.id] == nil {
+            albumsByID[album.id] = album
+        }
+        var localRecentAlbums: [Album] = []
+        var seenAlbumIDs = Set<String>()
+        for song in history.recentlyPlayedSongs {
+            guard let albumID = song.albumId,
+                  seenAlbumIDs.insert(albumID).inserted else {
+                continue
+            }
+            if let album = albumsByID[albumID] {
+                localRecentAlbums.append(album)
+            } else if !song.album.isEmpty {
+                localRecentAlbums.append(
+                    Album(
+                        id: albumID,
+                        name: song.album,
+                        artist: song.artist,
+                        coverArt: song.coverArt,
+                        year: nil,
+                        starred: nil
+                    )
+                )
+                albumsByID[albumID] = localRecentAlbums.last
+            }
+        }
+        value.recentlyPlayedAlbums = Self.uniqueAlbums(
+            localRecentAlbums + snapshot.recentlyPlayedAlbums
+        )
+        return value
+    }
+
+    private static func uniqueSongs(_ values: [Song]) -> [Song] {
+        var ids = Set<String>()
+        return values.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func uniqueAlbums(_ values: [Album]) -> [Album] {
+        var ids = Set<String>()
+        return values.filter { ids.insert($0.id).inserted }
+    }
+
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
         sessionGeneration += 1
         let generation = sessionGeneration
@@ -1067,13 +1175,15 @@ final class AppModel: ObservableObject {
             async let statusRequest = client.ping()
             async let homeRequest = client.home()
             let (status, loadResult) = try await (statusRequest, homeRequest)
-            let snapshot = loadResult.snapshot
             try Task.checkCancellation()
             guard generation == sessionGeneration else { return }
 
             let accountScope = AccountScope.identifier(for: credentials)
             await OfflineStore.shared.activate(accountScope: accountScope)
             await ArtworkStore.shared.activate(accountScope: accountScope)
+            await ListeningHistoryStore.shared.activate(accountScope: accountScope)
+            guard generation == sessionGeneration else { return }
+            let snapshot = await mergingListeningHistory(into: loadResult.snapshot)
             guard generation == sessionGeneration else { return }
             if persist { try secureStore.save(credentials) }
 
