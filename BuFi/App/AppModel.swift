@@ -37,11 +37,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var isSearching = false
     @Published private(set) var serverVersion = ""
     @Published private(set) var favoriteOverrides: [String: Bool] = [:]
+    @Published private(set) var hasLastFMAPIKey = false
+    @Published private(set) var hasListenBrainzToken = false
+    @Published private(set) var listenBrainzUsername = ""
     @Published var errorMessage: String?
 
     private(set) var client: OpenSubsonicClient?
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
+    private var recommendationTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var lastFullRefresh = Date.distantPast
     private var sessionGeneration = 0
@@ -60,8 +64,20 @@ final class AppModel: ObservableObject {
     private static let albumDetailCacheLimit = 48
     private static let playlistDetailCacheLimit = 24
     private static let artistDetailCacheLimit = 32
+    private static let lastFMKeyAccount = "lastfm-api-key"
+    private static let listenBrainzTokenAccount = "listenbrainz-token"
+    private static let listenBrainzUsernameKey = "listenbrainz-username"
 
     init() {
+        hasLastFMAPIKey = secureStore.loadSecret(
+            account: Self.lastFMKeyAccount
+        )?.isEmpty == false
+        hasListenBrainzToken = secureStore.loadSecret(
+            account: Self.listenBrainzTokenAccount
+        )?.isEmpty == false
+        listenBrainzUsername = UserDefaults.standard.string(
+            forKey: Self.listenBrainzUsernameKey
+        ) ?? ""
         if let credentials = secureStore.load() {
             Task { await connect(credentials, persist: false) }
         }
@@ -84,6 +100,7 @@ final class AppModel: ObservableObject {
         }
         searchGeneration += 1
         searchTask?.cancel()
+        recommendationTask?.cancel()
         clearFavoriteState()
         secureStore.delete()
         if let accountScope {
@@ -130,7 +147,11 @@ final class AppModel: ObservableObject {
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
-            let snapshot = await mergingListeningHistory(into: loadResult.snapshot)
+            var snapshot = await mergingListeningHistory(into: loadResult.snapshot)
+            snapshot.recommendedSongs = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: .current()
+            )
             guard generation == sessionGeneration, self.client === client else { return }
             guard revision == homeRevision else { return }
             guard starRequests.isEmpty else { return }
@@ -141,6 +162,12 @@ final class AppModel: ObservableObject {
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
             if home != resolvedSnapshot { home = resolvedSnapshot }
+            if needsFullRefresh {
+                scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: generation
+                )
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -241,6 +268,108 @@ final class AppModel: ObservableObject {
         }
         let song = station.playableSong
         AudioEngine.shared.play(song, in: [song])
+    }
+
+    func saveLastFMAPIKey(_ value: String) {
+        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if key.isEmpty {
+                secureStore.deleteSecret(account: Self.lastFMKeyAccount)
+                hasLastFMAPIKey = false
+                var snapshot = home
+                snapshot.lastFMRecommendedSongs = []
+                snapshot.recommendedSongs = RecommendationMixer.mix(
+                    snapshot: snapshot,
+                    weights: .current()
+                )
+                home = snapshot
+            } else {
+                try secureStore.saveSecret(key, account: Self.lastFMKeyAccount)
+                hasLastFMAPIKey = true
+                var snapshot = home
+                snapshot.lastFMRecommendedSongs = []
+                snapshot.recommendedSongs = RecommendationMixer.mix(
+                    snapshot: snapshot,
+                    weights: .current()
+                )
+                home = snapshot
+            }
+            if let client {
+                scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: sessionGeneration
+                )
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func saveListenBrainz(username: String, token: String) {
+        let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(name, forKey: Self.listenBrainzUsernameKey)
+        listenBrainzUsername = name
+        do {
+            if secret.isEmpty {
+                if name.isEmpty {
+                    secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
+                    hasListenBrainzToken = false
+                }
+            } else {
+                try secureStore.saveSecret(
+                    secret,
+                    account: Self.listenBrainzTokenAccount
+                )
+                hasListenBrainzToken = true
+            }
+            var snapshot = home
+            snapshot.listenBrainzRecommendedSongs = []
+            snapshot.recommendedSongs = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: .current()
+            )
+            home = snapshot
+            if let client {
+                scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: sessionGeneration
+                )
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeListenBrainz() {
+        secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
+        UserDefaults.standard.removeObject(forKey: Self.listenBrainzUsernameKey)
+        hasListenBrainzToken = false
+        listenBrainzUsername = ""
+        var snapshot = home
+        snapshot.listenBrainzRecommendedSongs = []
+        snapshot.recommendedSongs = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: .current()
+        )
+        home = snapshot
+        if let client {
+            scheduleExternalRecommendationRefresh(
+                client: client,
+                generation: sessionGeneration
+            )
+        } else {
+            recommendationTask?.cancel()
+        }
+    }
+
+    func rebuildRecommendations() {
+        var snapshot = home
+        snapshot.recommendedSongs = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: .current()
+        )
+        if snapshot != home { home = snapshot }
     }
 
     func album(id: String) async throws -> AlbumDetail {
@@ -703,6 +832,11 @@ final class AppModel: ObservableObject {
 
         value.artists = value.artists.map(applyingFavoriteOverride)
         value.randomSongs = value.randomSongs.map(applyingFavoriteOverride)
+        value.serverRecommendedSongs = value.serverRecommendedSongs.map(applyingFavoriteOverride)
+        value.lastFMRecommendedSongs = value.lastFMRecommendedSongs.map(applyingFavoriteOverride)
+        value.listenBrainzRecommendedSongs = value.listenBrainzRecommendedSongs.map(
+            applyingFavoriteOverride
+        )
         value.recommendedSongs = value.recommendedSongs.map(applyingFavoriteOverride)
         value.mostPlayedSongs = value.mostPlayedSongs.map(applyingFavoriteOverride)
         return value
@@ -789,8 +923,11 @@ final class AppModel: ObservableObject {
         case .song:
             let visibleSongs =
                 home.starredSongs + home.randomSongs + home.recommendedSongs +
-                home.mostPlayedSongs + snapshot.starredSongs +
-                snapshot.randomSongs + snapshot.recommendedSongs +
+                home.serverRecommendedSongs + home.lastFMRecommendedSongs +
+                home.listenBrainzRecommendedSongs + home.mostPlayedSongs +
+                snapshot.starredSongs + snapshot.randomSongs +
+                snapshot.serverRecommendedSongs + snapshot.lastFMRecommendedSongs +
+                snapshot.listenBrainzRecommendedSongs + snapshot.recommendedSongs +
                 snapshot.mostPlayedSongs +
                 searchResults.songs
             ids.formUnion(visibleSongs.lazy.filter(\.isStarred).map(\.id))
@@ -937,6 +1074,15 @@ final class AppModel: ObservableObject {
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
         snapshot.randomSongs = snapshot.randomSongs.map { $0.id == song.id ? updated : $0 }
         snapshot.recommendedSongs = snapshot.recommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.serverRecommendedSongs = snapshot.serverRecommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.lastFMRecommendedSongs = snapshot.lastFMRecommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.listenBrainzRecommendedSongs = snapshot.listenBrainzRecommendedSongs.map {
             $0.id == song.id ? updated : $0
         }
         snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
@@ -1150,11 +1296,108 @@ final class AppModel: ObservableObject {
         return values.filter { ids.insert($0.id).inserted }
     }
 
+    private func enrichingExternalRecommendations(
+        in snapshot: HomeSnapshot,
+        client: OpenSubsonicClient
+    ) async -> HomeSnapshot {
+        let lastFMKey = secureStore.loadSecret(account: Self.lastFMKeyAccount) ?? ""
+        let listenBrainzToken = secureStore.loadSecret(
+            account: Self.listenBrainzTokenAccount
+        )
+        let seed = snapshot.mostPlayedSongs.first
+            ?? snapshot.starredSongs.first
+            ?? snapshot.randomSongs.first
+
+        async let lastFMCandidates = Self.lastFMCandidates(
+            seed: seed,
+            apiKey: lastFMKey
+        )
+        async let listenBrainzCandidates =
+            ExternalRecommendationClient.shared.listenBrainz(
+                username: listenBrainzUsername,
+                token: listenBrainzToken
+            )
+
+        let candidates = await (lastFMCandidates, listenBrainzCandidates)
+        async let lastFMSongs = client.matchExternalRecommendations(
+            candidates.0,
+            limit: 8
+        )
+        async let listenBrainzSongs = client.matchExternalRecommendations(
+            candidates.1,
+            limit: 8
+        )
+
+        var value = snapshot
+        let matches = await (lastFMSongs, listenBrainzSongs)
+        if !matches.0.isEmpty {
+            value.lastFMRecommendedSongs = matches.0
+        }
+        if !matches.1.isEmpty {
+            value.listenBrainzRecommendedSongs = matches.1
+        }
+        return value
+    }
+
+    private nonisolated static func lastFMCandidates(
+        seed: Song?,
+        apiKey: String
+    ) async -> [ExternalRecommendationCandidate] {
+        guard let seed, !apiKey.isEmpty else { return [] }
+        return await ExternalRecommendationClient.shared.lastFM(
+            seed: seed,
+            apiKey: apiKey
+        )
+    }
+
+    private func scheduleExternalRecommendationRefresh(
+        client: OpenSubsonicClient,
+        generation: Int
+    ) {
+        recommendationTask?.cancel()
+        guard hasLastFMAPIKey || !listenBrainzUsername.isEmpty,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled,
+              ProcessInfo.processInfo.thermalState.rawValue <
+                ProcessInfo.ThermalState.serious.rawValue else {
+            return
+        }
+        let source = home
+        recommendationTask = Task { [weak self] in
+            guard let self else { return }
+            let enriched = await self.enrichingExternalRecommendations(
+                in: source,
+                client: client
+            )
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration,
+                  self.client === client else {
+                return
+            }
+            var value = self.home
+            if !enriched.lastFMRecommendedSongs.isEmpty {
+                value.lastFMRecommendedSongs = enriched.lastFMRecommendedSongs
+            }
+            if !enriched.listenBrainzRecommendedSongs.isEmpty {
+                value.listenBrainzRecommendedSongs =
+                    enriched.listenBrainzRecommendedSongs
+            }
+            value.recommendedSongs = RecommendationMixer.mix(
+                snapshot: value,
+                weights: .current()
+            )
+            value = self.applyingFavoriteOverrides(to: value)
+            if value != self.home {
+                self.home = value
+            }
+        }
+    }
+
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
         sessionGeneration += 1
         let generation = sessionGeneration
         searchGeneration += 1
         searchTask?.cancel()
+        recommendationTask?.cancel()
         let isReplacingActiveSession = client != nil
         client = nil
         if isReplacingActiveSession {
@@ -1183,7 +1426,11 @@ final class AppModel: ObservableObject {
             await ArtworkStore.shared.activate(accountScope: accountScope)
             await ListeningHistoryStore.shared.activate(accountScope: accountScope)
             guard generation == sessionGeneration else { return }
-            let snapshot = await mergingListeningHistory(into: loadResult.snapshot)
+            var snapshot = await mergingListeningHistory(into: loadResult.snapshot)
+            snapshot.recommendedSongs = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: .current()
+            )
             guard generation == sessionGeneration else { return }
             if persist { try secureStore.save(credentials) }
 
@@ -1205,6 +1452,10 @@ final class AppModel: ObservableObject {
                         enabled: !self.isStarred(song)
                     )
                 }
+            )
+            scheduleExternalRecommendationRefresh(
+                client: client,
+                generation: generation
             )
         } catch is CancellationError {
             return

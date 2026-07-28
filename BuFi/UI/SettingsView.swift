@@ -119,6 +119,19 @@ struct SettingsView: View {
                 }
                 .listRowBackground(settingsRowBackground)
 
+                Section("추천") {
+                    NavigationLink {
+                        RecommendationSettingsView()
+                            .environmentObject(model)
+                    } label: {
+                        Label("추천 알고리즘", systemImage: "wand.and.stars")
+                    }
+                    Text("서버 유사곡, 청취 기록, 좋아요, 새로운 음악과 선택한 외부 서비스를 기기에서 조합합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .listRowBackground(settingsRowBackground)
+
                 Section("재생") {
                     Picker("음질", selection: $audio.quality) {
                         ForEach(StreamQuality.allCases) { quality in
@@ -256,6 +269,136 @@ struct SettingsView: View {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
             ?? "15"
         return "\(version) (\(build))"
+    }
+}
+
+private struct RecommendationSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var lastFMAPIKey = ""
+    @State private var listenBrainzUsername = ""
+    @State private var listenBrainzToken = ""
+    @AppStorage("recommendation-weight-history") private var historyWeight = 0.70
+    @AppStorage("recommendation-weight-favorites") private var favoriteWeight = 0.80
+    @AppStorage("recommendation-weight-server") private var serverWeight = 0.90
+    @AppStorage("recommendation-weight-discovery") private var discoveryWeight = 0.35
+    @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.55
+    @AppStorage("recommendation-weight-listenbrainz")
+    private var listenBrainzWeight = 0.55
+
+    var body: some View {
+        List {
+            Section("추천 가중치") {
+                weightRow("청취 기록 취향", value: $historyWeight)
+                weightRow("좋아요 취향", value: $favoriteWeight)
+                weightRow("서버 유사곡·Sonic", value: $serverWeight)
+                weightRow("새로운 음악 발견", value: $discoveryWeight)
+                weightRow("Last.fm 유사곡", value: $lastFMWeight)
+                weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
+                Button("기본값으로 복원") {
+                    historyWeight = 0.70
+                    favoriteWeight = 0.80
+                    serverWeight = 0.90
+                    discoveryWeight = 0.35
+                    lastFMWeight = 0.55
+                    listenBrainzWeight = 0.55
+                    model.rebuildRecommendations()
+                }
+            }
+            .listRowBackground(BuFiTheme.elevated)
+
+            Section("Last.fm") {
+                SecureField(
+                    model.hasLastFMAPIKey
+                        ? "저장된 API 키 교체"
+                        : "Last.fm API 키",
+                    text: $lastFMAPIKey
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                Button(model.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
+                    model.saveLastFMAPIKey(lastFMAPIKey)
+                    lastFMAPIKey = ""
+                }
+                .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if model.hasLastFMAPIKey {
+                    Button("Last.fm 연동 해제", role: .destructive) {
+                        model.saveLastFMAPIKey("")
+                    }
+                }
+                Text("Last.fm track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .listRowBackground(BuFiTheme.elevated)
+
+            Section("ListenBrainz") {
+                TextField("ListenBrainz 사용자 이름", text: $listenBrainzUsername)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField(
+                    model.hasListenBrainzToken
+                        ? "저장된 토큰 유지 또는 교체"
+                        : "사용자 토큰",
+                    text: $listenBrainzToken
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                Button("ListenBrainz 설정 저장") {
+                    model.saveListenBrainz(
+                        username: listenBrainzUsername,
+                        token: listenBrainzToken
+                    )
+                    listenBrainzToken = ""
+                }
+                .disabled(
+                    listenBrainzUsername
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                )
+                if model.hasListenBrainzToken || !model.listenBrainzUsername.isEmpty {
+                    Button("ListenBrainz 연동 해제", role: .destructive) {
+                        model.removeListenBrainz()
+                        listenBrainzUsername = ""
+                        listenBrainzToken = ""
+                    }
+                }
+                Text("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 존재하는 곡만 매칭합니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .listRowBackground(BuFiTheme.elevated)
+        }
+        .scrollContentBackground(.hidden)
+        .background(BuFiScreenBackground())
+        .navigationTitle("추천 알고리즘")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            listenBrainzUsername = model.listenBrainzUsername
+        }
+        .onChange(of: historyWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: favoriteWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: serverWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: discoveryWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: lastFMWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: listenBrainzWeight) { _, _ in model.rebuildRecommendations() }
+    }
+
+    private func weightRow(
+        _ title: LocalizedStringKey,
+        value: Binding<Double>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(value.wrappedValue, format: .percent.precision(.fractionLength(0)))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: value, in: 0...1, step: 0.05)
+                .tint(BuFiTheme.accent)
+        }
+        .padding(.vertical, 3)
     }
 }
 

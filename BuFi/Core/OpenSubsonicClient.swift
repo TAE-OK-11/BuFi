@@ -317,7 +317,7 @@ actor OpenSubsonicClient {
             ?? fallback.randomSongs
         let recommendations = await recommendationQueue(
             seeds: starredSongs + randomSongValues,
-            fallback: fallback.recommendedSongs
+            fallback: fallback.serverRecommendedSongs
         )
         let rankedServerSongs = Self.uniqueSongs(randomSongValues)
             .filter { ($0.playCount ?? 0) > 0 }
@@ -339,6 +339,9 @@ actor OpenSubsonicClient {
                 artists: values.5.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
                     ?? fallback.artists,
                 randomSongs: randomSongValues,
+                serverRecommendedSongs: recommendations,
+                lastFMRecommendedSongs: fallback.lastFMRecommendedSongs,
+                listenBrainzRecommendedSongs: fallback.listenBrainzRecommendedSongs,
                 recommendedSongs: recommendations,
                 mostPlayedSongs: rankedServerSongs.isEmpty
                     ? fallback.mostPlayedSongs
@@ -403,6 +406,41 @@ actor OpenSubsonicClient {
         await recommendationQueue(seeds: [seed], fallback: [], count: count)
     }
 
+    func matchExternalRecommendations(
+        _ candidates: [ExternalRecommendationCandidate],
+        limit: Int = 10
+    ) async -> [Song] {
+        var matches: [Song] = []
+        var ids = Set<String>()
+        for candidate in candidates.prefix(limit) {
+            guard !Task.isCancelled else { break }
+            let query = "\(candidate.artist) \(candidate.title)"
+            guard let results = try? await search(query) else { continue }
+            let normalizedTitle = Self.normalized(candidate.title)
+            let normalizedArtist = Self.normalized(candidate.artist)
+            let match = results.songs.first { song in
+                guard let recordingMBID = candidate.recordingMBID else {
+                    return false
+                }
+                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
+                    == .orderedSame
+            } ?? results.songs.first { song in
+                let title = Self.normalized(song.title)
+                let artist = Self.normalized(song.artist)
+                return title == normalizedTitle &&
+                    (artist == normalizedArtist ||
+                        artist.contains(normalizedArtist) ||
+                        normalizedArtist.contains(artist))
+            } ?? results.songs.first { song in
+                Self.normalized(song.title).contains(normalizedTitle)
+            }
+            if let match, ids.insert(match.id).inserted {
+                matches.append(match)
+            }
+        }
+        return matches
+    }
+
     private func recommendationQueue(
         seeds: [Song],
         fallback: [Song],
@@ -442,6 +480,14 @@ actor OpenSubsonicClient {
     private static func uniqueSongs(_ songs: [Song]) -> [Song] {
         var ids = Set<String>()
         return songs.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func search(_ query: String) async throws -> SearchResults {
