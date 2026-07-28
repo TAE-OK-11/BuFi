@@ -12,7 +12,7 @@ It is designed around the iOS media stack rather than a web view.
 - Automatic AAC/MP3 compatibility fallback when an original file cannot be decoded
 - Built-in speaker/route/interruption recovery and Subsonic MIME compatibility handling adapted from Amperfy
 - Synchronized OpenSubsonic lyrics with a full-screen lyrics view
-- Apple Music-led visual system with Spotify density, a subtle Deezer accent, and native Liquid Glass on iOS 26+
+- Apple Music-led visual system with Spotify density, a subtle Deezer accent, and an optional native Liquid Glass seek bar on iOS 26+ while retaining Classic transport controls
 - Core Graphics dominant-color clustering and an adaptive player background
 - Nuke-backed artwork request coalescing, caching, and downsampling
 - HTTP/3-capable API requests plus gzip, Brotli, and bounded Zstandard response decoding

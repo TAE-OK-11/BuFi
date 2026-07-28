@@ -18,9 +18,9 @@
 
 ## UI and energy
 
-- Adds a selectable player-control style: Apple’s native Liquid Glass slider
-  and glass buttons on iOS 26+, with an automatic Classic fallback on iOS
-  17–25.
+- Adds a selectable seek-bar style: Apple’s native Liquid Glass slider on iOS
+  26+, with an automatic Classic fallback on iOS 17–25. Transport buttons and
+  the rest of the player retain the existing Classic design.
 - Centralizes motion policy so Reduce Motion, Low Power Mode, and serious or
   critical thermal pressure suppress nonessential transitions consistently.
 - Light-mode contrast fixes for artist, album, playlist controls and settings surfaces.

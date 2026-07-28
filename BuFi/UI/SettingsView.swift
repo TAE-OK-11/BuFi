@@ -8,8 +8,8 @@ struct SettingsView: View {
     @State private var confirmArtworkRemoval = false
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("motion-enabled") private var motionEnabled = true
-    @AppStorage("player-control-appearance")
-    private var playerControlAppearance = PlayerControlAppearance.liquidGlass.rawValue
+    @AppStorage("player-seekbar-appearance")
+    private var playerSeekBarAppearance = PlayerSeekBarAppearance.liquidGlass.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("auto-open-player") private var autoOpenPlayer = false
     @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
@@ -67,15 +67,15 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Picker("플레이어 컨트롤", selection: $playerControlAppearance) {
-                        ForEach(PlayerControlAppearance.allCases) { appearance in
+                    Picker("재생바 스타일", selection: $playerSeekBarAppearance) {
+                        ForEach(PlayerSeekBarAppearance.allCases) { appearance in
                             Text(appearance.title).tag(appearance.rawValue)
                         }
                     }
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Text("Liquid Glass는 iOS 26 이상에서 Apple 기본 재생 막대와 컨트롤을 사용합니다. 이전 iOS에서는 클래식 스타일로 자동 전환됩니다.")
+                    Text("Liquid Glass는 iOS 26 이상에서 재생 막대만 Apple 기본 디자인으로 변경합니다. 나머지 플레이어 버튼과 배치는 기존 클래식 디자인을 유지하며, 이전 iOS에서는 클래식 재생바로 자동 전환됩니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 

@@ -15,8 +15,8 @@ struct PlayerView: View {
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
     @Namespace private var lyricsMorph
-    @AppStorage("player-control-appearance")
-    private var playerControlAppearance = PlayerControlAppearance.liquidGlass.rawValue
+    @AppStorage("player-seekbar-appearance")
+    private var playerSeekBarAppearance = PlayerSeekBarAppearance.liquidGlass.rawValue
 
     var body: some View {
         GeometryReader { proxy in
@@ -46,7 +46,7 @@ struct PlayerView: View {
                     FullLyricsView(
                         palette: palette,
                         namespace: lyricsMorph,
-                        controlAppearance: resolvedControlAppearance
+                        seekBarAppearance: resolvedSeekBarAppearance
                     )
                         .environmentObject(audio)
                         .transition(
@@ -270,7 +270,7 @@ struct PlayerView: View {
             PlayerSeekBar(
                 value: $scrubValue,
                 range: 0...seekUpperBound,
-                appearance: resolvedControlAppearance,
+                appearance: resolvedSeekBarAppearance,
                 tint: playerPrimary
             ) { editing in
                 isScrubbing = editing
@@ -290,18 +290,8 @@ struct PlayerView: View {
     }
 
     private var transport: some View {
-        Group {
-            if resolvedControlAppearance == .liquidGlass {
-                if #available(iOS 26.0, *) {
-                    liquidGlassTransport
-                } else {
-                    classicTransport
-                }
-            } else {
-                classicTransport
-            }
-        }
-        .frame(height: 112)
+        classicTransport
+            .frame(height: 112)
     }
 
     private var classicTransport: some View {
@@ -349,59 +339,6 @@ struct PlayerView: View {
         .buttonStyle(BuFiPressStyle())
         .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.isPlaying)
         .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
-    }
-
-    @available(iOS 26.0, *)
-    private var liquidGlassTransport: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack {
-                liquidGlassControl(
-                    "shuffle",
-                    size: 22,
-                    active: audio.isShuffleEnabled,
-                    label: "셔플"
-                ) {
-                    audio.toggleShuffle()
-                }
-                Spacer()
-                liquidGlassControl("backward.end.fill", size: 27, label: "이전 곡") {
-                    audio.previous()
-                }
-                Spacer()
-                Button {
-                    audio.togglePlayback()
-                } label: {
-                    Group {
-                        if audio.isBuffering {
-                            ProgressView()
-                        } else {
-                            Image(systemName: audio.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 25, weight: .bold))
-                                .offset(x: audio.isPlaying ? 0 : 1)
-                                .contentTransition(.symbolEffect(.replace))
-                        }
-                    }
-                    .frame(width: 58, height: 58)
-                }
-                .buttonStyle(.glassProminent)
-                .tint(BuFiTheme.accent)
-                .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.isPlaying)
-                .accessibilityLabel(audio.isPlaying ? "일시정지" : "재생")
-                Spacer()
-                liquidGlassControl("forward.end.fill", size: 27, label: "다음 곡") {
-                    audio.next()
-                }
-                Spacer()
-                liquidGlassControl(
-                    audio.repeatMode == .one ? "repeat.1" : "repeat",
-                    size: 22,
-                    active: audio.repeatMode != .off,
-                    label: "반복"
-                ) {
-                    audio.cycleRepeat()
-                }
-            }
-        }
     }
 
     private func utilityRow(_ song: Song) -> some View {
@@ -573,36 +510,6 @@ struct PlayerView: View {
         .accessibilityLabel(label)
     }
 
-    @available(iOS 26.0, *)
-    private func liquidGlassControl(
-        _ icon: String,
-        size: CGFloat,
-        active: Bool = false,
-        label: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            ZStack(alignment: .bottom) {
-                Image(systemName: icon)
-                    .font(.system(size: size, weight: .semibold))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(active ? BuFiTheme.accent : playerPrimary)
-                    .frame(width: 44, height: 44)
-                    .contentTransition(.symbolEffect(.replace))
-                if active {
-                    Circle()
-                        .fill(BuFiTheme.accentSoft)
-                        .frame(width: 4, height: 4)
-                        .offset(y: 1)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-        }
-        .buttonStyle(.glass)
-        .animation(allowsMotion ? BuFiMotion.tap : .none, value: active)
-        .accessibilityLabel(label)
-    }
-
     private func artistRoute(for song: Song) -> MusicRoute? {
         let artists = model.home.starredArtists + model.home.artists
         if let artistID = song.artistId {
@@ -666,8 +573,8 @@ struct PlayerView: View {
         }
     }
 
-    private var resolvedControlAppearance: PlayerControlAppearance {
-        PlayerControlAppearance.resolved(playerControlAppearance)
+    private var resolvedSeekBarAppearance: PlayerSeekBarAppearance {
+        PlayerSeekBarAppearance.resolved(playerSeekBarAppearance)
     }
 
     private var allowsMotion: Bool { motionEnabled }
@@ -692,7 +599,7 @@ private struct FullLyricsView: View {
 
     let palette: ArtworkPalette
     let namespace: Namespace.ID
-    let controlAppearance: PlayerControlAppearance
+    let seekBarAppearance: PlayerSeekBarAppearance
 
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
@@ -825,7 +732,7 @@ private struct FullLyricsView: View {
             PlayerSeekBar(
                 value: $scrubValue,
                 range: 0...max(duration, 1),
-                appearance: controlAppearance,
+                appearance: seekBarAppearance,
                 tint: lyricsPrimary
             ) { editing in
                 isScrubbing = editing

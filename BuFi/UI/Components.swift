@@ -35,7 +35,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
-enum PlayerControlAppearance: String, CaseIterable, Identifiable {
+enum PlayerSeekBarAppearance: String, CaseIterable, Identifiable {
     case classic
     case liquidGlass
 
@@ -48,8 +48,8 @@ enum PlayerControlAppearance: String, CaseIterable, Identifiable {
         }
     }
 
-    static func resolved(_ rawValue: String) -> PlayerControlAppearance {
-        PlayerControlAppearance(rawValue: rawValue) ?? .liquidGlass
+    static func resolved(_ rawValue: String) -> PlayerSeekBarAppearance {
+        PlayerSeekBarAppearance(rawValue: rawValue) ?? .liquidGlass
     }
 }
 
@@ -520,7 +520,7 @@ struct SectionTitle: View {
 struct PlayerSeekBar: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
-    let appearance: PlayerControlAppearance
+    let appearance: PlayerSeekBarAppearance
     var tint: Color = .white
     var onEditingChanged: (Bool) -> Void = { _ in }
 
