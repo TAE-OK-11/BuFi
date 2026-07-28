@@ -11,7 +11,7 @@ struct PlayerView: View {
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
     @State private var showQueue = false
-    @State private var artworkPage: Int?
+    @State private var artworkPage = 0
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
     @Namespace private var lyricsMorph
@@ -178,70 +178,38 @@ struct PlayerView: View {
     }
 
     private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
-        let viewportWidth = max(240, availableWidth - 44)
-        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
-        let sideInset = max(0, (viewportWidth - edge) / 2)
+        let edge = min(availableWidth - 44, max(264, availableHeight * 0.47))
         let songs = audio.queue.isEmpty ? [song] : audio.queue
-        let animatesArtworkTransition = allowsMotion
 
-        return VStack(spacing: 0) {
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 18) {
-                    ForEach(songs.indices, id: \.self) { index in
-                        let item = songs[index]
-                        ArtworkView(
-                            coverArt: item.coverArt,
-                            size: edge,
-                            cornerRadius: 14,
-                            onPalette: { nextPalette in
-                                guard index == artworkPage else { return }
-                                withAnimation(allowsMotion ? BuFiMotion.color : .none) {
-                                    palette = nextPalette
-                                }
+        return TabView(selection: $artworkPage) {
+            ForEach(Array(songs.enumerated()), id: \.element.id) { index, item in
+                VStack(spacing: 0) {
+                    ArtworkView(
+                        coverArt: item.coverArt,
+                        size: edge,
+                        cornerRadius: 14,
+                        onPalette: { nextPalette in
+                            guard index == artworkPage else { return }
+                            withAnimation(allowsMotion ? BuFiMotion.color : .none) {
+                                palette = nextPalette
                             }
-                        )
-                        .frame(width: edge, height: edge)
-                        .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
-                        .id(index)
-                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                            content
-                                .scaleEffect(phase.isIdentity || !animatesArtworkTransition ? 1 : 0.94)
-                                .opacity(phase.isIdentity || !animatesArtworkTransition ? 1 : 0.72)
                         }
-                    }
-                }
-                .scrollTargetLayout()
-            }
-            .scrollIndicators(.hidden)
-            .contentMargins(.horizontal, sideInset, for: .scrollContent)
-            .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $artworkPage)
-            .frame(height: edge + 42)
-
-            ZStack {
-                metadataContent(song)
-                    .id(song.id)
-                    .transition(
-                        allowsMotion
-                            ? .asymmetric(
-                                insertion: .move(
-                                    edge: transitionDirection > 0 ? .trailing : .leading
-                                ).combined(with: .opacity),
-                                removal: .move(
-                                    edge: transitionDirection > 0 ? .leading : .trailing
-                                ).combined(with: .opacity)
-                            )
-                            : .opacity
                     )
+                    .frame(width: edge, height: edge)
+                    .padding(.horizontal, 4)
+                    .padding(.top, 13)
+                    .padding(.bottom, 26)
+
+                    metadataContent(item)
+                        .padding(.bottom, 18)
+                }
+                .tag(index)
             }
-            .animation(allowsMotion ? BuFiMotion.text : .none, value: song.id)
-            .padding(.bottom, 18)
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(height: edge + 116)
         .contentShape(Rectangle())
-        .onChange(of: artworkPage) { oldPage, page in
-            guard let index = page else { return }
-            let oldIndex = oldPage ?? audio.queueIndex
+        .onChange(of: artworkPage) { oldIndex, index in
             transitionDirection = index >= oldIndex ? 1 : -1
             guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
@@ -426,9 +394,12 @@ struct PlayerView: View {
                 Button {
                     openFullLyrics()
                 } label: {
-                    miniLyricsWindow
+                    ZStack(alignment: .topLeading) {
+                        miniLyricsWindow
+                    }
                     .frame(maxWidth: .infinity)
-                    .frame(minHeight: 205, alignment: .top)
+                    .frame(height: 205, alignment: .top)
+                    .clipped()
                     .id(audio.currentSong?.id)
                     .transition(
                         allowsMotion
