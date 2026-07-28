@@ -308,9 +308,6 @@ struct PlayerView: View {
                 progress
                     .padding(.horizontal, 2)
                 transport
-                SystemVolumeSlider(tint: playerPrimary)
-                    .frame(height: 24)
-                    .accessibilityLabel("시스템 음량")
                 utilityRow(song, includesAirPlay: false)
                     .padding(.vertical, 0)
             }
