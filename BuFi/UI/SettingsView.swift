@@ -9,7 +9,7 @@ struct SettingsView: View {
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("motion-enabled") private var motionEnabled = true
     @AppStorage("player-seekbar-appearance")
-    private var playerSeekBarAppearance = PlayerSeekBarAppearance.liquidGlass.rawValue
+    private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
     private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
@@ -69,15 +69,15 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Picker("재생바 스타일", selection: $playerSeekBarAppearance) {
-                        ForEach(PlayerSeekBarAppearance.allCases) { appearance in
+                    Picker("플레이어 스타일", selection: $playerAppearance) {
+                        ForEach(PlayerAppearance.allCases) { appearance in
                             Text(appearance.title).tag(appearance.rawValue)
                         }
                     }
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Text("Liquid Glass는 iOS 26 이상에서 재생 막대만 Apple 기본 디자인으로 변경합니다. 나머지 플레이어 버튼과 배치는 기존 클래식 디자인을 유지하며, 이전 iOS에서는 클래식 재생바로 자동 전환됩니다.")
+                    Text("Classic은 최초 플레이어 디자인을 유지합니다. Liquid Glass는 같은 배치에서 재생바만 Apple 디자인으로 변경합니다. Dynamic은 앨범 커버 아래 유리 카드에 곡 정보와 재생 제어를 모아 잠금화면처럼 표시합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 

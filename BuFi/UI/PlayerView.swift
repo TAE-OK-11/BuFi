@@ -11,12 +11,12 @@ struct PlayerView: View {
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
     @State private var showQueue = false
-    @State private var artworkPage = 0
+    @State private var artworkPage: Int?
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
     @Namespace private var lyricsMorph
     @AppStorage("player-seekbar-appearance")
-    private var playerSeekBarAppearance = PlayerSeekBarAppearance.liquidGlass.rawValue
+    private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
     private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
 
@@ -29,10 +29,22 @@ struct PlayerView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(song)
-                            nowPlayingPager(song, availableWidth: proxy.size.width, availableHeight: proxy.size.height)
-                            progress
-                            transport
-                            utilityRow(song)
+                            if resolvedPlayerAppearance == .dynamic {
+                                dynamicPlayer(
+                                    song,
+                                    availableWidth: proxy.size.width,
+                                    availableHeight: proxy.size.height
+                                )
+                            } else {
+                                nowPlayingPager(
+                                    song,
+                                    availableWidth: proxy.size.width,
+                                    availableHeight: proxy.size.height
+                                )
+                                progress
+                                transport
+                                utilityRow(song)
+                            }
                             lyricsCard
                         }
                         .padding(.horizontal, 22)
@@ -167,38 +179,67 @@ struct PlayerView: View {
     }
 
     private func nowPlayingPager(_ song: Song, availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
-        let edge = min(availableWidth - 44, max(264, availableHeight * 0.47))
+        let viewportWidth = max(240, availableWidth - 44)
+        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
+        let sideInset = max(0, (viewportWidth - edge) / 2)
         let songs = audio.queue.isEmpty ? [song] : audio.queue
+        let animatesTransition = allowsMotion
 
-        return TabView(selection: $artworkPage) {
-            ForEach(Array(songs.enumerated()), id: \.element.id) { index, item in
-                VStack(spacing: 0) {
-                    ArtworkView(
-                        coverArt: item.coverArt,
-                        size: edge,
-                        cornerRadius: 14,
-                        onPalette: { nextPalette in
-                            guard index == artworkPage else { return }
-                            withAnimation(allowsMotion ? BuFiMotion.color : .none) {
-                                palette = nextPalette
+        return VStack(spacing: 0) {
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 18) {
+                    ForEach(songs.indices, id: \.self) { index in
+                        let item = songs[index]
+                        ArtworkView(
+                            coverArt: item.coverArt,
+                            size: edge,
+                            cornerRadius: 14,
+                            onPalette: { nextPalette in
+                                guard index == artworkPage else { return }
+                                withAnimation(allowsMotion ? BuFiMotion.color : .none) {
+                                    palette = nextPalette
+                                }
                             }
+                        )
+                        .frame(width: edge, height: edge)
+                        .id(index)
+                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                            content
+                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.94)
+                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.72)
                         }
-                    )
-                    .frame(width: edge, height: edge)
-                    .padding(.horizontal, 4)
-                    .padding(.top, 13)
-                    .padding(.bottom, 26)
-
-                    metadataContent(item)
-                        .padding(.bottom, 18)
+                    }
                 }
-                .tag(index)
+                .scrollTargetLayout()
             }
+            .scrollIndicators(.hidden)
+            .contentMargins(.horizontal, sideInset, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $artworkPage)
+            .frame(height: edge + 42)
+
+            metadataContent(song)
+                .id(song.id)
+                .transition(
+                    allowsMotion
+                        ? .asymmetric(
+                            insertion: .move(
+                                edge: transitionDirection > 0 ? .trailing : .leading
+                            ).combined(with: .opacity),
+                            removal: .move(
+                                edge: transitionDirection > 0 ? .leading : .trailing
+                            ).combined(with: .opacity)
+                        )
+                        : .opacity
+                )
+                .animation(allowsMotion ? BuFiMotion.text : .none, value: song.id)
+                .padding(.bottom, 18)
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(height: edge + 116)
         .contentShape(Rectangle())
-        .onChange(of: artworkPage) { oldIndex, index in
+        .onChange(of: artworkPage) { oldPage, page in
+            guard let index = page else { return }
+            let oldIndex = oldPage ?? audio.queueIndex
             transitionDirection = index >= oldIndex ? 1 : -1
             guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
@@ -242,6 +283,130 @@ struct PlayerView: View {
             }
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+        }
+    }
+
+    private func dynamicPlayer(
+        _ song: Song,
+        availableWidth: CGFloat,
+        availableHeight: CGFloat
+    ) -> some View {
+        VStack(spacing: 14) {
+            dynamicArtworkPager(
+                song,
+                availableWidth: availableWidth,
+                availableHeight: availableHeight
+            )
+
+            VStack(spacing: 4) {
+                dynamicMetadataContent(song)
+                    .padding(.bottom, 8)
+                progress
+                    .padding(.horizontal, 2)
+                transport
+                SystemVolumeSlider(tint: playerPrimary)
+                    .frame(height: 24)
+                    .accessibilityLabel("시스템 음량")
+                utilityRow(song)
+                    .padding(.vertical, 0)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 14)
+            .background {
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(Color.white.opacity(0.24))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 30, style: .continuous)
+                            .stroke(.white.opacity(0.30), lineWidth: 0.8)
+                    }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+            .buFiGlass(cornerRadius: 30, interactive: true)
+        }
+        .padding(.bottom, 8)
+    }
+
+    private func dynamicArtworkPager(
+        _ song: Song,
+        availableWidth: CGFloat,
+        availableHeight: CGFloat
+    ) -> some View {
+        let viewportWidth = max(240, availableWidth - 44)
+        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
+        let sideInset = max(0, (viewportWidth - edge) / 2)
+        let songs = audio.queue.isEmpty ? [song] : audio.queue
+        let animatesTransition = allowsMotion
+
+        return ScrollView(.horizontal) {
+            LazyHStack(spacing: 18) {
+                ForEach(songs.indices, id: \.self) { index in
+                    let item = songs[index]
+                    ArtworkView(
+                        coverArt: item.coverArt,
+                        size: edge,
+                        cornerRadius: 14,
+                        onPalette: { nextPalette in
+                            guard index == artworkPage else { return }
+                            withAnimation(allowsMotion ? BuFiMotion.color : .none) {
+                                palette = nextPalette
+                            }
+                        }
+                    )
+                    .frame(width: edge, height: edge)
+                    .id(index)
+                    .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                        content
+                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.94)
+                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.72)
+                    }
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollIndicators(.hidden)
+        .contentMargins(.horizontal, sideInset, for: .scrollContent)
+        .scrollTargetBehavior(.viewAligned)
+        .scrollPosition(id: $artworkPage)
+        .frame(height: edge + 26)
+        .contentShape(Rectangle())
+        .onChange(of: artworkPage) { oldPage, page in
+            guard let index = page else { return }
+            let oldIndex = oldPage ?? audio.queueIndex
+            transitionDirection = index >= oldIndex ? 1 : -1
+            guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
+            audio.playQueueItem(at: index)
+        }
+    }
+
+    private func dynamicMetadataContent(_ song: Song) -> some View {
+        ZStack {
+            VStack(spacing: 4) {
+                Text(song.title)
+                    .font(.system(size: 22, weight: .bold))
+                    .tracking(-0.55)
+                    .lineLimit(1)
+                Text(song.artist)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(playerSecondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 52)
+
+            HStack {
+                Spacer()
+                Button {
+                    Task { await model.toggleStar(song: song) }
+                } label: {
+                    Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : playerPrimary)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+            }
         }
     }
 
@@ -530,7 +695,6 @@ struct PlayerView: View {
 
     private func syncArtworkPage(to index: Int, animated: Bool) {
         let resolved = audio.queue.indices.contains(index) ? index : 0
-        guard artworkPage != resolved else { return }
         if animated && allowsMotion {
             withAnimation(BuFiMotion.player) {
                 artworkPage = resolved
@@ -566,7 +730,11 @@ struct PlayerView: View {
     }
 
     private var resolvedSeekBarAppearance: PlayerSeekBarAppearance {
-        PlayerSeekBarAppearance.resolved(playerSeekBarAppearance)
+        resolvedPlayerAppearance.seekBarAppearance
+    }
+
+    private var resolvedPlayerAppearance: PlayerAppearance {
+        PlayerAppearance.resolved(playerAppearance)
     }
 
     private var resolvedBackgroundAppearance: PlayerBackgroundAppearance {
@@ -576,7 +744,9 @@ struct PlayerView: View {
     private var allowsMotion: Bool { motionEnabled }
 
     private var usesDarkForeground: Bool {
-        colorScheme == .light || resolvedBackgroundAppearance == .bright
+        colorScheme == .light
+            || resolvedBackgroundAppearance == .bright
+            || resolvedPlayerAppearance == .dynamic
     }
 
     private var playerPrimary: Color {

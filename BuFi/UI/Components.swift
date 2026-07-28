@@ -1,4 +1,5 @@
 import AVKit
+import MediaPlayer
 import SwiftUI
 import UIKit
 
@@ -50,6 +51,30 @@ enum PlayerSeekBarAppearance: String, CaseIterable, Identifiable {
 
     static func resolved(_ rawValue: String) -> PlayerSeekBarAppearance {
         PlayerSeekBarAppearance(rawValue: rawValue) ?? .liquidGlass
+    }
+}
+
+enum PlayerAppearance: String, CaseIterable, Identifiable {
+    case classic
+    case liquidGlass
+    case dynamic
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .classic: "클래식"
+        case .liquidGlass: "Liquid Glass"
+        case .dynamic: "Dynamic"
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> PlayerAppearance {
+        PlayerAppearance(rawValue: rawValue) ?? .liquidGlass
+    }
+
+    var seekBarAppearance: PlayerSeekBarAppearance {
+        self == .classic ? .classic : .liquidGlass
     }
 }
 
@@ -704,5 +729,28 @@ struct AirPlayButton: UIViewRepresentable {
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
         uiView.tintColor = lightContent ? .white : .label
+    }
+}
+
+struct SystemVolumeSlider: UIViewRepresentable {
+    var tint: Color = .primary
+
+    func makeUIView(context: Context) -> MPVolumeView {
+        let volumeView = MPVolumeView(frame: .zero)
+        volumeView.showsRouteButton = false
+        volumeView.showsVolumeSlider = true
+        updateSlider(in: volumeView)
+        return volumeView
+    }
+
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {
+        updateSlider(in: uiView)
+    }
+
+    private func updateSlider(in volumeView: MPVolumeView) {
+        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return }
+        slider.minimumTrackTintColor = UIColor(tint).withAlphaComponent(0.48)
+        slider.maximumTrackTintColor = UIColor(tint).withAlphaComponent(0.18)
+        slider.thumbTintColor = UIColor(tint)
     }
 }

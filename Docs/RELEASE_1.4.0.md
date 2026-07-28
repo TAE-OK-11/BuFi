@@ -18,11 +18,13 @@
 
 ## UI and energy
 
-- Adds a selectable seek-bar style: Apple’s native Liquid Glass slider on iOS
-  26+, with an automatic Classic fallback on iOS 17–25. Transport buttons and
-  the rest of the player retain the existing Classic design.
-- Keeps the original full-width artwork pager, spacing, and player layout, and
-  removes the added artwork drop shadow.
+- Adds three selectable player styles: Classic preserves the original layout,
+  Liquid Glass changes only the seek bar to Apple’s native control on iOS 26+,
+  and Dynamic groups metadata, seek, transport, system volume, AirPlay, share,
+  and queue controls in a Lock Screen-style glass card.
+- Adds the separated artwork swipe and programmatic track-transition behavior
+  to all three player styles while preserving the original full-width cover
+  size and omitting the artwork drop shadow.
 - Adds Original, Multicolor, and Bright player-background choices. The two new
   modes extract and cache up to three distinct album colors, then render a
   static Lock Screen-style gradient without continuous image analysis.
