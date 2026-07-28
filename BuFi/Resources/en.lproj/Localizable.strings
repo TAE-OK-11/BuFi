@@ -144,11 +144,11 @@
 "동작 줄이기, 저전력 모드 또는 기기 온도가 높을 때는 애니메이션을 자동으로 줄입니다." = "Animations are automatically reduced when Reduce Motion or Low Power Mode is on, or when the device is running hot.";
 "인증된 스트림·아트워크·다운로드 URL 생성에 사용합니다." = "Used to generate authenticated stream, artwork, and download URLs.";
 "플레이어 배경" = "Player Background";
-"기존" = "Original";
+"기본" = "Default";
 "다중 컬러" = "Multicolor";
 "밝게" = "Bright";
 "플레이어 스타일" = "Player Style";
 "Dynamic" = "Dynamic";
 "Classic은 최초 플레이어 디자인을 유지합니다. Liquid Glass는 같은 배치에서 재생바만 Apple 디자인으로 변경합니다. Dynamic은 앨범 커버 아래 유리 카드에 곡 정보와 재생 제어를 모아 잠금화면처럼 표시합니다." = "Classic preserves the original player design. Liquid Glass keeps the same layout and changes only the seek bar to Apple's design. Dynamic groups track details and playback controls in a glass card below the artwork for a Lock Screen-style layout.";
 "시스템 음량" = "System Volume";
-"기존은 원래 대표색 명암에 앨범 보조색을 은은하게 섞습니다. 다중 컬러와 밝게는 서로 다른 대표색을 최대 3개 더 선명하게 사용해 잠금화면처럼 부드러운 그라데이션으로 표시합니다." = "Original subtly blends supporting album colors into its familiar primary-color shading. Multicolor and Bright use up to three distinct colors more vividly for a smooth Lock Screen-style gradient.";
+"기본은 Classic과 Liquid Glass에서 앨범 대표색을 단색으로 표시하고, Dynamic에서는 잠금화면 느낌의 그라데이션을 유지합니다. 다중 컬러와 밝게는 서로 다른 대표색을 최대 3개 사용합니다." = "Default uses a solid album color in Classic and Liquid Glass, while Dynamic keeps its Lock Screen-style gradient. Multicolor and Bright use up to three distinct album colors.";

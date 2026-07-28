@@ -60,6 +60,7 @@ struct PlayerView: View {
                     FullLyricsView(
                         palette: palette,
                         namespace: lyricsMorph,
+                        playerAppearance: resolvedPlayerAppearance,
                         seekBarAppearance: resolvedSeekBarAppearance,
                         backgroundAppearance: resolvedBackgroundAppearance
                     )
@@ -107,6 +108,7 @@ struct PlayerView: View {
     private var background: some View {
         PlayerPaletteBackground(
             palette: palette,
+            playerAppearance: resolvedPlayerAppearance,
             appearance: resolvedBackgroundAppearance,
             colorScheme: colorScheme
         )
@@ -773,6 +775,7 @@ private struct FullLyricsView: View {
 
     let palette: ArtworkPalette
     let namespace: Namespace.ID
+    let playerAppearance: PlayerAppearance
     let seekBarAppearance: PlayerSeekBarAppearance
     let backgroundAppearance: PlayerBackgroundAppearance
 
@@ -785,6 +788,7 @@ private struct FullLyricsView: View {
         ZStack {
             PlayerPaletteBackground(
                 palette: palette,
+                playerAppearance: playerAppearance,
                 appearance: backgroundAppearance,
                 colorScheme: colorScheme
             )
@@ -990,6 +994,7 @@ private struct FullLyricsView: View {
 
 private struct PlayerPaletteBackground: View {
     let palette: ArtworkPalette
+    let playerAppearance: PlayerAppearance
     let appearance: PlayerBackgroundAppearance
     let colorScheme: ColorScheme
 
@@ -997,36 +1002,47 @@ private struct PlayerPaletteBackground: View {
     var body: some View {
         switch appearance {
         case .classic:
-            ZStack {
-                LinearGradient(
-                    colors: [Color(palette.top), Color(palette.bottom)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                RadialGradient(
-                    colors: [Color(palette.secondary).opacity(0.18), .clear],
-                    center: secondaryPoint,
-                    startRadius: 8,
-                    endRadius: 540
-                )
-                RadialGradient(
-                    colors: [Color(palette.accent).opacity(0.16), .clear],
-                    center: accentPoint,
-                    startRadius: 12,
-                    endRadius: 620
-                )
-                if colorScheme == .light {
+            if playerAppearance == .dynamic {
+                ZStack {
                     LinearGradient(
-                        colors: [.white.opacity(0.46), .white.opacity(0.72)],
+                        colors: [Color(palette.top), Color(palette.bottom)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                } else {
-                    LinearGradient(
-                        colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
-                        startPoint: .top,
-                        endPoint: .bottom
+                    RadialGradient(
+                        colors: [Color(palette.secondary).opacity(0.18), .clear],
+                        center: secondaryPoint,
+                        startRadius: 8,
+                        endRadius: 540
                     )
+                    RadialGradient(
+                        colors: [Color(palette.accent).opacity(0.16), .clear],
+                        center: accentPoint,
+                        startRadius: 12,
+                        endRadius: 620
+                    )
+                    if colorScheme == .light {
+                        LinearGradient(
+                            colors: [.white.opacity(0.46), .white.opacity(0.72)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    } else {
+                        LinearGradient(
+                            colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                }
+            } else {
+                ZStack {
+                    Color(palette.top)
+                    if colorScheme == .light {
+                        Color.white.opacity(0.56)
+                    } else {
+                        Color.black.opacity(0.18)
+                    }
                 }
             }
         case .multicolor:

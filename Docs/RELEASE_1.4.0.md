@@ -64,6 +64,9 @@
   replay, buffering intent, pause-during-buffering, route/interruption resume,
   queue replacement, artwork palette cancellation, and lock-screen artwork
   refreshes.
+- Renames the player background option from Original to Default. Default now
+  uses a single album-derived color in Classic and Liquid Glass while Dynamic
+  keeps its Lock Screen-style gradient.
 
 ## Verification
 

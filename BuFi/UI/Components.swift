@@ -87,7 +87,7 @@ enum PlayerBackgroundAppearance: String, CaseIterable, Identifiable {
 
     var title: LocalizedStringKey {
         switch self {
-        case .classic: "기존"
+        case .classic: "기본"
         case .multicolor: "다중 컬러"
         case .bright: "밝게"
         }
