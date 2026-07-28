@@ -89,7 +89,7 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Text("기존은 한 가지 대표색의 명암을 사용합니다. 다중 컬러와 밝게는 앨범에서 서로 다른 대표색을 최대 3개 추출해 잠금화면처럼 부드러운 그라데이션으로 표시합니다.")
+                    Text("기존은 원래 대표색 명암에 앨범 보조색을 은은하게 섞습니다. 다중 컬러와 밝게는 서로 다른 대표색을 최대 3개 더 선명하게 사용해 잠금화면처럼 부드러운 그라데이션으로 표시합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 

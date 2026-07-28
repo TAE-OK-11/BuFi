@@ -31,6 +31,9 @@
 - Refines album palettes with deterministic OKLab clustering, perceptual color
   separation, pastel-aware scoring, and artwork-relative color positions so
   gradients preserve more of each cover’s actual color composition.
+- Uses the refined supporting colors in Classic and Liquid Glass as subtle
+  spatial highlights as well as in the stronger Multicolor, Bright, and
+  Dynamic presentations.
 - Smooths compact lyric progression and the compact-to-full-screen surface
   transition, shows up to five compact lyric lines, and allows long lines to
   wrap instead of truncating.

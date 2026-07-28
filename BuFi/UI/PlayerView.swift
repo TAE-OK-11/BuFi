@@ -991,6 +991,18 @@ private struct PlayerPaletteBackground: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
+                RadialGradient(
+                    colors: [Color(palette.secondary).opacity(0.18), .clear],
+                    center: secondaryPoint,
+                    startRadius: 8,
+                    endRadius: 540
+                )
+                RadialGradient(
+                    colors: [Color(palette.accent).opacity(0.16), .clear],
+                    center: accentPoint,
+                    startRadius: 12,
+                    endRadius: 620
+                )
                 if colorScheme == .light {
                     LinearGradient(
                         colors: [.white.opacity(0.46), .white.opacity(0.72)],
