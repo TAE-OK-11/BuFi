@@ -16,7 +16,6 @@ struct PlayerView: View {
     @State private var artworkPalettes: [String: ArtworkPalette] = [:]
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
-    @Namespace private var lyricsMorph
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -65,17 +64,12 @@ struct PlayerView: View {
                 if audio.showFullLyrics {
                     FullLyricsView(
                         palette: palette,
-                        namespace: lyricsMorph,
                         playerAppearance: resolvedPlayerAppearance,
                         seekBarAppearance: resolvedSeekBarAppearance,
                         backgroundAppearance: resolvedBackgroundAppearance
                     )
                         .environmentObject(audio)
-                        .transition(
-                            allowsMotion
-                                ? .scale(scale: 0.985, anchor: .bottom).combined(with: .opacity)
-                                : .opacity
-                        )
+                        .transition(.opacity)
                         .zIndex(20)
                 }
             }
@@ -623,11 +617,8 @@ struct PlayerView: View {
                         miniLyricsWindow
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 205, alignment: .top)
+                    .frame(minHeight: 104, maxHeight: 158, alignment: .top)
                     .clipped()
-                    .id(audio.currentSong?.id)
-                    .transition(trackTextTransition)
-                    .animation(allowsMotion ? BuFiMotion.trackText : .none, value: audio.currentSong?.id)
                 }
                 .buttonStyle(.plain)
             }
@@ -641,11 +632,6 @@ struct PlayerView: View {
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
-                    )
-                    .matchedGeometryEffect(
-                        id: "lyrics-surface",
-                        in: lyricsMorph,
-                        isSource: !audio.showFullLyrics
                     )
             }
             .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -707,8 +693,8 @@ struct PlayerView: View {
     private var miniLyricLineTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 10).combined(with: .opacity),
-            removal: .offset(y: -8).combined(with: .opacity)
+            insertion: .offset(y: 4).combined(with: .opacity),
+            removal: .offset(y: -3).combined(with: .opacity)
         )
     }
 
@@ -896,7 +882,6 @@ private struct FullLyricsView: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let palette: ArtworkPalette
-    let namespace: Namespace.ID
     let playerAppearance: PlayerAppearance
     let seekBarAppearance: PlayerSeekBarAppearance
     let backgroundAppearance: PlayerBackgroundAppearance
@@ -915,7 +900,6 @@ private struct FullLyricsView: View {
                 colorScheme: colorScheme
             )
                 .clipShape(RoundedRectangle(cornerRadius: dragCornerRadius, style: .continuous))
-                .matchedGeometryEffect(id: "lyrics-surface", in: namespace, isSource: true)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -979,7 +963,7 @@ private struct FullLyricsView: View {
                                 .foregroundStyle(color(for: index))
                                 .scaleEffect(
                                     allowsMotion
-                                        ? (index == audio.activeLyricIndex ? 1.045 : 0.985)
+                                        ? (index == audio.activeLyricIndex ? 1.015 : 0.995)
                                         : 1,
                                     anchor: .leading
                                 )
@@ -1102,9 +1086,9 @@ private struct FullLyricsView: View {
     }
 
     private var dragProgress: CGFloat { min(max(dragOffset / 420, 0), 1) }
-    private var dragScale: CGFloat { allowsMotion ? 1 - (dragProgress * 0.055) : 1 }
-    private var dragOpacity: Double { allowsMotion ? 1 - Double(dragProgress * 0.16) : 1 }
-    private var dragCornerRadius: CGFloat { allowsMotion ? dragProgress * 28 : 0 }
+    private var dragScale: CGFloat { allowsMotion ? 1 - (dragProgress * 0.018) : 1 }
+    private var dragOpacity: Double { allowsMotion ? 1 - Double(dragProgress * 0.08) : 1 }
+    private var dragCornerRadius: CGFloat { allowsMotion ? dragProgress * 18 : 0 }
     private var allowsMotion: Bool { motionEnabled }
     private var usesDarkForeground: Bool {
         colorScheme == .light || backgroundAppearance == .bright
