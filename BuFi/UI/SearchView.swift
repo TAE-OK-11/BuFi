@@ -26,7 +26,12 @@ struct SearchView: View {
         NavigationStack {
             ScrollViewReader { scrollProxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        BuFiPageHeader(
+                            title: "검색",
+                            subtitle: "서버의 음악과 내 컬렉션을 빠르게 찾기",
+                            systemImage: "magnifyingglass"
+                        )
                         searchField
                             .id(SearchScrollAnchor.top)
                         Group {
@@ -42,7 +47,7 @@ struct SearchView: View {
                             focused = false
                         }
                     }
-                    .padding(.top, 20)
+                    .padding(.top, 18)
                     .padding(.bottom, 34)
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -108,13 +113,11 @@ struct SearchView: View {
         }
         .foregroundStyle(.primary)
         .padding(.horizontal, 16)
-        .frame(minHeight: 56)
-        .background(
-            BuFiTheme.elevated,
-            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
-        )
+        .frame(minHeight: 58)
+        .background(Color.primary.opacity(0.05))
+        .buFiGlass(cornerRadius: 20, interactive: true)
         .overlay {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(
                     focused
                         ? LinearGradient(
@@ -133,14 +136,6 @@ struct SearchView: View {
                     lineWidth: focused ? 1.4 : 0.6
                 )
         }
-        .shadow(
-            color: focused ? BuFiTheme.accent.opacity(0.18) : .clear,
-            radius: focused ? 13 : 0
-        )
-        .shadow(
-            color: focused ? BuFiTheme.deezerGlow.opacity(0.13) : .clear,
-            radius: focused ? 18 : 0
-        )
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
         .animation(motionEnabled ? BuFiMotion.fade : .none, value: focused)
@@ -179,9 +174,15 @@ struct SearchView: View {
                 )
                 .padding(.top, 32)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(model.home.starredSongs) { song in
-                        SongRow(song: song, queue: model.home.starredSongs)
+                BuFiGroupedSurface {
+                    VStack(spacing: 0) {
+                        ForEach(model.home.starredSongs) { song in
+                            SongRow(song: song, queue: model.home.starredSongs)
+                                .padding(.horizontal, 14)
+                            if song.id != model.home.starredSongs.last?.id {
+                                rowSeparator
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -221,33 +222,14 @@ struct SearchView: View {
                             browseMode = index == 0 ? .favoriteSongs : .favoriteAlbums
                         }
                     } label: {
-                        ZStack(alignment: .bottomTrailing) {
-                            LinearGradient(
-                                colors: [
-                                    category.1,
-                                    category.1.opacity(0.66),
-                                    BuFiTheme.deezerGlow.opacity(index == 0 ? 0.16 : 0.52)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            Image(systemName: category.2)
-                                .font(.system(size: 50, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.20))
-                                .rotationEffect(.degrees(8))
-                                .padding(13)
-                            Text(LocalizedStringKey(category.0))
-                                .font(.system(size: 19, weight: .bold))
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                                .padding(15)
-                        }
-                        .foregroundStyle(.white)
-                        .frame(height: 118)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .shadow(color: category.1.opacity(0.16), radius: 14, y: 7)
+                        BuFiFeatureCard(
+                            title: LocalizedStringKey(category.0),
+                            subtitle: categoryCount(index),
+                            systemImage: category.2,
+                            tint: category.1,
+                            expandsHorizontally: true,
+                            trailingSystemImage: "chevron.right"
+                        )
                     }
                     .buttonStyle(BuFiPressStyle())
                 }
@@ -256,9 +238,7 @@ struct SearchView: View {
 
             if !model.home.recentAlbums.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("앨범 둘러보기")
-                        .font(.system(size: 26, weight: .bold))
-                        .tracking(-0.7)
+                    SectionTitle(title: "앨범 둘러보기")
                         .padding(.horizontal, 16)
                         .padding(.top, 2)
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -287,7 +267,8 @@ struct SearchView: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .bold))
                     .frame(width: 38, height: 38)
-                    .background(BuFiTheme.elevated, in: Circle())
+                    .background(Color.primary.opacity(0.05))
+                    .buFiGlass(cornerRadius: 19, interactive: true)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("검색 둘러보기로 돌아가기")
@@ -320,57 +301,84 @@ struct SearchView: View {
         } else {
             VStack(alignment: .leading, spacing: 22) {
                 if !model.searchResults.artists.isEmpty {
-                    resultHeader("아티스트")
-                    ForEach(model.searchResults.artists) { artist in
-                        NavigationLink(value: MusicRoute.artist(artist)) {
-                            HStack(spacing: 13) {
-                                ArtworkView(coverArt: artist.coverArt, size: 62, cornerRadius: 31)
-                                    .frame(width: 62, height: 62)
-                                Text(artist.name)
-                                    .font(.system(size: 17, weight: .semibold))
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .layoutPriority(1)
-                                Spacer(minLength: 8)
-                                Image(systemName: "chevron.right").foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                if !model.searchResults.albums.isEmpty {
-                    resultHeader("앨범")
-                    ForEach(model.searchResults.albums) { album in
-                        NavigationLink(value: MusicRoute.album(album)) {
-                            HStack(spacing: 13) {
-                                ArtworkView(coverArt: album.coverArt, size: 62, cornerRadius: 6)
-                                    .frame(width: 62, height: 62)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(album.name)
+                    resultSection("아티스트") {
+                        ForEach(model.searchResults.artists) { artist in
+                            NavigationLink(value: MusicRoute.artist(artist)) {
+                                HStack(spacing: 13) {
+                                    ArtworkView(
+                                        coverArt: artist.coverArt,
+                                        size: 58,
+                                        cornerRadius: 29
+                                    )
+                                    .frame(width: 58, height: 58)
+                                    Text(artist.name)
                                         .font(.system(size: 17, weight: .semibold))
                                         .lineLimit(2)
                                         .fixedSize(horizontal: false, vertical: true)
-                                    Text("앨범 · \(album.artist)")
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                        .layoutPriority(1)
+                                    Spacer(minLength: 8)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundStyle(.tertiary)
                                 }
-                                .layoutPriority(1)
-                                Spacer(minLength: 8)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                            }
+                            .buttonStyle(.plain)
+                            if artist.id != model.searchResults.artists.last?.id {
+                                rowSeparator
                             }
                         }
-                        .buttonStyle(.plain)
+                    }
+                }
+                if !model.searchResults.albums.isEmpty {
+                    resultSection("앨범") {
+                        ForEach(model.searchResults.albums) { album in
+                            NavigationLink(value: MusicRoute.album(album)) {
+                                HStack(spacing: 13) {
+                                    ArtworkView(
+                                        coverArt: album.coverArt,
+                                        size: 58,
+                                        cornerRadius: 11
+                                    )
+                                    .frame(width: 58, height: 58)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(album.name)
+                                            .font(.system(size: 17, weight: .semibold))
+                                            .lineLimit(2)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text("앨범 · \(album.artist)")
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .layoutPriority(1)
+                                    Spacer(minLength: 8)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                            }
+                            .buttonStyle(.plain)
+                            if album.id != model.searchResults.albums.last?.id {
+                                rowSeparator
+                            }
+                        }
                     }
                 }
                 if !model.searchResults.songs.isEmpty {
-                    resultHeader("곡")
-                    ForEach(model.searchResults.songs) { song in
-                        SongRow(
-                            song: song,
-                            queue: model.searchResults.songs,
-                            textLineLimit: 2
-                        )
+                    resultSection("곡") {
+                        ForEach(model.searchResults.songs) { song in
+                            SongRow(
+                                song: song,
+                                queue: model.searchResults.songs,
+                                textLineLimit: 2
+                            )
+                            .padding(.horizontal, 14)
+                            if song.id != model.searchResults.songs.last?.id {
+                                rowSeparator
+                            }
+                        }
                     }
                 }
             }
@@ -378,10 +386,31 @@ struct SearchView: View {
         }
     }
 
-    private func resultHeader(_ title: String) -> some View {
-        Text(LocalizedStringKey(title))
-            .font(.system(size: 23, weight: .bold))
-            .padding(.top, 4)
+    private func categoryCount(_ index: Int) -> String {
+        let count = index == 0
+            ? model.home.starredSongs.count
+            : model.home.starredAlbums.count
+        return String(format: String(localized: "%d개 항목"), count)
+    }
+
+    private func resultSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            SectionTitle(title: title)
+            BuFiGroupedSurface {
+                VStack(spacing: 0) {
+                    content()
+                }
+            }
+        }
+    }
+
+    private var rowSeparator: some View {
+        Divider()
+            .padding(.leading, 85)
+            .opacity(0.55)
     }
 }
 
