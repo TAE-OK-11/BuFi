@@ -70,14 +70,27 @@ struct PersonalizedMixArtwork: View {
 
     private var assetName: String {
         switch mix.kind {
-        case .daylist: "MixDaylist"
+        case .daylist:
+            if mix.id.hasSuffix("-night") {
+                "MixMidnightDrive"
+            } else if mix.id.hasSuffix("-afternoon") {
+                "MixSunset"
+            } else {
+                "MixDaylist"
+            }
         case .repeatListening: "MixRepeat"
         case .listenAgain: "MixListenAgain"
         case .genre: "MixGenre"
         case .artist: "MixArtist"
-        case .mood: "MixMood"
-        case .favorites: "MixFavorites"
-        case .ranking: "MixRanking"
+        case .mood:
+            switch mix.id {
+            case "happy-mix": "MixMoodBoost"
+            case "upbeat-mix": "MixWorkoutEnergy"
+            case "chill-mix": "MixChillWaves"
+            default: "MixMood"
+            }
+        case .favorites: "MixLikedSongs"
+        case .ranking: "MixTopTracks"
         }
     }
 
@@ -93,8 +106,10 @@ struct PersonalizedMixArtwork: View {
     }
 
     private var foreground: Color {
-        switch mix.kind {
-        case .listenAgain, .genre, .mood: Color(red: 0.08, green: 0.06, blue: 0.15)
+        switch assetName {
+        case "MixListenAgain", "MixGenre", "MixMood",
+             "MixMoodBoost", "MixChillWaves":
+            Color(red: 0.08, green: 0.06, blue: 0.15)
         default: .white
         }
     }
