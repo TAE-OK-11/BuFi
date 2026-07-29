@@ -44,7 +44,31 @@ references; no source was copied into BuFi.
 - A paused player deactivates its audio session after a short resume window;
   an idle player entering the background deactivates immediately.
 - Release builds use explicit modules, whole-module Swift optimization, and
-  Thin LTO. CI skips redundant clean passes and Homebrew auto-update work.
+  monolithic LTO. CI skips redundant clean passes and Homebrew auto-update work.
+
+## Release optimizer follow-up
+
+- `LLVM_LTO = YES` combines the executable into one link-time optimization
+  unit. This deliberately trades longer links and higher CI memory use for the
+  strongest cross-file optimization.
+- Swift remains on safe `-O` whole-module optimization. `-Ounchecked` and
+  disabled exclusivity or safety checks are intentionally excluded because
+  playback and networking correctness matter more than an unmeasured
+  micro-optimization.
+- Xcode 26 compilation caching and explicit modules reduce repeated compilation
+  work.
+- Release deployment postprocessing, full symbol stripping, dead-code
+  stripping, and product validation keep the shipped executable lean while
+  retaining a dSYM for crash symbolication.
+
+Official references:
+
+- Apple Xcode Build Settings Reference:
+  <https://developer.apple.com/documentation/xcode/build-settings-reference>
+- Apple Xcode 26 Release Notes — compilation caching:
+  <https://developer.apple.com/documentation/xcode-release-notes/xcode-26-release-notes>
+- Swift.org Whole-Module Optimization:
+  <https://www.swift.org/blog/whole-module-optimizations/>
 
 ## Deliberately not adopted
 
