@@ -39,6 +39,10 @@
   <array>
     <string>audio</string>
   </array>
+  <key>UIAppFonts</key>
+  <array>
+    <string>Unbounded.ttf</string>
+  </array>
   <key>UILaunchScreen</key>
   <dict>
     <key>UIColorName</key>
