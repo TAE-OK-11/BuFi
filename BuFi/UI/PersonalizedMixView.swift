@@ -6,56 +6,42 @@ struct PersonalizedMixArtwork: View {
     var cornerRadius: CGFloat = 16
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .bottomLeading) {
             Image(assetName)
                 .resizable()
                 .scaledToFill()
 
-            VStack(alignment: .leading, spacing: max(3, size * 0.018)) {
-                Text("BuFi MIX")
-                    .font(
-                        .system(
-                            size: max(9, size * 0.055),
-                            weight: .black,
-                            design: .rounded
-                        )
-                    )
-                    .tracking(size * 0.005)
-                    .opacity(0.78)
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.28)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: max(4, size * 0.022)) {
+                    Capsule()
+                        .frame(width: max(24, size * 0.16), height: max(3, size * 0.018))
+                    Circle()
+                        .frame(width: max(3, size * 0.018), height: max(3, size * 0.018))
+                }
+                .opacity(0.86)
+
+                Spacer(minLength: 0)
 
                 Text(coverTitle)
                     .font(
                         .system(
-                            size: max(18, size * 0.115),
-                            weight: .black,
-                            design: .rounded
-                        )
-                    )
-                    .tracking(-size * 0.006)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.70)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 0)
-
-                Image(systemName: fallbackIcon)
-                    .font(
-                        .system(
-                            size: max(16, size * 0.105),
+                            size: max(21, size * 0.125),
                             weight: .black
                         )
                     )
-                    .frame(
-                        width: max(31, size * 0.20),
-                        height: max(31, size * 0.20)
-                    )
-                    .background(
-                        foreground.opacity(0.16),
-                        in: Circle()
-                    )
+                    .tracking(-size * 0.008)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.62)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .foregroundStyle(foreground)
-            .padding(max(13, size * 0.075))
+            .foregroundStyle(.white)
+            .padding(max(12, size * 0.065))
         }
         .frame(width: size, height: size)
         .clipShape(
@@ -82,34 +68,7 @@ struct PersonalizedMixArtwork: View {
     }
 
     private var coverTitle: String {
-        switch mix.kind {
-        case .daylist: "DAYLIST"
-        case .repeatListening: "REPEAT"
-        case .listenAgain: "LISTEN\nAGAIN"
-        case .favorites: "FAVORITES"
-        case .ranking: "TOP\nTRACKS"
-        case .genre, .artist, .mood: mix.title.uppercased()
-        }
-    }
-
-    private var foreground: Color {
-        switch mix.kind {
-        case .listenAgain, .genre, .mood: Color(red: 0.08, green: 0.06, blue: 0.15)
-        default: .white
-        }
-    }
-
-    private var fallbackIcon: String {
-        switch mix.kind {
-        case .daylist: "sun.horizon.fill"
-        case .repeatListening: "repeat"
-        case .listenAgain: "clock.arrow.circlepath"
-        case .genre: "music.note"
-        case .artist: "person.wave.2.fill"
-        case .mood: "sparkles"
-        case .favorites: "heart.fill"
-        case .ranking: "chart.bar.fill"
-        }
+        mix.title
     }
 }
 
