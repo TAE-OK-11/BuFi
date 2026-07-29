@@ -119,6 +119,123 @@ enum RecommendationMixer {
     }
 }
 
+enum DaylistBuilder {
+    static func make(
+        snapshot: HomeSnapshot,
+        date: Date = Date(),
+        calendar: Calendar = .current,
+        limit: Int = 24
+    ) -> [Song] {
+        let hour = calendar.component(.hour, from: date)
+        let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
+        let period: Int
+        let familiarSlots: Int
+        switch hour {
+        case 5..<11:
+            period = 0
+            familiarSlots = 2
+        case 11..<17:
+            period = 1
+            familiarSlots = 1
+        case 17..<22:
+            period = 2
+            familiarSlots = 2
+        default:
+            period = 3
+            familiarSlots = 3
+        }
+        let seed = day * 4 + period
+        let familiar = ordered(
+            unique(
+                snapshot.mostPlayedSongs +
+                snapshot.starredSongs +
+                snapshot.recentlyPlayedAlbums.flatMap { album in
+                    snapshot.recommendedSongs.filter { $0.albumId == album.id }
+                }
+            ),
+            seed: seed
+        )
+        let discovery = ordered(
+            unique(
+                snapshot.serverRecommendedSongs +
+                snapshot.lastFMRecommendedSongs +
+                snapshot.listenBrainzRecommendedSongs +
+                snapshot.randomSongs +
+                snapshot.recommendedSongs
+            ),
+            seed: seed + 17
+        )
+
+        var result: [Song] = []
+        var ids = Set<String>()
+        var artistCounts: [String: Int] = [:]
+        var familiarIndex = 0
+        var discoveryIndex = 0
+        while result.count < limit &&
+                (familiarIndex < familiar.count ||
+                    discoveryIndex < discovery.count) {
+            for slot in 0..<4 where result.count < limit {
+                let prefersFamiliar = slot < familiarSlots
+                let candidate: Song?
+                if prefersFamiliar, familiarIndex < familiar.count {
+                    candidate = familiar[familiarIndex]
+                    familiarIndex += 1
+                } else if discoveryIndex < discovery.count {
+                    candidate = discovery[discoveryIndex]
+                    discoveryIndex += 1
+                } else if familiarIndex < familiar.count {
+                    candidate = familiar[familiarIndex]
+                    familiarIndex += 1
+                } else {
+                    candidate = nil
+                }
+                guard let candidate, ids.insert(candidate.id).inserted else {
+                    continue
+                }
+                let artist = normalized(candidate.artist)
+                guard (artistCounts[artist] ?? 0) < 2 else { continue }
+                artistCounts[artist, default: 0] += 1
+                result.append(candidate)
+            }
+        }
+        if result.count < limit {
+            for song in unique(familiar + discovery)
+                where result.count < limit && ids.insert(song.id).inserted {
+                result.append(song)
+            }
+        }
+        return result
+    }
+
+    private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
+        songs.sorted {
+            stableHash($0.id, seed: seed) < stableHash($1.id, seed: seed)
+        }
+    }
+
+    private static func unique(_ songs: [Song]) -> [Song] {
+        var ids = Set<String>()
+        return songs.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stableHash(_ value: String, seed: Int) -> UInt64 {
+        var hash = UInt64(bitPattern: Int64(seed)) ^ 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+}
+
 struct ExternalRecommendationCandidate: Sendable {
     enum Source: Sendable {
         case lastFM

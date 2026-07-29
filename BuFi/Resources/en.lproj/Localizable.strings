@@ -190,3 +190,9 @@
 "선캐시는 곡 전환을 빠르게 하지만 전체 음원을 미리 저장합니다. 배터리와 데이터 절약을 위해 기본값은 끔이며, 저전력·고온 상태에서는 자동으로 제한됩니다." = "Pre-caching speeds up track changes by storing complete audio files in advance. It is off by default to save battery and data, and is limited automatically in Low Power Mode or under thermal pressure.";
 "추천곡 계속 재생" = "Autoplay Recommendations";
 "현재 재생목록이 끝나기 전에 서버 유사곡을 미리 추가해 음악이 끊기지 않도록 계속 재생합니다." = "Adds server-recommended similar tracks before the current queue ends so playback can continue without interruption.";
+"%@ 아침 daylist" = "%@ Morning Daylist";
+"%@ 오후 daylist" = "%@ Afternoon Daylist";
+"%@ 저녁 daylist" = "%@ Evening Daylist";
+"%@ 밤 daylist" = "%@ Night Daylist";
+"추천 아티스트" = "Artists for You";
+"자동 로그인 중…" = "Signing in…";

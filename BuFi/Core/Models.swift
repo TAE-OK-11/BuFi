@@ -123,7 +123,7 @@ struct InternetRadioStation: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-struct HomeSnapshot: Equatable, Sendable {
+struct HomeSnapshot: Codable, Equatable, Sendable {
     var recentAlbums: [Album] = []
     var recentlyPlayedAlbums: [Album] = []
     var frequentAlbums: [Album] = []
@@ -137,7 +137,9 @@ struct HomeSnapshot: Equatable, Sendable {
     var lastFMRecommendedSongs: [Song] = []
     var listenBrainzRecommendedSongs: [Song] = []
     var recommendedSongs: [Song] = []
+    var daylistSongs: [Song] = []
     var mostPlayedSongs: [Song] = []
+    var recommendedArtists: [Artist] = []
     var playlists: [Playlist] = []
     var radioStations: [InternetRadioStation] = []
 
@@ -312,6 +314,7 @@ struct ArtistInfoPayload: Decodable {
 
 struct ArtistInfo: Decodable, Sendable {
     let biography: String?
+    let similarArtist: [Artist]?
 }
 
 struct ArtistAlbumsPayload: Decodable {

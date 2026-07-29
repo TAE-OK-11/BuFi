@@ -315,43 +315,61 @@ actor OpenSubsonicClient {
 
         let randomSongValues = values.6.map { $0.randomSongs?.song ?? [] }
             ?? fallback.randomSongs
-        let recommendations = await recommendationQueue(
+        let allArtists =
+            values.5.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
+            ?? fallback.artists
+        let frequentAlbums = values.2.map { $0.albumList2?.album ?? [] }
+            ?? fallback.frequentAlbums
+        async let recommendationsRequest = recommendationQueue(
             seeds: starredSongs + randomSongValues,
             fallback: fallback.serverRecommendedSongs
         )
-        let frequentAlbums = values.2.map { $0.albumList2?.album ?? [] }
-            ?? fallback.frequentAlbums
-        let rankedServerSongs = await mostPlayedSongs(
+        async let rankedSongsRequest = mostPlayedSongs(
             from: frequentAlbums,
             fallback: fallback.mostPlayedSongs
         )
+        async let artistRecommendationsRequest = similarArtists(
+            to: starredArtists,
+            fallback: fallback.recommendedArtists
+        )
+        let (
+            recommendations,
+            rankedServerSongs,
+            artistRecommendations
+        ) = await (
+            recommendationsRequest,
+            rankedSongsRequest,
+            artistRecommendationsRequest
+        )
 
+        var snapshot = HomeSnapshot(
+            recentAlbums: values.0.map { $0.albumList2?.album ?? [] }
+                ?? fallback.recentAlbums,
+            recentlyPlayedAlbums: values.1.map { $0.albumList2?.album ?? [] }
+                ?? fallback.recentlyPlayedAlbums,
+            frequentAlbums: frequentAlbums,
+            randomAlbums: values.3.map { $0.albumList2?.album ?? [] }
+                ?? fallback.randomAlbums,
+            starredAlbums: starredAlbums,
+            starredSongs: starredSongs,
+            starredArtists: starredArtists,
+            artists: allArtists,
+            randomSongs: randomSongValues,
+            serverRecommendedSongs: recommendations,
+            lastFMRecommendedSongs: fallback.lastFMRecommendedSongs,
+            listenBrainzRecommendedSongs: fallback.listenBrainzRecommendedSongs,
+            recommendedSongs: recommendations,
+            mostPlayedSongs: rankedServerSongs,
+            recommendedArtists: artistRecommendations,
+            playlists: values.7.map { $0.playlists?.playlist ?? [] }
+                ?? fallback.playlists,
+            radioStations: values.8.map {
+                $0.internetRadioStations?.internetRadioStation ?? []
+            } ?? fallback.radioStations
+        )
+        snapshot.daylistSongs = DaylistBuilder.make(snapshot: snapshot)
         return HomeLoadResult(
-            snapshot: HomeSnapshot(
-                recentAlbums: values.0.map { $0.albumList2?.album ?? [] }
-                    ?? fallback.recentAlbums,
-                recentlyPlayedAlbums: values.1.map { $0.albumList2?.album ?? [] }
-                    ?? fallback.recentlyPlayedAlbums,
-                frequentAlbums: frequentAlbums,
-                randomAlbums: values.3.map { $0.albumList2?.album ?? [] }
-                    ?? fallback.randomAlbums,
-                starredAlbums: starredAlbums,
-                starredSongs: starredSongs,
-                starredArtists: starredArtists,
-                artists: values.5.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
-                    ?? fallback.artists,
-                randomSongs: randomSongValues,
-                serverRecommendedSongs: recommendations,
-                lastFMRecommendedSongs: fallback.lastFMRecommendedSongs,
-                listenBrainzRecommendedSongs: fallback.listenBrainzRecommendedSongs,
-                recommendedSongs: recommendations,
-                mostPlayedSongs: rankedServerSongs,
-                playlists: values.7.map { $0.playlists?.playlist ?? [] }
-                    ?? fallback.playlists,
-                radioStations: values.8.map {
-                    $0.internetRadioStations?.internetRadioStation ?? []
-                } ?? fallback.radioStations
-            ),
+            snapshot: snapshot,
             hasAuthoritativeStarredState: values.4?.starred2 != nil
         )
     }
@@ -575,9 +593,49 @@ actor OpenSubsonicClient {
         return ranked.isEmpty ? fallback : Array(ranked.prefix(30))
     }
 
+    private func similarArtists(
+        to seeds: [Artist],
+        fallback: [Artist]
+    ) async -> [Artist] {
+        let candidates = Array(seeds.prefix(3))
+        guard !candidates.isEmpty else { return fallback }
+        let values = await withTaskGroup(
+            of: [Artist].self,
+            returning: [Artist].self
+        ) { group in
+            for artist in candidates {
+                group.addTask { [self] in
+                    let payload: ArtistInfoPayload? = try? await self.request(
+                        "getArtistInfo2",
+                        parameters: [
+                            "id": artist.id,
+                            "count": "8",
+                            "includeNotPresent": "false"
+                        ]
+                    )
+                    return payload?.artistInfo2?.similarArtist ?? []
+                }
+            }
+            var artists: [Artist] = []
+            for await result in group {
+                artists.append(contentsOf: result)
+            }
+            return artists
+        }
+        let seedIDs = Set(candidates.map(\.id))
+        let result = Self.uniqueArtists(values)
+            .filter { !seedIDs.contains($0.id) }
+        return result.isEmpty ? fallback : Array(result.prefix(12))
+    }
+
     private static func uniqueSongs(_ songs: [Song]) -> [Song] {
         var ids = Set<String>()
         return songs.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
+        var ids = Set<String>()
+        return artists.filter { ids.insert($0.id).inserted }
     }
 
     private static func normalized(_ value: String) -> String {

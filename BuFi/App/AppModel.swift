@@ -69,17 +69,33 @@ final class AppModel: ObservableObject {
     private static let listenBrainzUsernameKey = "listenbrainz-username"
 
     init() {
-        hasLastFMAPIKey = secureStore.loadSecret(
-            account: Self.lastFMKeyAccount
-        )?.isEmpty == false
-        hasListenBrainzToken = secureStore.loadSecret(
-            account: Self.listenBrainzTokenAccount
-        )?.isEmpty == false
+        let lastFMAccount = Self.lastFMKeyAccount
+        let listenBrainzAccount = Self.listenBrainzTokenAccount
+        sessionState = .connecting
         listenBrainzUsername = UserDefaults.standard.string(
             forKey: Self.listenBrainzUsernameKey
         ) ?? ""
-        if let credentials = secureStore.load() {
-            Task { await connect(credentials, persist: false) }
+        Task { [weak self] in
+            let stored = await Task.detached(priority: .userInitiated) {
+                let store = SecureStore()
+                return (
+                    credentials: store.load(),
+                    hasLastFMKey: store.loadSecret(
+                        account: lastFMAccount
+                    )?.isEmpty == false,
+                    hasListenBrainzToken: store.loadSecret(
+                        account: listenBrainzAccount
+                    )?.isEmpty == false
+                )
+            }.value
+            guard let self else { return }
+            self.hasLastFMAPIKey = stored.hasLastFMKey
+            self.hasListenBrainzToken = stored.hasListenBrainzToken
+            if let credentials = stored.credentials {
+                await self.connect(credentials, persist: false)
+            } else {
+                self.sessionState = .signedOut
+            }
         }
     }
 
@@ -115,6 +131,10 @@ final class AppModel: ObservableObject {
                 await ArtworkStore.shared.deactivate(accountScope: accountScope)
                 guard self.sessionGeneration == logoutGeneration else { return }
                 await ListeningHistoryStore.shared.deactivate(
+                    accountScope: accountScope
+                )
+                guard self.sessionGeneration == logoutGeneration else { return }
+                await HomeSnapshotStore.shared.remove(
                     accountScope: accountScope
                 )
             }
@@ -156,11 +176,7 @@ final class AppModel: ObservableObject {
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
-            var snapshot = await mergingListeningHistory(into: loadResult.snapshot)
-            snapshot.recommendedSongs = RecommendationMixer.mix(
-                snapshot: snapshot,
-                weights: .current()
-            )
+            let snapshot = await preparedHomeSnapshot(loadResult.snapshot)
             guard generation == sessionGeneration, self.client === client else { return }
             guard revision == homeRevision else { return }
             guard starRequests.isEmpty else { return }
@@ -171,6 +187,11 @@ final class AppModel: ObservableObject {
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
             if home != resolvedSnapshot { home = resolvedSnapshot }
+            let accountScope = AccountScope.identifier(for: client.credentials)
+            await HomeSnapshotStore.shared.save(
+                resolvedSnapshot,
+                accountScope: accountScope
+            )
             if needsFullRefresh {
                 scheduleExternalRecommendationRefresh(
                     client: client,
@@ -874,7 +895,11 @@ final class AppModel: ObservableObject {
             applyingFavoriteOverride
         )
         value.recommendedSongs = value.recommendedSongs.map(applyingFavoriteOverride)
+        value.daylistSongs = value.daylistSongs.map(applyingFavoriteOverride)
         value.mostPlayedSongs = value.mostPlayedSongs.map(applyingFavoriteOverride)
+        value.recommendedArtists = value.recommendedArtists.map(
+            applyingFavoriteOverride
+        )
         return value
     }
 
@@ -961,10 +986,11 @@ final class AppModel: ObservableObject {
                 home.starredSongs + home.randomSongs + home.recommendedSongs +
                 home.serverRecommendedSongs + home.lastFMRecommendedSongs +
                 home.listenBrainzRecommendedSongs + home.mostPlayedSongs +
+                home.daylistSongs +
                 snapshot.starredSongs + snapshot.randomSongs +
                 snapshot.serverRecommendedSongs + snapshot.lastFMRecommendedSongs +
                 snapshot.listenBrainzRecommendedSongs + snapshot.recommendedSongs +
-                snapshot.mostPlayedSongs +
+                snapshot.mostPlayedSongs + snapshot.daylistSongs +
                 searchResults.songs
             ids.formUnion(visibleSongs.lazy.filter(\.isStarred).map(\.id))
             ids.formUnion(
@@ -1004,8 +1030,9 @@ final class AppModel: ObservableObject {
             }
         case .artist:
             let visibleArtists =
-                home.starredArtists + home.artists +
+                home.starredArtists + home.artists + home.recommendedArtists +
                 snapshot.starredArtists + snapshot.artists +
+                snapshot.recommendedArtists +
                 searchResults.artists
             ids.formUnion(visibleArtists.lazy.filter(\.isStarred).map(\.id))
             for cached in artistDetailCache.values where cached.value.artist.isStarred {
@@ -1121,6 +1148,9 @@ final class AppModel: ObservableObject {
         snapshot.listenBrainzRecommendedSongs = snapshot.listenBrainzRecommendedSongs.map {
             $0.id == song.id ? updated : $0
         }
+        snapshot.daylistSongs = snapshot.daylistSongs.map {
+            $0.id == song.id ? updated : $0
+        }
         snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
             $0.id == song.id ? updated : $0
         }
@@ -1202,6 +1232,9 @@ final class AppModel: ObservableObject {
         snapshot.starredArtists.removeAll { $0.id == artist.id }
         if enabled { snapshot.starredArtists.insert(updated, at: 0) }
         snapshot.artists = snapshot.artists.map { $0.id == artist.id ? updated : $0 }
+        snapshot.recommendedArtists = snapshot.recommendedArtists.map {
+            $0.id == artist.id ? updated : $0
+        }
         homeRevision &+= 1
         home = snapshot
 
@@ -1322,12 +1355,66 @@ final class AppModel: ObservableObject {
         return value
     }
 
+    private func preparedHomeSnapshot(
+        _ snapshot: HomeSnapshot
+    ) async -> HomeSnapshot {
+        var value = await mergingListeningHistory(into: snapshot)
+        value.recommendedSongs = RecommendationMixer.mix(
+            snapshot: value,
+            weights: .current()
+        )
+        value.recommendedArtists = resolvedRecommendedArtists(in: value)
+        value.daylistSongs = DaylistBuilder.make(snapshot: value)
+        return value
+    }
+
+    private func resolvedRecommendedArtists(
+        in snapshot: HomeSnapshot
+    ) -> [Artist] {
+        var result = Self.uniqueArtists(snapshot.recommendedArtists)
+        var ids = Set(result.map(\.id))
+        let starredIDs = Set(snapshot.starredArtists.map(\.id))
+        let artistsByName = Dictionary(
+            snapshot.artists.map {
+                (Self.normalizedName($0.name), $0)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let signals =
+            snapshot.recommendedSongs +
+            snapshot.serverRecommendedSongs +
+            snapshot.lastFMRecommendedSongs +
+            snapshot.listenBrainzRecommendedSongs +
+            snapshot.mostPlayedSongs +
+            snapshot.starredSongs
+        for song in signals {
+            guard result.count < 12,
+                  let artist = artistsByName[
+                    Self.normalizedName(song.artist)
+                  ],
+                  !starredIDs.contains(artist.id),
+                  ids.insert(artist.id).inserted else {
+                continue
+            }
+            result.append(artist)
+        }
+        return Array(result.filter { !starredIDs.contains($0.id) }.prefix(12))
+    }
+
+    private static func normalizedName(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func uniqueSongs(_ values: [Song]) -> [Song] {
         var ids = Set<String>()
         return values.filter { ids.insert($0.id).inserted }
     }
 
-    private static func uniqueAlbums(_ values: [Album]) -> [Album] {
+    private static func uniqueArtists(_ values: [Artist]) -> [Artist] {
         var ids = Set<String>()
         return values.filter { ids.insert($0.id).inserted }
     }
@@ -1430,9 +1517,20 @@ final class AppModel: ObservableObject {
                 snapshot: value,
                 weights: .current()
             )
+            value.recommendedArtists = self.resolvedRecommendedArtists(
+                in: value
+            )
+            value.daylistSongs = DaylistBuilder.make(snapshot: value)
             value = self.applyingFavoriteOverrides(to: value)
             if value != self.home {
                 self.home = value
+                let accountScope = AccountScope.identifier(
+                    for: client.credentials
+                )
+                await HomeSnapshotStore.shared.save(
+                    value,
+                    accountScope: accountScope
+                )
             }
         }
     }
@@ -1468,13 +1566,16 @@ final class AppModel: ObservableObject {
         var activatedAccountScope: String?
         do {
             let client = try OpenSubsonicClient(credentials: credentials)
+            let accountScope = AccountScope.identifier(for: credentials)
             async let statusRequest = client.ping()
-            async let homeRequest = client.home()
-            let (status, loadResult) = try await (statusRequest, homeRequest)
+            async let cachedSnapshotRequest = HomeSnapshotStore.shared.load(
+                accountScope: accountScope
+            )
+            let status = try await statusRequest
+            let cachedSnapshot = await cachedSnapshotRequest
             try Task.checkCancellation()
             guard generation == sessionGeneration else { return }
 
-            let accountScope = AccountScope.identifier(for: credentials)
             await OfflineStore.shared.activate(accountScope: accountScope)
             await ArtworkStore.shared.activate(accountScope: accountScope)
             await ListeningHistoryStore.shared.activate(accountScope: accountScope)
@@ -1483,10 +1584,8 @@ final class AppModel: ObservableObject {
                 await deactivateStores(accountScope: accountScope)
                 return
             }
-            var snapshot = await mergingListeningHistory(into: loadResult.snapshot)
-            snapshot.recommendedSongs = RecommendationMixer.mix(
-                snapshot: snapshot,
-                weights: .current()
+            let snapshot = await preparedHomeSnapshot(
+                cachedSnapshot ?? .empty
             )
             guard generation == sessionGeneration else {
                 await deactivateStores(accountScope: accountScope)
@@ -1496,11 +1595,11 @@ final class AppModel: ObservableObject {
 
             reconcileFavoriteStates(
                 in: snapshot,
-                authoritative: loadResult.hasAuthoritativeStarredState
+                authoritative: false
             )
             self.client = client
             self.home = applyingFavoriteOverrides(to: snapshot)
-            self.lastFullRefresh = Date()
+            self.lastFullRefresh = .distantPast
             self.serverVersion = status.serverVersion ?? status.version ?? ""
             self.sessionState = .ready
             activatedAccountScope = nil
@@ -1522,10 +1621,12 @@ final class AppModel: ObservableObject {
                     )
                 }
             )
-            scheduleExternalRecommendationRefresh(
-                client: client,
-                generation: generation
-            )
+            Task { [weak self] in
+                await self?.refresh(
+                    forceFull: true,
+                    silent: cachedSnapshot != nil
+                )
+            }
         } catch is CancellationError {
             if let activatedAccountScope {
                 await deactivateStores(accountScope: activatedAccountScope)

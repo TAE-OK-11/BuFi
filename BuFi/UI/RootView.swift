@@ -27,9 +27,17 @@ struct RootView: View {
     var body: some View {
         Group {
             switch model.sessionState {
-            case .signedOut, .connecting:
+            case .signedOut:
                 LoginView()
                     .transition(.opacity.combined(with: .scale(scale: 0.985)))
+            case .connecting:
+                ZStack {
+                    BuFiScreenBackground()
+                    ProgressView("자동 로그인 중…")
+                        .font(.system(size: 15, weight: .semibold))
+                        .tint(BuFiTheme.accent)
+                }
+                .transition(.opacity)
             case .ready:
                 appContent
                     .transition(.opacity)

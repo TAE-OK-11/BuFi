@@ -65,8 +65,8 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 28) {
             quickCarousel
             songSection(
-                "맞춤 추천",
-                songs: Array(model.home.recommendedSongs.prefix(12))
+                daylistTitle,
+                songs: Array(model.home.daylistSongs.prefix(12))
             )
             albumSection(
                 "최근 들은 앨범",
@@ -80,11 +80,32 @@ struct HomeView: View {
                 "좋아요 표시한 아티스트",
                 artists: model.home.starredArtists
             )
+            artistSection(
+                "추천 아티스트",
+                artists: model.home.recommendedArtists
+            )
             albumSection("랜덤 앨범", albums: model.home.randomAlbums)
             albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
             albumSection("자주 들은 앨범", albums: model.home.frequentAlbums)
             albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
         }
+    }
+
+    private var daylistTitle: String {
+        let now = Date()
+        let weekday = now.formatted(.dateTime.weekday(.wide))
+        let format: String
+        switch Calendar.current.component(.hour, from: now) {
+        case 5..<11:
+            format = String(localized: "%@ 아침 daylist")
+        case 11..<17:
+            format = String(localized: "%@ 오후 daylist")
+        case 17..<22:
+            format = String(localized: "%@ 저녁 daylist")
+        default:
+            format = String(localized: "%@ 밤 daylist")
+        }
+        return String(format: format, weekday)
     }
 
     private var quickCarousel: some View {
