@@ -67,24 +67,24 @@ struct HomeView: View {
     private func allContent(mixes: [PersonalizedMix]) -> some View {
         VStack(alignment: .leading, spacing: 28) {
             shortcuts
-            albumSection("랜덤 앨범", albums: model.home.randomAlbums)
-            albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
-            albumSection("알고리즘 추천 앨범", albums: recommendedAlbums)
-            artistSection("아티스트", artists: primaryArtists)
+            albumSection("오늘 골라본 앨범", albums: model.home.randomAlbums)
+            albumSection("좋아하는 앨범", albums: model.home.starredAlbums)
+            albumSection("취향을 닮은 앨범", albums: recommendedAlbums)
+            artistSection("즐겨 듣는 아티스트", artists: primaryArtists)
             personalizedMixSection(
-                "아티스트 추천 플레이리스트",
+                "아티스트에서 이어 듣기",
                 mixes: mixes.filter { $0.kind == .artist }
             )
             artistSection(
-                "추천 아티스트",
-                artists: model.home.recommendedArtists
+                "놓치면 아쉬운 아티스트",
+                artists: featuredArtists
             )
             albumSection(
-                "최근 들은 앨범",
+                "최근 감상",
                 albums: model.home.recentlyPlayedAlbums
             )
-            albumSection("자주 들은 앨범", albums: model.home.frequentAlbums)
-            albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
+            albumSection("다시 찾는 앨범", albums: model.home.frequentAlbums)
+            albumSection("새로 만나는 음악", albums: model.home.recentAlbums)
             playlistSection(showEmpty: false)
             radioSection
         }
@@ -127,7 +127,7 @@ struct HomeView: View {
             ) {
                 BuFiShortcutCard(
                     title: "좋아요 표시한 곡",
-                    subtitle: countText(model.home.starredSongs.count),
+                    subtitle: String(localized: "저장한 곡을 이어 들어보세요"),
                     systemImage: "heart.fill",
                     tint: BuFiTheme.accent
                 )
@@ -141,8 +141,8 @@ struct HomeView: View {
                 )
             ) {
                 BuFiShortcutCard(
-                    title: "많이 들은 곡 순위",
-                    subtitle: countText(model.home.mostPlayedSongs.count),
+                    title: "자주 들은 곡",
+                    subtitle: String(localized: "청취 기록으로 만든 순위"),
                     systemImage: "chart.bar.fill",
                     tint: Color(red: 0.22, green: 0.50, blue: 0.78)
                 )
@@ -190,7 +190,7 @@ struct HomeView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 14) {
-                SectionTitle(title: "플레이리스트")
+                SectionTitle(title: "내 플레이리스트")
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
@@ -277,7 +277,7 @@ struct HomeView: View {
     private var radioSection: some View {
         if !model.home.radioStations.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                SectionTitle(title: "인터넷 라디오")
+                SectionTitle(title: "라이브 라디오")
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
@@ -354,6 +354,77 @@ struct HomeView: View {
             return model.home.starredArtists
         }
         return Array(model.home.artists.prefix(12))
+    }
+
+    private var featuredArtists: [Artist] {
+        let songSources =
+            model.home.starredSongs +
+            model.home.mostPlayedSongs +
+            model.home.recommendedSongs +
+            model.home.randomSongs
+        let artistSources =
+            model.home.recommendedArtists +
+            model.home.starredArtists +
+            model.home.artists
+
+        var taylor = artistSources.first {
+            normalizedArtistName($0.name) == "taylor swift"
+        }
+        if taylor == nil,
+           let album = (
+               model.home.starredAlbums +
+               model.home.randomAlbums +
+               model.home.recentAlbums
+           ).first(where: {
+               normalizedArtistName($0.artist) == "taylor swift"
+           }),
+           let artistID = album.artistId,
+           !artistID.isEmpty {
+            taylor = Artist(
+                id: artistID,
+                name: "Taylor Swift",
+                coverArt: album.coverArt,
+                albumCount: nil,
+                starred: nil
+            )
+        }
+        if taylor == nil,
+           let song = songSources.first(where: {
+               normalizedArtistName($0.artist) == "taylor swift"
+           }),
+           let artistID = song.artistId,
+           !artistID.isEmpty {
+            taylor = Artist(
+                id: artistID,
+                name: "Taylor Swift",
+                coverArt: song.coverArt,
+                albumCount: nil,
+                starred: nil
+            )
+        }
+
+        var values: [Artist] = []
+        var seen = Set<String>()
+        func append(_ artist: Artist?) {
+            guard let artist else { return }
+            let key = normalizedArtistName(artist.name)
+            guard !key.isEmpty, seen.insert(key).inserted else { return }
+            values.append(artist)
+        }
+
+        append(taylor)
+        model.home.starredArtists.forEach { append($0) }
+        model.home.recommendedArtists.forEach { append($0) }
+        model.home.artists.forEach { append($0) }
+        return Array(values.prefix(12))
+    }
+
+    private func normalizedArtistName(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var recommendedAlbums: [Album] {

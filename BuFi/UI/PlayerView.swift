@@ -630,7 +630,7 @@ struct PlayerView: View {
                         miniLyricsWindow
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(minHeight: 104, maxHeight: 158, alignment: .top)
+                    .frame(height: 154, alignment: .top)
                     .clipped()
                 }
                 .buttonStyle(.plain)
@@ -676,10 +676,14 @@ struct PlayerView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .transition(miniLyricLineTransition)
                 }
             }
+            .id(audio.activeLyricIndex)
+            .transition(miniLyricsWindowTransition)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .contentShape(Rectangle())
+        .clipped()
         .animation(
             allowsMotion ? BuFiMotion.miniLyrics : .none,
             value: audio.activeLyricIndex
@@ -690,7 +694,7 @@ struct PlayerView: View {
         let lines = audio.lyrics.lines
         guard !lines.isEmpty else { return [] }
         let active = lines.indices.contains(audio.activeLyricIndex) ? audio.activeLyricIndex : 0
-        let end = min(lines.count, active + 4)
+        let end = min(lines.count, active + 3)
         return (active..<end).map { (index: $0, line: lines[$0]) }
     }
 
@@ -703,11 +707,11 @@ struct PlayerView: View {
         }
     }
 
-    private var miniLyricLineTransition: AnyTransition {
+    private var miniLyricsWindowTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 4).combined(with: .opacity),
-            removal: .offset(y: -3).combined(with: .opacity)
+            insertion: .offset(y: 6).combined(with: .opacity),
+            removal: .offset(y: -6).combined(with: .opacity)
         )
     }
 

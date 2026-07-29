@@ -199,7 +199,7 @@ struct RootView: View {
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if audio.currentSong != nil {
                     LegacyMiniPlayerView()
-                        .frame(height: 60)
+                        .frame(height: 68)
                         .padding(.horizontal, 8)
                         .padding(.bottom, 6)
                         .transition(effectiveMotion ? .move(edge: .bottom).combined(with: .opacity) : .opacity)
