@@ -35,38 +35,29 @@ struct LegacyMiniPlayerView: View {
                         )
                         .frame(width: 56, height: 56)
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(song.title)
-                                .font(.system(size: 15, weight: .semibold))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.82)
-
-                            ZStack(alignment: .leading) {
-                                if let lyric = activeMiniLyric {
-                                    Text(lyric.text)
-                                        .id("\(song.id)-\(lyric.id)")
-                                        .transition(miniLyricTransition)
-                                } else {
-                                    Text(song.artist)
-                                        .id("\(song.id)-artist")
-                                        .transition(miniLyricTransition)
-                                }
+                        ZStack(alignment: .leading) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(song.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.82)
+                                Text(song.artist)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.white.opacity(0.78))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.76)
                             }
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.78))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.76)
-                            .frame(maxWidth: .infinity, minHeight: 17, maxHeight: 17)
-                            .clipped()
-                            .animation(
-                                motionEnabled ? BuFiMotion.miniLyrics : .none,
-                                value: miniLyricAnimationID
-                            )
+                            .id(song.id)
+                            .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, minHeight: 42, maxHeight: 42)
                         .clipped()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .allowsHitTesting(false)
+                        .animation(
+                            motionEnabled ? BuFiMotion.trackText : .none,
+                            value: song.id
+                        )
 
                         AirPlayButton(lightContent: true)
                             .frame(width: 36, height: 36)
@@ -135,26 +126,11 @@ struct LegacyMiniPlayerView: View {
         }
     }
 
-    private var activeMiniLyric: LyricLine? {
-        guard audio.lyrics.lines.indices.contains(audio.activeLyricIndex) else {
-            return nil
-        }
-        let line = audio.lyrics.lines[audio.activeLyricIndex]
-        return line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? nil
-            : line
-    }
-
-    private var miniLyricAnimationID: String {
-        guard let songID = audio.currentSong?.id else { return "empty" }
-        return "\(songID)-\(activeMiniLyric?.id ?? -1)"
-    }
-
-    private var miniLyricTransition: AnyTransition {
+    private var trackTextTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 3).combined(with: .opacity),
-            removal: .offset(y: -3).combined(with: .opacity)
+            insertion: .offset(y: 5).combined(with: .opacity),
+            removal: .offset(y: -4).combined(with: .opacity)
         )
     }
 }

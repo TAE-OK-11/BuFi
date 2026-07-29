@@ -68,8 +68,8 @@ struct LibraryView: View {
             } else {
                 LazyVGrid(
                     columns: [
-                        GridItem(.flexible(), spacing: 14),
-                        GridItem(.flexible(), spacing: 14)
+                        GridItem(.flexible(), spacing: 14, alignment: .top),
+                        GridItem(.flexible(), spacing: 14, alignment: .top)
                     ],
                     alignment: .leading,
                     spacing: 24
@@ -78,7 +78,8 @@ struct LibraryView: View {
                         NavigationLink(value: MusicRoute.album(album)) {
                             AlbumCard(
                                 album: album,
-                                width: libraryAlbumWidth
+                                width: libraryAlbumWidth,
+                                usesHorizontalScrollTransition: false
                             )
                         }
                         .buttonStyle(BuFiPressStyle())
