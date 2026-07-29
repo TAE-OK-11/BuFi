@@ -9,29 +9,12 @@ struct SearchView: View {
     @State private var browseMode = SearchBrowseMode.main
     @FocusState private var focused: Bool
 
-    private let categories: [(String, Color, String)] = [
-        (
-            "좋아요 표시한 곡",
-            Color(red: 0.78, green: 0.16, blue: 0.27),
-            "heart.fill"
-        ),
-        (
-            "좋아요 표시한 앨범",
-            Color(red: 0.38, green: 0.24, blue: 0.62),
-            "square.stack.fill"
-        )
-    ]
-
     var body: some View {
         NavigationStack {
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        BuFiPageHeader(
-                            title: "검색",
-                            subtitle: "서버의 음악과 내 컬렉션을 빠르게 찾기",
-                            systemImage: "magnifyingglass"
-                        )
+                        BuFiPageHeader(title: "검색")
                         searchField
                             .id(SearchScrollAnchor.top)
                         Group {
@@ -60,6 +43,9 @@ struct SearchView: View {
             .background(BuFiScreenBackground())
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
+            }
+            .navigationDestination(for: PersonalizedMix.self) { mix in
+                PersonalizedMixDetailView(mix: mix)
             }
             .toolbar(.hidden, for: .navigationBar)
             .onChange(of: query) { _, value in
@@ -120,19 +106,8 @@ struct SearchView: View {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(
                     focused
-                        ? LinearGradient(
-                            colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                        : LinearGradient(
-                            colors: [
-                                BuFiTheme.separator.opacity(0.55),
-                                BuFiTheme.separator.opacity(0.55)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
+                        ? BuFiTheme.accent.opacity(0.78)
+                        : BuFiTheme.separator.opacity(0.42),
                     lineWidth: focused ? 1.4 : 0.6
                 )
         }
@@ -209,26 +184,36 @@ struct SearchView: View {
                 }
                 .padding(.horizontal, 16)
             }
+        case .algorithmPlaylists:
+            algorithmPlaylists(
+                PersonalizedMixBuilder.make(snapshot: model.home)
+            )
+        case .mostPlayed:
+            browseCollectionHeader("많이 들은 곡 순위")
+            rankedSongs
         }
     }
 
     private var browseMain: some View {
         VStack(alignment: .leading, spacing: 22) {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                ForEach(categories.indices, id: \.self) { index in
-                    let category = categories[index]
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 10),
+                    GridItem(.flexible(), spacing: 10)
+                ],
+                spacing: 10
+            ) {
+                ForEach(searchShortcuts) { shortcut in
                     Button {
                         withAnimation(motionEnabled ? BuFiMotion.content : .none) {
-                            browseMode = index == 0 ? .favoriteSongs : .favoriteAlbums
+                            browseMode = shortcut.mode
                         }
                     } label: {
-                        BuFiFeatureCard(
-                            title: LocalizedStringKey(category.0),
-                            subtitle: categoryCount(index),
-                            systemImage: category.2,
-                            tint: category.1,
-                            expandsHorizontally: true,
-                            trailingSystemImage: "chevron.right"
+                        BuFiShortcutCard(
+                            title: LocalizedStringKey(shortcut.title),
+                            subtitle: shortcut.subtitle,
+                            systemImage: shortcut.systemImage,
+                            tint: shortcut.tint
                         )
                     }
                     .buttonStyle(BuFiPressStyle())
@@ -236,16 +221,34 @@ struct SearchView: View {
             }
             .padding(.horizontal, 16)
 
-            if !model.home.recentAlbums.isEmpty {
+            if !model.home.recommendedArtists.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionTitle(title: "앨범 둘러보기")
+                    SectionTitle(title: "추천 아티스트")
                         .padding(.horizontal, 16)
                         .padding(.top, 2)
                     ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 15) {
-                            ForEach(model.home.recentAlbums) { album in
-                                NavigationLink(value: MusicRoute.album(album)) {
-                                    AlbumCard(album: album)
+                        LazyHStack(alignment: .top, spacing: 16) {
+                            ForEach(model.home.recommendedArtists.prefix(12)) {
+                                artist in
+                                NavigationLink(value: MusicRoute.artist(artist)) {
+                                    VStack(spacing: 8) {
+                                        ArtworkView(
+                                            coverArt: artist.coverArt,
+                                            size: 120,
+                                            cornerRadius: 60
+                                        )
+                                        .frame(width: 120, height: 120)
+                                        Text(artist.name)
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(3)
+                                            .multilineTextAlignment(.center)
+                                            .fixedSize(
+                                                horizontal: false,
+                                                vertical: true
+                                            )
+                                    }
+                                    .frame(width: 120)
                                 }
                                 .buttonStyle(BuFiPressStyle())
                             }
@@ -386,11 +389,124 @@ struct SearchView: View {
         }
     }
 
-    private func categoryCount(_ index: Int) -> String {
-        let count = index == 0
-            ? model.home.starredSongs.count
-            : model.home.starredAlbums.count
-        return String(format: String(localized: "%d개 항목"), count)
+    private var searchShortcuts: [SearchShortcut] {
+        [
+            SearchShortcut(
+                mode: .favoriteSongs,
+                title: "좋아요 표시한 곡",
+                subtitle: itemCountText(model.home.starredSongs.count),
+                systemImage: "heart.fill",
+                tint: BuFiTheme.accent
+            ),
+            SearchShortcut(
+                mode: .favoriteAlbums,
+                title: "좋아요 표시한 앨범",
+                subtitle: itemCountText(model.home.starredAlbums.count),
+                systemImage: "square.stack.fill",
+                tint: Color(red: 0.45, green: 0.33, blue: 0.74)
+            ),
+            SearchShortcut(
+                mode: .algorithmPlaylists,
+                title: "알고리즘 추천 플레이리스트",
+                subtitle: String(localized: "Daylist와 맞춤 믹스"),
+                systemImage: "sparkles",
+                tint: Color(red: 0.20, green: 0.58, blue: 0.52)
+            ),
+            SearchShortcut(
+                mode: .mostPlayed,
+                title: "많이 들은 곡",
+                subtitle: itemCountText(model.home.mostPlayedSongs.count),
+                systemImage: "chart.bar.fill",
+                tint: Color(red: 0.22, green: 0.50, blue: 0.78)
+            )
+        ]
+    }
+
+    @ViewBuilder
+    private func algorithmPlaylists(
+        _ mixes: [PersonalizedMix]
+    ) -> some View {
+        browseCollectionHeader("알고리즘 추천 플레이리스트")
+        if mixes.isEmpty {
+            ContentUnavailableView(
+                "추천 플레이리스트를 만들 음악이 없습니다",
+                systemImage: "sparkles"
+            )
+            .padding(.top, 32)
+        } else {
+            LazyVGrid(
+                columns: [GridItem(.flexible()), GridItem(.flexible())],
+                alignment: .leading,
+                spacing: 20
+            ) {
+                ForEach(mixes) { mix in
+                    NavigationLink(value: mix) {
+                        PersonalizedMixCard(
+                            mix: mix,
+                            width: collectionCardWidth
+                        )
+                    }
+                    .buttonStyle(BuFiPressStyle())
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var rankedSongs: some View {
+        Group {
+            if model.home.mostPlayedSongs.isEmpty {
+                ContentUnavailableView(
+                    "청취 순위가 아직 없습니다",
+                    systemImage: "chart.bar"
+                )
+                .padding(.top, 32)
+            } else {
+                BuFiGroupedSurface {
+                    LazyVStack(spacing: 0) {
+                        ForEach(
+                            Array(model.home.mostPlayedSongs.enumerated()),
+                            id: \.element.id
+                        ) { index, song in
+                            HStack(spacing: 2) {
+                                Text("\(index + 1)")
+                                    .font(
+                                        .system(
+                                            size: 14,
+                                            weight: index < 3 ? .bold : .medium,
+                                            design: .rounded
+                                        )
+                                    )
+                                    .foregroundStyle(
+                                        index < 3
+                                            ? BuFiTheme.accent
+                                            : Color.secondary
+                                    )
+                                    .monospacedDigit()
+                                    .frame(width: 28, alignment: .trailing)
+                                SongRow(
+                                    song: song,
+                                    queue: model.home.mostPlayedSongs,
+                                    artworkSize: 52,
+                                    textLineLimit: 2
+                                )
+                            }
+                            .padding(.horizontal, 12)
+                            if song.id != model.home.mostPlayedSongs.last?.id {
+                                Divider()
+                                    .padding(.leading, 106)
+                                    .opacity(0.50)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    private func itemCountText(_ count: Int) -> String {
+        String(format: String(localized: "%d개 항목"), count)
     }
 
     private func resultSection<Content: View>(
@@ -418,6 +534,18 @@ private enum SearchBrowseMode {
     case main
     case favoriteSongs
     case favoriteAlbums
+    case algorithmPlaylists
+    case mostPlayed
+}
+
+private struct SearchShortcut: Identifiable {
+    let mode: SearchBrowseMode
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+
+    var id: String { title }
 }
 
 private enum SearchScrollAnchor: Hashable {

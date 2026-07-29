@@ -10,11 +10,7 @@ struct LibraryView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    BuFiPageHeader(
-                        title: "내 라이브러리",
-                        subtitle: "저장한 음악과 플레이리스트 모아보기",
-                        systemImage: "music.note.list"
-                    )
+                    BuFiPageHeader(title: "내 라이브러리")
                     filters
                     content
                         .id(filter)
@@ -121,7 +117,7 @@ struct LibraryView: View {
         } else {
             if !favorites.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    librarySectionTitle("좋아요 표시한 아티스트", icon: "heart.fill")
+                    librarySectionTitle("좋아요 표시한 아티스트")
                     BuFiGroupedSurface {
                         VStack(spacing: 0) {
                             ForEach(favorites) { artist in
@@ -137,7 +133,7 @@ struct LibraryView: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                librarySectionTitle("모든 아티스트", icon: "textformat")
+                librarySectionTitle("모든 아티스트")
                 ForEach(sections) { section in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(section.title)
@@ -171,7 +167,7 @@ struct LibraryView: View {
                         .frame(width: 66, height: 66)
                     Text(artist.name)
                         .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(2)
+                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                 }
@@ -196,17 +192,12 @@ struct LibraryView: View {
         .padding(.vertical, 4)
     }
 
-    private func librarySectionTitle(_ title: String, icon: String) -> some View {
-        Label {
-            Text(LocalizedStringKey(title))
-        } icon: {
-            Image(systemName: icon)
-                .foregroundStyle(BuFiTheme.accent)
-        }
-        .font(.system(size: 21, weight: .bold))
-        .padding(.horizontal, 18)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
+    private func librarySectionTitle(_ title: String) -> some View {
+        Text(LocalizedStringKey(title))
+            .font(.system(size: 21, weight: .bold))
+            .padding(.horizontal, 18)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
     }
 
     private func libraryRow(
@@ -226,7 +217,7 @@ struct LibraryView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(title)
                     .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(subtitle)
                     .font(.system(size: 13))
@@ -281,18 +272,10 @@ struct LibraryView: View {
             )
         } else {
             ZStack {
-                LinearGradient(
-                    colors: [
-                        BuFiTheme.accent.opacity(0.74),
-                        BuFiTheme.deezerGlow.opacity(0.76),
-                        Color.black.opacity(0.72)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+                Color.secondary.opacity(0.12)
                 Image(systemName: placeholderIcon)
                     .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(BuFiTheme.accentSoft)
             }
             .clipShape(
                 RoundedRectangle(

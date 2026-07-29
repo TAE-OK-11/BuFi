@@ -8,19 +8,14 @@ enum MusicRoute: Hashable {
 
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var audio: AudioEngine
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var filter = HomeFilter.all
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 24) {
-                    BuFiPageHeader(
-                        title: "홈",
-                        subtitle: "내 음악과 새로운 추천을 한곳에서",
-                        systemImage: "waveform"
-                    )
+                LazyVStack(alignment: .leading, spacing: 22) {
+                    BuFiPageHeader(title: "홈")
                     filterBar
                     filteredContent
                 }
@@ -32,6 +27,9 @@ struct HomeView: View {
             .navigationDestination(for: MusicRoute.self) { route in
                 MusicDetailView(route: route)
             }
+            .navigationDestination(for: PersonalizedMix.self) { mix in
+                PersonalizedMixDetailView(mix: mix)
+            }
             .toolbar(.hidden, for: .navigationBar)
         }
     }
@@ -40,7 +38,7 @@ struct HomeView: View {
         BuFiFilterBar(
             items: HomeFilter.allCases,
             selection: $filter,
-            fontSize: 14,
+            fontSize: 13,
             title: { $0.title }
         )
     }
@@ -50,135 +48,133 @@ struct HomeView: View {
         Group {
             switch filter {
             case .all:
-                VStack(alignment: .leading, spacing: 28) {
-                    musicOverview
-                    playlistSection(showEmpty: false)
-                    radioSection
-                }
-            case .music:
-                musicOverview
+                allContent(
+                    mixes: PersonalizedMixBuilder.make(snapshot: model.home)
+                )
             case .playlists:
                 playlistSection(showEmpty: true)
+            case .personalized:
+                personalizedContent(
+                    PersonalizedMixBuilder.make(snapshot: model.home)
+                )
             }
         }
         .id(filter)
-        .transition(
-            .opacity.combined(with: .offset(y: 6))
-        )
+        .transition(.opacity.combined(with: .offset(y: 5)))
         .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
     }
 
-    private var musicOverview: some View {
+    private func allContent(mixes: [PersonalizedMix]) -> some View {
         VStack(alignment: .leading, spacing: 28) {
-            quickCarousel
-            songSection(
-                daylistTitle,
-                songs: Array(model.home.daylistSongs.prefix(12))
-            )
-            songSection(
-                "오프라인 백업",
-                songs: Array(model.home.offlineBackupSongs.prefix(12))
-            )
-            albumSection(
-                "최근 들은 앨범",
-                albums: model.home.recentlyPlayedAlbums
-            )
-            rankedSongSection(
-                "많이 들은 곡 순위",
-                songs: Array(model.home.mostPlayedSongs.prefix(12))
-            )
-            artistSection(
-                "좋아요 표시한 아티스트",
-                artists: model.home.starredArtists
+            shortcuts
+            albumSection("랜덤 앨범", albums: model.home.randomAlbums)
+            albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+            albumSection("알고리즘 추천 앨범", albums: recommendedAlbums)
+            artistSection("아티스트", artists: primaryArtists)
+            personalizedMixSection(
+                "아티스트 추천 플레이리스트",
+                mixes: mixes.filter { $0.kind == .artist }
             )
             artistSection(
                 "추천 아티스트",
                 artists: model.home.recommendedArtists
             )
-            albumSection("랜덤 앨범", albums: model.home.randomAlbums)
-            albumSection("좋아요 표시한 앨범", albums: model.home.starredAlbums)
+            albumSection(
+                "최근 들은 앨범",
+                albums: model.home.recentlyPlayedAlbums
+            )
             albumSection("자주 들은 앨범", albums: model.home.frequentAlbums)
             albumSection("새로 추가된 음악", albums: model.home.recentAlbums)
+            playlistSection(showEmpty: false)
+            radioSection
         }
     }
 
-    private var daylistTitle: String {
-        let now = Date()
-        let weekday = now.formatted(.dateTime.weekday(.wide))
-        let format: String
-        switch Calendar.current.component(.hour, from: now) {
-        case 5..<11:
-            format = String(localized: "%@ 아침 daylist")
-        case 11..<17:
-            format = String(localized: "%@ 오후 daylist")
-        case 17..<22:
-            format = String(localized: "%@ 저녁 daylist")
-        default:
-            format = String(localized: "%@ 밤 daylist")
-        }
-        return String(format: format, weekday)
-    }
-
-    private var quickCarousel: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 11) {
-                Button {
-                    if let first = model.home.starredSongs.first {
-                        audio.play(first, in: model.home.starredSongs)
-                    }
-                } label: {
-                    quickCategoryCard(
-                        title: "좋아요 표시한 곡",
-                        count: model.home.starredSongs.count,
-                        songs: model.home.starredSongs,
-                        icon: "heart.fill",
-                        tint: BuFiTheme.accent
-                    )
-                }
-                .buttonStyle(BuFiPressStyle())
-                .disabled(model.home.starredSongs.isEmpty)
-
-                Button {
-                    if let first = model.home.mostPlayedSongs.first {
-                        audio.play(first, in: model.home.mostPlayedSongs)
-                    }
-                } label: {
-                    quickCategoryCard(
-                        title: "많이 들은 곡 순위",
-                        count: model.home.mostPlayedSongs.count,
-                        songs: model.home.mostPlayedSongs,
-                        icon: "chart.bar.fill",
-                        tint: Color(red: 0.20, green: 0.48, blue: 0.70),
-                        showsRank: true
-                    )
-                }
-                .buttonStyle(BuFiPressStyle())
-                .disabled(model.home.mostPlayedSongs.isEmpty)
-            }
-            .padding(.horizontal, 16)
-        }
-    }
-
-    private func quickCategoryCard(
-        title: String,
-        count: Int,
-        songs: [Song],
-        icon: String,
-        tint: Color,
-        showsRank: Bool = false
+    private func personalizedContent(
+        _ mixes: [PersonalizedMix]
     ) -> some View {
-        BuFiFeatureCard(
-            title: LocalizedStringKey(title),
-            subtitle: String(
-                format: String(localized: "%d곡"),
-                count
-            ),
-            systemImage: icon,
-            tint: tint,
-            details: Array(songs.prefix(2).enumerated()).map { index, song in
-                showsRank ? "\(index + 1). \(song.title)" : song.title
+        VStack(alignment: .leading, spacing: 28) {
+            personalizedMixSection(
+                "오늘의 믹스",
+                mixes: mixes.filter {
+                    [.daylist, .repeatListening, .listenAgain, .genre]
+                        .contains($0.kind)
+                }
+            )
+            personalizedMixSection(
+                "아티스트 믹스",
+                mixes: mixes.filter { $0.kind == .artist }
+            )
+            personalizedMixSection(
+                "무드별 믹스",
+                mixes: mixes.filter { $0.kind == .mood }
+            )
+        }
+    }
+
+    private var shortcuts: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 10),
+                GridItem(.flexible(), spacing: 10)
+            ],
+            spacing: 10
+        ) {
+            NavigationLink(
+                value: PersonalizedMixBuilder.favoriteSongs(
+                    model.home.starredSongs
+                )
+            ) {
+                BuFiShortcutCard(
+                    title: "좋아요 표시한 곡",
+                    subtitle: countText(model.home.starredSongs.count),
+                    systemImage: "heart.fill",
+                    tint: BuFiTheme.accent
+                )
             }
-        )
+            .buttonStyle(BuFiPressStyle())
+            .disabled(model.home.starredSongs.isEmpty)
+
+            NavigationLink(
+                value: PersonalizedMixBuilder.mostPlayedSongs(
+                    model.home.mostPlayedSongs
+                )
+            ) {
+                BuFiShortcutCard(
+                    title: "많이 들은 곡 순위",
+                    subtitle: countText(model.home.mostPlayedSongs.count),
+                    systemImage: "chart.bar.fill",
+                    tint: Color(red: 0.22, green: 0.50, blue: 0.78)
+                )
+            }
+            .buttonStyle(BuFiPressStyle())
+            .disabled(model.home.mostPlayedSongs.isEmpty)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private func personalizedMixSection(
+        _ title: String,
+        mixes: [PersonalizedMix]
+    ) -> some View {
+        if !mixes.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionTitle(title: title)
+                    .padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 15) {
+                        ForEach(mixes) { mix in
+                            NavigationLink(value: mix) {
+                                PersonalizedMixCard(mix: mix)
+                            }
+                            .buttonStyle(BuFiPressStyle())
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -193,8 +189,8 @@ struct HomeView: View {
                 .padding(.top, 44)
             }
         } else {
-            VStack(alignment: .leading, spacing: 15) {
-                SectionTitle(title: "내 플레이리스트")
+            VStack(alignment: .leading, spacing: 14) {
+                SectionTitle(title: "플레이리스트")
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
@@ -207,14 +203,10 @@ struct HomeView: View {
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(.primary)
                                         .lineLimit(2)
-                                    Text(
-                                        String(
-                                            format: String(localized: "%d곡"),
-                                            playlist.songCount ?? 0
-                                        )
-                                    )
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(countText(playlist.songCount ?? 0))
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.secondary)
                                 }
                                 .frame(width: 166, alignment: .leading)
                             }
@@ -233,28 +225,24 @@ struct HomeView: View {
             ArtworkView(coverArt: cover, size: 166, cornerRadius: 14)
         } else {
             ZStack {
-                LinearGradient(
-                    colors: [
-                        BuFiTheme.accent.opacity(0.72),
-                        BuFiTheme.deezerGlow.opacity(0.82),
-                        Color.black.opacity(0.68)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+                BuFiTheme.elevated
                 Image(systemName: "music.note.list")
-                    .font(.system(size: 48, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
+                    .font(.system(size: 46, weight: .semibold))
+                    .foregroundStyle(BuFiTheme.accentSoft)
             }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(BuFiTheme.separator.opacity(0.28), lineWidth: 0.7)
+            }
         }
     }
 
     @ViewBuilder
     private func artistSection(_ title: String, artists: [Artist]) -> some View {
         if !artists.isEmpty {
-            VStack(alignment: .leading, spacing: 15) {
-                SectionTitle(title: title, trailing: "라이브러리")
+            VStack(alignment: .leading, spacing: 14) {
+                SectionTitle(title: title)
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 16) {
@@ -272,6 +260,7 @@ struct HomeView: View {
                                         .foregroundStyle(.primary)
                                         .lineLimit(2)
                                         .multilineTextAlignment(.center)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                                 .frame(width: 132)
                             }
@@ -285,56 +274,9 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private func rankedSongSection(_ title: String, songs: [Song]) -> some View {
-        if !songs.isEmpty {
-            VStack(alignment: .leading, spacing: 15) {
-                SectionTitle(title: title)
-                    .padding(.horizontal, 16)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: 15) {
-                        ForEach(Array(songs.enumerated()), id: \.element.id) {
-                            index, song in
-                            Button {
-                                audio.play(song, in: songs)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ZStack(alignment: .bottomLeading) {
-                                        ArtworkView(
-                                            coverArt: song.coverArt,
-                                            size: 166,
-                                            cornerRadius: 14
-                                        )
-                                        .frame(width: 166, height: 166)
-                                        Text("\(index + 1)")
-                                            .font(.system(size: 32, weight: .black, design: .rounded))
-                                            .foregroundStyle(.white)
-                                            .shadow(color: .black.opacity(0.55), radius: 5, y: 2)
-                                            .padding(10)
-                                    }
-                                    Text(song.title)
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                    Text(song.artist)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                .frame(width: 166, alignment: .leading)
-                            }
-                            .buttonStyle(BuFiPressStyle())
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
     private var radioSection: some View {
         if !model.home.radioStations.isEmpty {
-            VStack(alignment: .leading, spacing: 15) {
+            VStack(alignment: .leading, spacing: 14) {
                 SectionTitle(title: "인터넷 라디오")
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -345,18 +287,10 @@ struct HomeView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 10) {
                                     ZStack {
-                                        LinearGradient(
-                                            colors: [
-                                                BuFiTheme.accent.opacity(0.88),
-                                                BuFiTheme.deezerGlow.opacity(0.76),
-                                                Color.black.opacity(0.76)
-                                            ],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
+                                        BuFiTheme.elevated
                                         Image(systemName: "radio.fill")
-                                            .font(.system(size: 42, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.9))
+                                            .font(.system(size: 40, weight: .semibold))
+                                            .foregroundStyle(BuFiTheme.accentSoft)
                                     }
                                     .frame(width: 166, height: 112)
                                     .clipShape(
@@ -365,6 +299,16 @@ struct HomeView: View {
                                             style: .continuous
                                         )
                                     )
+                                    .overlay {
+                                        RoundedRectangle(
+                                            cornerRadius: 18,
+                                            style: .continuous
+                                        )
+                                        .stroke(
+                                            BuFiTheme.separator.opacity(0.28),
+                                            lineWidth: 0.7
+                                        )
+                                    }
                                     Text(station.name)
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(.primary)
@@ -387,8 +331,8 @@ struct HomeView: View {
     @ViewBuilder
     private func albumSection(_ title: String, albums: [Album]) -> some View {
         if !albums.isEmpty {
-            VStack(alignment: .leading, spacing: 15) {
-                SectionTitle(title: title, trailing: "라이브러리")
+            VStack(alignment: .leading, spacing: 14) {
+                SectionTitle(title: title)
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
@@ -405,53 +349,71 @@ struct HomeView: View {
         }
     }
 
-    @ViewBuilder
-    private func songSection(_ title: String, songs: [Song]) -> some View {
-        if !songs.isEmpty {
-            VStack(alignment: .leading, spacing: 15) {
-                SectionTitle(title: title)
-                    .padding(.horizontal, 16)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: 15) {
-                        ForEach(songs) { song in
-                            Button {
-                                audio.play(song, in: songs)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ArtworkView(coverArt: song.coverArt, size: 166, cornerRadius: 14)
-                                        .frame(width: 166, height: 166)
-                                    Text(song.title)
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .lineLimit(2)
-                                    Text(song.artist)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                .frame(width: 166, alignment: .leading)
-                            }
-                            .buttonStyle(BuFiPressStyle())
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-            }
+    private var primaryArtists: [Artist] {
+        if !model.home.starredArtists.isEmpty {
+            return model.home.starredArtists
         }
+        return Array(model.home.artists.prefix(12))
+    }
+
+    private var recommendedAlbums: [Album] {
+        let sourceAlbums =
+            model.home.randomAlbums +
+            model.home.recentAlbums +
+            model.home.frequentAlbums +
+            model.home.recentlyPlayedAlbums +
+            model.home.starredAlbums
+        var albumsByID: [String: Album] = [:]
+        for album in sourceAlbums where albumsByID[album.id] == nil {
+            albumsByID[album.id] = album
+        }
+
+        var result: [Album] = []
+        var seen = Set<String>()
+        for song in model.home.recommendedSongs {
+            guard let albumID = song.albumId,
+                  !albumID.isEmpty,
+                  seen.insert(albumID).inserted else {
+                continue
+            }
+            if let album = albumsByID[albumID] {
+                result.append(album)
+            } else if !song.album.isEmpty {
+                result.append(
+                    Album(
+                        id: albumID,
+                        name: song.album,
+                        artist: song.artist,
+                        coverArt: song.coverArt,
+                        year: nil,
+                        starred: nil,
+                        artistId: song.artistId,
+                        genre: song.genre
+                    )
+                )
+            }
+            if result.count == 12 { break }
+        }
+        return result
+    }
+
+    private func countText(_ count: Int) -> String {
+        String(format: String(localized: "%d곡"), count)
     }
 }
 
 private enum HomeFilter: Int, CaseIterable, Identifiable {
     case all
-    case music
     case playlists
+    case personalized
 
     var id: Int { rawValue }
 
     var title: LocalizedStringKey {
         switch self {
         case .all: "전체"
-        case .music: "음악"
         case .playlists: "플레이리스트"
+        case .personalized: "나만의 플레이리스트"
         }
     }
 }

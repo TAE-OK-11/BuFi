@@ -131,20 +131,17 @@ enum DaylistBuilder {
         let period: Int
         let familiarSlots: Int
         switch hour {
-        case 5..<11:
+        case 5..<12:
             period = 0
             familiarSlots = 2
-        case 11..<17:
+        case 12..<19:
             period = 1
             familiarSlots = 1
-        case 17..<22:
-            period = 2
-            familiarSlots = 2
         default:
-            period = 3
+            period = 2
             familiarSlots = 3
         }
-        let seed = day * 4 + period
+        let seed = day * 3 + period
         let familiar = ordered(
             unique(
                 snapshot.mostPlayedSongs +
@@ -233,6 +230,448 @@ enum DaylistBuilder {
             hash &*= 1_099_511_628_211
         }
         return hash
+    }
+}
+
+struct PersonalizedMix: Identifiable, Hashable, Sendable {
+    enum Kind: String, Hashable, Sendable {
+        case daylist
+        case repeatListening
+        case listenAgain
+        case genre
+        case artist
+        case mood
+        case favorites
+        case ranking
+    }
+
+    let id: String
+    let title: String
+    let subtitle: String
+    let songs: [Song]
+    let kind: Kind
+
+    var coverArts: [String] {
+        var values: [String] = []
+        var seen = Set<String>()
+        for song in songs {
+            guard let cover = song.coverArt,
+                  !cover.isEmpty,
+                  seen.insert(cover).inserted else {
+                continue
+            }
+            values.append(cover)
+            if values.count == 4 { break }
+        }
+        return values
+    }
+
+    var showsRanking: Bool { kind == .ranking }
+}
+
+enum PersonalizedMixBuilder {
+    static func make(
+        snapshot: HomeSnapshot,
+        date: Date = Date(),
+        calendar: Calendar = .current,
+        songLimit: Int = 24
+    ) -> [PersonalizedMix] {
+        let pool = unique(
+            snapshot.mostPlayedSongs +
+            snapshot.starredSongs +
+            snapshot.daylistSongs +
+            snapshot.recommendedSongs +
+            snapshot.serverRecommendedSongs +
+            snapshot.lastFMRecommendedSongs +
+            snapshot.listenBrainzRecommendedSongs +
+            snapshot.randomSongs
+        )
+        guard !pool.isEmpty else { return [] }
+
+        let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
+        let year = calendar.component(.year, from: date)
+        let dailySeed = year * 1_000 + day
+        let daylist = filled(
+            preferred: DaylistBuilder.make(
+                snapshot: snapshot,
+                date: date,
+                calendar: calendar,
+                limit: songLimit
+            ),
+            from: pool,
+            seed: dailySeed,
+            limit: songLimit
+        )
+
+        let repeatSongs = filled(
+            preferred: snapshot.mostPlayedSongs + snapshot.starredSongs,
+            from: pool,
+            seed: dailySeed + 11,
+            limit: songLimit
+        )
+        let recentlyPlayed = pool.filter { $0.played != nil }.sorted {
+            ($0.played ?? "") > ($1.played ?? "")
+        }
+        let listenAgain = filled(
+            preferred: recentlyPlayed + snapshot.mostPlayedSongs,
+            from: pool,
+            seed: dailySeed + 23,
+            limit: songLimit
+        )
+
+        let kPopMatches = pool.filter {
+            containsAny(
+                searchableText($0),
+                tokens: ["k-pop", "kpop", "korean pop", "케이팝"]
+            )
+        }
+        let popMatches = pool.filter {
+            containsAny(searchableText($0), tokens: ["pop", "팝"]) &&
+                !kPopMatches.contains($0)
+        }
+        let affinityArtists = highestAffinityArtists(
+            in: snapshot,
+            fallbackPool: pool,
+            limit: 3
+        )
+
+        var mixes: [PersonalizedMix] = [
+            PersonalizedMix(
+                id: "daylist-\(dailySeed)-\(dayPeriod(date, calendar: calendar).id)",
+                title: daylistTitle(date, calendar: calendar),
+                subtitle: dayPeriod(date, calendar: calendar).subtitle,
+                songs: daylist,
+                kind: .daylist
+            ),
+            PersonalizedMix(
+                id: "repeat-listening",
+                title: String(localized: "반복 듣기"),
+                subtitle: String(localized: "자주 찾는 곡을 한데 모았어요"),
+                songs: repeatSongs,
+                kind: .repeatListening
+            ),
+            PersonalizedMix(
+                id: "listen-again",
+                title: String(localized: "한 번 더 듣기"),
+                subtitle: String(localized: "최근 취향을 다시 이어 들어보세요"),
+                songs: listenAgain,
+                kind: .listenAgain
+            ),
+            PersonalizedMix(
+                id: "pop-mix",
+                title: "Pop Mix",
+                subtitle: String(localized: "취향에 맞춘 팝 중심 믹스"),
+                songs: filled(
+                    preferred: popMatches,
+                    from: pool,
+                    seed: dailySeed + 37,
+                    limit: songLimit
+                ),
+                kind: .genre
+            ),
+            PersonalizedMix(
+                id: "k-pop-mix",
+                title: "K-Pop Mix",
+                subtitle: String(localized: "즐겨 듣는 K-Pop과 비슷한 곡"),
+                songs: filled(
+                    preferred: kPopMatches,
+                    from: pool,
+                    seed: dailySeed + 41,
+                    limit: songLimit
+                ),
+                kind: .genre
+            )
+        ]
+
+        for (index, artist) in affinityArtists.enumerated() {
+            mixes.append(
+                artistMix(
+                    artist: artist,
+                    pool: pool,
+                    seed: dailySeed + 53 + index * 7,
+                    limit: songLimit
+                )
+            )
+        }
+
+        mixes.append(contentsOf: [
+            moodMix(
+                id: "happy-mix",
+                title: "Happy Mix",
+                subtitle: String(localized: "기분을 환하게 만드는 음악"),
+                tokens: ["happy", "smile", "joy", "summer", "disco", "funk", "행복", "여름"],
+                pool: pool,
+                seed: dailySeed + 61,
+                limit: songLimit
+            ),
+            moodMix(
+                id: "upbeat-mix",
+                title: "Upbeat Mix",
+                subtitle: String(localized: "에너지가 필요한 순간을 위한 음악"),
+                tokens: ["dance", "edm", "electronic", "rock", "hip hop", "upbeat", "댄스"],
+                pool: pool,
+                seed: dailySeed + 67,
+                limit: songLimit
+            ),
+            moodMix(
+                id: "love-mix",
+                title: "Love Mix",
+                subtitle: String(localized: "사랑과 설렘을 담은 음악"),
+                tokens: ["love", "romantic", "romance", "r&b", "soul", "ballad", "사랑"],
+                pool: pool,
+                seed: dailySeed + 71,
+                limit: songLimit
+            ),
+            moodMix(
+                id: "chill-mix",
+                title: "Chill Mix",
+                subtitle: String(localized: "편안하게 흐르는 차분한 음악"),
+                tokens: ["chill", "ambient", "acoustic", "jazz", "lo-fi", "indie", "잔잔"],
+                pool: pool,
+                seed: dailySeed + 79,
+                limit: songLimit
+            )
+        ])
+
+        return mixes.filter { !$0.songs.isEmpty }
+    }
+
+    static func favoriteSongs(_ songs: [Song]) -> PersonalizedMix {
+        PersonalizedMix(
+            id: "favorite-songs",
+            title: String(localized: "좋아요 표시한 곡"),
+            subtitle: String(
+                format: String(localized: "%d곡"),
+                songs.count
+            ),
+            songs: songs,
+            kind: .favorites
+        )
+    }
+
+    static func mostPlayedSongs(_ songs: [Song]) -> PersonalizedMix {
+        PersonalizedMix(
+            id: "most-played-ranking",
+            title: String(localized: "많이 들은 곡 순위"),
+            subtitle: String(localized: "서버와 청취 기록을 반영한 순위"),
+            songs: songs,
+            kind: .ranking
+        )
+    }
+
+    private static func artistMix(
+        artist: String,
+        pool: [Song],
+        seed: Int,
+        limit: Int
+    ) -> PersonalizedMix {
+        let normalizedArtist = normalized(artist)
+        let primary = ordered(
+            pool.filter { normalized($0.artist) == normalizedArtist },
+            seed: seed
+        )
+        let primaryGenres = Set(primary.compactMap { $0.genre.map(normalized) })
+        let related = ordered(
+            pool.filter { song in
+                guard normalized(song.artist) != normalizedArtist else { return false }
+                if let genre = song.genre {
+                    return primaryGenres.contains(normalized(genre))
+                }
+                return true
+            },
+            seed: seed + 7
+        )
+
+        var songs: [Song] = []
+        var primaryIndex = 0
+        var relatedIndex = 0
+        while songs.count < limit &&
+                (primaryIndex < primary.count || relatedIndex < related.count) {
+            for _ in 0..<3 where primaryIndex < primary.count && songs.count < limit {
+                songs.append(primary[primaryIndex])
+                primaryIndex += 1
+            }
+            for _ in 0..<2 where relatedIndex < related.count && songs.count < limit {
+                songs.append(related[relatedIndex])
+                relatedIndex += 1
+            }
+        }
+        songs = filled(
+            preferred: songs,
+            from: primary + related + pool,
+            seed: seed,
+            limit: limit
+        )
+        return PersonalizedMix(
+            id: "artist-\(stableHash(artist, seed: 0))",
+            title: "\(artist) Mix",
+            subtitle: String(
+                format: String(localized: "%@ 음악과 비슷한 곡"),
+                artist
+            ),
+            songs: songs,
+            kind: .artist
+        )
+    }
+
+    private static func moodMix(
+        id: String,
+        title: String,
+        subtitle: String,
+        tokens: [String],
+        pool: [Song],
+        seed: Int,
+        limit: Int
+    ) -> PersonalizedMix {
+        let matches = pool.filter {
+            containsAny(searchableText($0), tokens: tokens)
+        }
+        return PersonalizedMix(
+            id: id,
+            title: title,
+            subtitle: subtitle,
+            songs: filled(
+                preferred: matches,
+                from: pool,
+                seed: seed,
+                limit: limit
+            ),
+            kind: .mood
+        )
+    }
+
+    private static func highestAffinityArtists(
+        in snapshot: HomeSnapshot,
+        fallbackPool: [Song],
+        limit: Int
+    ) -> [String] {
+        var scores: [String: Int] = [:]
+        var displayNames: [String: String] = [:]
+        func score(_ songs: [Song], value: Int) {
+            for song in songs where !song.artist.isEmpty {
+                let key = normalized(song.artist)
+                scores[key, default: 0] += value
+                displayNames[key] = song.artist
+            }
+        }
+        score(snapshot.mostPlayedSongs, value: 4)
+        score(snapshot.starredSongs, value: 3)
+        score(snapshot.recommendedSongs, value: 1)
+        let orderedKeys = scores.keys.sorted(by: {
+            let left = scores[$0, default: 0]
+            let right = scores[$1, default: 0]
+            return left == right ? $0 < $1 : left > right
+        })
+
+        var result: [String] = []
+        var seen = Set<String>()
+        for key in orderedKeys {
+            guard let name = displayNames[key],
+                  seen.insert(key).inserted else {
+                continue
+            }
+            result.append(name)
+            if result.count == limit { return result }
+        }
+        for song in fallbackPool where !song.artist.isEmpty {
+            let key = normalized(song.artist)
+            guard seen.insert(key).inserted else { continue }
+            result.append(song.artist)
+            if result.count == limit { break }
+        }
+        return result
+    }
+
+    private static func filled(
+        preferred: [Song],
+        from pool: [Song],
+        seed: Int,
+        limit: Int
+    ) -> [Song] {
+        Array(
+            unique(
+                ordered(preferred, seed: seed) +
+                ordered(pool, seed: seed + 97)
+            )
+            .prefix(limit)
+        )
+    }
+
+    private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
+        unique(songs).sorted {
+            stableHash($0.id, seed: seed) < stableHash($1.id, seed: seed)
+        }
+    }
+
+    private static func unique(_ songs: [Song]) -> [Song] {
+        var ids = Set<String>()
+        return songs.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func searchableText(_ song: Song) -> String {
+        normalized(
+            [song.genre, song.title, song.album, song.artist]
+                .compactMap { $0 }
+                .joined(separator: " ")
+        )
+    }
+
+    private static func containsAny(_ value: String, tokens: [String]) -> Bool {
+        tokens.contains { value.contains(normalized($0)) }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stableHash(_ value: String, seed: Int) -> UInt64 {
+        var hash = UInt64(bitPattern: Int64(seed)) ^ 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash
+    }
+
+    private static func daylistTitle(
+        _ date: Date,
+        calendar: Calendar
+    ) -> String {
+        let weekday = date.formatted(.dateTime.weekday(.wide))
+        return String(
+            format: dayPeriod(date, calendar: calendar).titleFormat,
+            weekday
+        )
+    }
+
+    private static func dayPeriod(
+        _ date: Date,
+        calendar: Calendar
+    ) -> (id: String, titleFormat: String, subtitle: String) {
+        switch calendar.component(.hour, from: date) {
+        case 5..<12:
+            (
+                "morning",
+                String(localized: "%@ 아침 daylist"),
+                String(localized: "가볍게 하루를 시작하는 맞춤 음악")
+            )
+        case 12..<19:
+            (
+                "afternoon",
+                String(localized: "%@ 오후 daylist"),
+                String(localized: "오후의 흐름에 맞춘 익숙함과 발견")
+            )
+        default:
+            (
+                "night",
+                String(localized: "%@ 밤 daylist"),
+                String(localized: "밤에 어울리는 익숙하고 편안한 음악")
+            )
+        }
     }
 }
 
