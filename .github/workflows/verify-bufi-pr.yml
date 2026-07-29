@@ -1,5 +1,8 @@
 name: Verify BuFi PR
 
+env:
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+
 on:
   pull_request:
     branches:
@@ -60,7 +63,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
-            clean build 2>&1 | tee build/xcode26.log
+            build 2>&1 | tee build/xcode26.log
       - name: Upload Xcode 26 failure log
         if: failure()
         uses: actions/upload-artifact@v7
@@ -129,7 +132,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
-            clean build 2>&1 | tee build/xcode27.log
+            build 2>&1 | tee build/xcode27.log
       - name: Upload Xcode 27 preview log
         if: always()
         uses: actions/upload-artifact@v7

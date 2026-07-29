@@ -41,6 +41,10 @@ references; no source was copied into BuFi.
   keep-screen-awake playback setting is enabled.
 - Optional Last.fm and ListenBrainz requests avoid constrained networks and
   limit connection concurrency.
+- A paused player deactivates its audio session after a short resume window;
+  an idle player entering the background deactivates immediately.
+- Release builds use explicit modules, whole-module Swift optimization, and
+  Thin LTO. CI skips redundant clean passes and Homebrew auto-update work.
 
 ## Deliberately not adopted
 

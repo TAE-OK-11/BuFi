@@ -80,6 +80,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var recoveryTask: Task<Void, Never>?
     private var audioSessionActivationTask: Task<Void, Never>?
     private var audioSessionActivationToken: UUID?
+    private var audioSessionDeactivationTask: Task<Void, Never>?
     private var nowPlayingActivationTask: Task<Void, Never>?
     private let audioSessionController = AudioSessionController()
     private var recoveryToken: UUID?
@@ -339,6 +340,7 @@ final class AudioEngine: NSObject, ObservableObject {
         endBackgroundBridge()
         refreshIdleTimerPreference()
         updateNowPlaying()
+        scheduleAudioSessionDeactivation()
         if persistsQueue { scheduleQueueSave(immediate: true) }
     }
 
@@ -1302,6 +1304,8 @@ final class AudioEngine: NSObject, ObservableObject {
         // AVAudioSession activation may synchronously negotiate with the audio
         // daemon. Serialize it away from MainActor and coalesce repeated calls
         // from ready/buffer/route observers into one operation.
+        audioSessionDeactivationTask?.cancel()
+        audioSessionDeactivationTask = nil
         guard audioSessionActivationTask == nil else { return }
         let controller = audioSessionController
         let token = UUID()
@@ -1319,6 +1323,8 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func resetAndConfigureAudioSession() {
+        audioSessionDeactivationTask?.cancel()
+        audioSessionDeactivationTask = nil
         audioSessionActivationTask?.cancel()
         let controller = audioSessionController
         let token = UUID()
@@ -1336,6 +1342,8 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func markAudioSessionInactive() {
+        audioSessionDeactivationTask?.cancel()
+        audioSessionDeactivationTask = nil
         let activationTask = audioSessionActivationTask
         activationTask?.cancel()
         audioSessionActivationToken = nil
@@ -1344,6 +1352,29 @@ final class AudioEngine: NSObject, ObservableObject {
         Task {
             _ = await activationTask?.value
             await controller.markInactive()
+        }
+    }
+
+    private func scheduleAudioSessionDeactivation(immediate: Bool = false) {
+        audioSessionDeactivationTask?.cancel()
+        let controller = audioSessionController
+        audioSessionDeactivationTask = Task { [weak self] in
+            if !immediate {
+                do {
+                    try await Task.sleep(for: .seconds(4))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  !self.wantsPlayback,
+                  self.player.timeControlStatus != .playing else {
+                return
+            }
+            await controller.deactivate()
+            guard !Task.isCancelled else { return }
+            self.audioSessionDeactivationTask = nil
         }
     }
 
@@ -1412,7 +1443,10 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func handleDidEnterBackground() {
         scheduleQueueSave(immediate: true)
-        guard wantsPlayback else { return }
+        guard wantsPlayback else {
+            scheduleAudioSessionDeactivation(immediate: true)
+            return
+        }
         beginBackgroundBridge()
         preserveActivePlayback()
         Task { [weak self] in
@@ -1843,6 +1877,15 @@ private actor AudioSessionController {
 
     func markInactive() {
         isActive = false
+    }
+
+    func deactivate() {
+        guard isActive else { return }
+        defer { isActive = false }
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
     }
 
     func resetAndActivate() -> Bool {
