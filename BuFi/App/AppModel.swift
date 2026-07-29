@@ -429,6 +429,14 @@ final class AppModel: ObservableObject {
         if snapshot != home { home = snapshot }
     }
 
+    func handleMemoryPressure() {
+        // In-flight detail requests belong to visible screens and are allowed
+        // to finish. Only reusable snapshots are discarded.
+        albumDetailCache.removeAll(keepingCapacity: false)
+        playlistDetailCache.removeAll(keepingCapacity: false)
+        artistDetailCache.removeAll(keepingCapacity: false)
+    }
+
     func album(id: String) async throws -> AlbumDetail {
         if let cached = Self.cachedDetail(id: id, cache: &albumDetailCache) {
             return cached

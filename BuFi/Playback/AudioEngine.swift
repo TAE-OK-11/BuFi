@@ -73,6 +73,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryTask: Task<Void, Never>?
+    private var audioSessionActivationTask: Task<Void, Never>?
+    private var audioSessionActivationToken: UUID?
+    private var nowPlayingActivationTask: Task<Void, Never>?
+    private let audioSessionController = AudioSessionController()
     private var recoveryToken: UUID?
     private weak var handledFailedItem: AVPlayerItem?
     private var recoveryAttempt = 0
@@ -100,7 +104,6 @@ final class AudioEngine: NSObject, ObservableObject {
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         nowPlayingSession = MPNowPlayingSession(players: [player])
         nowPlayingSession?.automaticallyPublishesNowPlayingInfo = false
-        configureAudioSession()
         installPlayerObservers()
         installSystemObservers()
         installRemoteCommands()
@@ -294,6 +297,16 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func pause() {
         pausePlayback(persistsQueue: true)
+    }
+
+    func handleMemoryPressure() {
+        // Preserve the active player item and autoplay continuity. Only
+        // speculative work is discarded so playback cannot be interrupted by
+        // a system memory warning.
+        offlinePrefetchTask?.cancel()
+        offlinePrefetchTask = nil
+        recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
+        player.currentItem?.preferredForwardBufferDuration = 0
     }
 
     private func pausePlayback(persistsQueue: Bool) {
@@ -1241,23 +1254,52 @@ final class AudioEngine: NSObject, ObservableObject {
         return result
     }
 
-    @discardableResult
-    private func configureAudioSession() -> Bool {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(
-                .playback,
-                mode: .default,
-                policy: .longFormAudio
-            )
-            try session.setActive(true)
-            player.isMuted = false
-            player.volume = 1
-            return true
-        } catch {
-            // A later play attempt and the route/interruption observers retry.
-            // Keeping this nonfatal is important while another app owns output.
-            return false
+    private func configureAudioSession() {
+        // AVAudioSession activation may synchronously negotiate with the audio
+        // daemon. Serialize it away from MainActor and coalesce repeated calls
+        // from ready/buffer/route observers into one operation.
+        guard audioSessionActivationTask == nil else { return }
+        let controller = audioSessionController
+        let token = UUID()
+        audioSessionActivationToken = token
+        audioSessionActivationTask = Task { [weak self] in
+            let activated = await controller.activate()
+            guard let self else { return }
+            guard self.audioSessionActivationToken == token else { return }
+            self.audioSessionActivationToken = nil
+            self.audioSessionActivationTask = nil
+            guard activated else { return }
+            self.player.isMuted = false
+            self.player.volume = 1
+        }
+    }
+
+    private func resetAndConfigureAudioSession() {
+        audioSessionActivationTask?.cancel()
+        let controller = audioSessionController
+        let token = UUID()
+        audioSessionActivationToken = token
+        audioSessionActivationTask = Task { [weak self] in
+            let activated = await controller.resetAndActivate()
+            guard let self else { return }
+            guard self.audioSessionActivationToken == token else { return }
+            self.audioSessionActivationToken = nil
+            self.audioSessionActivationTask = nil
+            guard activated else { return }
+            self.player.isMuted = false
+            self.player.volume = 1
+        }
+    }
+
+    private func markAudioSessionInactive() {
+        let activationTask = audioSessionActivationTask
+        activationTask?.cancel()
+        audioSessionActivationToken = nil
+        audioSessionActivationTask = nil
+        let controller = audioSessionController
+        Task {
+            _ = await activationTask?.value
+            await controller.markInactive()
         }
     }
 
@@ -1292,7 +1334,7 @@ final class AudioEngine: NSObject, ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.configureAudioSession()
+                self.resetAndConfigureAudioSession()
                 if self.currentSong != nil {
                     self.restartPlaybackPlan(resumeFrom: self.elapsed)
                 }
@@ -1383,6 +1425,7 @@ final class AudioEngine: NSObject, ObservableObject {
             resumeAfterInterruption = isPlaying || wantsPlayback
             wantsPlayback = false
             cancelPlaybackRecovery()
+            markAudioSessionInactive()
             player.pause()
             endBackgroundBridge()
             scheduleQueueSave(immediate: true)
@@ -1602,9 +1645,11 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func activateNowPlayingSession() {
-        guard let nowPlayingSession else { return }
-        Task {
+        guard let nowPlayingSession, nowPlayingActivationTask == nil else { return }
+        nowPlayingActivationTask = Task { [weak self] in
             _ = await nowPlayingSession.becomeActiveIfPossible()
+            guard let self else { return }
+            self.nowPlayingActivationTask = nil
         }
     }
 
@@ -1659,16 +1704,20 @@ final class AudioEngine: NSObject, ObservableObject {
             shuffle: isShuffleEnabled,
             repeatMode: repeatMode
         )
+        let restorationEnabled = queueRestorationEnabled
         queueSaveTask = Task {
             if !immediate { try? await Task.sleep(for: .milliseconds(450)) }
-            guard !Task.isCancelled,
-                  let data = try? JSONEncoder().encode(snapshot) else {
+            guard !Task.isCancelled else { return }
+            let data = await Task.detached(priority: .utility) {
+                try? JSONEncoder().encode(snapshot)
+            }.value
+            guard !Task.isCancelled, let data else {
                 return
             }
             let containsOnlyServerSongs = snapshot.queue.allSatisfy {
                 $0.externalStreamURL == nil
             }
-            if self.queueRestorationEnabled && containsOnlyServerSongs {
+            if restorationEnabled && containsOnlyServerSongs {
                 UserDefaults.standard.set(data, forKey: queueStorageKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
@@ -1720,4 +1769,41 @@ private struct QueueSnapshot: Codable, Sendable {
     let elapsed: TimeInterval
     let shuffle: Bool
     let repeatMode: RepeatMode
+}
+
+private actor AudioSessionController {
+    private var isConfigured = false
+    private var isActive = false
+
+    func activate() -> Bool {
+        if isActive { return true }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            if !isConfigured {
+                try session.setCategory(
+                    .playback,
+                    mode: .default,
+                    policy: .longFormAudio
+                )
+                isConfigured = true
+            }
+            try session.setActive(true)
+            isActive = true
+            return true
+        } catch {
+            // A later ready, route, or interruption event retries activation.
+            isActive = false
+            return false
+        }
+    }
+
+    func markInactive() {
+        isActive = false
+    }
+
+    func resetAndActivate() -> Bool {
+        isConfigured = false
+        isActive = false
+        return activate()
+    }
 }

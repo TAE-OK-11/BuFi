@@ -68,6 +68,8 @@ struct RootView: View {
             thermalState = ProcessInfo.processInfo.thermalState
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            model.handleMemoryPressure()
+            audio.handleMemoryPressure()
             Task(priority: .utility) {
                 await ArtworkStore.shared.clearMemory()
             }
