@@ -9,6 +9,8 @@ enum MusicRoute: Hashable {
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @AppStorage(ArtistMixPreferences.storageKey)
+    private var selectedArtistMixes = "[]"
     @State private var filter = HomeFilter.all
 
     var body: some View {
@@ -49,19 +51,26 @@ struct HomeView: View {
             switch filter {
             case .all:
                 allContent(
-                    mixes: PersonalizedMixBuilder.make(snapshot: model.home)
+                    mixes: personalizedMixes
                 )
             case .playlists:
                 playlistSection(showEmpty: true)
             case .personalized:
                 personalizedContent(
-                    PersonalizedMixBuilder.make(snapshot: model.home)
+                    personalizedMixes
                 )
             }
         }
         .id(filter)
-        .transition(.opacity.combined(with: .offset(y: 5)))
+        .transition(.opacity)
         .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
+    }
+
+    private var personalizedMixes: [PersonalizedMix] {
+        PersonalizedMixBuilder.make(
+            snapshot: model.home,
+            selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
+        )
     }
 
     private func allContent(mixes: [PersonalizedMix]) -> some View {
@@ -127,7 +136,6 @@ struct HomeView: View {
             ) {
                 BuFiShortcutCard(
                     title: "좋아요 표시한 곡",
-                    subtitle: String(localized: "저장한 곡을 이어 들어보세요"),
                     systemImage: "heart.fill",
                     tint: BuFiTheme.accent
                 )
@@ -142,7 +150,6 @@ struct HomeView: View {
             ) {
                 BuFiShortcutCard(
                     title: "자주 들은 곡",
-                    subtitle: String(localized: "청취 기록으로 만든 순위"),
                     systemImage: "chart.bar.fill",
                     tint: Color(red: 0.22, green: 0.50, blue: 0.78)
                 )

@@ -97,6 +97,62 @@ final class RecommendationEngineTests: XCTestCase {
         XCTAssertEqual(Set(first.map(\.id)).count, first.count)
     }
 
+    func testPersonalizedMixesProvideSixDefaultAndFourSelectedArtists() {
+        let songs = (0..<12).map { index in
+            song(
+                id: "artist-track-\(index)",
+                title: "Track \(index)",
+                artist: "Artist \(index)",
+                genre: index.isMultiple(of: 2) ? "Pop" : "Rock"
+            )
+        }
+        let selected = ["Artist 8", "Artist 9", "Artist 10", "Artist 11"]
+        let mixes = PersonalizedMixBuilder.make(
+            snapshot: HomeSnapshot(randomSongs: songs),
+            date: Date(timeIntervalSince1970: 1_800_000_000),
+            selectedArtists: selected
+        )
+        let artistMixes = mixes.filter { $0.kind == .artist }
+
+        XCTAssertEqual(artistMixes.count, 10)
+        for artist in selected {
+            XCTAssertTrue(artistMixes.contains { $0.title == "\(artist) Mix" })
+        }
+    }
+
+    func testPersonalizedMixIdentityChangesOnTheNextDay() {
+        let songs = (0..<12).map { index in
+            song(
+                id: "daily-track-\(index)",
+                title: "Daily \(index)",
+                artist: "Artist \(index % 6)"
+            )
+        }
+        let snapshot = HomeSnapshot(randomSongs: songs)
+        let first = PersonalizedMixBuilder.make(
+            snapshot: snapshot,
+            date: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let nextDay = PersonalizedMixBuilder.make(
+            snapshot: snapshot,
+            date: Date(timeIntervalSince1970: 1_800_086_400)
+        )
+
+        XCTAssertNotEqual(first.map(\.id), nextDay.map(\.id))
+    }
+
+    func testArtistMixPreferencesDeduplicateAndKeepFourRecentArtists() {
+        var encoded = "[]"
+        for artist in ["A", "B", "C", "D", "E", "B"] {
+            encoded = ArtistMixPreferences.adding(artist, to: encoded)
+        }
+
+        XCTAssertEqual(
+            ArtistMixPreferences.decode(encoded),
+            ["B", "E", "D", "C"]
+        )
+    }
+
     private func weights() -> RecommendationWeights {
         let defaults = UserDefaults(
             suiteName: "RecommendationEngineTests.\(UUID().uuidString)"

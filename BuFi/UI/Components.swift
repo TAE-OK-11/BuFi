@@ -268,7 +268,7 @@ struct BuFiGroupedSurface<Content: View>: View {
 
 struct BuFiShortcutCard: View {
     let title: LocalizedStringKey
-    let subtitle: String
+    var subtitle: String? = nil
     let systemImage: String
     let tint: Color
 
@@ -287,10 +287,12 @@ struct BuFiShortcutCard: View {
                     .foregroundStyle(.primary)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(subtitle)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -400,8 +402,8 @@ struct AlbumCard: View {
             card
                 .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                     content
-                        .scaleEffect(phase.isIdentity ? 1 : 0.965)
-                        .opacity(phase.isIdentity ? 1 : 0.86)
+                        .scaleEffect(phase.isIdentity ? 1 : 0.985)
+                        .opacity(phase.isIdentity ? 1 : 0.94)
                 }
         } else {
             card
@@ -418,13 +420,13 @@ struct AlbumCard: View {
                 }
             Text(album.name)
                 .font(.system(size: 15, weight: .semibold))
-                .lineLimit(4)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(2)
+                .frame(height: 38, alignment: .topLeading)
                 .foregroundStyle(.primary)
             Text(album.artist)
                 .font(.system(size: 13))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .frame(height: 17, alignment: .topLeading)
                 .foregroundStyle(.secondary)
         }
         .frame(width: width, alignment: .leading)

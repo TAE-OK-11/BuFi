@@ -15,7 +15,7 @@ struct LibraryView: View {
                     filters
                     content
                         .id(filter)
-                        .transition(.opacity.combined(with: .offset(y: 6)))
+                        .transition(.opacity)
                 }
                 .padding(.top, 18)
                 .padding(.bottom, audio.currentSong == nil ? 56 : 154)
@@ -81,7 +81,9 @@ struct LibraryView: View {
                                 width: libraryAlbumWidth,
                                 usesHorizontalScrollTransition: false
                             )
+                            .frame(maxHeight: .infinity, alignment: .topLeading)
                         }
+                        .frame(maxHeight: .infinity, alignment: .topLeading)
                         .buttonStyle(BuFiPressStyle())
                     }
                 }
