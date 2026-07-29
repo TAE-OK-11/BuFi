@@ -11,48 +11,15 @@ struct PersonalizedMixArtwork: View {
                 .resizable()
                 .scaledToFill()
 
-            VStack(alignment: .leading, spacing: max(3, size * 0.018)) {
-                Text("BuFi MIX")
-                    .font(
-                        .system(
-                            size: max(9, size * 0.055),
-                            weight: .black,
-                            design: .rounded
-                        )
-                    )
-                    .tracking(size * 0.005)
-                    .opacity(0.78)
-
+            VStack(alignment: .leading, spacing: 0) {
                 Text(coverTitle)
-                    .font(
-                        .system(
-                            size: max(18, size * 0.115),
-                            weight: .black,
-                            design: .rounded
-                        )
-                    )
+                    .font(coverFont)
                     .tracking(-size * 0.006)
                     .lineLimit(3)
                     .minimumScaleFactor(0.70)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
-
-                Image(systemName: fallbackIcon)
-                    .font(
-                        .system(
-                            size: max(16, size * 0.105),
-                            weight: .black
-                        )
-                    )
-                    .frame(
-                        width: max(31, size * 0.20),
-                        height: max(31, size * 0.20)
-                    )
-                    .background(
-                        foreground.opacity(0.16),
-                        in: Circle()
-                    )
             }
             .foregroundStyle(foreground)
             .padding(max(13, size * 0.075))
@@ -114,18 +81,21 @@ struct PersonalizedMixArtwork: View {
         }
     }
 
-    private var fallbackIcon: String {
-        switch mix.kind {
-        case .daylist: "sun.horizon.fill"
-        case .repeatListening: "repeat"
-        case .listenAgain: "clock.arrow.circlepath"
-        case .genre: "music.note"
-        case .artist: "person.wave.2.fill"
-        case .mood: "sparkles"
-        case .favorites: "heart.fill"
-        case .ranking: "chart.bar.fill"
+    private var coverFont: Font {
+        let fontSize = max(18, size * 0.115)
+        let supportsUnbounded = coverTitle.unicodeScalars.allSatisfy {
+            $0.isASCII
         }
+        if supportsUnbounded {
+            return .custom("Unbounded-Black", fixedSize: fontSize)
+        }
+        return .system(
+            size: fontSize,
+            weight: .black,
+            design: .rounded
+        )
     }
+
 }
 
 struct PersonalizedMixCard: View {

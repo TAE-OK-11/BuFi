@@ -93,6 +93,8 @@ targets:
           UIColorName: LaunchBackground
         UIBackgroundModes:
           - audio
+        UIAppFonts:
+          - Unbounded.ttf
         UIApplicationSupportsIndirectInputEvents: true
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
