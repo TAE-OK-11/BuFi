@@ -246,7 +246,7 @@ struct LibraryView: View {
 
     private func groupedLibraryRows<Item: Identifiable, Row: View>(
         _ items: [Item],
-        @ViewBuilder row: (Item) -> Row
+        @ViewBuilder row: @escaping (Item) -> Row
     ) -> some View {
         BuFiGroupedSurface {
             VStack(spacing: 0) {
