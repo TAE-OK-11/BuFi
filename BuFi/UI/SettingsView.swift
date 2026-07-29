@@ -16,6 +16,8 @@ struct SettingsView: View {
     @AppStorage("auto-open-player") private var autoOpenPlayer = false
     @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
     @AppStorage("restore-play-queue") private var restorePlayQueue = true
+    @AppStorage("algorithmic-autoplay-enabled")
+    private var algorithmicAutoplayEnabled = true
     @AppStorage("keep-screen-awake") private var keepScreenAwake = false
     @AppStorage("server-sync-interval") private var syncInterval = 300.0
     @AppStorage("offline-wifi-only") private var offlineWiFiOnly = true
@@ -148,6 +150,15 @@ struct SettingsView: View {
                     Toggle(isOn: $restorePlayQueue) {
                         Label("재생 대기목록 기억", systemImage: "clock.arrow.circlepath")
                     }
+                    Toggle(isOn: $algorithmicAutoplayEnabled) {
+                        Label(
+                            "추천곡 계속 재생",
+                            systemImage: "infinity.circle"
+                        )
+                    }
+                    Text("현재 재생목록이 끝나기 전에 서버 유사곡을 미리 추가해 음악이 끊기지 않도록 계속 재생합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Toggle(isOn: $lyricsAutoScroll) {
                         Label("가사 자동 스크롤", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }

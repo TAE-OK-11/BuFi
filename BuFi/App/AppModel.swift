@@ -270,6 +270,32 @@ final class AppModel: ObservableObject {
         AudioEngine.shared.play(values[0], in: values)
     }
 
+    private func autoplayContinuation(
+        after seed: Song,
+        excluding excludedIDs: Set<String>,
+        client: OpenSubsonicClient
+    ) async -> [Song] {
+        let serverValues = await client.autoplayQueue(
+            seed: seed,
+            excluding: excludedIDs
+        )
+        guard self.client === client else { return [] }
+        let fallbacks =
+            home.recommendedSongs +
+            home.serverRecommendedSongs +
+            home.lastFMRecommendedSongs +
+            home.listenBrainzRecommendedSongs +
+            home.randomSongs
+        return Self.uniqueSongs(serverValues + fallbacks)
+            .filter {
+                !excludedIDs.contains($0.id) &&
+                    $0.id != seed.id &&
+                    $0.externalStreamURL == nil
+            }
+            .prefix(16)
+            .map(applyingFavoriteOverride)
+    }
+
     func playInternetRadio(_ station: InternetRadioStation) {
         guard let url = URL(string: station.streamUrl),
               url.scheme?.lowercased() == "https" else {
@@ -1254,9 +1280,9 @@ final class AppModel: ObservableObject {
     ) async -> HomeSnapshot {
         let history = await ListeningHistoryStore.shared.snapshot()
         var value = snapshot
-        value.mostPlayedSongs = Self.uniqueSongs(
-            history.mostPlayedSongs + snapshot.mostPlayedSongs
-        )
+        if value.mostPlayedSongs.isEmpty {
+            value.mostPlayedSongs = history.mostPlayedSongs
+        }
 
         let albums = snapshot.recentlyPlayedAlbums +
             snapshot.frequentAlbums +
@@ -1290,9 +1316,9 @@ final class AppModel: ObservableObject {
                 albumsByID[albumID] = localRecentAlbums.last
             }
         }
-        value.recentlyPlayedAlbums = Self.uniqueAlbums(
-            localRecentAlbums + snapshot.recentlyPlayedAlbums
-        )
+        if value.recentlyPlayedAlbums.isEmpty {
+            value.recentlyPlayedAlbums = localRecentAlbums
+        }
         return value
     }
 
@@ -1485,6 +1511,14 @@ final class AppModel: ObservableObject {
                     return await self.setStar(
                         song: song,
                         enabled: !self.isStarred(song)
+                    )
+                },
+                autoplayContinuationProvider: { [weak self] seed, excludedIDs in
+                    guard let self else { return [] }
+                    return await self.autoplayContinuation(
+                        after: seed,
+                        excluding: excludedIDs,
+                        client: client
                     )
                 }
             )

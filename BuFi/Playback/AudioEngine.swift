@@ -42,6 +42,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingSession: MPNowPlayingSession?
     private var client: OpenSubsonicClient?
     private var songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)?
+    private var autoplayContinuationProvider:
+        (@MainActor (Song, Set<String>) async -> [Song])?
     private var itemObservation: NSKeyValueObservation?
     private var itemBufferObservations: [NSKeyValueObservation] = []
     private var timeControlObservation: NSKeyValueObservation?
@@ -57,6 +59,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var serverQueueTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
+    private var autoplayTask: Task<Void, Never>?
     private var nowPlayingSongID: String?
     private var nowPlayingArtworkKey: String?
     private var resumeAfterInterruption = false
@@ -68,7 +71,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var itemLoadGeneration: UInt64 = 0
     private var lyricsLoadGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
+    private var autoplayGeneration: UInt64 = 0
     private var isSeekInFlight = false
+    private var autoplayShouldAdvance = false
     private var pendingSeekPosition: TimeInterval?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
@@ -94,11 +99,18 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func configure(
         client: OpenSubsonicClient?,
-        songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil
+        songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil,
+        autoplayContinuationProvider:
+            (@MainActor (Song, Set<String>) async -> [Song])? = nil
     ) {
         serverQueueTask?.cancel()
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration &+= 1
+        autoplayShouldAdvance = false
         self.client = client
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
+        self.autoplayContinuationProvider = autoplayContinuationProvider
         if client == nil {
             queueSaveTask?.cancel()
             offlinePrefetchTask?.cancel()
@@ -163,6 +175,10 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func play(_ song: Song, in sourceQueue: [Song], autoplay: Bool = true) {
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration &+= 1
+        autoplayShouldAdvance = false
         startPlayback(song, in: sourceQueue, preferredIndex: nil, autoplay: autoplay)
     }
 
@@ -226,6 +242,7 @@ final class AudioEngine: NSObject, ObservableObject {
         scheduleOfflinePrefetch()
         scheduleQueueSave()
         updateNowPlaying()
+        scheduleAutoplayContinuationIfNeeded()
     }
 
     func togglePlayback() {
@@ -259,6 +276,7 @@ final class AudioEngine: NSObject, ObservableObject {
             player.playImmediately(atRate: 1)
         }
         updateNowPlaying()
+        scheduleAutoplayContinuationIfNeeded()
     }
 
     func pause() {
@@ -347,10 +365,79 @@ final class AudioEngine: NSObject, ObservableObject {
         } else if repeatMode == .all || (isAutoAdvance && repeatMode == .one) {
             queueIndex = 0
         } else {
-            pause()
+            requestAutoplayContinuation(advanceWhenReady: true)
             return
         }
         startPlayback(queue[queueIndex], in: queue, preferredIndex: queueIndex)
+    }
+
+    private func scheduleAutoplayContinuationIfNeeded() {
+        let remaining = max(0, queue.count - queueIndex - 1)
+        guard remaining <= 3 else { return }
+        requestAutoplayContinuation(advanceWhenReady: false)
+    }
+
+    private func requestAutoplayContinuation(advanceWhenReady: Bool) {
+        guard repeatMode == .off,
+              !isShuffleEnabled,
+              algorithmicAutoplayEnabled,
+              let seed = currentSong,
+              seed.externalStreamURL == nil,
+              let provider = autoplayContinuationProvider else {
+            if advanceWhenReady { pause() }
+            return
+        }
+
+        autoplayShouldAdvance = autoplayShouldAdvance || advanceWhenReady
+        if advanceWhenReady {
+            player.pause()
+            isPlaying = false
+            isBuffering = true
+            updateNowPlaying()
+        }
+        guard autoplayTask == nil else { return }
+
+        let generation = autoplayGeneration
+        let excludedIDs = Set(queue.map(\.id))
+        autoplayTask = Task { [weak self] in
+            let candidates = await provider(seed, excludedIDs)
+            guard let self,
+                  !Task.isCancelled,
+                  generation == self.autoplayGeneration else {
+                return
+            }
+            guard self.algorithmicAutoplayEnabled else {
+                self.autoplayTask = nil
+                let shouldAdvance = self.autoplayShouldAdvance
+                self.autoplayShouldAdvance = false
+                if shouldAdvance { self.pause() }
+                return
+            }
+
+            let currentIDs = Set(self.queue.map(\.id))
+            var appendedIDs = currentIDs
+            let additions = candidates.filter {
+                appendedIDs.insert($0.id).inserted &&
+                    $0.externalStreamURL == nil
+            }
+            self.autoplayTask = nil
+            let shouldAdvance = self.autoplayShouldAdvance
+            self.autoplayShouldAdvance = false
+
+            guard !additions.isEmpty else {
+                if shouldAdvance { self.pause() }
+                return
+            }
+            self.queue.append(contentsOf: additions)
+            self.updateRemoteCommands()
+            self.updateNowPlaying()
+            self.scheduleOfflinePrefetch()
+            self.scheduleQueueSave(immediate: true)
+            if shouldAdvance {
+                self.isBuffering = false
+                self.next(isAutoAdvance: true)
+            }
+        }
     }
 
     func previous() {
@@ -416,6 +503,7 @@ final class AudioEngine: NSObject, ObservableObject {
         isShuffleEnabled.toggle()
         updateRemoteCommands()
         scheduleQueueSave()
+        if !isShuffleEnabled { scheduleAutoplayContinuationIfNeeded() }
     }
 
     func cycleRepeat() {
@@ -426,6 +514,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         updateRemoteCommands()
         scheduleQueueSave()
+        if repeatMode == .off { scheduleAutoplayContinuationIfNeeded() }
     }
 
     func updateStarred(songID: String, enabled: Bool) {
@@ -1294,10 +1383,15 @@ final class AudioEngine: NSObject, ObservableObject {
     private func updateRemoteCommands() {
         let commands = remoteCommandCenter
         let hasSong = currentSong != nil
+        let canAutoplay = hasSong &&
+            client != nil &&
+            currentSong?.externalStreamURL == nil &&
+            algorithmicAutoplayEnabled
         commands.playCommand.isEnabled = hasSong && !wantsPlayback
         commands.pauseCommand.isEnabled = hasSong && wantsPlayback
         commands.togglePlayPauseCommand.isEnabled = hasSong
-        commands.nextTrackCommand.isEnabled = hasSong && queue.count > 1
+        commands.nextTrackCommand.isEnabled =
+            hasSong && (queue.count > 1 || canAutoplay)
         commands.previousTrackCommand.isEnabled = hasSong
         commands.changePlaybackPositionCommand.isEnabled = hasSong && duration > 0
         commands.changeShuffleModeCommand.isEnabled = hasSong && queue.count > 1
@@ -1399,6 +1493,11 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private var queueRestorationEnabled: Bool {
         UserDefaults.standard.object(forKey: "restore-play-queue") as? Bool ?? true
+    }
+
+    private var algorithmicAutoplayEnabled: Bool {
+        UserDefaults.standard.object(forKey: "algorithmic-autoplay-enabled")
+            as? Bool ?? true
     }
 
     private func provideTrackChangeHaptic() {
