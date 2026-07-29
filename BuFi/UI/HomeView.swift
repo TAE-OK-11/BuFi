@@ -68,6 +68,10 @@ struct HomeView: View {
                 daylistTitle,
                 songs: Array(model.home.daylistSongs.prefix(12))
             )
+            songSection(
+                "오프라인 백업",
+                songs: Array(model.home.offlineBackupSongs.prefix(12))
+            )
             albumSection(
                 "최근 들은 앨범",
                 albums: model.home.recentlyPlayedAlbums

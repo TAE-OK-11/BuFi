@@ -8,13 +8,15 @@ actor HomeSnapshotStore {
         let snapshot: HomeSnapshot
     }
 
-    private let keyPrefix = "home-snapshot-v1"
+    private let keyPrefix = "home-snapshot-v2"
+    private let legacyKeyPrefix = "home-snapshot-v1"
     private let maximumAge: TimeInterval = 7 * 24 * 60 * 60
     private let maximumBytes = 4 * 1_024 * 1_024
 
     private init() {}
 
     func load(accountScope: String) -> HomeSnapshot? {
+        removeLegacySnapshot(accountScope: accountScope)
         guard let data = UserDefaults.standard.data(
             forKey: storageKey(accountScope)
         ), data.count <= maximumBytes,
@@ -28,6 +30,7 @@ actor HomeSnapshotStore {
     }
 
     func save(_ snapshot: HomeSnapshot, accountScope: String) {
+        removeLegacySnapshot(accountScope: accountScope)
         let value = CachedSnapshot(savedAt: Date(), snapshot: snapshot)
         guard let data = try? JSONEncoder().encode(value),
               data.count <= maximumBytes else {
@@ -38,9 +41,16 @@ actor HomeSnapshotStore {
 
     func remove(accountScope: String) {
         UserDefaults.standard.removeObject(forKey: storageKey(accountScope))
+        removeLegacySnapshot(accountScope: accountScope)
     }
 
     private func storageKey(_ accountScope: String) -> String {
         "\(keyPrefix).\(accountScope)"
+    }
+
+    private func removeLegacySnapshot(accountScope: String) {
+        UserDefaults.standard.removeObject(
+            forKey: "\(legacyKeyPrefix).\(accountScope)"
+        )
     }
 }

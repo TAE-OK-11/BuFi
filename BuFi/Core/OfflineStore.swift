@@ -325,6 +325,10 @@ actor OfflineStore {
         }
     }
 
+    func availableSongIDs() -> Set<String> {
+        Set(entries.keys)
+    }
+
     func flushPendingWrites() {
         flushPendingWrites(retryOnFailure: true)
     }

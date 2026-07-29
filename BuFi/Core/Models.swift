@@ -39,6 +39,20 @@ enum RepeatMode: String, Codable, Sendable {
     case one
 }
 
+enum ShuffleStyle: String, Codable, CaseIterable, Identifiable, Sendable {
+    case fewerRepeats
+    case standard
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fewerRepeats: String(localized: "반복 줄이기")
+        case .standard: String(localized: "기본 셔플")
+        }
+    }
+}
+
 struct Song: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var title: String
@@ -140,6 +154,7 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
     var listenBrainzRecommendedSongs: [Song] = []
     var recommendedSongs: [Song] = []
     var daylistSongs: [Song] = []
+    var offlineBackupSongs: [Song] = []
     var mostPlayedSongs: [Song] = []
     var recommendedArtists: [Artist] = []
     var playlists: [Playlist] = []

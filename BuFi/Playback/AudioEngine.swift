@@ -21,6 +21,14 @@ final class AudioEngine: NSObject, ObservableObject {
     @Published var showPlayer = false
     @Published var showFullLyrics = false
     @Published var isShuffleEnabled = false
+    @Published var shuffleStyle: ShuffleStyle {
+        didSet {
+            UserDefaults.standard.set(
+                shuffleStyle.rawValue,
+                forKey: "shuffle-style"
+            )
+        }
+    }
     @Published var repeatMode: RepeatMode = .off
     @Published var quality: StreamQuality {
         didSet {
@@ -74,6 +82,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var autoplayGeneration: UInt64 = 0
     private var isSeekInFlight = false
     private var autoplayShouldAdvance = false
+    private var recentShuffleIDs: [String] = []
     private var pendingSeekPosition: TimeInterval?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
@@ -83,6 +92,9 @@ final class AudioEngine: NSObject, ObservableObject {
         quality = StreamQuality(
             rawValue: UserDefaults.standard.string(forKey: "stream-quality") ?? ""
         ) ?? .automatic
+        shuffleStyle = ShuffleStyle(
+            rawValue: UserDefaults.standard.string(forKey: "shuffle-style") ?? ""
+        ) ?? .fewerRepeats
         super.init()
         player.automaticallyWaitsToMinimizeStalling = true
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
@@ -214,6 +226,7 @@ final class AudioEngine: NSObject, ObservableObject {
         itemObservers.removeAll()
         player.replaceCurrentItem(with: nil)
         currentSong = selectedSong
+        rememberShuffleSelection(selectedSong.id)
         elapsed = 0
         duration = selectedSong.safeDuration
         activeLyricIndex = -1
@@ -355,11 +368,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         if isShuffleEnabled, queue.count > 1 {
-            var nextIndex = queueIndex
-            while nextIndex == queueIndex {
-                nextIndex = Int.random(in: queue.indices)
-            }
-            queueIndex = nextIndex
+            queueIndex = nextShuffleIndex()
         } else if queueIndex < queue.count - 1 {
             queueIndex += 1
         } else if repeatMode == .all || (isAutoAdvance && repeatMode == .one) {
@@ -469,6 +478,85 @@ final class AudioEngine: NSObject, ObservableObject {
         scheduleQueueSave(immediate: true)
     }
 
+    func enqueueNext(_ song: Song) {
+        guard queue.indices.contains(queueIndex) else {
+            play(song, in: [song])
+            return
+        }
+        removeUpcomingOccurrence(of: song.id)
+        queue.insert(song, at: min(queueIndex + 1, queue.count))
+        queueDidChange()
+    }
+
+    func enqueue(_ song: Song) {
+        guard queue.indices.contains(queueIndex) else {
+            play(song, in: [song])
+            return
+        }
+        removeUpcomingOccurrence(of: song.id)
+        queue.append(song)
+        queueDidChange()
+    }
+
+    func moveQueueItems(from offsets: IndexSet, to destination: Int) {
+        guard !offsets.isEmpty else { return }
+        let currentID = currentSong?.id
+        let moved = offsets.sorted().compactMap { index in
+            queue.indices.contains(index) ? queue[index] : nil
+        }
+        guard moved.count == offsets.count else { return }
+        var remaining = queue.enumerated().compactMap { index, song in
+            offsets.contains(index) ? nil : song
+        }
+        let removedBeforeDestination = offsets.lazy.filter {
+            $0 < destination
+        }.count
+        let insertionIndex = min(
+            max(0, destination - removedBeforeDestination),
+            remaining.count
+        )
+        remaining.insert(contentsOf: moved, at: insertionIndex)
+        queue = remaining
+        if let currentID,
+           let index = queue.firstIndex(where: { $0.id == currentID }) {
+            queueIndex = index
+        }
+        queueDidChange()
+    }
+
+    func reshuffleUpcoming() {
+        guard queue.indices.contains(queueIndex),
+              queueIndex + 1 < queue.count else {
+            return
+        }
+        let prefix = Array(queue[...queueIndex])
+        var upcoming = Array(queue[(queueIndex + 1)...])
+        upcoming.shuffle()
+        if shuffleStyle == .fewerRepeats {
+            let recent = Set(recentShuffleIDs.suffix(8))
+            upcoming.sort {
+                let lhsRecent = recent.contains($0.id)
+                let rhsRecent = recent.contains($1.id)
+                return lhsRecent == rhsRecent ? false : !lhsRecent
+            }
+        }
+        queue = prefix + upcoming
+        queueDidChange()
+    }
+
+    func clearUpcomingQueue() {
+        guard queue.indices.contains(queueIndex),
+              queueIndex + 1 < queue.count else {
+            return
+        }
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration &+= 1
+        autoplayShouldAdvance = false
+        queue.removeSubrange((queueIndex + 1)..<queue.count)
+        queueDidChange()
+    }
+
     func excludeCurrentAndAdvance() {
         guard queue.indices.contains(queueIndex) else { return }
         let removedIndex = queueIndex
@@ -504,6 +592,44 @@ final class AudioEngine: NSObject, ObservableObject {
         updateRemoteCommands()
         scheduleQueueSave()
         if !isShuffleEnabled { scheduleAutoplayContinuationIfNeeded() }
+    }
+
+    private func nextShuffleIndex() -> Int {
+        let candidates = queue.indices.filter { $0 != queueIndex }
+        guard shuffleStyle == .fewerRepeats else {
+            return candidates.randomElement() ?? queueIndex
+        }
+        let recent = Set(
+            recentShuffleIDs.suffix(min(8, max(1, queue.count - 1)))
+        )
+        let fresh = candidates.filter { !recent.contains(queue[$0].id) }
+        return (fresh.isEmpty ? candidates : fresh).randomElement() ?? queueIndex
+    }
+
+    private func rememberShuffleSelection(_ songID: String) {
+        recentShuffleIDs.removeAll { $0 == songID }
+        recentShuffleIDs.append(songID)
+        if recentShuffleIDs.count > 12 {
+            recentShuffleIDs.removeFirst(recentShuffleIDs.count - 12)
+        }
+    }
+
+    private func removeUpcomingOccurrence(of songID: String) {
+        guard queue.indices.contains(queueIndex),
+              queueIndex + 1 < queue.count,
+              let index = queue[(queueIndex + 1)...].firstIndex(
+                where: { $0.id == songID }
+              ) else {
+            return
+        }
+        queue.remove(at: index)
+    }
+
+    private func queueDidChange() {
+        updateRemoteCommands()
+        updateNowPlaying()
+        scheduleOfflinePrefetch()
+        scheduleQueueSave(immediate: true)
     }
 
     func cycleRepeat() {

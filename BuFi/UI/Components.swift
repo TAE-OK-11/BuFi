@@ -373,10 +373,40 @@ struct SongRow: View {
 
     @ViewBuilder
     var body: some View {
-        if layout == .compactAlbum {
-            compactAlbumRow
-        } else {
-            standardRow
+        Group {
+            if layout == .compactAlbum {
+                compactAlbumRow
+            } else {
+                standardRow
+            }
+        }
+        .contextMenu {
+            Button {
+                audio.enqueueNext(song)
+            } label: {
+                Label(
+                    "다음에 재생",
+                    systemImage: "text.line.first.and.arrowtriangle.forward"
+                )
+            }
+            Button {
+                audio.enqueue(song)
+            } label: {
+                Label("대기목록에 추가", systemImage: "text.badge.plus")
+            }
+            Button {
+                Task { await model.download(song) }
+            } label: {
+                Label("오프라인 저장", systemImage: "arrow.down.circle")
+            }
+            Button {
+                Task { await model.toggleStar(song: song) }
+            } label: {
+                Label(
+                    model.isStarred(song) ? "좋아요 취소" : "좋아요 표시",
+                    systemImage: model.isStarred(song) ? "heart.slash" : "heart"
+                )
+            }
         }
     }
 

@@ -170,6 +170,19 @@ struct PlayerView: View {
                     Label("오프라인 저장", systemImage: "arrow.down.circle")
                 }
                 Button {
+                    audio.enqueueNext(song)
+                } label: {
+                    Label(
+                        "다음에 재생",
+                        systemImage: "text.line.first.and.arrowtriangle.forward"
+                    )
+                }
+                Button {
+                    audio.enqueue(song)
+                } label: {
+                    Label("대기목록에 추가", systemImage: "text.badge.plus")
+                }
+                Button {
                     Task { await model.playRadio(from: song) }
                 } label: {
                     Label("곡으로 라디오 시작", systemImage: "dot.radiowaves.left.and.right")
@@ -1279,6 +1292,7 @@ private struct PlayerPaletteBackground: View {
 private struct QueueView: View {
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmClear = false
 
     var body: some View {
         NavigationStack {
@@ -1321,6 +1335,12 @@ private struct QueueView: View {
                                 }
                             }
                         }
+                        .onMove { offsets, destination in
+                            audio.moveQueueItems(
+                                from: offsets,
+                                to: destination
+                            )
+                        }
                     }
                     .listStyle(.plain)
                 }
@@ -1328,9 +1348,41 @@ private struct QueueView: View {
             .navigationTitle("재생 대기 목록")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    EditButton()
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            audio.reshuffleUpcoming()
+                        } label: {
+                            Label("다시 섞기", systemImage: "shuffle")
+                        }
+                        Button(role: .destructive) {
+                            confirmClear = true
+                        } label: {
+                            Label(
+                                "다음 곡 모두 지우기",
+                                systemImage: "trash"
+                            )
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("완료") { dismiss() }
                 }
+            }
+            .confirmationDialog(
+                "다음 곡을 모두 지울까요?",
+                isPresented: $confirmClear,
+                titleVisibility: .visible
+            ) {
+                Button("모두 지우기", role: .destructive) {
+                    audio.clearUpcomingQueue()
+                }
+                Button("취소", role: .cancel) {}
             }
         }
     }

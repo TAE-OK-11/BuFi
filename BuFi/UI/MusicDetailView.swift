@@ -53,7 +53,7 @@ struct MusicDetailView: View {
         .task(id: route) { await load() }
         .sheet(item: $selectedSong) { song in
             SongActionsSheet(song: song)
-                .presentationDetents([.height(245)])
+                .presentationDetents([.height(335)])
                 .presentationDragIndicator(.visible)
         }
     }
@@ -683,6 +683,14 @@ private struct SongActionsSheet: View {
             }
             action("오프라인 저장", icon: "arrow.down.circle") {
                 Task { await model.download(song) }
+                dismiss()
+            }
+            action("다음에 재생", icon: "text.line.first.and.arrowtriangle.forward") {
+                audio.enqueueNext(song)
+                dismiss()
+            }
+            action("대기목록에 추가", icon: "text.badge.plus") {
+                audio.enqueue(song)
                 dismiss()
             }
             action("지금 재생", icon: "play.fill") {

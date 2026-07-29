@@ -159,6 +159,15 @@ struct SettingsView: View {
                     Text("현재 재생목록이 끝나기 전에 서버 유사곡을 미리 추가해 음악이 끊기지 않도록 계속 재생합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    Picker("셔플 방식", selection: $audio.shuffleStyle) {
+                        ForEach(ShuffleStyle.allCases) { style in
+                            Text(style.title).tag(style)
+                        }
+                    }
+                    .tint(Color(uiColor: .secondaryLabel))
+                    Text("반복 줄이기는 최근 재생곡을 잠시 피해서 같은 곡이 짧은 간격으로 다시 나오는 현상을 줄입니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Toggle(isOn: $lyricsAutoScroll) {
                         Label("가사 자동 스크롤", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }

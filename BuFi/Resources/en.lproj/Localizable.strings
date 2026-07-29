@@ -138,6 +138,17 @@
 "인기곡" = "Popular";
 "싱글" = "Singles";
 "EP" = "EPs";
+"반복 줄이기" = "Fewer repeats";
+"기본 셔플" = "Standard shuffle";
+"다음에 재생" = "Play next";
+"대기목록에 추가" = "Add to queue";
+"다시 섞기" = "Reshuffle";
+"다음 곡 모두 지우기" = "Clear upcoming songs";
+"다음 곡을 모두 지울까요?" = "Clear all upcoming songs?";
+"모두 지우기" = "Clear all";
+"셔플 방식" = "Shuffle style";
+"반복 줄이기는 최근 재생곡을 잠시 피해서 같은 곡이 짧은 간격으로 다시 나오는 현상을 줄입니다." = "Fewer repeats temporarily avoids recently played tracks so the same songs are less likely to return too soon.";
+"오프라인 백업" = "Offline Backup";
 "아티스트 소개" = "About the Artist";
 "자동 음질은 AAC·MP3·ALAC 등 iPhone이 직접 재생할 수 있는 형식은 원본으로 재생하고, FLAC·Opus·Vorbis 등은 서버에서 AAC 256kbps로 변환합니다. 원본 재생이 실패하면 AAC·MP3로 안전하게 전환합니다." = "Automatic quality plays iPhone-native formats such as AAC, MP3, and ALAC in their original form, while the server converts FLAC, Opus, Vorbis, and similar formats to AAC 256 kbps. If original playback fails, BuFi safely falls back to AAC and MP3.";
 "클래식" = "Classic";

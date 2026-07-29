@@ -896,6 +896,9 @@ final class AppModel: ObservableObject {
         )
         value.recommendedSongs = value.recommendedSongs.map(applyingFavoriteOverride)
         value.daylistSongs = value.daylistSongs.map(applyingFavoriteOverride)
+        value.offlineBackupSongs = value.offlineBackupSongs.map(
+            applyingFavoriteOverride
+        )
         value.mostPlayedSongs = value.mostPlayedSongs.map(applyingFavoriteOverride)
         value.recommendedArtists = value.recommendedArtists.map(
             applyingFavoriteOverride
@@ -986,11 +989,12 @@ final class AppModel: ObservableObject {
                 home.starredSongs + home.randomSongs + home.recommendedSongs +
                 home.serverRecommendedSongs + home.lastFMRecommendedSongs +
                 home.listenBrainzRecommendedSongs + home.mostPlayedSongs +
-                home.daylistSongs +
+                home.daylistSongs + home.offlineBackupSongs +
                 snapshot.starredSongs + snapshot.randomSongs +
                 snapshot.serverRecommendedSongs + snapshot.lastFMRecommendedSongs +
                 snapshot.listenBrainzRecommendedSongs + snapshot.recommendedSongs +
                 snapshot.mostPlayedSongs + snapshot.daylistSongs +
+                snapshot.offlineBackupSongs +
                 searchResults.songs
             ids.formUnion(visibleSongs.lazy.filter(\.isStarred).map(\.id))
             ids.formUnion(
@@ -1149,6 +1153,9 @@ final class AppModel: ObservableObject {
             $0.id == song.id ? updated : $0
         }
         snapshot.daylistSongs = snapshot.daylistSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.offlineBackupSongs = snapshot.offlineBackupSongs.map {
             $0.id == song.id ? updated : $0
         }
         snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
@@ -1312,6 +1319,7 @@ final class AppModel: ObservableObject {
         into snapshot: HomeSnapshot
     ) async -> HomeSnapshot {
         let history = await ListeningHistoryStore.shared.snapshot()
+        let offlineSongIDs = await OfflineStore.shared.availableSongIDs()
         var value = snapshot
         if value.mostPlayedSongs.isEmpty {
             value.mostPlayedSongs = history.mostPlayedSongs
@@ -1351,6 +1359,9 @@ final class AppModel: ObservableObject {
         }
         if value.recentlyPlayedAlbums.isEmpty {
             value.recentlyPlayedAlbums = localRecentAlbums
+        }
+        value.offlineBackupSongs = history.recentlyPlayedSongs.filter {
+            offlineSongIDs.contains($0.id)
         }
         return value
     }
