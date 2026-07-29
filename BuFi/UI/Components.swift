@@ -391,11 +391,12 @@ struct ArtworkView: View {
 struct AlbumCard: View {
     let album: Album
     var width: CGFloat = 166
+    var usesHorizontalScrollTransition = true
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     @ViewBuilder
     var body: some View {
-        if motionEnabled {
+        if motionEnabled && usesHorizontalScrollTransition {
             card
                 .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                     content

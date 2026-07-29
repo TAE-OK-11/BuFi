@@ -157,12 +157,20 @@ struct SearchView: View {
                 .padding(.top, 32)
             } else {
                 LazyVGrid(
-                    columns: [GridItem(.flexible()), GridItem(.flexible())],
+                    columns: [
+                        GridItem(.flexible(), spacing: 14, alignment: .top),
+                        GridItem(.flexible(), spacing: 14, alignment: .top)
+                    ],
+                    alignment: .leading,
                     spacing: 20
                 ) {
                     ForEach(model.home.starredAlbums) { album in
                         NavigationLink(value: MusicRoute.album(album)) {
-                            AlbumCard(album: album, width: collectionCardWidth)
+                            AlbumCard(
+                                album: album,
+                                width: collectionCardWidth,
+                                usesHorizontalScrollTransition: false
+                            )
                         }
                         .buttonStyle(BuFiPressStyle())
                     }
