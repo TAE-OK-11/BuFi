@@ -1,0 +1,100 @@
+name: Cleanup merged branches
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cleanup-merged-branches
+  cancel-in-progress: false
+
+jobs:
+  delete-non-main-branches:
+    if: github.repository == 'TAE-OK-11/BuFi' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the verified branch set
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const expected = [
+              "agent/apple-music-polish",
+              "agent/bufi-identity-sync",
+              "agent/default-solid-player-background",
+              "agent/production-player",
+              "agent/refine-track-change-motion",
+              "agent/stabilize-ios27-liquid-glass",
+              "backup-main-before-ea4c290",
+              "beau",
+              "core/stability-optimization",
+              "energy/battery-efficiency",
+              "feat/bufi-1.4.0-final",
+              "feat/bufi-1.4.0-verified",
+              "feat/home-liquid-segmented-1.2.5",
+              "feat/light-mode-contrast-1.3.1",
+              "feat/motion-system-1.3.0",
+              "feat/player-lyrics-transitions-1.2.6",
+              "fix/artist-hero-layout",
+              "fix/layout-polish-1.2.4",
+              "fix/mini-player-height",
+              "fix/playback-time-motion-stability",
+              "fix/tab-fade-album-tracks-1.2.7",
+              "fix/tab-safe-area-player",
+              "optimize-release-build",
+              "perf/energy-optimization-1.2.8",
+              "performance/adaptive-sync-energy",
+              "playback/low-power-codecs",
+              "refactor/dead-code-lightweight",
+              "security/harden-server-transport",
+              "stability/oss-inspired-core"
+            ];
+
+            const listBranches = () => github.paginate(
+              github.rest.repos.listBranches,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100
+              }
+            );
+
+            const before = await listBranches();
+            const names = new Set(before.map(branch => branch.name));
+            const unexpected = [...names].filter(
+              name => name !== "main" && !expected.includes(name)
+            );
+
+            if (unexpected.length > 0) {
+              core.setFailed(`Refusing cleanup; unexpected branches: ${unexpected.join(", ")}`);
+              return;
+            }
+
+            for (const branch of expected) {
+              if (!names.has(branch)) {
+                core.info(`Already absent: ${branch}`);
+                continue;
+              }
+
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branch}`
+              });
+              core.info(`Deleted: ${branch}`);
+            }
+
+            const remaining = (await listBranches())
+              .map(branch => branch.name)
+              .filter(name => name !== "main");
+
+            if (remaining.length > 0) {
+              core.setFailed(`Branches remain after cleanup: ${remaining.join(", ")}`);
+              return;
+            }
+
+            core.info("Verified that main is the only remaining branch.");
