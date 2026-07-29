@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
@@ -65,21 +66,25 @@ struct LibraryView: View {
             if model.home.starredAlbums.isEmpty {
                 empty("저장한 앨범이 없습니다", icon: "square.stack")
             } else {
-                groupedLibraryRows(model.home.starredAlbums) { album in
-                    NavigationLink(value: MusicRoute.album(album)) {
-                        libraryRow(
-                            title: album.name,
-                            subtitle: String(
-                                format: String(localized: "앨범 · %@"),
-                                album.artist
-                            ),
-                            cover: album.coverArt,
-                            circle: false,
-                            placeholderIcon: "square.stack.fill"
-                        )
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 14),
+                        GridItem(.flexible(), spacing: 14)
+                    ],
+                    alignment: .leading,
+                    spacing: 24
+                ) {
+                    ForEach(model.home.starredAlbums) { album in
+                        NavigationLink(value: MusicRoute.album(album)) {
+                            AlbumCard(
+                                album: album,
+                                width: libraryAlbumWidth
+                            )
+                        }
+                        .buttonStyle(BuFiPressStyle())
                     }
-                    .buttonStyle(.plain)
                 }
+                .padding(.horizontal, 16)
             }
         case .artists:
             artistsContent
@@ -88,7 +93,7 @@ struct LibraryView: View {
                 empty("좋아요 표시한 곡이 없습니다", icon: "heart")
             } else {
                 BuFiGroupedSurface {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(model.home.starredSongs) { song in
                             SongRow(song: song, queue: model.home.starredSongs)
                                 .padding(.horizontal, 14)
@@ -116,19 +121,16 @@ struct LibraryView: View {
             empty("아티스트가 없습니다", icon: "person.2")
         } else {
             if !favorites.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    librarySectionTitle("좋아요 표시한 아티스트")
-                    BuFiGroupedSurface {
-                        VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    librarySectionTitle("좋아하는 아티스트")
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(alignment: .top, spacing: 16) {
                             ForEach(favorites) { artist in
-                                artistRow(artist, favorite: true)
-                                if artist.id != favorites.last?.id {
-                                    rowSeparator
-                                }
+                                favoriteArtistCard(artist)
                             }
                         }
+                        .padding(.horizontal, 16)
                     }
-                    .padding(.horizontal, 16)
                 }
             }
 
@@ -159,12 +161,52 @@ struct LibraryView: View {
         }
     }
 
+    private func favoriteArtistCard(_ artist: Artist) -> some View {
+        ZStack(alignment: .topTrailing) {
+            NavigationLink(value: MusicRoute.artist(artist)) {
+                VStack(spacing: 9) {
+                    ArtworkView(
+                        coverArt: artist.coverArt,
+                        size: 92,
+                        cornerRadius: 46
+                    )
+                    .frame(width: 92, height: 92)
+                    Text(artist.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(width: 108)
+            }
+            .buttonStyle(BuFiPressStyle())
+
+            Button {
+                Task { await model.toggleStar(artist: artist) }
+            } label: {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(BuFiTheme.accent, in: Circle())
+            }
+            .buttonStyle(BuFiPressStyle())
+            .accessibilityLabel("좋아요 취소")
+        }
+        .frame(width: 108, alignment: .top)
+    }
+
     private func artistRow(_ artist: Artist, favorite: Bool) -> some View {
         HStack(spacing: 8) {
             NavigationLink(value: MusicRoute.artist(artist)) {
-                HStack(spacing: 13) {
-                    ArtworkView(coverArt: artist.coverArt, size: 66, cornerRadius: 33)
-                        .frame(width: 66, height: 66)
+                HStack(spacing: 12) {
+                    ArtworkView(
+                        coverArt: artist.coverArt,
+                        size: 56,
+                        cornerRadius: 28
+                    )
+                    .frame(width: 56, height: 56)
                     Text(artist.name)
                         .font(.system(size: 17, weight: .semibold))
                         .lineLimit(3)
@@ -188,8 +230,12 @@ struct LibraryView: View {
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel(favorite ? "좋아요 취소" : "좋아요 표시")
         }
-        .padding(.horizontal, 17)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    private var libraryAlbumWidth: CGFloat {
+        max(132, (UIScreen.main.bounds.width - 46) / 2)
     }
 
     private func librarySectionTitle(_ title: String) -> some View {
@@ -207,13 +253,15 @@ struct LibraryView: View {
         circle: Bool,
         placeholderIcon: String
     ) -> some View {
-        HStack(spacing: 13) {
+        let artworkSize: CGFloat = circle ? 56 : 64
+        return HStack(spacing: 12) {
             libraryArtwork(
                 cover: cover,
+                size: artworkSize,
                 circle: circle,
                 placeholderIcon: placeholderIcon
             )
-            .frame(width: 66, height: 66)
+            .frame(width: artworkSize, height: artworkSize)
             VStack(alignment: .leading, spacing: 5) {
                 Text(title)
                     .font(.system(size: 17, weight: .semibold))
@@ -225,13 +273,14 @@ struct LibraryView: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
+            .layoutPriority(1)
+            Spacer(minLength: 8)
             Image(systemName: "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 17)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
     }
 
@@ -254,32 +303,33 @@ struct LibraryView: View {
 
     private var rowSeparator: some View {
         Divider()
-            .padding(.leading, 96)
+            .padding(.leading, 92)
             .opacity(0.52)
     }
 
     @ViewBuilder
     private func libraryArtwork(
         cover: String?,
+        size: CGFloat,
         circle: Bool,
         placeholderIcon: String
     ) -> some View {
         if let cover, !cover.isEmpty {
             ArtworkView(
                 coverArt: cover,
-                size: 66,
-                cornerRadius: circle ? 33 : 11
+                size: size,
+                cornerRadius: circle ? size / 2 : 12
             )
         } else {
             ZStack {
                 Color.secondary.opacity(0.12)
                 Image(systemName: placeholderIcon)
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: size * 0.38, weight: .semibold))
                     .foregroundStyle(BuFiTheme.accentSoft)
             }
             .clipShape(
                 RoundedRectangle(
-                    cornerRadius: circle ? 33 : 11,
+                    cornerRadius: circle ? size / 2 : 12,
                     style: .continuous
                 )
             )

@@ -417,11 +417,13 @@ struct AlbumCard: View {
                 }
             Text(album.name)
                 .font(.system(size: 15, weight: .semibold))
-                .lineLimit(2)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(.primary)
             Text(album.artist)
                 .font(.system(size: 13))
-                .lineLimit(1)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(.secondary)
         }
         .frame(width: width, alignment: .leading)

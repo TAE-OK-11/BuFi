@@ -15,8 +15,8 @@ struct SearchView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         BuFiPageHeader(title: "검색")
-                        searchField
                             .id(SearchScrollAnchor.top)
+                        searchField
                         Group {
                             if isSearchSession {
                                 searchSessionContent
@@ -26,9 +26,9 @@ struct SearchView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .top)
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            focused = false
-                        }
+                        .simultaneousGesture(
+                            TapGesture().onEnded { focused = false }
+                        )
                     }
                     .padding(.top, 18)
                     .padding(.bottom, 34)
@@ -58,7 +58,7 @@ struct SearchView: View {
     }
 
     private var isSearchSession: Bool {
-        focused || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var searchField: some View {
@@ -116,23 +116,8 @@ struct SearchView: View {
         .animation(motionEnabled ? BuFiMotion.fade : .none, value: focused)
     }
 
-    @ViewBuilder
     private var searchSessionContent: some View {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                Text("검색어를 입력하세요")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 54)
-        } else {
-            results
-        }
+        results
     }
 
     @ViewBuilder
@@ -141,7 +126,7 @@ struct SearchView: View {
         case .main:
             browseMain
         case .favoriteSongs:
-            browseCollectionHeader("좋아요 표시한 곡")
+            browseCollectionHeader("좋아요 곡")
             if model.home.starredSongs.isEmpty {
                 ContentUnavailableView(
                     "좋아요 표시한 곡이 없습니다",
@@ -150,7 +135,7 @@ struct SearchView: View {
                 .padding(.top, 32)
             } else {
                 BuFiGroupedSurface {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(model.home.starredSongs) { song in
                             SongRow(song: song, queue: model.home.starredSongs)
                                 .padding(.horizontal, 14)
@@ -163,7 +148,7 @@ struct SearchView: View {
                 .padding(.horizontal, 16)
             }
         case .favoriteAlbums:
-            browseCollectionHeader("좋아요 표시한 앨범")
+            browseCollectionHeader("좋아요 앨범")
             if model.home.starredAlbums.isEmpty {
                 ContentUnavailableView(
                     "저장한 앨범이 없습니다",
@@ -189,7 +174,7 @@ struct SearchView: View {
                 PersonalizedMixBuilder.make(snapshot: model.home)
             )
         case .mostPlayed:
-            browseCollectionHeader("많이 들은 곡 순위")
+            browseCollectionHeader("자주 들은 곡")
             rankedSongs
         }
     }
@@ -207,6 +192,7 @@ struct SearchView: View {
                     Button {
                         withAnimation(motionEnabled ? BuFiMotion.content : .none) {
                             browseMode = shortcut.mode
+                            focused = false
                         }
                     } label: {
                         BuFiShortcutCard(
@@ -270,7 +256,7 @@ struct SearchView: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .bold))
                     .frame(width: 38, height: 38)
-                    .background(Color.primary.opacity(0.05))
+                    .background(Color.primary.opacity(0.05), in: Circle())
                     .buFiGlass(cornerRadius: 19, interactive: true)
             }
             .buttonStyle(.plain)
@@ -393,29 +379,29 @@ struct SearchView: View {
         [
             SearchShortcut(
                 mode: .favoriteSongs,
-                title: "좋아요 표시한 곡",
-                subtitle: itemCountText(model.home.starredSongs.count),
+                title: "좋아요 곡",
+                subtitle: String(localized: "저장한 음악"),
                 systemImage: "heart.fill",
                 tint: BuFiTheme.accent
             ),
             SearchShortcut(
                 mode: .favoriteAlbums,
-                title: "좋아요 표시한 앨범",
-                subtitle: itemCountText(model.home.starredAlbums.count),
+                title: "좋아요 앨범",
+                subtitle: String(localized: "보관한 앨범"),
                 systemImage: "square.stack.fill",
                 tint: Color(red: 0.45, green: 0.33, blue: 0.74)
             ),
             SearchShortcut(
                 mode: .algorithmPlaylists,
-                title: "알고리즘 추천 플레이리스트",
-                subtitle: String(localized: "Daylist와 맞춤 믹스"),
+                title: "맞춤 믹스",
+                subtitle: String(localized: "Daylist와 취향 추천"),
                 systemImage: "sparkles",
                 tint: Color(red: 0.20, green: 0.58, blue: 0.52)
             ),
             SearchShortcut(
                 mode: .mostPlayed,
-                title: "많이 들은 곡",
-                subtitle: itemCountText(model.home.mostPlayedSongs.count),
+                title: "자주 듣는 곡",
+                subtitle: String(localized: "청취 기록 순위"),
                 systemImage: "chart.bar.fill",
                 tint: Color(red: 0.22, green: 0.50, blue: 0.78)
             )
@@ -426,7 +412,7 @@ struct SearchView: View {
     private func algorithmPlaylists(
         _ mixes: [PersonalizedMix]
     ) -> some View {
-        browseCollectionHeader("알고리즘 추천 플레이리스트")
+        browseCollectionHeader("맞춤 믹스")
         if mixes.isEmpty {
             ContentUnavailableView(
                 "추천 플레이리스트를 만들 음악이 없습니다",
@@ -503,10 +489,6 @@ struct SearchView: View {
                 .padding(.horizontal, 16)
             }
         }
-    }
-
-    private func itemCountText(_ count: Int) -> String {
-        String(format: String(localized: "%d개 항목"), count)
     }
 
     private func resultSection<Content: View>(

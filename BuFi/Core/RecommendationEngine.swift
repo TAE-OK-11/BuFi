@@ -452,7 +452,7 @@ enum PersonalizedMixBuilder {
     static func mostPlayedSongs(_ songs: [Song]) -> PersonalizedMix {
         PersonalizedMix(
             id: "most-played-ranking",
-            title: String(localized: "많이 들은 곡 순위"),
+            title: String(localized: "자주 들은 곡"),
             subtitle: String(localized: "서버와 청취 기록을 반영한 순위"),
             songs: songs,
             kind: .ranking
