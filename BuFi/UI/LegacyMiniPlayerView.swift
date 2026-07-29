@@ -5,8 +5,8 @@ struct LegacyMiniPlayerView: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var palette = ArtworkPalette.fallback
 
-    private let playerHeight: CGFloat = 68
-    private let cornerRadius: CGFloat = 12
+    private let playerHeight: CGFloat = 60
+    private let cornerRadius: CGFloat = 10
 
     var body: some View {
         if let song = audio.currentSong {
@@ -29,11 +29,11 @@ struct LegacyMiniPlayerView: View {
                     HStack(spacing: 9) {
                         ArtworkView(
                             coverArt: song.coverArt,
-                            size: 56,
-                            cornerRadius: 7,
+                            size: 50,
+                            cornerRadius: 5,
                             onPalette: { palette = $0 }
                         )
-                        .frame(width: 56, height: 56)
+                        .frame(width: 50, height: 50)
 
                         ZStack(alignment: .leading) {
                             VStack(alignment: .leading, spacing: 3) {
@@ -50,8 +50,6 @@ struct LegacyMiniPlayerView: View {
                             .id(song.id)
                             .transition(trackTextTransition)
                         }
-                        .frame(maxWidth: .infinity, minHeight: 42, maxHeight: 42)
-                        .clipped()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .allowsHitTesting(false)
                         .animation(

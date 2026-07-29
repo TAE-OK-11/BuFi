@@ -251,21 +251,6 @@ struct PersonalizedMix: Identifiable, Hashable, Sendable {
     let songs: [Song]
     let kind: Kind
 
-    var coverArts: [String] {
-        var values: [String] = []
-        var seen = Set<String>()
-        for song in songs {
-            guard let cover = song.coverArt,
-                  !cover.isEmpty,
-                  seen.insert(cover).inserted else {
-                continue
-            }
-            values.append(cover)
-            if values.count == 4 { break }
-        }
-        return values
-    }
-
     var showsRanking: Bool { kind == .ranking }
 }
 

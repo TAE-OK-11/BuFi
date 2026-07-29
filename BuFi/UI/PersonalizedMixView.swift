@@ -6,19 +6,58 @@ struct PersonalizedMixArtwork: View {
     var cornerRadius: CGFloat = 16
 
     var body: some View {
-        let coverArts = mix.coverArts
-        VStack(spacing: 2) {
-            HStack(spacing: 2) {
-                artworkCell(0, coverArts: coverArts)
-                artworkCell(1, coverArts: coverArts)
+        ZStack(alignment: .topLeading) {
+            Image(assetName)
+                .resizable()
+                .scaledToFill()
+
+            VStack(alignment: .leading, spacing: max(3, size * 0.018)) {
+                Text("BuFi MIX")
+                    .font(
+                        .system(
+                            size: max(9, size * 0.055),
+                            weight: .black,
+                            design: .rounded
+                        )
+                    )
+                    .tracking(size * 0.005)
+                    .opacity(0.78)
+
+                Text(coverTitle)
+                    .font(
+                        .system(
+                            size: max(18, size * 0.115),
+                            weight: .black,
+                            design: .rounded
+                        )
+                    )
+                    .tracking(-size * 0.006)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.70)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: fallbackIcon)
+                    .font(
+                        .system(
+                            size: max(16, size * 0.105),
+                            weight: .black
+                        )
+                    )
+                    .frame(
+                        width: max(31, size * 0.20),
+                        height: max(31, size * 0.20)
+                    )
+                    .background(
+                        foreground.opacity(0.16),
+                        in: Circle()
+                    )
             }
-            HStack(spacing: 2) {
-                artworkCell(2, coverArts: coverArts)
-                artworkCell(3, coverArts: coverArts)
-            }
+            .foregroundStyle(foreground)
+            .padding(max(13, size * 0.075))
         }
         .frame(width: size, height: size)
-        .background(BuFiTheme.elevated)
         .clipShape(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         )
@@ -29,26 +68,34 @@ struct PersonalizedMixArtwork: View {
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    private func artworkCell(
-        _ index: Int,
-        coverArts: [String]
-    ) -> some View {
-        if coverArts.indices.contains(index) {
-            ArtworkView(
-                coverArt: coverArts[index],
-                size: size / 2,
-                cornerRadius: 0
-            )
-            .frame(width: size / 2 - 1, height: size / 2 - 1)
-        } else {
-            ZStack {
-                Color.secondary.opacity(0.12)
-                Image(systemName: fallbackIcon)
-                    .font(.system(size: size * 0.095, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: size / 2 - 1, height: size / 2 - 1)
+    private var assetName: String {
+        switch mix.kind {
+        case .daylist: "MixDaylist"
+        case .repeatListening: "MixRepeat"
+        case .listenAgain: "MixListenAgain"
+        case .genre: "MixGenre"
+        case .artist: "MixArtist"
+        case .mood: "MixMood"
+        case .favorites: "MixFavorites"
+        case .ranking: "MixRanking"
+        }
+    }
+
+    private var coverTitle: String {
+        switch mix.kind {
+        case .daylist: "DAYLIST"
+        case .repeatListening: "REPEAT"
+        case .listenAgain: "LISTEN\nAGAIN"
+        case .favorites: "FAVORITES"
+        case .ranking: "TOP\nTRACKS"
+        case .genre, .artist, .mood: mix.title.uppercased()
+        }
+    }
+
+    private var foreground: Color {
+        switch mix.kind {
+        case .listenAgain, .genre, .mood: Color(red: 0.08, green: 0.06, blue: 0.15)
+        default: .white
         }
     }
 
