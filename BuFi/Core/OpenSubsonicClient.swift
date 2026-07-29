@@ -259,6 +259,14 @@ actor OpenSubsonicClient {
             "getAlbumList2",
             parameters: ["type": "newest", "size": "16"]
         )
+        async let recentlyPlayed: AlbumListPayload? = bestEffortRequest(
+            "getAlbumList2",
+            parameters: ["type": "recent", "size": "16"]
+        )
+        async let frequent: AlbumListPayload? = bestEffortRequest(
+            "getAlbumList2",
+            parameters: ["type": "frequent", "size": "16"]
+        )
         async let randomAlbums: AlbumListPayload? = bestEffortRequest(
             "getAlbumList2",
             parameters: ["type": "random", "size": "16"]
@@ -270,10 +278,24 @@ actor OpenSubsonicClient {
             parameters: ["size": "24"]
         )
         async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
+        async let radioStations: InternetRadioStationsPayload? = bestEffortRequest(
+            "getInternetRadioStations"
+        )
 
-        let values = try await (recent, randomAlbums, starred, artists, randomSongs, playlists)
+        let values = try await (
+            recent,
+            recentlyPlayed,
+            frequent,
+            randomAlbums,
+            starred,
+            artists,
+            randomSongs,
+            playlists,
+            radioStations
+        )
         guard values.0 != nil || values.1 != nil || values.2 != nil ||
-                values.3 != nil || values.4 != nil || values.5 != nil else {
+                values.3 != nil || values.4 != nil || values.5 != nil ||
+                values.6 != nil || values.7 != nil || values.8 != nil else {
             throw OpenSubsonicError.invalidResponse
         }
 
@@ -281,7 +303,7 @@ actor OpenSubsonicClient {
         let starredAlbums: [Album]
         let starredSongs: [Song]
         let starredArtists: [Artist]
-        if let value = values.2?.starred2 {
+        if let value = values.4?.starred2 {
             starredAlbums = value.album ?? []
             starredSongs = value.song ?? []
             starredArtists = value.artist ?? []
@@ -291,23 +313,64 @@ actor OpenSubsonicClient {
             starredArtists = fallback.starredArtists
         }
 
+        let randomSongValues = values.6.map { $0.randomSongs?.song ?? [] }
+            ?? fallback.randomSongs
+        let allArtists =
+            values.5.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
+            ?? fallback.artists
+        let frequentAlbums = values.2.map { $0.albumList2?.album ?? [] }
+            ?? fallback.frequentAlbums
+        async let recommendationsRequest = recommendationQueue(
+            seeds: starredSongs + randomSongValues,
+            fallback: fallback.serverRecommendedSongs
+        )
+        async let rankedSongsRequest = mostPlayedSongs(
+            from: frequentAlbums,
+            fallback: fallback.mostPlayedSongs
+        )
+        async let artistRecommendationsRequest = similarArtists(
+            to: starredArtists,
+            fallback: fallback.recommendedArtists
+        )
+        let (
+            recommendations,
+            rankedServerSongs,
+            artistRecommendations
+        ) = await (
+            recommendationsRequest,
+            rankedSongsRequest,
+            artistRecommendationsRequest
+        )
+
+        var snapshot = HomeSnapshot(
+            recentAlbums: values.0.map { $0.albumList2?.album ?? [] }
+                ?? fallback.recentAlbums,
+            recentlyPlayedAlbums: values.1.map { $0.albumList2?.album ?? [] }
+                ?? fallback.recentlyPlayedAlbums,
+            frequentAlbums: frequentAlbums,
+            randomAlbums: values.3.map { $0.albumList2?.album ?? [] }
+                ?? fallback.randomAlbums,
+            starredAlbums: starredAlbums,
+            starredSongs: starredSongs,
+            starredArtists: starredArtists,
+            artists: allArtists,
+            randomSongs: randomSongValues,
+            serverRecommendedSongs: recommendations,
+            lastFMRecommendedSongs: fallback.lastFMRecommendedSongs,
+            listenBrainzRecommendedSongs: fallback.listenBrainzRecommendedSongs,
+            recommendedSongs: recommendations,
+            mostPlayedSongs: rankedServerSongs,
+            recommendedArtists: artistRecommendations,
+            playlists: values.7.map { $0.playlists?.playlist ?? [] }
+                ?? fallback.playlists,
+            radioStations: values.8.map {
+                $0.internetRadioStations?.internetRadioStation ?? []
+            } ?? fallback.radioStations
+        )
+        snapshot.daylistSongs = DaylistBuilder.make(snapshot: snapshot)
         return HomeLoadResult(
-            snapshot: HomeSnapshot(
-                recentAlbums: values.0.map { $0.albumList2?.album ?? [] }
-                    ?? fallback.recentAlbums,
-                randomAlbums: values.1.map { $0.albumList2?.album ?? [] }
-                    ?? fallback.randomAlbums,
-                starredAlbums: starredAlbums,
-                starredSongs: starredSongs,
-                starredArtists: starredArtists,
-                artists: values.3.map { $0.artists?.index?.flatMap { $0.artist ?? [] } ?? [] }
-                    ?? fallback.artists,
-                randomSongs: values.4.map { $0.randomSongs?.song ?? [] }
-                    ?? fallback.randomSongs,
-                playlists: values.5.map { $0.playlists?.playlist ?? [] }
-                    ?? fallback.playlists
-            ),
-            hasAuthoritativeStarredState: values.2?.starred2 != nil
+            snapshot: snapshot,
+            hasAuthoritativeStarredState: values.4?.starred2 != nil
         )
     }
 
@@ -316,11 +379,20 @@ actor OpenSubsonicClient {
             "getAlbumList2",
             parameters: ["type": "newest", "size": "16"]
         )
+        async let recentlyPlayed: AlbumListPayload? = bestEffortRequest(
+            "getAlbumList2",
+            parameters: ["type": "recent", "size": "16"]
+        )
+        async let frequent: AlbumListPayload? = bestEffortRequest(
+            "getAlbumList2",
+            parameters: ["type": "frequent", "size": "16"]
+        )
         async let starred: StarredPayload? = bestEffortRequest("getStarred2")
         async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
 
-        let values = try await (recent, starred, playlists)
-        guard values.0 != nil || values.1 != nil || values.2 != nil else {
+        let values = try await (recent, recentlyPlayed, frequent, starred, playlists)
+        guard values.0 != nil || values.1 != nil || values.2 != nil ||
+                values.3 != nil || values.4 != nil else {
             throw OpenSubsonicError.invalidResponse
         }
 
@@ -328,18 +400,306 @@ actor OpenSubsonicClient {
         if let recent = values.0 {
             snapshot.recentAlbums = recent.albumList2?.album ?? []
         }
-        if let starred = values.1?.starred2 {
+        if let recent = values.1 {
+            snapshot.recentlyPlayedAlbums = recent.albumList2?.album ?? []
+        }
+        if let frequent = values.2 {
+            let frequentAlbums = frequent.albumList2?.album ?? []
+            snapshot.frequentAlbums = frequentAlbums
+            snapshot.mostPlayedSongs = await mostPlayedSongs(
+                from: frequentAlbums,
+                fallback: previous.mostPlayedSongs
+            )
+        }
+        if let starred = values.3?.starred2 {
             snapshot.starredAlbums = starred.album ?? []
             snapshot.starredSongs = starred.song ?? []
             snapshot.starredArtists = starred.artist ?? []
         }
-        if let playlists = values.2 {
+        if let playlists = values.4 {
             snapshot.playlists = playlists.playlists?.playlist ?? []
         }
         return HomeLoadResult(
             snapshot: snapshot,
-            hasAuthoritativeStarredState: values.1?.starred2 != nil
+            hasAuthoritativeStarredState: values.3?.starred2 != nil
         )
+    }
+
+    func radioQueue(seed: Song, count: Int = 30) async -> [Song] {
+        await recommendationQueue(seeds: [seed], fallback: [], count: count)
+    }
+
+    func autoplayQueue(
+        seed: Song,
+        excluding excludedIDs: Set<String>,
+        count: Int = 16
+    ) async -> [Song] {
+        let recommended = await recommendationQueue(
+            seeds: [seed],
+            fallback: [],
+            count: max(count, 12)
+        )
+        var values = recommended.filter { !excludedIDs.contains($0.id) }
+        if values.count < count {
+            let parameters: [String: String]
+            if let genre = seed.genre?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ), !genre.isEmpty {
+                parameters = ["size": "\(max(count * 2, 24))", "genre": genre]
+            } else {
+                parameters = ["size": "\(max(count * 2, 24))"]
+            }
+            let random: RandomSongsPayload? = try? await request(
+                "getRandomSongs",
+                parameters: parameters
+            )
+            values.append(contentsOf: random?.randomSongs?.song ?? [])
+        }
+        return Array(
+            Self.uniqueSongs(values)
+                .filter { $0.id != seed.id && !excludedIDs.contains($0.id) }
+                .prefix(count)
+        )
+    }
+
+    func matchExternalRecommendations(
+        _ candidates: [ExternalRecommendationCandidate],
+        library: [Song] = [],
+        limit: Int = 10
+    ) async -> [Song] {
+        var matches: [Song] = []
+        var ids = Set<String>()
+        for candidate in candidates.prefix(limit) {
+            guard !Task.isCancelled else { break }
+            let normalizedTitle = Self.normalized(candidate.title)
+            let normalizedArtist = Self.normalized(candidate.artist)
+            let normalizedAlbum = candidate.album.map(Self.normalized)
+            guard !normalizedTitle.isEmpty else { continue }
+            let localMatch = library.first { song in
+                Self.matchesExternalMetadata(
+                    song,
+                    title: normalizedTitle,
+                    artist: normalizedArtist,
+                    album: normalizedAlbum
+                )
+            } ?? library.first { song in
+                guard let recordingMBID = candidate.recordingMBID else {
+                    return false
+                }
+                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
+                    == .orderedSame
+            } ?? library.first { song in
+                Self.matchesExternalMetadata(
+                    song,
+                    title: normalizedTitle,
+                    artist: normalizedArtist,
+                    album: nil
+                )
+            }
+            let match: Song?
+            if let localMatch {
+                match = localMatch
+            } else {
+                let query = "\(candidate.artist) \(candidate.title)"
+                guard let results = try? await search(query) else { continue }
+                match = results.songs.first { song in
+                    Self.matchesExternalMetadata(
+                        song,
+                        title: normalizedTitle,
+                        artist: normalizedArtist,
+                        album: normalizedAlbum
+                    )
+                } ?? results.songs.first { song in
+                    guard let recordingMBID = candidate.recordingMBID else {
+                        return false
+                    }
+                    return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
+                        == .orderedSame
+                } ?? results.songs.first { song in
+                    Self.matchesExternalMetadata(
+                        song,
+                        title: normalizedTitle,
+                        artist: normalizedArtist,
+                        album: nil
+                    )
+                } ?? results.songs.first { song in
+                    Self.normalized(song.title).contains(normalizedTitle)
+                }
+            }
+            if let match, ids.insert(match.id).inserted {
+                matches.append(match)
+            }
+        }
+        return matches
+    }
+
+    private func recommendationQueue(
+        seeds: [Song],
+        fallback: [Song],
+        count: Int = 24
+    ) async -> [Song] {
+        let distinctSeeds = Self.uniqueSongs(seeds)
+        guard !distinctSeeds.isEmpty else { return fallback }
+        var result: [Song] = []
+
+        for seed in distinctSeeds.prefix(3) {
+            if let sonic: SonicSimilarPayload = try? await request(
+                "getSonicSimilarTracks",
+                parameters: ["id": seed.id, "count": "\(max(8, count))"]
+            ) {
+                result.append(contentsOf: (sonic.sonicMatch ?? []).map(\.entry))
+            }
+            if result.count < count, let artistID = seed.artistId {
+                let similar: SimilarSongsPayload? = try? await request(
+                    "getSimilarSongs2",
+                    parameters: ["id": artistID, "count": "\(max(8, count))"]
+                )
+                result.append(contentsOf:
+                    similar?.similarSongs2?.song
+                    ?? similar?.similarSongs?.song
+                    ?? []
+                )
+            }
+            if result.count >= count { break }
+        }
+
+        let seedIDs = Set(distinctSeeds.map(\.id))
+        let unique = Self.uniqueSongs(result)
+            .filter { !seedIDs.contains($0.id) }
+        return unique.isEmpty ? fallback : Array(unique.prefix(count))
+    }
+
+    private func mostPlayedSongs(
+        from albums: [Album],
+        fallback: [Song]
+    ) async -> [Song] {
+        let candidates = Array(albums.prefix(8))
+        guard !candidates.isEmpty else { return fallback }
+        let songs = await withTaskGroup(
+            of: (Int, [Song]).self,
+            returning: [Song].self
+        ) { group in
+            for (index, album) in candidates.enumerated() {
+                group.addTask { [self] in
+                    let detail = try? await self.album(id: album.id)
+                    return (index, detail?.songs ?? [])
+                }
+            }
+            var values: [(Int, [Song])] = []
+            for await value in group {
+                values.append(value)
+            }
+            return values
+                .sorted { $0.0 < $1.0 }
+                .flatMap(\.1)
+        }
+        let ranked = Self.uniqueSongs(songs)
+            .filter { ($0.playCount ?? 0) > 0 }
+            .sorted { lhs, rhs in
+                let lhsCount = lhs.playCount ?? 0
+                let rhsCount = rhs.playCount ?? 0
+                if lhsCount == rhsCount {
+                    return (lhs.played ?? "") > (rhs.played ?? "")
+                }
+                return lhsCount > rhsCount
+            }
+        return ranked.isEmpty ? fallback : Array(ranked.prefix(30))
+    }
+
+    private func similarArtists(
+        to seeds: [Artist],
+        fallback: [Artist]
+    ) async -> [Artist] {
+        let candidates = Array(seeds.prefix(3))
+        guard !candidates.isEmpty else { return fallback }
+        let values = await withTaskGroup(
+            of: [Artist].self,
+            returning: [Artist].self
+        ) { group in
+            for artist in candidates {
+                group.addTask { [self] in
+                    let payload: ArtistInfoPayload? = try? await self.request(
+                        "getArtistInfo2",
+                        parameters: [
+                            "id": artist.id,
+                            "count": "8",
+                            "includeNotPresent": "false"
+                        ]
+                    )
+                    return payload?.artistInfo2?.similarArtist ?? []
+                }
+            }
+            var artists: [Artist] = []
+            for await result in group {
+                artists.append(contentsOf: result)
+            }
+            return artists
+        }
+        let seedIDs = Set(candidates.map(\.id))
+        let result = Self.uniqueArtists(values)
+            .filter { !seedIDs.contains($0.id) }
+        return result.isEmpty ? fallback : Array(result.prefix(12))
+    }
+
+    private static func uniqueSongs(_ songs: [Song]) -> [Song] {
+        var ids = Set<String>()
+        return songs.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func uniqueSongsByIdentity(_ songs: [Song]) -> [Song] {
+        var ids = Set<String>()
+        var mbids = Set<String>()
+        var metadata = Set<String>()
+        return songs.filter { song in
+            guard ids.insert(song.id).inserted else { return false }
+            let mbid = normalized(song.musicBrainzId ?? "")
+            let identity = [
+                normalized(song.title),
+                normalized(song.artist),
+                normalized(song.album)
+            ].joined(separator: "\u{1F}")
+            if !mbid.isEmpty, mbids.contains(mbid) {
+                return false
+            }
+            if metadata.contains(identity) {
+                return false
+            }
+            if !mbid.isEmpty { mbids.insert(mbid) }
+            metadata.insert(identity)
+            return true
+        }
+    }
+
+    private static func matchesExternalMetadata(
+        _ song: Song,
+        title: String,
+        artist: String,
+        album: String?
+    ) -> Bool {
+        guard normalized(song.title) == title, !artist.isEmpty else {
+            return false
+        }
+        let songArtist = normalized(song.artist)
+        guard songArtist == artist ||
+                songArtist.contains(artist) ||
+                artist.contains(songArtist) else {
+            return false
+        }
+        guard let album, !album.isEmpty else { return true }
+        return normalized(song.album) == album
+    }
+
+    private static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
+        var ids = Set<String>()
+        return artists.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func search(_ query: String) async throws -> SearchResults {
@@ -415,7 +775,7 @@ actor OpenSubsonicClient {
         return ArtistDetail(
             artist: artist.artistValue,
             albums: artist.album ?? [],
-            topSongs: top.topSongs?.song ?? [],
+            topSongs: Self.uniqueSongsByIdentity(top.topSongs?.song ?? []),
             info: info?.artistInfo2
         )
     }

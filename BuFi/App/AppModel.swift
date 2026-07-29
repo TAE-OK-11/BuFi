@@ -37,11 +37,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var isSearching = false
     @Published private(set) var serverVersion = ""
     @Published private(set) var favoriteOverrides: [String: Bool] = [:]
+    @Published private(set) var hasLastFMAPIKey = false
+    @Published private(set) var hasListenBrainzToken = false
+    @Published private(set) var listenBrainzUsername = ""
     @Published var errorMessage: String?
 
     private(set) var client: OpenSubsonicClient?
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
+    private var recommendationTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var lastFullRefresh = Date.distantPast
     private var sessionGeneration = 0
@@ -60,10 +64,38 @@ final class AppModel: ObservableObject {
     private static let albumDetailCacheLimit = 48
     private static let playlistDetailCacheLimit = 24
     private static let artistDetailCacheLimit = 32
+    private static let lastFMKeyAccount = "lastfm-api-key"
+    private static let listenBrainzTokenAccount = "listenbrainz-token"
+    private static let listenBrainzUsernameKey = "listenbrainz-username"
 
     init() {
-        if let credentials = secureStore.load() {
-            Task { await connect(credentials, persist: false) }
+        let lastFMAccount = Self.lastFMKeyAccount
+        let listenBrainzAccount = Self.listenBrainzTokenAccount
+        sessionState = .connecting
+        listenBrainzUsername = UserDefaults.standard.string(
+            forKey: Self.listenBrainzUsernameKey
+        ) ?? ""
+        Task { [weak self] in
+            let stored = await Task.detached(priority: .userInitiated) {
+                let store = SecureStore()
+                return (
+                    credentials: store.load(),
+                    hasLastFMKey: store.loadSecret(
+                        account: lastFMAccount
+                    )?.isEmpty == false,
+                    hasListenBrainzToken: store.loadSecret(
+                        account: listenBrainzAccount
+                    )?.isEmpty == false
+                )
+            }.value
+            guard let self else { return }
+            self.hasLastFMAPIKey = stored.hasLastFMKey
+            self.hasListenBrainzToken = stored.hasListenBrainzToken
+            if let credentials = stored.credentials {
+                await self.connect(credentials, persist: false)
+            } else {
+                self.sessionState = .signedOut
+            }
         }
     }
 
@@ -79,10 +111,34 @@ final class AppModel: ObservableObject {
 
     func logout() {
         sessionGeneration += 1
+        let logoutGeneration = sessionGeneration
+        let accountScope = client.map {
+            AccountScope.identifier(for: $0.credentials)
+        }
         searchGeneration += 1
         searchTask?.cancel()
+        recommendationTask?.cancel()
         clearFavoriteState()
         secureStore.delete()
+        if let accountScope {
+            Task { [weak self] in
+                guard let self,
+                      self.sessionGeneration == logoutGeneration else {
+                    return
+                }
+                await OfflineStore.shared.deactivate(accountScope: accountScope)
+                guard self.sessionGeneration == logoutGeneration else { return }
+                await ArtworkStore.shared.deactivate(accountScope: accountScope)
+                guard self.sessionGeneration == logoutGeneration else { return }
+                await ListeningHistoryStore.shared.deactivate(
+                    accountScope: accountScope
+                )
+                guard self.sessionGeneration == logoutGeneration else { return }
+                await HomeSnapshotStore.shared.remove(
+                    accountScope: accountScope
+                )
+            }
+        }
         client = nil
         home = .empty
         searchResults = .empty
@@ -120,7 +176,7 @@ final class AppModel: ObservableObject {
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
-            let snapshot = loadResult.snapshot
+            let snapshot = await preparedHomeSnapshot(loadResult.snapshot)
             guard generation == sessionGeneration, self.client === client else { return }
             guard revision == homeRevision else { return }
             guard starRequests.isEmpty else { return }
@@ -131,6 +187,17 @@ final class AppModel: ObservableObject {
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
             if home != resolvedSnapshot { home = resolvedSnapshot }
+            let accountScope = AccountScope.identifier(for: client.credentials)
+            await HomeSnapshotStore.shared.save(
+                resolvedSnapshot,
+                accountScope: accountScope
+            )
+            if needsFullRefresh {
+                scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: generation
+                )
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -150,14 +217,15 @@ final class AppModel: ObservableObject {
             return
         }
 
-        isSearching = true
         searchTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(260))
                 try Task.checkCancellation()
+                guard let self, generation == self.searchGeneration, self.client === client else { return }
+                self.isSearching = true
                 let value = try await client.search(query)
                 try Task.checkCancellation()
-                guard let self, generation == self.searchGeneration, self.client === client else { return }
+                guard generation == self.searchGeneration, self.client === client else { return }
                 self.reconcileFavoriteStates(in: value)
                 self.searchResults = self.applyingFavoriteOverrides(to: value)
                 self.isSearching = false
@@ -210,6 +278,176 @@ final class AppModel: ObservableObject {
         searchTask?.cancel()
         isSearching = false
         searchResults = .empty
+    }
+
+    func playRadio(from seed: Song) async {
+        guard let client else { return }
+        let radioSongs = await client.radioQueue(seed: seed)
+        let values = radioSongs.map(applyingFavoriteOverride)
+        guard !values.isEmpty else {
+            errorMessage = String(localized: "이 곡과 비슷한 음악을 서버에서 찾지 못했습니다.")
+            return
+        }
+        AudioEngine.shared.play(values[0], in: values)
+    }
+
+    private func autoplayContinuation(
+        after seed: Song,
+        excluding excludedIDs: Set<String>,
+        client: OpenSubsonicClient
+    ) async -> [Song] {
+        let serverValues = await client.autoplayQueue(
+            seed: seed,
+            excluding: excludedIDs
+        )
+        guard self.client === client else { return [] }
+        let fallbacks =
+            home.recommendedSongs +
+            home.serverRecommendedSongs +
+            home.lastFMRecommendedSongs +
+            home.listenBrainzRecommendedSongs +
+            home.randomSongs
+        return Self.uniqueSongs(serverValues + fallbacks)
+            .filter {
+                !excludedIDs.contains($0.id) &&
+                    $0.id != seed.id &&
+                    $0.externalStreamURL == nil
+            }
+            .prefix(16)
+            .map(applyingFavoriteOverride)
+    }
+
+    func playInternetRadio(_ station: InternetRadioStation) {
+        guard let url = URL(string: station.streamUrl),
+              url.scheme?.lowercased() == "https" else {
+            errorMessage = String(localized: "HTTPS 인터넷 라디오만 안전하게 재생할 수 있습니다.")
+            return
+        }
+        let song = station.playableSong
+        AudioEngine.shared.play(song, in: [song])
+    }
+
+    func saveLastFMAPIKey(_ value: String) {
+        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if key.isEmpty {
+                secureStore.deleteSecret(account: Self.lastFMKeyAccount)
+                hasLastFMAPIKey = false
+                var snapshot = home
+                snapshot.lastFMRecommendedSongs = []
+                snapshot.recommendedSongs = RecommendationMixer.mix(
+                    snapshot: snapshot,
+                    weights: .current()
+                )
+                home = snapshot
+            } else {
+                try secureStore.saveSecret(key, account: Self.lastFMKeyAccount)
+                hasLastFMAPIKey = true
+                var snapshot = home
+                snapshot.lastFMRecommendedSongs = []
+                snapshot.recommendedSongs = RecommendationMixer.mix(
+                    snapshot: snapshot,
+                    weights: .current()
+                )
+                home = snapshot
+            }
+            if let client {
+                scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: sessionGeneration
+                )
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func saveListenBrainz(username: String, token: String) {
+        let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(name, forKey: Self.listenBrainzUsernameKey)
+        listenBrainzUsername = name
+        do {
+            if secret.isEmpty {
+                if name.isEmpty {
+                    secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
+                    hasListenBrainzToken = false
+                }
+            } else {
+                try secureStore.saveSecret(
+                    secret,
+                    account: Self.listenBrainzTokenAccount
+                )
+                hasListenBrainzToken = true
+            }
+            var snapshot = home
+            snapshot.listenBrainzRecommendedSongs = []
+            snapshot.recommendedSongs = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: .current()
+            )
+            home = snapshot
+            if let client {
+                scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: sessionGeneration
+                )
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeListenBrainz() {
+        secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
+        UserDefaults.standard.removeObject(forKey: Self.listenBrainzUsernameKey)
+        hasListenBrainzToken = false
+        listenBrainzUsername = ""
+        var snapshot = home
+        snapshot.listenBrainzRecommendedSongs = []
+        snapshot.recommendedSongs = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: .current()
+        )
+        home = snapshot
+        if let client {
+            scheduleExternalRecommendationRefresh(
+                client: client,
+                generation: sessionGeneration
+            )
+        } else {
+            recommendationTask?.cancel()
+        }
+    }
+
+    func rebuildRecommendations() {
+        var snapshot = home
+        snapshot.recommendedSongs = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: .current()
+        )
+        if snapshot != home { home = snapshot }
+    }
+
+    func handleMemoryPressure() {
+        // In-flight detail requests belong to visible screens and are allowed
+        // to finish. Only reusable snapshots are discarded.
+        albumDetailCache.removeAll(keepingCapacity: false)
+        playlistDetailCache.removeAll(keepingCapacity: false)
+        artistDetailCache.removeAll(keepingCapacity: false)
+    }
+
+    func handleEnergyConstraints(
+        lowPowerMode: Bool,
+        thermalState: ProcessInfo.ThermalState
+    ) {
+        guard lowPowerMode
+                || thermalState == .serious
+                || thermalState == .critical else {
+            return
+        }
+        recommendationTask?.cancel()
+        recommendationTask = nil
     }
 
     func album(id: String) async throws -> AlbumDetail {
@@ -628,6 +866,8 @@ final class AppModel: ObservableObject {
     private func applyingFavoriteOverrides(to snapshot: HomeSnapshot) -> HomeSnapshot {
         var value = snapshot
         value.recentAlbums = value.recentAlbums.map(applyingFavoriteOverride)
+        value.recentlyPlayedAlbums = value.recentlyPlayedAlbums.map(applyingFavoriteOverride)
+        value.frequentAlbums = value.frequentAlbums.map(applyingFavoriteOverride)
         value.randomAlbums = value.randomAlbums.map(applyingFavoriteOverride)
         let resolvedAlbums = value.starredAlbums
             .map(applyingFavoriteOverride)
@@ -670,6 +910,20 @@ final class AppModel: ObservableObject {
 
         value.artists = value.artists.map(applyingFavoriteOverride)
         value.randomSongs = value.randomSongs.map(applyingFavoriteOverride)
+        value.serverRecommendedSongs = value.serverRecommendedSongs.map(applyingFavoriteOverride)
+        value.lastFMRecommendedSongs = value.lastFMRecommendedSongs.map(applyingFavoriteOverride)
+        value.listenBrainzRecommendedSongs = value.listenBrainzRecommendedSongs.map(
+            applyingFavoriteOverride
+        )
+        value.recommendedSongs = value.recommendedSongs.map(applyingFavoriteOverride)
+        value.daylistSongs = value.daylistSongs.map(applyingFavoriteOverride)
+        value.offlineBackupSongs = value.offlineBackupSongs.map(
+            applyingFavoriteOverride
+        )
+        value.mostPlayedSongs = value.mostPlayedSongs.map(applyingFavoriteOverride)
+        value.recommendedArtists = value.recommendedArtists.map(
+            applyingFavoriteOverride
+        )
         return value
     }
 
@@ -753,8 +1007,15 @@ final class AppModel: ObservableObject {
         switch target {
         case .song:
             let visibleSongs =
-                home.starredSongs + home.randomSongs +
+                home.starredSongs + home.randomSongs + home.recommendedSongs +
+                home.serverRecommendedSongs + home.lastFMRecommendedSongs +
+                home.listenBrainzRecommendedSongs + home.mostPlayedSongs +
+                home.daylistSongs + home.offlineBackupSongs +
                 snapshot.starredSongs + snapshot.randomSongs +
+                snapshot.serverRecommendedSongs + snapshot.lastFMRecommendedSongs +
+                snapshot.listenBrainzRecommendedSongs + snapshot.recommendedSongs +
+                snapshot.mostPlayedSongs + snapshot.daylistSongs +
+                snapshot.offlineBackupSongs +
                 searchResults.songs
             ids.formUnion(visibleSongs.lazy.filter(\.isStarred).map(\.id))
             ids.formUnion(
@@ -780,8 +1041,11 @@ final class AppModel: ObservableObject {
             }
         case .album:
             let visibleAlbums =
-                home.starredAlbums + home.recentAlbums + home.randomAlbums +
-                snapshot.starredAlbums + snapshot.recentAlbums + snapshot.randomAlbums +
+                home.starredAlbums + home.recentAlbums + home.recentlyPlayedAlbums +
+                home.frequentAlbums + home.randomAlbums +
+                snapshot.starredAlbums + snapshot.recentAlbums +
+                snapshot.recentlyPlayedAlbums + snapshot.frequentAlbums +
+                snapshot.randomAlbums +
                 searchResults.albums
             ids.formUnion(visibleAlbums.lazy.filter(\.isStarred).map(\.id))
             for cached in artistDetailCache.values {
@@ -791,8 +1055,9 @@ final class AppModel: ObservableObject {
             }
         case .artist:
             let visibleArtists =
-                home.starredArtists + home.artists +
+                home.starredArtists + home.artists + home.recommendedArtists +
                 snapshot.starredArtists + snapshot.artists +
+                snapshot.recommendedArtists +
                 searchResults.artists
             ids.formUnion(visibleArtists.lazy.filter(\.isStarred).map(\.id))
             for cached in artistDetailCache.values where cached.value.artist.isStarred {
@@ -896,6 +1161,27 @@ final class AppModel: ObservableObject {
         snapshot.starredSongs.removeAll { $0.id == song.id }
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
         snapshot.randomSongs = snapshot.randomSongs.map { $0.id == song.id ? updated : $0 }
+        snapshot.recommendedSongs = snapshot.recommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.serverRecommendedSongs = snapshot.serverRecommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.lastFMRecommendedSongs = snapshot.lastFMRecommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.listenBrainzRecommendedSongs = snapshot.listenBrainzRecommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.daylistSongs = snapshot.daylistSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.offlineBackupSongs = snapshot.offlineBackupSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
         homeRevision &+= 1
         home = snapshot
 
@@ -940,6 +1226,12 @@ final class AppModel: ObservableObject {
         snapshot.starredAlbums.removeAll { $0.id == album.id }
         if enabled { snapshot.starredAlbums.insert(updated, at: 0) }
         snapshot.recentAlbums = snapshot.recentAlbums.map { $0.id == album.id ? updated : $0 }
+        snapshot.recentlyPlayedAlbums = snapshot.recentlyPlayedAlbums.map {
+            $0.id == album.id ? updated : $0
+        }
+        snapshot.frequentAlbums = snapshot.frequentAlbums.map {
+            $0.id == album.id ? updated : $0
+        }
         snapshot.randomAlbums = snapshot.randomAlbums.map { $0.id == album.id ? updated : $0 }
         homeRevision &+= 1
         home = snapshot
@@ -968,6 +1260,9 @@ final class AppModel: ObservableObject {
         snapshot.starredArtists.removeAll { $0.id == artist.id }
         if enabled { snapshot.starredArtists.insert(updated, at: 0) }
         snapshot.artists = snapshot.artists.map { $0.id == artist.id ? updated : $0 }
+        snapshot.recommendedArtists = snapshot.recommendedArtists.map {
+            $0.id == artist.id ? updated : $0
+        }
         homeRevision &+= 1
         home = snapshot
 
@@ -1041,16 +1336,255 @@ final class AppModel: ObservableObject {
 
     private var isHomeEmpty: Bool { home == .empty }
 
+    private func mergingListeningHistory(
+        into snapshot: HomeSnapshot
+    ) async -> HomeSnapshot {
+        let history = await ListeningHistoryStore.shared.snapshot()
+        let offlineSongIDs = await OfflineStore.shared.availableSongIDs()
+        var value = snapshot
+        if value.mostPlayedSongs.isEmpty {
+            value.mostPlayedSongs = history.mostPlayedSongs
+        }
+
+        let albums = snapshot.recentlyPlayedAlbums +
+            snapshot.frequentAlbums +
+            snapshot.recentAlbums +
+            snapshot.randomAlbums +
+            snapshot.starredAlbums
+        var albumsByID: [String: Album] = [:]
+        for album in albums where albumsByID[album.id] == nil {
+            albumsByID[album.id] = album
+        }
+        var localRecentAlbums: [Album] = []
+        var seenAlbumIDs = Set<String>()
+        for song in history.recentlyPlayedSongs {
+            guard let albumID = song.albumId,
+                  seenAlbumIDs.insert(albumID).inserted else {
+                continue
+            }
+            if let album = albumsByID[albumID] {
+                localRecentAlbums.append(album)
+            } else if !song.album.isEmpty {
+                localRecentAlbums.append(
+                    Album(
+                        id: albumID,
+                        name: song.album,
+                        artist: song.artist,
+                        coverArt: song.coverArt,
+                        year: nil,
+                        starred: nil
+                    )
+                )
+                albumsByID[albumID] = localRecentAlbums.last
+            }
+        }
+        if value.recentlyPlayedAlbums.isEmpty {
+            value.recentlyPlayedAlbums = localRecentAlbums
+        }
+        value.offlineBackupSongs = history.recentlyPlayedSongs.filter {
+            offlineSongIDs.contains($0.id)
+        }
+        return value
+    }
+
+    private func preparedHomeSnapshot(
+        _ snapshot: HomeSnapshot
+    ) async -> HomeSnapshot {
+        var value = await mergingListeningHistory(into: snapshot)
+        value.recommendedSongs = RecommendationMixer.mix(
+            snapshot: value,
+            weights: .current()
+        )
+        value.recommendedArtists = resolvedRecommendedArtists(in: value)
+        value.daylistSongs = DaylistBuilder.make(snapshot: value)
+        return value
+    }
+
+    private func resolvedRecommendedArtists(
+        in snapshot: HomeSnapshot
+    ) -> [Artist] {
+        var result = Self.uniqueArtists(snapshot.recommendedArtists)
+        var ids = Set(result.map(\.id))
+        let starredIDs = Set(snapshot.starredArtists.map(\.id))
+        let artistsByName = Dictionary(
+            snapshot.artists.map {
+                (Self.normalizedName($0.name), $0)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let signals =
+            snapshot.recommendedSongs +
+            snapshot.serverRecommendedSongs +
+            snapshot.lastFMRecommendedSongs +
+            snapshot.listenBrainzRecommendedSongs +
+            snapshot.mostPlayedSongs +
+            snapshot.starredSongs
+        for song in signals {
+            guard result.count < 12,
+                  let artist = artistsByName[
+                    Self.normalizedName(song.artist)
+                  ],
+                  !starredIDs.contains(artist.id),
+                  ids.insert(artist.id).inserted else {
+                continue
+            }
+            result.append(artist)
+        }
+        return Array(result.filter { !starredIDs.contains($0.id) }.prefix(12))
+    }
+
+    private static func normalizedName(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func uniqueSongs(_ values: [Song]) -> [Song] {
+        var ids = Set<String>()
+        return values.filter { ids.insert($0.id).inserted }
+    }
+
+    private static func uniqueArtists(_ values: [Artist]) -> [Artist] {
+        var ids = Set<String>()
+        return values.filter { ids.insert($0.id).inserted }
+    }
+
+    private func enrichingExternalRecommendations(
+        in snapshot: HomeSnapshot,
+        client: OpenSubsonicClient
+    ) async -> HomeSnapshot {
+        let lastFMKey = secureStore.loadSecret(account: Self.lastFMKeyAccount) ?? ""
+        let listenBrainzToken = secureStore.loadSecret(
+            account: Self.listenBrainzTokenAccount
+        )
+        let seed = snapshot.mostPlayedSongs.first
+            ?? snapshot.starredSongs.first
+            ?? snapshot.randomSongs.first
+
+        async let lastFMCandidates = Self.lastFMCandidates(
+            seed: seed,
+            apiKey: lastFMKey
+        )
+        async let listenBrainzCandidates =
+            ExternalRecommendationClient.shared.listenBrainz(
+                username: listenBrainzUsername,
+                token: listenBrainzToken
+            )
+
+        let candidates = await (lastFMCandidates, listenBrainzCandidates)
+        let knownSongs = Self.uniqueSongs(
+            snapshot.starredSongs +
+            snapshot.mostPlayedSongs +
+            snapshot.randomSongs +
+            snapshot.serverRecommendedSongs +
+            snapshot.recommendedSongs
+        )
+        async let lastFMSongs = client.matchExternalRecommendations(
+            candidates.0,
+            library: knownSongs,
+            limit: 8
+        )
+        async let listenBrainzSongs = client.matchExternalRecommendations(
+            candidates.1,
+            library: knownSongs,
+            limit: 8
+        )
+
+        var value = snapshot
+        let matches = await (lastFMSongs, listenBrainzSongs)
+        if !matches.0.isEmpty {
+            value.lastFMRecommendedSongs = matches.0
+        }
+        if !matches.1.isEmpty {
+            value.listenBrainzRecommendedSongs = matches.1
+        }
+        return value
+    }
+
+    private nonisolated static func lastFMCandidates(
+        seed: Song?,
+        apiKey: String
+    ) async -> [ExternalRecommendationCandidate] {
+        guard let seed, !apiKey.isEmpty else { return [] }
+        return await ExternalRecommendationClient.shared.lastFM(
+            seed: seed,
+            apiKey: apiKey
+        )
+    }
+
+    private func scheduleExternalRecommendationRefresh(
+        client: OpenSubsonicClient,
+        generation: Int
+    ) {
+        recommendationTask?.cancel()
+        guard hasLastFMAPIKey || !listenBrainzUsername.isEmpty,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled,
+              ProcessInfo.processInfo.thermalState.rawValue <
+                ProcessInfo.ThermalState.serious.rawValue else {
+            return
+        }
+        let source = home
+        recommendationTask = Task { [weak self] in
+            guard let self else { return }
+            let enriched = await self.enrichingExternalRecommendations(
+                in: source,
+                client: client
+            )
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration,
+                  self.client === client else {
+                return
+            }
+            var value = self.home
+            if !enriched.lastFMRecommendedSongs.isEmpty {
+                value.lastFMRecommendedSongs = enriched.lastFMRecommendedSongs
+            }
+            if !enriched.listenBrainzRecommendedSongs.isEmpty {
+                value.listenBrainzRecommendedSongs =
+                    enriched.listenBrainzRecommendedSongs
+            }
+            value.recommendedSongs = RecommendationMixer.mix(
+                snapshot: value,
+                weights: .current()
+            )
+            value.recommendedArtists = self.resolvedRecommendedArtists(
+                in: value
+            )
+            value.daylistSongs = DaylistBuilder.make(snapshot: value)
+            value = self.applyingFavoriteOverrides(to: value)
+            if value != self.home {
+                self.home = value
+                let accountScope = AccountScope.identifier(
+                    for: client.credentials
+                )
+                await HomeSnapshotStore.shared.save(
+                    value,
+                    accountScope: accountScope
+                )
+            }
+        }
+    }
+
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
         sessionGeneration += 1
         let generation = sessionGeneration
         searchGeneration += 1
         searchTask?.cancel()
+        recommendationTask?.cancel()
+        let previousAccountScope = client.map {
+            AccountScope.identifier(for: $0.credentials)
+        }
         let isReplacingActiveSession = client != nil
         client = nil
         if isReplacingActiveSession {
             AudioEngine.shared.configure(client: nil)
         }
+        if let previousAccountScope {
+            await deactivateStores(accountScope: previousAccountScope)
+        }
+        guard generation == sessionGeneration else { return }
         home = .empty
         searchResults = .empty
         serverVersion = ""
@@ -1061,30 +1595,46 @@ final class AppModel: ObservableObject {
         clearDetailCaches()
         sessionState = .connecting
         errorMessage = nil
+        var activatedAccountScope: String?
         do {
             let client = try OpenSubsonicClient(credentials: credentials)
+            let accountScope = AccountScope.identifier(for: credentials)
             async let statusRequest = client.ping()
-            async let homeRequest = client.home()
-            let (status, loadResult) = try await (statusRequest, homeRequest)
-            let snapshot = loadResult.snapshot
+            async let cachedSnapshotRequest = HomeSnapshotStore.shared.load(
+                accountScope: accountScope
+            )
+            let status = try await statusRequest
+            let cachedSnapshot = await cachedSnapshotRequest
             try Task.checkCancellation()
             guard generation == sessionGeneration else { return }
 
-            let accountScope = AccountScope.identifier(for: credentials)
             await OfflineStore.shared.activate(accountScope: accountScope)
             await ArtworkStore.shared.activate(accountScope: accountScope)
-            guard generation == sessionGeneration else { return }
+            await ListeningHistoryStore.shared.activate(accountScope: accountScope)
+            activatedAccountScope = accountScope
+            guard generation == sessionGeneration else {
+                await deactivateStores(accountScope: accountScope)
+                return
+            }
+            let snapshot = await preparedHomeSnapshot(
+                cachedSnapshot ?? .empty
+            )
+            guard generation == sessionGeneration else {
+                await deactivateStores(accountScope: accountScope)
+                return
+            }
             if persist { try secureStore.save(credentials) }
 
             reconcileFavoriteStates(
                 in: snapshot,
-                authoritative: loadResult.hasAuthoritativeStarredState
+                authoritative: false
             )
             self.client = client
             self.home = applyingFavoriteOverrides(to: snapshot)
-            self.lastFullRefresh = Date()
+            self.lastFullRefresh = .distantPast
             self.serverVersion = status.serverVersion ?? status.version ?? ""
             self.sessionState = .ready
+            activatedAccountScope = nil
             AudioEngine.shared.configure(
                 client: client,
                 songFavoriteMutationHandler: { [weak self] song in
@@ -1093,11 +1643,31 @@ final class AppModel: ObservableObject {
                         song: song,
                         enabled: !self.isStarred(song)
                     )
+                },
+                autoplayContinuationProvider: { [weak self] seed, excludedIDs in
+                    guard let self else { return [] }
+                    return await self.autoplayContinuation(
+                        after: seed,
+                        excluding: excludedIDs,
+                        client: client
+                    )
                 }
             )
+            Task { [weak self] in
+                await self?.refresh(
+                    forceFull: true,
+                    silent: cachedSnapshot != nil
+                )
+            }
         } catch is CancellationError {
+            if let activatedAccountScope {
+                await deactivateStores(accountScope: activatedAccountScope)
+            }
             return
         } catch {
+            if let activatedAccountScope {
+                await deactivateStores(accountScope: activatedAccountScope)
+            }
             guard generation == sessionGeneration else { return }
             client = nil
             home = .empty
@@ -1109,5 +1679,11 @@ final class AppModel: ObservableObject {
             sessionState = .signedOut
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func deactivateStores(accountScope: String) async {
+        await OfflineStore.shared.deactivate(accountScope: accountScope)
+        await ArtworkStore.shared.deactivate(accountScope: accountScope)
+        await ListeningHistoryStore.shared.deactivate(accountScope: accountScope)
     }
 }

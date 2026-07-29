@@ -16,10 +16,12 @@ struct SettingsView: View {
     @AppStorage("auto-open-player") private var autoOpenPlayer = false
     @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
     @AppStorage("restore-play-queue") private var restorePlayQueue = true
+    @AppStorage("algorithmic-autoplay-enabled")
+    private var algorithmicAutoplayEnabled = true
     @AppStorage("keep-screen-awake") private var keepScreenAwake = false
-    @AppStorage("server-sync-interval") private var syncInterval = 30.0
+    @AppStorage("server-sync-interval") private var syncInterval = 300.0
     @AppStorage("offline-wifi-only") private var offlineWiFiOnly = true
-    @AppStorage("offline-prefetch-count") private var offlinePrefetchCount = 1
+    @AppStorage("offline-prefetch-count") private var offlinePrefetchCount = 0
     @AppStorage("offline-storage-limit-gb") private var offlineStorageLimitGB = 10.0
 
     var body: some View {
@@ -89,7 +91,7 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .tint(BuFiTheme.accent)
 
-                    Text("기본은 Classic과 Liquid Glass에서 앨범 대표색을 단색으로 표시하고, Dynamic에서는 잠금화면 느낌의 그라데이션을 유지합니다. 다중 컬러와 밝게는 서로 다른 대표색을 최대 3개 사용합니다.")
+                    Text("기본은 Classic과 Liquid Glass에서 앨범 대표색을 단색으로 표시합니다. 다중 컬러는 앨범에서 색이 발견된 위치를 따라 배치하고, 밝게는 화면을 라이트 모드로 바꾸지 않고 추출색 자체를 더 밝고 선명하게 표시합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
@@ -113,7 +115,20 @@ struct SettingsView: View {
                         Text("15분").tag(900.0)
                     }
                     .tint(Color(uiColor: .secondaryLabel))
-                    Text("앱이 활성 상태일 때만 동기화합니다. 평소에는 좋아요·새 앨범·플레이리스트만 가볍게 갱신하고, 전체 라이브러리는 5분 간격으로 확인합니다. 저전력 모드에서는 주기를 자동으로 늘립니다.")
+                    Text("선택한 주기마다 활성 화면의 변경 사항을 확인하고 전체 홈 데이터는 최대 5분에 한 번 갱신합니다. 재생 중에는 간격을 늘리며 저전력·고온 상태에서는 자동 동기화를 멈춥니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .listRowBackground(settingsRowBackground)
+
+                Section("추천") {
+                    NavigationLink {
+                        RecommendationSettingsView()
+                            .environmentObject(model)
+                    } label: {
+                        Label("추천 알고리즘", systemImage: "wand.and.stars")
+                    }
+                    Text("서버 유사곡, 청취 기록, 좋아요, 새로운 음악과 선택한 외부 서비스를 기기에서 조합합니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -135,6 +150,24 @@ struct SettingsView: View {
                     Toggle(isOn: $restorePlayQueue) {
                         Label("재생 대기목록 기억", systemImage: "clock.arrow.circlepath")
                     }
+                    Toggle(isOn: $algorithmicAutoplayEnabled) {
+                        Label(
+                            "추천곡 계속 재생",
+                            systemImage: "infinity.circle"
+                        )
+                    }
+                    Text("현재 재생목록이 끝나기 전에 서버 유사곡을 미리 추가해 음악이 끊기지 않도록 계속 재생합니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Picker("셔플 방식", selection: $audio.shuffleStyle) {
+                        ForEach(ShuffleStyle.allCases) { style in
+                            Text(style.title).tag(style)
+                        }
+                    }
+                    .tint(Color(uiColor: .secondaryLabel))
+                    Text("반복 줄이기는 최근 재생곡을 잠시 피해서 같은 곡이 짧은 간격으로 다시 나오는 현상을 줄입니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Toggle(isOn: $lyricsAutoScroll) {
                         Label("가사 자동 스크롤", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
@@ -159,6 +192,9 @@ struct SettingsView: View {
                         Text("1곡").tag(1)
                         Text("3곡").tag(3)
                     }
+                    Text("선캐시는 곡 전환을 빠르게 하지만 전체 음원을 미리 저장합니다. 배터리와 데이터 절약을 위해 기본값은 끔이며, 저전력·고온 상태에서는 자동으로 제한됩니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Picker("오프라인 용량 제한", selection: $offlineStorageLimitGB) {
                         Text("5 GB").tag(5.0)
                         Text("10 GB").tag(10.0)
@@ -256,6 +292,136 @@ struct SettingsView: View {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
             ?? "15"
         return "\(version) (\(build))"
+    }
+}
+
+private struct RecommendationSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var lastFMAPIKey = ""
+    @State private var listenBrainzUsername = ""
+    @State private var listenBrainzToken = ""
+    @AppStorage("recommendation-weight-history") private var historyWeight = 0.70
+    @AppStorage("recommendation-weight-favorites") private var favoriteWeight = 0.80
+    @AppStorage("recommendation-weight-server") private var serverWeight = 0.90
+    @AppStorage("recommendation-weight-discovery") private var discoveryWeight = 0.35
+    @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.55
+    @AppStorage("recommendation-weight-listenbrainz")
+    private var listenBrainzWeight = 0.55
+
+    var body: some View {
+        List {
+            Section("추천 가중치") {
+                weightRow("청취 기록 취향", value: $historyWeight)
+                weightRow("좋아요 취향", value: $favoriteWeight)
+                weightRow("서버 유사곡·Sonic", value: $serverWeight)
+                weightRow("새로운 음악 발견", value: $discoveryWeight)
+                weightRow("Last.fm 유사곡", value: $lastFMWeight)
+                weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
+                Button("기본값으로 복원") {
+                    historyWeight = 0.70
+                    favoriteWeight = 0.80
+                    serverWeight = 0.90
+                    discoveryWeight = 0.35
+                    lastFMWeight = 0.55
+                    listenBrainzWeight = 0.55
+                    model.rebuildRecommendations()
+                }
+            }
+            .listRowBackground(BuFiTheme.elevated)
+
+            Section("Last.fm") {
+                SecureField(
+                    model.hasLastFMAPIKey
+                        ? "저장된 API 키 교체"
+                        : "Last.fm API 키",
+                    text: $lastFMAPIKey
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                Button(model.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
+                    model.saveLastFMAPIKey(lastFMAPIKey)
+                    lastFMAPIKey = ""
+                }
+                .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if model.hasLastFMAPIKey {
+                    Button("Last.fm 연동 해제", role: .destructive) {
+                        model.saveLastFMAPIKey("")
+                    }
+                }
+                Text("Last.fm track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .listRowBackground(BuFiTheme.elevated)
+
+            Section("ListenBrainz") {
+                TextField("ListenBrainz 사용자 이름", text: $listenBrainzUsername)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField(
+                    model.hasListenBrainzToken
+                        ? "저장된 토큰 유지 또는 교체"
+                        : "사용자 토큰",
+                    text: $listenBrainzToken
+                )
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                Button("ListenBrainz 설정 저장") {
+                    model.saveListenBrainz(
+                        username: listenBrainzUsername,
+                        token: listenBrainzToken
+                    )
+                    listenBrainzToken = ""
+                }
+                .disabled(
+                    listenBrainzUsername
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                )
+                if model.hasListenBrainzToken || !model.listenBrainzUsername.isEmpty {
+                    Button("ListenBrainz 연동 해제", role: .destructive) {
+                        model.removeListenBrainz()
+                        listenBrainzUsername = ""
+                        listenBrainzToken = ""
+                    }
+                }
+                Text("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 존재하는 곡만 매칭합니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .listRowBackground(BuFiTheme.elevated)
+        }
+        .scrollContentBackground(.hidden)
+        .background(BuFiScreenBackground())
+        .navigationTitle("추천 알고리즘")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            listenBrainzUsername = model.listenBrainzUsername
+        }
+        .onChange(of: historyWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: favoriteWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: serverWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: discoveryWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: lastFMWeight) { _, _ in model.rebuildRecommendations() }
+        .onChange(of: listenBrainzWeight) { _, _ in model.rebuildRecommendations() }
+    }
+
+    private func weightRow(
+        _ title: LocalizedStringKey,
+        value: Binding<Double>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(value.wrappedValue, format: .percent.precision(.fractionLength(0)))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: value, in: 0...1, step: 0.05)
+                .tint(BuFiTheme.accent)
+        }
+        .padding(.vertical, 3)
     }
 }
 

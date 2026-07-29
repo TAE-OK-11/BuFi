@@ -35,18 +35,25 @@ struct LegacyMiniPlayerView: View {
                         )
                         .frame(width: 50, height: 50)
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(song.title)
-                                .font(.system(size: 15, weight: .semibold))
-                                .lineLimit(1)
-                                .contentTransition(.interpolate)
-                            Text(song.artist)
-                                .font(.system(size: 13))
-                                .foregroundStyle(.white.opacity(0.78))
-                                .lineLimit(1)
+                        ZStack(alignment: .leading) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(song.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .lineLimit(1)
+                                Text(song.artist)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.white.opacity(0.78))
+                                    .lineLimit(1)
+                            }
+                            .id(song.id)
+                            .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .allowsHitTesting(false)
+                        .animation(
+                            motionEnabled ? BuFiMotion.trackText : .none,
+                            value: song.id
+                        )
 
                         AirPlayButton(lightContent: true)
                             .frame(width: 36, height: 36)
@@ -63,15 +70,6 @@ struct LegacyMiniPlayerView: View {
                     }
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)
-                    .id(song.id)
-                    .transition(
-                        motionEnabled
-                            ? .asymmetric(
-                                insertion: .move(edge: .trailing).combined(with: .opacity),
-                                removal: .move(edge: .leading).combined(with: .opacity)
-                            )
-                            : .opacity
-                    )
 
                     GeometryReader { proxy in
                         ZStack(alignment: .leading) {
@@ -93,12 +91,6 @@ struct LegacyMiniPlayerView: View {
             .frame(height: playerHeight)
             .fixedSize(horizontal: false, vertical: true)
             .clipped()
-            .animation(
-                motionEnabled
-                    ? BuFiMotion.player
-                    : .none,
-                value: song.id
-            )
             .foregroundStyle(.white)
             .background {
                 ZStack {
@@ -123,6 +115,15 @@ struct LegacyMiniPlayerView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .shadow(color: .black.opacity(0.20), radius: 12, y: 6)
+            .animation(motionEnabled ? BuFiMotion.color : .none, value: palette)
         }
+    }
+
+    private var trackTextTransition: AnyTransition {
+        guard motionEnabled else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(y: 5).combined(with: .opacity),
+            removal: .offset(y: -4).combined(with: .opacity)
+        )
     }
 }

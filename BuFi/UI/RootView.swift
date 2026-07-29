@@ -20,16 +20,24 @@ struct RootView: View {
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("motion-enabled") private var motionEnabled = true
-    @AppStorage("server-sync-interval") private var syncInterval = 30.0
+    @AppStorage("server-sync-interval") private var syncInterval = 300.0
 
     private let tabHaptic = UISelectionFeedbackGenerator()
 
     var body: some View {
         Group {
             switch model.sessionState {
-            case .signedOut, .connecting:
+            case .signedOut:
                 LoginView()
                     .transition(.opacity.combined(with: .scale(scale: 0.985)))
+            case .connecting:
+                ZStack {
+                    BuFiScreenBackground()
+                    ProgressView("자동 로그인 중…")
+                        .font(.system(size: 15, weight: .semibold))
+                        .tint(BuFiTheme.accent)
+                }
+                .transition(.opacity)
             case .ready:
                 appContent
                     .transition(.opacity)
@@ -54,12 +62,32 @@ struct RootView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
-            lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            lowPowerMode = currentLowPowerMode
+            model.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
-            thermalState = ProcessInfo.processInfo.thermalState
+            let currentThermalState = ProcessInfo.processInfo.thermalState
+            thermalState = currentThermalState
+            model.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            model.handleMemoryPressure()
+            audio.handleMemoryPressure()
             Task(priority: .utility) {
                 await ArtworkStore.shared.clearMemory()
             }
@@ -88,7 +116,11 @@ struct RootView: View {
         }
         .fullScreenCover(isPresented: $audio.showPlayer) {
             NavigationStack {
-                PlayerView()
+                PlayerView(
+                    initialArtworkPage: audio.queue.indices.contains(audio.queueIndex)
+                        ? audio.queueIndex
+                        : 0
+                )
                     .navigationDestination(for: MusicRoute.self) { route in
                         MusicDetailView(route: route)
                     }
@@ -163,8 +195,7 @@ struct RootView: View {
         let activeProgress = tab == tag && effectiveMotion ? pageProgress : 1
         content
             .opacity(activeProgress)
-            .scaleEffect(0.992 + (0.008 * activeProgress))
-            .blur(radius: (1 - activeProgress) * 1.2)
+            .scaleEffect(0.996 + (0.004 * activeProgress))
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if audio.currentSong != nil {
                     LegacyMiniPlayerView()
@@ -174,7 +205,10 @@ struct RootView: View {
                         .transition(effectiveMotion ? .move(edge: .bottom).combined(with: .opacity) : .opacity)
                 }
             }
-            .animation(effectiveMotion ? BuFiMotion.player : .none, value: audio.currentSong?.id)
+            .animation(
+                effectiveMotion ? BuFiMotion.content : .none,
+                value: audio.currentSong != nil
+            )
     }
 
     private var syncTaskID: String {
@@ -211,11 +245,6 @@ struct RootView: View {
         return selected
     }
 
-    private func syncDelay(afterCompletedRounds rounds: Int) -> TimeInterval {
-        let maximum: TimeInterval = audio.isPlaying ? 900 : 600
-        return min(baseSyncInterval * pow(2, Double(min(rounds, 4))), maximum)
-    }
-
     private func runAutomaticSync() async {
         guard model.sessionState == .ready,
               scenePhase == .active,
@@ -224,11 +253,9 @@ struct RootView: View {
             return
         }
 
-        var completedRounds = 0
         while !Task.isCancelled {
-            let delay = syncDelay(afterCompletedRounds: completedRounds)
             do {
-                try await Task.sleep(for: .seconds(delay))
+                try await Task.sleep(for: .seconds(baseSyncInterval))
             } catch {
                 return
             }
@@ -240,7 +267,6 @@ struct RootView: View {
                 return
             }
             await model.refresh(silent: true)
-            completedRounds += 1
         }
     }
 }

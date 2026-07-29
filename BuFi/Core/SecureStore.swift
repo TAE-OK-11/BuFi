@@ -73,4 +73,63 @@ struct SecureStore {
         ]
         SecItemDelete(query as CFDictionary)
     }
+
+    func saveSecret(_ value: String, account: String) throws {
+        guard let data = value.data(using: .utf8) else {
+            throw SecureStoreError.encoding
+        }
+        try saveData(data, account: account)
+    }
+
+    func loadSecret(account: String) -> String? {
+        guard let data = loadData(account: account) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func deleteSecret(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    private func saveData(_ data: Data, account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw SecureStoreError.keychain(updateStatus)
+        }
+        var value = query
+        value.merge(update) { _, new in new }
+        let status = SecItemAdd(value as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw SecureStoreError.keychain(status)
+        }
+    }
+
+    private func loadData(account: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
+            return nil
+        }
+        return item as? Data
+    }
 }

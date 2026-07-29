@@ -48,9 +48,6 @@ enum PlayerSeekBarAppearance: String, CaseIterable, Identifiable {
         }
     }
 
-    static func resolved(_ rawValue: String) -> PlayerSeekBarAppearance {
-        PlayerSeekBarAppearance(rawValue: rawValue) ?? .liquidGlass
-    }
 }
 
 enum PlayerAppearance: String, CaseIterable, Identifiable {
@@ -174,15 +171,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
         HStack(spacing: 4) {
             ForEach(items) { item in
                 Button {
-                    withAnimation(
-                        motionEnabled
-                            ? .interactiveSpring(
-                                response: 0.34,
-                                dampingFraction: 0.80,
-                                blendDuration: 0.08
-                            )
-                            : .none
-                    ) {
+                    withAnimation(motionEnabled ? BuFiMotion.content : .none) {
                         selection = item
                     }
                 } label: {
@@ -314,9 +303,13 @@ struct ArtworkView: View {
                 }
                 guard !Task.isCancelled else { return }
                 image = loaded
-                let palette = await ArtworkStore.shared.palette(for: url, image: loaded)
+                guard let onPalette else { return }
+                let palette = await ArtworkStore.shared.palette(
+                    for: url,
+                    image: loaded
+                )
                 guard !Task.isCancelled else { return }
-                onPalette?(palette)
+                onPalette(palette)
                 return
             }
             guard !Task.isCancelled else { return }
@@ -380,13 +373,44 @@ struct SongRow: View {
     var layout: SongRowLayout = .standard
     var fallbackTrackNumber: Int?
     var onMore: (() -> Void)?
+    var textLineLimit = 1
 
     @ViewBuilder
     var body: some View {
-        if layout == .compactAlbum {
-            compactAlbumRow
-        } else {
-            standardRow
+        Group {
+            if layout == .compactAlbum {
+                compactAlbumRow
+            } else {
+                standardRow
+            }
+        }
+        .contextMenu {
+            Button {
+                audio.enqueueNext(song)
+            } label: {
+                Label(
+                    "다음에 재생",
+                    systemImage: "text.line.first.and.arrowtriangle.forward"
+                )
+            }
+            Button {
+                audio.enqueue(song)
+            } label: {
+                Label("대기목록에 추가", systemImage: "text.badge.plus")
+            }
+            Button {
+                Task { await model.download(song) }
+            } label: {
+                Label("오프라인 저장", systemImage: "arrow.down.circle")
+            }
+            Button {
+                Task { await model.toggleStar(song: song) }
+            } label: {
+                Label(
+                    model.isStarred(song) ? "좋아요 취소" : "좋아요 표시",
+                    systemImage: model.isStarred(song) ? "heart.slash" : "heart"
+                )
+            }
         }
     }
 
@@ -486,12 +510,15 @@ struct SongRow: View {
                                     ? BuFiTheme.accent
                                     : Color.primary
                             )
-                            .lineLimit(1)
+                            .lineLimit(textLineLimit)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text([song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(textLineLimit)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    .layoutPriority(1)
                     Spacer(minLength: 6)
                 }
                 .contentShape(Rectangle())

@@ -18,9 +18,22 @@ final class AudioEngine: NSObject, ObservableObject {
     @Published private(set) var lyrics = LyricsDocument.empty
     @Published private(set) var activeLyricIndex = -1
     @Published var playbackError: String?
-    @Published var showPlayer = false
+    @Published var showPlayer = false {
+        didSet {
+            guard oldValue != showPlayer else { return }
+            installPlaybackTimeObserver()
+        }
+    }
     @Published var showFullLyrics = false
     @Published var isShuffleEnabled = false
+    @Published var shuffleStyle: ShuffleStyle {
+        didSet {
+            UserDefaults.standard.set(
+                shuffleStyle.rawValue,
+                forKey: "shuffle-style"
+            )
+        }
+    }
     @Published var repeatMode: RepeatMode = .off
     @Published var quality: StreamQuality {
         didSet {
@@ -42,6 +55,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingSession: MPNowPlayingSession?
     private var client: OpenSubsonicClient?
     private var songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)?
+    private var autoplayContinuationProvider:
+        (@MainActor (Song, Set<String>) async -> [Song])?
     private var itemObservation: NSKeyValueObservation?
     private var itemBufferObservations: [NSKeyValueObservation] = []
     private var timeControlObservation: NSKeyValueObservation?
@@ -57,33 +72,45 @@ final class AudioEngine: NSObject, ObservableObject {
     private var serverQueueTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
+    private var autoplayTask: Task<Void, Never>?
     private var nowPlayingSongID: String?
     private var nowPlayingArtworkKey: String?
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryTask: Task<Void, Never>?
+    private var audioSessionActivationTask: Task<Void, Never>?
+    private var audioSessionActivationToken: UUID?
+    private var audioSessionDeactivationTask: Task<Void, Never>?
+    private var nowPlayingActivationTask: Task<Void, Never>?
+    private let audioSessionController = AudioSessionController()
     private var recoveryToken: UUID?
     private weak var handledFailedItem: AVPlayerItem?
     private var recoveryAttempt = 0
     private var itemLoadGeneration: UInt64 = 0
     private var lyricsLoadGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
+    private var autoplayGeneration: UInt64 = 0
     private var isSeekInFlight = false
+    private var autoplayShouldAdvance = false
+    private var recentShuffleIDs: [String] = []
     private var pendingSeekPosition: TimeInterval?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
+    private var lastMaintenanceSecond = -1
     private let queueStorageKey = "native-play-queue"
 
     override private init() {
         quality = StreamQuality(
             rawValue: UserDefaults.standard.string(forKey: "stream-quality") ?? ""
         ) ?? .automatic
+        shuffleStyle = ShuffleStyle(
+            rawValue: UserDefaults.standard.string(forKey: "shuffle-style") ?? ""
+        ) ?? .fewerRepeats
         super.init()
         player.automaticallyWaitsToMinimizeStalling = true
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         nowPlayingSession = MPNowPlayingSession(players: [player])
         nowPlayingSession?.automaticallyPublishesNowPlayingInfo = false
-        configureAudioSession()
         installPlayerObservers()
         installSystemObservers()
         installRemoteCommands()
@@ -94,11 +121,18 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func configure(
         client: OpenSubsonicClient?,
-        songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil
+        songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil,
+        autoplayContinuationProvider:
+            (@MainActor (Song, Set<String>) async -> [Song])? = nil
     ) {
         serverQueueTask?.cancel()
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration &+= 1
+        autoplayShouldAdvance = false
         self.client = client
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
+        self.autoplayContinuationProvider = autoplayContinuationProvider
         if client == nil {
             queueSaveTask?.cancel()
             offlinePrefetchTask?.cancel()
@@ -163,6 +197,10 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func play(_ song: Song, in sourceQueue: [Song], autoplay: Bool = true) {
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration &+= 1
+        autoplayShouldAdvance = false
         startPlayback(song, in: sourceQueue, preferredIndex: nil, autoplay: autoplay)
     }
 
@@ -198,6 +236,7 @@ final class AudioEngine: NSObject, ObservableObject {
         itemObservers.removeAll()
         player.replaceCurrentItem(with: nil)
         currentSong = selectedSong
+        rememberShuffleSelection(selectedSong.id)
         elapsed = 0
         duration = selectedSong.safeDuration
         activeLyricIndex = -1
@@ -212,6 +251,7 @@ final class AudioEngine: NSObject, ObservableObject {
         playbackError = nil
         wantsPlayback = autoplay
         scrobbled = false
+        lastMaintenanceSecond = -1
         let automaticallyOpensPlayer =
             UserDefaults.standard.object(forKey: "auto-open-player") as? Bool ?? false
         showPlayer = showPlayer || automaticallyOpensPlayer
@@ -226,6 +266,7 @@ final class AudioEngine: NSObject, ObservableObject {
         scheduleOfflinePrefetch()
         scheduleQueueSave()
         updateNowPlaying()
+        scheduleAutoplayContinuationIfNeeded()
     }
 
     func togglePlayback() {
@@ -259,10 +300,35 @@ final class AudioEngine: NSObject, ObservableObject {
             player.playImmediately(atRate: 1)
         }
         updateNowPlaying()
+        scheduleAutoplayContinuationIfNeeded()
     }
 
     func pause() {
         pausePlayback(persistsQueue: true)
+    }
+
+    func handleMemoryPressure() {
+        // Preserve the active player item and autoplay continuity. Only
+        // speculative work is discarded so playback cannot be interrupted by
+        // a system memory warning.
+        offlinePrefetchTask?.cancel()
+        offlinePrefetchTask = nil
+        recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
+        player.currentItem?.preferredForwardBufferDuration = 0
+    }
+
+    func handleEnergyConstraints(
+        lowPowerMode: Bool,
+        thermalState: ProcessInfo.ThermalState
+    ) {
+        refreshIdleTimerPreference()
+        guard lowPowerMode
+                || thermalState == .serious
+                || thermalState == .critical else {
+            return
+        }
+        offlinePrefetchTask?.cancel()
+        offlinePrefetchTask = nil
     }
 
     private func pausePlayback(persistsQueue: Bool) {
@@ -274,6 +340,7 @@ final class AudioEngine: NSObject, ObservableObject {
         endBackgroundBridge()
         refreshIdleTimerPreference()
         updateNowPlaying()
+        scheduleAudioSessionDeactivation()
         if persistsQueue { scheduleQueueSave(immediate: true) }
     }
 
@@ -337,20 +404,85 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         if isShuffleEnabled, queue.count > 1 {
-            var nextIndex = queueIndex
-            while nextIndex == queueIndex {
-                nextIndex = Int.random(in: queue.indices)
-            }
-            queueIndex = nextIndex
+            queueIndex = nextShuffleIndex()
         } else if queueIndex < queue.count - 1 {
             queueIndex += 1
         } else if repeatMode == .all || (isAutoAdvance && repeatMode == .one) {
             queueIndex = 0
         } else {
-            pause()
+            requestAutoplayContinuation(advanceWhenReady: true)
             return
         }
         startPlayback(queue[queueIndex], in: queue, preferredIndex: queueIndex)
+    }
+
+    private func scheduleAutoplayContinuationIfNeeded() {
+        let remaining = max(0, queue.count - queueIndex - 1)
+        guard remaining <= 3 else { return }
+        requestAutoplayContinuation(advanceWhenReady: false)
+    }
+
+    private func requestAutoplayContinuation(advanceWhenReady: Bool) {
+        guard repeatMode == .off,
+              !isShuffleEnabled,
+              algorithmicAutoplayEnabled,
+              let seed = currentSong,
+              seed.externalStreamURL == nil,
+              let provider = autoplayContinuationProvider else {
+            if advanceWhenReady { pause() }
+            return
+        }
+
+        autoplayShouldAdvance = autoplayShouldAdvance || advanceWhenReady
+        if advanceWhenReady {
+            player.pause()
+            isPlaying = false
+            isBuffering = true
+            updateNowPlaying()
+        }
+        guard autoplayTask == nil else { return }
+
+        let generation = autoplayGeneration
+        let excludedIDs = Set(queue.map(\.id))
+        autoplayTask = Task { [weak self] in
+            let candidates = await provider(seed, excludedIDs)
+            guard let self,
+                  !Task.isCancelled,
+                  generation == self.autoplayGeneration else {
+                return
+            }
+            guard self.algorithmicAutoplayEnabled else {
+                self.autoplayTask = nil
+                let shouldAdvance = self.autoplayShouldAdvance
+                self.autoplayShouldAdvance = false
+                if shouldAdvance { self.pause() }
+                return
+            }
+
+            let currentIDs = Set(self.queue.map(\.id))
+            var appendedIDs = currentIDs
+            let additions = candidates.filter {
+                appendedIDs.insert($0.id).inserted &&
+                    $0.externalStreamURL == nil
+            }
+            self.autoplayTask = nil
+            let shouldAdvance = self.autoplayShouldAdvance
+            self.autoplayShouldAdvance = false
+
+            guard !additions.isEmpty else {
+                if shouldAdvance { self.pause() }
+                return
+            }
+            self.queue.append(contentsOf: additions)
+            self.updateRemoteCommands()
+            self.updateNowPlaying()
+            self.scheduleOfflinePrefetch()
+            self.scheduleQueueSave(immediate: true)
+            if shouldAdvance {
+                self.isBuffering = false
+                self.next(isAutoAdvance: true)
+            }
+        }
     }
 
     func previous() {
@@ -380,6 +512,85 @@ final class AudioEngine: NSObject, ObservableObject {
         updateRemoteCommands()
         updateNowPlaying()
         scheduleQueueSave(immediate: true)
+    }
+
+    func enqueueNext(_ song: Song) {
+        guard queue.indices.contains(queueIndex) else {
+            play(song, in: [song])
+            return
+        }
+        removeUpcomingOccurrence(of: song.id)
+        queue.insert(song, at: min(queueIndex + 1, queue.count))
+        queueDidChange()
+    }
+
+    func enqueue(_ song: Song) {
+        guard queue.indices.contains(queueIndex) else {
+            play(song, in: [song])
+            return
+        }
+        removeUpcomingOccurrence(of: song.id)
+        queue.append(song)
+        queueDidChange()
+    }
+
+    func moveQueueItems(from offsets: IndexSet, to destination: Int) {
+        guard !offsets.isEmpty else { return }
+        let currentID = currentSong?.id
+        let moved = offsets.sorted().compactMap { index in
+            queue.indices.contains(index) ? queue[index] : nil
+        }
+        guard moved.count == offsets.count else { return }
+        var remaining = queue.enumerated().compactMap { index, song in
+            offsets.contains(index) ? nil : song
+        }
+        let removedBeforeDestination = offsets.lazy.filter {
+            $0 < destination
+        }.count
+        let insertionIndex = min(
+            max(0, destination - removedBeforeDestination),
+            remaining.count
+        )
+        remaining.insert(contentsOf: moved, at: insertionIndex)
+        queue = remaining
+        if let currentID,
+           let index = queue.firstIndex(where: { $0.id == currentID }) {
+            queueIndex = index
+        }
+        queueDidChange()
+    }
+
+    func reshuffleUpcoming() {
+        guard queue.indices.contains(queueIndex),
+              queueIndex + 1 < queue.count else {
+            return
+        }
+        let prefix = Array(queue[...queueIndex])
+        var upcoming = Array(queue[(queueIndex + 1)...])
+        upcoming.shuffle()
+        if shuffleStyle == .fewerRepeats {
+            let recent = Set(recentShuffleIDs.suffix(8))
+            upcoming.sort {
+                let lhsRecent = recent.contains($0.id)
+                let rhsRecent = recent.contains($1.id)
+                return lhsRecent == rhsRecent ? false : !lhsRecent
+            }
+        }
+        queue = prefix + upcoming
+        queueDidChange()
+    }
+
+    func clearUpcomingQueue() {
+        guard queue.indices.contains(queueIndex),
+              queueIndex + 1 < queue.count else {
+            return
+        }
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration &+= 1
+        autoplayShouldAdvance = false
+        queue.removeSubrange((queueIndex + 1)..<queue.count)
+        queueDidChange()
     }
 
     func excludeCurrentAndAdvance() {
@@ -416,6 +627,45 @@ final class AudioEngine: NSObject, ObservableObject {
         isShuffleEnabled.toggle()
         updateRemoteCommands()
         scheduleQueueSave()
+        if !isShuffleEnabled { scheduleAutoplayContinuationIfNeeded() }
+    }
+
+    private func nextShuffleIndex() -> Int {
+        let candidates = queue.indices.filter { $0 != queueIndex }
+        guard shuffleStyle == .fewerRepeats else {
+            return candidates.randomElement() ?? queueIndex
+        }
+        let recent = Set(
+            recentShuffleIDs.suffix(min(8, max(1, queue.count - 1)))
+        )
+        let fresh = candidates.filter { !recent.contains(queue[$0].id) }
+        return (fresh.isEmpty ? candidates : fresh).randomElement() ?? queueIndex
+    }
+
+    private func rememberShuffleSelection(_ songID: String) {
+        recentShuffleIDs.removeAll { $0 == songID }
+        recentShuffleIDs.append(songID)
+        if recentShuffleIDs.count > 12 {
+            recentShuffleIDs.removeFirst(recentShuffleIDs.count - 12)
+        }
+    }
+
+    private func removeUpcomingOccurrence(of songID: String) {
+        guard queue.indices.contains(queueIndex),
+              queueIndex + 1 < queue.count,
+              let index = queue[(queueIndex + 1)...].firstIndex(
+                where: { $0.id == songID }
+              ) else {
+            return
+        }
+        queue.remove(at: index)
+    }
+
+    private func queueDidChange() {
+        updateRemoteCommands()
+        updateNowPlaying()
+        scheduleOfflinePrefetch()
+        scheduleQueueSave(immediate: true)
     }
 
     func cycleRepeat() {
@@ -426,6 +676,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         updateRemoteCommands()
         scheduleQueueSave()
+        if repeatMode == .off { scheduleAutoplayContinuationIfNeeded() }
     }
 
     func updateStarred(songID: String, enabled: Bool) {
@@ -477,7 +728,10 @@ final class AudioEngine: NSObject, ObservableObject {
     func refreshIdleTimerPreference() {
         let keepAwake =
             UserDefaults.standard.object(forKey: "keep-screen-awake") as? Bool ?? false
-        UIApplication.shared.isIdleTimerDisabled = keepAwake && isPlaying
+        UIApplication.shared.isIdleTimerDisabled =
+            keepAwake
+            && isPlaying
+            && !ProcessInfo.processInfo.isLowPowerModeEnabled
     }
 
     func toggleCurrentStar() async {
@@ -490,6 +744,11 @@ final class AudioEngine: NSObject, ObservableObject {
         for song: Song,
         compatibilityFormat: String?
     ) async throws -> PlaybackResource {
+        if let value = song.externalStreamURL,
+           let url = URL(string: value),
+           url.scheme?.lowercased() == "https" {
+            return PlaybackResource(url: url, mimeType: song.contentType)
+        }
         // A downloaded source avoids radio use and is attempted once. If the
         // system rejects it, later codec fallbacks bypass the local source.
         if fallbackIndex == 0,
@@ -532,7 +791,8 @@ final class AudioEngine: NSObject, ObservableObject {
         for quality: StreamQuality,
         song: Song
     ) -> [String] {
-        switch quality {
+        if song.externalStreamURL != nil { return [] }
+        return switch quality {
         case .automatic:
             automaticCompatibilityFormat(for: song) == "raw"
                 ? ["aac", "mp3"]
@@ -547,6 +807,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private static func automaticCompatibilityFormat(for song: Song) -> String {
+        if song.externalStreamURL != nil { return "raw" }
         let suffix = song.suffix?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
@@ -606,7 +867,10 @@ final class AudioEngine: NSObject, ObservableObject {
         offlinePrefetchTask?.cancel()
         guard let client, !queue.isEmpty, queue.indices.contains(queueIndex) else { return }
         let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
-        let defaultCount = UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil ? 1 : configured
+        let defaultCount =
+            UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
+                ? 0
+                : configured
         let thermalState = ProcessInfo.processInfo.thermalState
         guard thermalState != .serious, thermalState != .critical else { return }
         let cappedCount = min(max(defaultCount, 0), 3)
@@ -912,6 +1176,11 @@ final class AudioEngine: NSObject, ObservableObject {
         lyricsTask?.cancel()
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
+        guard song.externalStreamURL == nil else {
+            lyrics = .empty
+            activeLyricIndex = -1
+            return
+        }
         guard let client else { return }
         lyricsTask = Task { [weak self] in
             do {
@@ -956,8 +1225,20 @@ final class AudioEngine: NSObject, ObservableObject {
             }
         }
 
+        installPlaybackTimeObserver()
+    }
+
+    private func installPlaybackTimeObserver() {
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
+        }
+        let refreshInterval = showPlayer ? 0.25 : 0.5
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            forInterval: CMTime(
+                seconds: refreshInterval,
+                preferredTimescale: 600
+            ),
             queue: .main
         ) { [weak self] time in
             Task { @MainActor in
@@ -967,20 +1248,28 @@ final class AudioEngine: NSObject, ObservableObject {
                 if !self.isSeekInFlight, seconds.isFinite {
                     self.elapsed = max(0, seconds)
                 }
-                if let itemDuration = self.player.currentItem?.duration.seconds {
-                    self.updateDuration(using: itemDuration)
-                }
                 if self.duration > 0 {
                     self.elapsed = min(self.elapsed, self.duration)
                 }
                 self.updateActiveLyric()
-                self.submitScrobbleIfNeeded()
-                if Date().timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
-                    self.scheduleQueueSave(immediate: true)
+
+                // UI progress may need four updates per second while the full
+                // player is visible, but duration checks, scrobbling, and
+                // persistence do not. Batch those operations to one wakeup per
+                // playback second.
+                let maintenanceSecond = Int(self.elapsed.rounded(.down))
+                if maintenanceSecond != self.lastMaintenanceSecond {
+                    self.lastMaintenanceSecond = maintenanceSecond
+                    if let itemDuration = self.player.currentItem?.duration.seconds {
+                        self.updateDuration(using: itemDuration)
+                    }
+                    self.submitScrobbleIfNeeded()
+                    if Date().timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
+                        self.scheduleQueueSave(immediate: true)
+                    }
                 }
             }
         }
-
     }
 
     private func updateActiveLyric() {
@@ -1011,23 +1300,81 @@ final class AudioEngine: NSObject, ObservableObject {
         return result
     }
 
-    @discardableResult
-    private func configureAudioSession() -> Bool {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(
-                .playback,
-                mode: .default,
-                policy: .longFormAudio
-            )
-            try session.setActive(true)
-            player.isMuted = false
-            player.volume = 1
-            return true
-        } catch {
-            // A later play attempt and the route/interruption observers retry.
-            // Keeping this nonfatal is important while another app owns output.
-            return false
+    private func configureAudioSession() {
+        // AVAudioSession activation may synchronously negotiate with the audio
+        // daemon. Serialize it away from MainActor and coalesce repeated calls
+        // from ready/buffer/route observers into one operation.
+        audioSessionDeactivationTask?.cancel()
+        audioSessionDeactivationTask = nil
+        guard audioSessionActivationTask == nil else { return }
+        let controller = audioSessionController
+        let token = UUID()
+        audioSessionActivationToken = token
+        audioSessionActivationTask = Task { [weak self] in
+            let activated = await controller.activate()
+            guard let self else { return }
+            guard self.audioSessionActivationToken == token else { return }
+            self.audioSessionActivationToken = nil
+            self.audioSessionActivationTask = nil
+            guard activated else { return }
+            self.player.isMuted = false
+            self.player.volume = 1
+        }
+    }
+
+    private func resetAndConfigureAudioSession() {
+        audioSessionDeactivationTask?.cancel()
+        audioSessionDeactivationTask = nil
+        audioSessionActivationTask?.cancel()
+        let controller = audioSessionController
+        let token = UUID()
+        audioSessionActivationToken = token
+        audioSessionActivationTask = Task { [weak self] in
+            let activated = await controller.resetAndActivate()
+            guard let self else { return }
+            guard self.audioSessionActivationToken == token else { return }
+            self.audioSessionActivationToken = nil
+            self.audioSessionActivationTask = nil
+            guard activated else { return }
+            self.player.isMuted = false
+            self.player.volume = 1
+        }
+    }
+
+    private func markAudioSessionInactive() {
+        audioSessionDeactivationTask?.cancel()
+        audioSessionDeactivationTask = nil
+        let activationTask = audioSessionActivationTask
+        activationTask?.cancel()
+        audioSessionActivationToken = nil
+        audioSessionActivationTask = nil
+        let controller = audioSessionController
+        Task {
+            _ = await activationTask?.value
+            await controller.markInactive()
+        }
+    }
+
+    private func scheduleAudioSessionDeactivation(immediate: Bool = false) {
+        audioSessionDeactivationTask?.cancel()
+        let controller = audioSessionController
+        audioSessionDeactivationTask = Task { [weak self] in
+            if !immediate {
+                do {
+                    try await Task.sleep(for: .seconds(4))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled,
+                  let self,
+                  !self.wantsPlayback,
+                  self.player.timeControlStatus != .playing else {
+                return
+            }
+            await controller.deactivate()
+            guard !Task.isCancelled else { return }
+            self.audioSessionDeactivationTask = nil
         }
     }
 
@@ -1062,7 +1409,7 @@ final class AudioEngine: NSObject, ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.configureAudioSession()
+                self.resetAndConfigureAudioSession()
                 if self.currentSong != nil {
                     self.restartPlaybackPlan(resumeFrom: self.elapsed)
                 }
@@ -1096,7 +1443,10 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func handleDidEnterBackground() {
         scheduleQueueSave(immediate: true)
-        guard wantsPlayback else { return }
+        guard wantsPlayback else {
+            scheduleAudioSessionDeactivation(immediate: true)
+            return
+        }
         beginBackgroundBridge()
         preserveActivePlayback()
         Task { [weak self] in
@@ -1153,6 +1503,7 @@ final class AudioEngine: NSObject, ObservableObject {
             resumeAfterInterruption = isPlaying || wantsPlayback
             wantsPlayback = false
             cancelPlaybackRecovery()
+            markAudioSessionInactive()
             player.pause()
             endBackgroundBridge()
             scheduleQueueSave(immediate: true)
@@ -1279,10 +1630,15 @@ final class AudioEngine: NSObject, ObservableObject {
     private func updateRemoteCommands() {
         let commands = remoteCommandCenter
         let hasSong = currentSong != nil
+        let canAutoplay = hasSong &&
+            client != nil &&
+            currentSong?.externalStreamURL == nil &&
+            algorithmicAutoplayEnabled
         commands.playCommand.isEnabled = hasSong && !wantsPlayback
         commands.pauseCommand.isEnabled = hasSong && wantsPlayback
         commands.togglePlayPauseCommand.isEnabled = hasSong
-        commands.nextTrackCommand.isEnabled = hasSong && queue.count > 1
+        commands.nextTrackCommand.isEnabled =
+            hasSong && (queue.count > 1 || canAutoplay)
         commands.previousTrackCommand.isEnabled = hasSong
         commands.changePlaybackPositionCommand.isEnabled = hasSong && duration > 0
         commands.changeShuffleModeCommand.isEnabled = hasSong && queue.count > 1
@@ -1367,9 +1723,11 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func activateNowPlayingSession() {
-        guard let nowPlayingSession else { return }
-        Task {
+        guard let nowPlayingSession, nowPlayingActivationTask == nil else { return }
+        nowPlayingActivationTask = Task { [weak self] in
             _ = await nowPlayingSession.becomeActiveIfPossible()
+            guard let self else { return }
+            self.nowPlayingActivationTask = nil
         }
     }
 
@@ -1386,6 +1744,11 @@ final class AudioEngine: NSObject, ObservableObject {
         UserDefaults.standard.object(forKey: "restore-play-queue") as? Bool ?? true
     }
 
+    private var algorithmicAutoplayEnabled: Bool {
+        UserDefaults.standard.object(forKey: "algorithmic-autoplay-enabled")
+            as? Bool ?? true
+    }
+
     private func provideTrackChangeHaptic() {
         let enabled =
             UserDefaults.standard.object(forKey: "haptics-enabled") as? Bool ?? true
@@ -1396,12 +1759,16 @@ final class AudioEngine: NSObject, ObservableObject {
     private func submitScrobbleIfNeeded() {
         guard !scrobbled,
               let song = currentSong,
+              song.externalStreamURL == nil,
               elapsed >= min(max(30, duration * 0.5), 240),
               let client else {
             return
         }
         scrobbled = true
-        Task { try? await client.scrobble(id: song.id, submission: true) }
+        Task {
+            await ListeningHistoryStore.shared.record(song)
+            try? await client.scrobble(id: song.id, submission: true)
+        }
     }
 
     private func scheduleQueueSave(immediate: Bool = false) {
@@ -1415,20 +1782,28 @@ final class AudioEngine: NSObject, ObservableObject {
             shuffle: isShuffleEnabled,
             repeatMode: repeatMode
         )
+        let restorationEnabled = queueRestorationEnabled
         queueSaveTask = Task {
             if !immediate { try? await Task.sleep(for: .milliseconds(450)) }
-            guard !Task.isCancelled,
-                  let data = try? JSONEncoder().encode(snapshot) else {
+            guard !Task.isCancelled else { return }
+            let data = await Task.detached(priority: .utility) {
+                try? JSONEncoder().encode(snapshot)
+            }.value
+            guard !Task.isCancelled, let data else {
                 return
             }
-            if self.queueRestorationEnabled {
+            let containsOnlyServerSongs = snapshot.queue.allSatisfy {
+                $0.externalStreamURL == nil
+            }
+            if restorationEnabled && containsOnlyServerSongs {
                 UserDefaults.standard.set(data, forKey: queueStorageKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
             }
             guard let client,
                   let current = snapshot.currentID,
-                  !snapshot.queue.isEmpty else {
+                  !snapshot.queue.isEmpty,
+                  containsOnlyServerSongs else {
                 return
             }
             try? await client.savePlayQueue(
@@ -1440,16 +1815,26 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func restoreLocalQueue() {
-        guard let data = UserDefaults.standard.data(forKey: queueStorageKey),
-              let snapshot = try? JSONDecoder().decode(QueueSnapshot.self, from: data),
-              !snapshot.queue.isEmpty else {
+        guard let data = UserDefaults.standard.data(forKey: queueStorageKey) else {
+            return
+        }
+        guard let snapshot = try? JSONDecoder().decode(QueueSnapshot.self, from: data),
+              !snapshot.queue.isEmpty,
+              snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }) else {
+            UserDefaults.standard.removeObject(forKey: queueStorageKey)
             return
         }
         queue = snapshot.queue
-        queueIndex = snapshot.queue.indices.contains(snapshot.index) ? snapshot.index : 0
-        currentSong = snapshot.queue.first(where: { $0.id == snapshot.currentID }) ?? snapshot.queue[queueIndex]
-        elapsed = snapshot.elapsed
-        duration = currentSong?.safeDuration ?? 0
+        queueIndex = snapshot.currentID.flatMap { currentID in
+            snapshot.queue.firstIndex(where: { $0.id == currentID })
+        } ?? (snapshot.queue.indices.contains(snapshot.index) ? snapshot.index : 0)
+        currentSong = snapshot.queue[queueIndex]
+        let restoredElapsed = snapshot.elapsed.isFinite ? max(0, snapshot.elapsed) : 0
+        let restoredDuration = currentSong?.safeDuration ?? 0
+        elapsed = restoredDuration > 0
+            ? min(restoredElapsed, restoredDuration)
+            : restoredElapsed
+        duration = restoredDuration
         isShuffleEnabled = snapshot.shuffle
         repeatMode = snapshot.repeatMode
     }
@@ -1462,4 +1847,50 @@ private struct QueueSnapshot: Codable, Sendable {
     let elapsed: TimeInterval
     let shuffle: Bool
     let repeatMode: RepeatMode
+}
+
+private actor AudioSessionController {
+    private var isConfigured = false
+    private var isActive = false
+
+    func activate() -> Bool {
+        if isActive { return true }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            if !isConfigured {
+                try session.setCategory(
+                    .playback,
+                    mode: .default,
+                    policy: .longFormAudio
+                )
+                isConfigured = true
+            }
+            try session.setActive(true)
+            isActive = true
+            return true
+        } catch {
+            // A later ready, route, or interruption event retries activation.
+            isActive = false
+            return false
+        }
+    }
+
+    func markInactive() {
+        isActive = false
+    }
+
+    func deactivate() {
+        guard isActive else { return }
+        defer { isActive = false }
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+    }
+
+    func resetAndActivate() -> Bool {
+        isConfigured = false
+        isActive = false
+        return activate()
+    }
 }
