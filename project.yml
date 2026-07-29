@@ -108,5 +108,16 @@ targets:
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_ASSET_PATHS: ""
     scheme:
-      testTargets: []
+      testTargets:
+        - BuFiTests
       gatherCoverageData: false
+  BuFiTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BuFiTests
+    dependencies:
+      - target: BuFi
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true

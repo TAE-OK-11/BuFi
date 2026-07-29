@@ -64,6 +64,21 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             build 2>&1 | tee build/xcode26.log
+      - name: Compile recommendation tests
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -quiet \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData-Tests \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing 2>&1 | tee build/xcode26-tests.log
       - name: Upload Xcode 26 failure log
         if: failure()
         uses: actions/upload-artifact@v7
