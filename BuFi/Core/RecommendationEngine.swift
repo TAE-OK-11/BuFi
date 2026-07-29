@@ -256,7 +256,11 @@ private final class RecommendationMixCache: @unchecked Sendable {
             let retained = values.sorted {
                 $0.value.createdAt > $1.value.createdAt
             }
-            values = Dictionary(uniqueKeysWithValues: retained.prefix(32))
+            values = Dictionary(
+                uniqueKeysWithValues: retained.prefix(32).map {
+                    ($0.key, $0.value)
+                }
+            )
         }
         lock.unlock()
     }
@@ -650,7 +654,7 @@ enum RecommendationMixer {
 
     private static func completionAffinity(_ completion: Double?) -> Double {
         guard let completion else { return 0.5 }
-        switch completion {
+        return switch completion {
         case ..<0.10: 0
         case ..<0.40: 0.25
         case ..<0.70: 0.50
@@ -661,7 +665,7 @@ enum RecommendationMixer {
 
     private static func timeDecay(since date: Date, now: Date) -> Double {
         let days = max(0, now.timeIntervalSince(date) / 86_400)
-        switch days {
+        return switch days {
         case ...1: 1.0
         case ...7: interpolate(days, from: 1, to: 7, high: 1.0, low: 0.9)
         case ...30: interpolate(days, from: 7, to: 30, high: 0.9, low: 0.7)

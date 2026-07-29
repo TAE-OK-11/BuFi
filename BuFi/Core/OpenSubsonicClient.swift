@@ -281,7 +281,7 @@ actor OpenSubsonicClient {
             "getAlbumList2",
             parameters: ["type": "random", "size": "16"]
         )
-        async let popularAlbums: AlbumListPayload? = bestEffortRequest(
+        async let popularAlbumsRequest: AlbumListPayload? = bestEffortRequest(
             "getAlbumList2",
             parameters: ["type": "highest", "size": "12"]
         )
@@ -314,7 +314,7 @@ actor OpenSubsonicClient {
             recentlyPlayed,
             frequent,
             randomAlbums,
-            popularAlbums,
+            popularAlbumsRequest,
             starred,
             artists,
             randomSongs,
@@ -358,7 +358,7 @@ actor OpenSubsonicClient {
             ?? fallback.frequentAlbums
         let recentAlbums = recentValue.map { $0.albumList2?.album ?? [] }
             ?? fallback.recentAlbums
-        let popularAlbums = popularAlbumsValue.map {
+        let popularAlbumValues = popularAlbumsValue.map {
             $0.albumList2?.album ?? []
         } ?? []
         let playlistValues = playlistsValue.map {
@@ -399,7 +399,7 @@ actor OpenSubsonicClient {
             fallback: fallback.recentlyAddedSongs
         )
         async let popularSongsRequest = songs(
-            from: Array(popularAlbums.prefix(3)),
+            from: Array(popularAlbumValues.prefix(3)),
             fallback: fallback.popularSongs
         )
         async let playlistAffinityRequest = playlistAffinitySongs(
@@ -425,14 +425,13 @@ actor OpenSubsonicClient {
             popularSongsRequest,
             playlistAffinityRequest
         )
-        let serverRecommendations = Self.uniqueSongs(
-            recommendationSources.combined
-            + genreSongs
-            + topArtistSongs
-            + recentlyAddedSongs
-            + popularSongs
-            + playlistAffinitySongs
-        )
+        var combinedRecommendations = recommendationSources.combined
+        combinedRecommendations.append(contentsOf: genreSongs)
+        combinedRecommendations.append(contentsOf: topArtistSongs)
+        combinedRecommendations.append(contentsOf: recentlyAddedSongs)
+        combinedRecommendations.append(contentsOf: popularSongs)
+        combinedRecommendations.append(contentsOf: playlistAffinitySongs)
+        let serverRecommendations = Self.uniqueSongs(combinedRecommendations)
 
         var snapshot = HomeSnapshot(
             recentAlbums: recentAlbums,
