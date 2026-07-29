@@ -307,16 +307,63 @@ private struct RecommendationSettingsView: View {
     @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.55
     @AppStorage("recommendation-weight-listenbrainz")
     private var listenBrainzWeight = 0.55
+    @AppStorage("recommendation-weight-behavior")
+    private var behaviorWeight = 0.85
+    @AppStorage("recommendation-weight-completion")
+    private var completionWeight = 0.70
+    @AppStorage("recommendation-weight-repeat")
+    private var repeatWeight = 0.55
+    @AppStorage("recommendation-weight-recency")
+    private var recencyWeight = 0.65
+    @AppStorage("recommendation-weight-context")
+    private var contextWeight = 0.60
+    @AppStorage("recommendation-weight-metadata")
+    private var metadataWeight = 0.60
+    @AppStorage("recommendation-weight-playlist-affinity")
+    private var playlistAffinityWeight = 0.55
+    @AppStorage("recommendation-weight-album-completion")
+    private var albumCompletionWeight = 0.45
+    @AppStorage("recommendation-weight-forgotten-favorites")
+    private var forgottenFavoritesWeight = 0.50
+    @AppStorage("recommendation-weight-artist-rotation")
+    private var artistRotationWeight = 0.45
+    @AppStorage("recommendation-weight-time-awareness")
+    private var timeAwarenessWeight = 0.30
+    @AppStorage("recommendation-discovery-ratio")
+    private var discoveryRatio = 0.35
 
     var body: some View {
         List {
-            Section("추천 가중치") {
+            Section("핵심 추천 가중치") {
                 weightRow("청취 기록 취향", value: $historyWeight)
                 weightRow("좋아요 취향", value: $favoriteWeight)
                 weightRow("서버 유사곡·Sonic", value: $serverWeight)
                 weightRow("새로운 음악 발견", value: $discoveryWeight)
                 weightRow("Last.fm 유사곡", value: $lastFMWeight)
                 weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
+                weightRow("재생 행동", value: $behaviorWeight)
+                weightRow("완주율", value: $completionWeight)
+                weightRow("반복 재생", value: $repeatWeight)
+                weightRow("최근 취향", value: $recencyWeight)
+                weightRow("현재 세션 흐름", value: $contextWeight)
+            }
+            .listRowBackground(BuFiTheme.elevated)
+
+            Section("발견 비율") {
+                weightRow("새로운 곡·아티스트 비율", value: $discoveryRatio)
+                Text("점수에 곱하지 않고 최종 목록에서 익숙한 음악과 새로운 음악의 구성 비율을 조절합니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .listRowBackground(BuFiTheme.elevated)
+
+            Section("고급 추천 신호") {
+                weightRow("장르·BPM·분위기 메타데이터", value: $metadataWeight)
+                weightRow("플레이리스트 연관성", value: $playlistAffinityWeight)
+                weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
+                weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
+                weightRow("아티스트 순환", value: $artistRotationWeight)
+                weightRow("시간대 맞춤", value: $timeAwarenessWeight)
                 Button("기본값으로 복원") {
                     historyWeight = 0.70
                     favoriteWeight = 0.80
@@ -324,8 +371,23 @@ private struct RecommendationSettingsView: View {
                     discoveryWeight = 0.35
                     lastFMWeight = 0.55
                     listenBrainzWeight = 0.55
+                    behaviorWeight = 0.85
+                    completionWeight = 0.70
+                    repeatWeight = 0.55
+                    recencyWeight = 0.65
+                    contextWeight = 0.60
+                    metadataWeight = 0.60
+                    playlistAffinityWeight = 0.55
+                    albumCompletionWeight = 0.45
+                    forgottenFavoritesWeight = 0.50
+                    artistRotationWeight = 0.45
+                    timeAwarenessWeight = 0.30
+                    discoveryRatio = 0.35
                     model.rebuildRecommendations()
                 }
+                Text("모든 입력은 0~1로 정규화되며, 낮은 메타데이터 매칭 신뢰도와 반복 조기 스킵은 별도의 감점으로 반영됩니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             .listRowBackground(BuFiTheme.elevated)
 
@@ -398,12 +460,6 @@ private struct RecommendationSettingsView: View {
         .onAppear {
             listenBrainzUsername = model.listenBrainzUsername
         }
-        .onChange(of: historyWeight) { _, _ in model.rebuildRecommendations() }
-        .onChange(of: favoriteWeight) { _, _ in model.rebuildRecommendations() }
-        .onChange(of: serverWeight) { _, _ in model.rebuildRecommendations() }
-        .onChange(of: discoveryWeight) { _, _ in model.rebuildRecommendations() }
-        .onChange(of: lastFMWeight) { _, _ in model.rebuildRecommendations() }
-        .onChange(of: listenBrainzWeight) { _, _ in model.rebuildRecommendations() }
     }
 
     private func weightRow(
@@ -420,6 +476,9 @@ private struct RecommendationSettingsView: View {
             }
             Slider(value: value, in: 0...1, step: 0.05)
                 .tint(BuFiTheme.accent)
+                .onChange(of: value.wrappedValue) { _, _ in
+                    model.rebuildRecommendations()
+                }
         }
         .padding(.vertical, 3)
     }

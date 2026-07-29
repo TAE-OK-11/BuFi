@@ -185,14 +185,26 @@ struct MusicDetailView: View {
 
                 Menu {
                     Button {
-                        if let first = songs.first { audio.play(first, in: songs) }
+                        if let first = songs.first {
+                            audio.play(
+                                first,
+                                in: songs,
+                                origin: isArtist ? .manual : .album
+                            )
+                        }
                     } label: {
                         Label("모두 재생", systemImage: "play.fill")
                     }
                     Button {
                         guard !songs.isEmpty else { return }
                         let shuffled = songs.shuffled()
-                        if let first = shuffled.first { audio.play(first, in: shuffled) }
+                        if let first = shuffled.first {
+                            audio.play(
+                                first,
+                                in: shuffled,
+                                origin: isArtist ? .manual : .album
+                            )
+                        }
                     } label: {
                         Label("셔플 재생", systemImage: "shuffle")
                     }
@@ -215,7 +227,13 @@ struct MusicDetailView: View {
             Button {
                 guard !songs.isEmpty else { return }
                 let shuffled = songs.shuffled()
-                if let first = shuffled.first { audio.play(first, in: shuffled) }
+                if let first = shuffled.first {
+                    audio.play(
+                        first,
+                        in: shuffled,
+                        origin: isArtist ? .manual : .album
+                    )
+                }
             } label: {
                 secondaryControl(
                     Image(systemName: "shuffle")
@@ -228,7 +246,13 @@ struct MusicDetailView: View {
             .accessibilityLabel("셔플 재생")
 
             Button {
-                if let first = songs.first { audio.play(first, in: songs) }
+                if let first = songs.first {
+                    audio.play(
+                        first,
+                        in: songs,
+                        origin: isArtist ? .manual : .album
+                    )
+                }
             } label: {
                 Image(systemName: "play.fill")
                     .font(.system(size: 26, weight: .bold))
@@ -398,6 +422,7 @@ struct MusicDetailView: View {
                     SongRow(
                         song: song,
                         queue: songs,
+                        playbackOrigin: isArtist ? .manual : .album,
                         showsArtwork: true,
                         artworkSize: isArtist ? 54 : 44,
                         layout: rowLayout,

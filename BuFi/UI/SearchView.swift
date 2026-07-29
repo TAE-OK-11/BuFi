@@ -369,6 +369,7 @@ struct SearchView: View {
                             SongRow(
                                 song: song,
                                 queue: model.searchResults.songs,
+                                playbackOrigin: .search,
                                 textLineLimit: 2
                             )
                             .padding(.horizontal, 14)

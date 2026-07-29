@@ -301,13 +301,20 @@ final class AppModel: ObservableObject {
             excluding: excludedIDs
         )
         guard self.client === client else { return [] }
-        let fallbacks =
-            home.recommendedSongs +
-            home.serverRecommendedSongs +
-            home.lastFMRecommendedSongs +
-            home.listenBrainzRecommendedSongs +
-            home.randomSongs
-        return Self.uniqueSongs(serverValues + fallbacks)
+        let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
+        guard self.client === client else { return [] }
+        var snapshot = home
+        snapshot.serverRecommendedSongs = Self.uniqueSongs(
+            serverValues + snapshot.serverRecommendedSongs
+        )
+        let ranked = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: .current(),
+            purpose: .autoplay,
+            behavior: behavior,
+            limit: 32
+        )
+        return Self.uniqueSongs(ranked + serverValues + home.randomSongs)
             .filter {
                 !excludedIDs.contains($0.id) &&
                     $0.id != seed.id &&
@@ -421,12 +428,27 @@ final class AppModel: ObservableObject {
     }
 
     func rebuildRecommendations() {
-        var snapshot = home
-        snapshot.recommendedSongs = RecommendationMixer.mix(
-            snapshot: snapshot,
-            weights: .current()
-        )
-        if snapshot != home { home = snapshot }
+        let generation = sessionGeneration
+        Task { [weak self] in
+            guard let self else { return }
+            let behavior = await ListeningHistoryStore.shared
+                .recommendationSnapshot()
+            guard generation == self.sessionGeneration else { return }
+            var snapshot = self.home
+            snapshot.recommendedSongs = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: .current(),
+                behavior: behavior
+            )
+            snapshot.daylistSongs = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: .current(),
+                purpose: .daylist,
+                behavior: behavior,
+                limit: 24
+            )
+            if snapshot != self.home { self.home = snapshot }
+        }
     }
 
     func handleMemoryPressure() {
@@ -664,6 +686,13 @@ final class AppModel: ObservableObject {
             generation: generation,
             initialState: previous
         )
+        if outcome.succeeded {
+            await ListeningHistoryStore.shared.recordFavorite(
+                song,
+                enabled: enabled
+            )
+            return true
+        }
         guard !outcome.succeeded,
               generation == sessionGeneration,
               self.client === client else {
@@ -910,6 +939,23 @@ final class AppModel: ObservableObject {
 
         value.artists = value.artists.map(applyingFavoriteOverride)
         value.randomSongs = value.randomSongs.map(applyingFavoriteOverride)
+        value.sonicRecommendedSongs = value.sonicRecommendedSongs.map(
+            applyingFavoriteOverride
+        )
+        value.similarArtistSongs = value.similarArtistSongs.map(
+            applyingFavoriteOverride
+        )
+        value.genreRecommendedSongs = value.genreRecommendedSongs.map(
+            applyingFavoriteOverride
+        )
+        value.topArtistSongs = value.topArtistSongs.map(applyingFavoriteOverride)
+        value.recentlyAddedSongs = value.recentlyAddedSongs.map(
+            applyingFavoriteOverride
+        )
+        value.popularSongs = value.popularSongs.map(applyingFavoriteOverride)
+        value.playlistAffinitySongs = value.playlistAffinitySongs.map(
+            applyingFavoriteOverride
+        )
         value.serverRecommendedSongs = value.serverRecommendedSongs.map(applyingFavoriteOverride)
         value.lastFMRecommendedSongs = value.lastFMRecommendedSongs.map(applyingFavoriteOverride)
         value.listenBrainzRecommendedSongs = value.listenBrainzRecommendedSongs.map(
@@ -1006,17 +1052,41 @@ final class AppModel: ObservableObject {
         var ids = Set<String>()
         switch target {
         case .song:
-            let visibleSongs =
-                home.starredSongs + home.randomSongs + home.recommendedSongs +
-                home.serverRecommendedSongs + home.lastFMRecommendedSongs +
-                home.listenBrainzRecommendedSongs + home.mostPlayedSongs +
-                home.daylistSongs + home.offlineBackupSongs +
-                snapshot.starredSongs + snapshot.randomSongs +
-                snapshot.serverRecommendedSongs + snapshot.lastFMRecommendedSongs +
-                snapshot.listenBrainzRecommendedSongs + snapshot.recommendedSongs +
-                snapshot.mostPlayedSongs + snapshot.daylistSongs +
-                snapshot.offlineBackupSongs +
+            let visibleSongs = [
+                home.starredSongs,
+                home.randomSongs,
+                home.recommendedSongs,
+                home.sonicRecommendedSongs,
+                home.similarArtistSongs,
+                home.genreRecommendedSongs,
+                home.topArtistSongs,
+                home.recentlyAddedSongs,
+                home.popularSongs,
+                home.playlistAffinitySongs,
+                home.serverRecommendedSongs,
+                home.lastFMRecommendedSongs,
+                home.listenBrainzRecommendedSongs,
+                home.mostPlayedSongs,
+                home.daylistSongs,
+                home.offlineBackupSongs,
+                snapshot.starredSongs,
+                snapshot.randomSongs,
+                snapshot.sonicRecommendedSongs,
+                snapshot.similarArtistSongs,
+                snapshot.genreRecommendedSongs,
+                snapshot.topArtistSongs,
+                snapshot.recentlyAddedSongs,
+                snapshot.popularSongs,
+                snapshot.playlistAffinitySongs,
+                snapshot.serverRecommendedSongs,
+                snapshot.lastFMRecommendedSongs,
+                snapshot.listenBrainzRecommendedSongs,
+                snapshot.recommendedSongs,
+                snapshot.mostPlayedSongs,
+                snapshot.daylistSongs,
+                snapshot.offlineBackupSongs,
                 searchResults.songs
+            ].flatMap { $0 }
             ids.formUnion(visibleSongs.lazy.filter(\.isStarred).map(\.id))
             ids.formUnion(
                 AudioEngine.shared.queue.lazy.filter(\.isStarred).map(\.id)
@@ -1161,6 +1231,27 @@ final class AppModel: ObservableObject {
         snapshot.starredSongs.removeAll { $0.id == song.id }
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
         snapshot.randomSongs = snapshot.randomSongs.map { $0.id == song.id ? updated : $0 }
+        snapshot.sonicRecommendedSongs = snapshot.sonicRecommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.similarArtistSongs = snapshot.similarArtistSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.genreRecommendedSongs = snapshot.genreRecommendedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.topArtistSongs = snapshot.topArtistSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.recentlyAddedSongs = snapshot.recentlyAddedSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.popularSongs = snapshot.popularSongs.map {
+            $0.id == song.id ? updated : $0
+        }
+        snapshot.playlistAffinitySongs = snapshot.playlistAffinitySongs.map {
+            $0.id == song.id ? updated : $0
+        }
         snapshot.recommendedSongs = snapshot.recommendedSongs.map {
             $0.id == song.id ? updated : $0
         }
@@ -1391,12 +1482,20 @@ final class AppModel: ObservableObject {
         _ snapshot: HomeSnapshot
     ) async -> HomeSnapshot {
         var value = await mergingListeningHistory(into: snapshot)
+        let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
         value.recommendedSongs = RecommendationMixer.mix(
             snapshot: value,
-            weights: .current()
+            weights: .current(),
+            behavior: behavior
         )
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
-        value.daylistSongs = DaylistBuilder.make(snapshot: value)
+        value.daylistSongs = RecommendationMixer.mix(
+            snapshot: value,
+            weights: .current(),
+            purpose: .daylist,
+            behavior: behavior,
+            limit: 24
+        )
         return value
     }
 
@@ -1545,14 +1644,28 @@ final class AppModel: ObservableObject {
                 value.listenBrainzRecommendedSongs =
                     enriched.listenBrainzRecommendedSongs
             }
+            let behavior = await ListeningHistoryStore.shared
+                .recommendationSnapshot()
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration,
+                  self.client === client else {
+                return
+            }
             value.recommendedSongs = RecommendationMixer.mix(
                 snapshot: value,
-                weights: .current()
+                weights: .current(),
+                behavior: behavior
             )
             value.recommendedArtists = self.resolvedRecommendedArtists(
                 in: value
             )
-            value.daylistSongs = DaylistBuilder.make(snapshot: value)
+            value.daylistSongs = RecommendationMixer.mix(
+                snapshot: value,
+                weights: .current(),
+                purpose: .daylist,
+                behavior: behavior,
+                limit: 24
+            )
             value = self.applyingFavoriteOverrides(to: value)
             if value != self.home {
                 self.home = value

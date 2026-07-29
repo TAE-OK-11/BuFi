@@ -443,6 +443,7 @@ struct SongRow: View {
 
     let song: Song
     let queue: [Song]
+    var playbackOrigin: PlaybackOrigin = .manual
     var showsArtwork = true
     var artworkSize: CGFloat = 54
     var layout: SongRowLayout = .standard
@@ -494,7 +495,7 @@ struct SongRow: View {
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
-                audio.play(song, in: queue)
+                audio.play(song, in: queue, origin: playbackOrigin)
             } label: {
                 HStack(spacing: 12) {
                     Group {
@@ -566,7 +567,7 @@ struct SongRow: View {
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
-                audio.play(song, in: queue)
+                audio.play(song, in: queue, origin: playbackOrigin)
             } label: {
                 HStack(spacing: 12) {
                     if showsArtwork {
