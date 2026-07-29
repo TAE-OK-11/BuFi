@@ -473,21 +473,28 @@ actor OpenSubsonicClient {
             guard !Task.isCancelled else { break }
             let normalizedTitle = Self.normalized(candidate.title)
             let normalizedArtist = Self.normalized(candidate.artist)
+            let normalizedAlbum = candidate.album.map(Self.normalized)
             guard !normalizedTitle.isEmpty else { continue }
             let localMatch = library.first { song in
+                Self.matchesExternalMetadata(
+                    song,
+                    title: normalizedTitle,
+                    artist: normalizedArtist,
+                    album: normalizedAlbum
+                )
+            } ?? library.first { song in
                 guard let recordingMBID = candidate.recordingMBID else {
                     return false
                 }
                 return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
                     == .orderedSame
             } ?? library.first { song in
-                let title = Self.normalized(song.title)
-                let artist = Self.normalized(song.artist)
-                return title == normalizedTitle &&
-                    (!normalizedArtist.isEmpty &&
-                        (artist == normalizedArtist ||
-                        artist.contains(normalizedArtist) ||
-                        normalizedArtist.contains(artist)))
+                Self.matchesExternalMetadata(
+                    song,
+                    title: normalizedTitle,
+                    artist: normalizedArtist,
+                    album: nil
+                )
             }
             let match: Song?
             if let localMatch {
@@ -496,19 +503,25 @@ actor OpenSubsonicClient {
                 let query = "\(candidate.artist) \(candidate.title)"
                 guard let results = try? await search(query) else { continue }
                 match = results.songs.first { song in
+                    Self.matchesExternalMetadata(
+                        song,
+                        title: normalizedTitle,
+                        artist: normalizedArtist,
+                        album: normalizedAlbum
+                    )
+                } ?? results.songs.first { song in
                     guard let recordingMBID = candidate.recordingMBID else {
                         return false
                     }
                     return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
                         == .orderedSame
                 } ?? results.songs.first { song in
-                    let title = Self.normalized(song.title)
-                    let artist = Self.normalized(song.artist)
-                    return title == normalizedTitle &&
-                        (!normalizedArtist.isEmpty &&
-                            (artist == normalizedArtist ||
-                            artist.contains(normalizedArtist) ||
-                            normalizedArtist.contains(artist)))
+                    Self.matchesExternalMetadata(
+                        song,
+                        title: normalizedTitle,
+                        artist: normalizedArtist,
+                        album: nil
+                    )
                 } ?? results.songs.first { song in
                     Self.normalized(song.title).contains(normalizedTitle)
                 }
@@ -633,6 +646,49 @@ actor OpenSubsonicClient {
         return songs.filter { ids.insert($0.id).inserted }
     }
 
+    private static func uniqueSongsByIdentity(_ songs: [Song]) -> [Song] {
+        var ids = Set<String>()
+        var mbids = Set<String>()
+        var metadata = Set<String>()
+        return songs.filter { song in
+            guard ids.insert(song.id).inserted else { return false }
+            let mbid = normalized(song.musicBrainzId ?? "")
+            let identity = [
+                normalized(song.title),
+                normalized(song.artist),
+                normalized(song.album)
+            ].joined(separator: "\u{1F}")
+            if !mbid.isEmpty, mbids.contains(mbid) {
+                return false
+            }
+            if metadata.contains(identity) {
+                return false
+            }
+            if !mbid.isEmpty { mbids.insert(mbid) }
+            metadata.insert(identity)
+            return true
+        }
+    }
+
+    private static func matchesExternalMetadata(
+        _ song: Song,
+        title: String,
+        artist: String,
+        album: String?
+    ) -> Bool {
+        guard normalized(song.title) == title, !artist.isEmpty else {
+            return false
+        }
+        let songArtist = normalized(song.artist)
+        guard songArtist == artist ||
+                songArtist.contains(artist) ||
+                artist.contains(songArtist) else {
+            return false
+        }
+        guard let album, !album.isEmpty else { return true }
+        return normalized(song.album) == album
+    }
+
     private static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
         var ids = Set<String>()
         return artists.filter { ids.insert($0.id).inserted }
@@ -719,7 +775,7 @@ actor OpenSubsonicClient {
         return ArtistDetail(
             artist: artist.artistValue,
             albums: artist.album ?? [],
-            topSongs: top.topSongs?.song ?? [],
+            topSongs: Self.uniqueSongsByIdentity(top.topSongs?.song ?? []),
             info: info?.artistInfo2
         )
     }

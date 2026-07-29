@@ -30,8 +30,12 @@ struct MusicDetailView: View {
                         .transition(.opacity)
                 } else {
                     controls
-                    if !albums.isEmpty { albumRail }
-                    songList
+                    if isArtist {
+                        artistPopularSongs
+                        if !albums.isEmpty { artistDiscography }
+                    } else {
+                        songList
+                    }
                     if isArtist, !artistBiography.isEmpty { artistAbout }
                 }
             }
@@ -95,7 +99,7 @@ struct MusicDetailView: View {
                     .lineLimit(2)
                 Text(
                     String(
-                        format: String(localized: "%d개 앨범 · %d개 인기곡"),
+                        format: String(localized: "%d개 발매작 · %d개 인기곡"),
                         max(artistAlbumCount, albums.count),
                         songs.count
                     )
@@ -274,12 +278,37 @@ struct MusicDetailView: View {
         .padding(.top, 28)
     }
 
-    private var albumRail: some View {
+    private var artistPopularSongs: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("앨범")
+            Text("인기곡")
                 .font(.system(size: 23, weight: .bold))
                 .padding(.horizontal, 16)
-                .padding(.top, 18)
+            songList
+        }
+        .padding(.top, 10)
+    }
+
+    @ViewBuilder
+    private var artistDiscography: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if !fullAlbums.isEmpty {
+                albumRail("앨범", albums: fullAlbums)
+            }
+            if !epAlbums.isEmpty {
+                albumRail("EP", albums: epAlbums)
+            }
+            if !singleAlbums.isEmpty {
+                albumRail("싱글", albums: singleAlbums)
+            }
+        }
+        .padding(.top, 28)
+    }
+
+    private func albumRail(_ heading: LocalizedStringKey, albums: [Album]) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(heading)
+                .font(.system(size: 23, weight: .bold))
+                .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 15) {
                     ForEach(albums) { album in
@@ -292,6 +321,62 @@ struct MusicDetailView: View {
                 .padding(.horizontal, 16)
             }
         }
+    }
+
+    private var fullAlbums: [Album] {
+        sortedAlbums(releaseGroup: .album)
+    }
+
+    private var epAlbums: [Album] {
+        sortedAlbums(releaseGroup: .ep)
+    }
+
+    private var singleAlbums: [Album] {
+        sortedAlbums(releaseGroup: .single)
+    }
+
+    private func sortedAlbums(releaseGroup group: ArtistReleaseGroup) -> [Album] {
+        albums
+            .filter { releaseGroup(for: $0) == group }
+            .sorted {
+                if $0.year != $1.year { return ($0.year ?? 0) > ($1.year ?? 0) }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+    }
+
+    private func releaseGroup(for album: Album) -> ArtistReleaseGroup {
+        let types = (album.releaseTypes ?? []).map {
+            $0.folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+        }
+        if types.contains(where: { $0 == "single" || $0.contains("single") }) {
+            return .single
+        }
+        if types.contains(where: {
+            $0 == "ep" || $0.contains("extended play")
+        }) {
+            return .ep
+        }
+
+        let normalizedName = album.name
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedName.hasSuffix(" - single") ||
+            normalizedName.hasSuffix(" (single)") ||
+            normalizedName.hasSuffix(" [single]") {
+            return .single
+        }
+        if normalizedName.hasSuffix(" - ep") ||
+            normalizedName.hasSuffix(" (ep)") ||
+            normalizedName.hasSuffix(" [ep]") {
+            return .ep
+        }
+        return .album
     }
 
     @ViewBuilder
@@ -322,7 +407,7 @@ struct MusicDetailView: View {
                     .padding(.horizontal, 16)
                 }
             }
-            .padding(.top, albums.isEmpty ? 14 : 26)
+            .padding(.top, isArtist ? 0 : 14)
         }
     }
 
@@ -554,6 +639,12 @@ struct MusicDetailView: View {
         guard !Task.isCancelled else { return }
         isLoading = false
     }
+}
+
+private enum ArtistReleaseGroup {
+    case album
+    case ep
+    case single
 }
 
 private struct SongActionsSheet: View {

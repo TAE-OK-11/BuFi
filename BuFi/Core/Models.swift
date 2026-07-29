@@ -74,6 +74,8 @@ struct Album: Codable, Identifiable, Hashable, Sendable {
     var artistId: String? = nil
     var genre: String? = nil
     var musicBrainzId: String? = nil
+    var songCount: Int? = nil
+    var releaseTypes: [String]? = nil
 
     var isStarred: Bool { starred != nil }
 }

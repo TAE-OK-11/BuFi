@@ -244,6 +244,7 @@ struct ExternalRecommendationCandidate: Sendable {
 
     let title: String
     let artist: String
+    let album: String?
     let recordingMBID: String?
     let score: Double
     let source: Source
@@ -294,6 +295,7 @@ actor ExternalRecommendationClient {
             return ExternalRecommendationCandidate(
                 title: item.name,
                 artist: item.artist.name,
+                album: nil,
                 recordingMBID: nil,
                 score: Double(item.match) ?? 0.5,
                 source: .lastFM
@@ -339,7 +341,7 @@ actor ExternalRecommendationClient {
         }
         metadataURL.queryItems = [
             URLQueryItem(name: "recording_mbids", value: mbids.joined(separator: ",")),
-            URLQueryItem(name: "inc", value: "artist")
+            URLQueryItem(name: "inc", value: "artist release")
         ]
         guard let resolvedURL = metadataURL.url,
               let metadata: [String: ListenBrainzMetadata] = await decode(
@@ -366,6 +368,7 @@ actor ExternalRecommendationClient {
             return ExternalRecommendationCandidate(
                 title: title,
                 artist: artist,
+                album: value.release?.name,
                 recordingMBID: mbid,
                 score: scores[mbid] ?? 0.5,
                 source: .listenBrainz
@@ -436,4 +439,5 @@ private struct ListenBrainzMetadata: Decodable {
 
     let recording: NamedValue?
     let artist: NamedValue?
+    let release: NamedValue?
 }

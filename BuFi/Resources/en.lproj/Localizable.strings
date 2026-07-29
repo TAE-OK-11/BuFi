@@ -134,6 +134,10 @@
 "이미지는 필요할 때 서버에서 다시 불러옵니다." = "Artwork will be downloaded again when needed.";
 "%@ 아티스트 페이지 열기" = "Open %@’s artist page";
 "%d개 앨범 · %d개 인기곡" = "%d albums · %d popular songs";
+"%d개 발매작 · %d개 인기곡" = "%d releases · %d popular songs";
+"인기곡" = "Popular";
+"싱글" = "Singles";
+"EP" = "EPs";
 "아티스트 소개" = "About the Artist";
 "자동 음질은 AAC·MP3·ALAC 등 iPhone이 직접 재생할 수 있는 형식은 원본으로 재생하고, FLAC·Opus·Vorbis 등은 서버에서 AAC 256kbps로 변환합니다. 원본 재생이 실패하면 AAC·MP3로 안전하게 전환합니다." = "Automatic quality plays iPhone-native formats such as AAC, MP3, and ALAC in their original form, while the server converts FLAC, Opus, Vorbis, and similar formats to AAC 256 kbps. If original playback fails, BuFi safely falls back to AAC and MP3.";
 "클래식" = "Classic";
