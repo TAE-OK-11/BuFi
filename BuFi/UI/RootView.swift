@@ -20,7 +20,7 @@ struct RootView: View {
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("motion-enabled") private var motionEnabled = true
-    @AppStorage("server-sync-interval") private var syncInterval = 30.0
+    @AppStorage("server-sync-interval") private var syncInterval = 300.0
 
     private let tabHaptic = UISelectionFeedbackGenerator()
 
@@ -217,11 +217,6 @@ struct RootView: View {
         return selected
     }
 
-    private func syncDelay(afterCompletedRounds rounds: Int) -> TimeInterval {
-        let maximum: TimeInterval = audio.isPlaying ? 900 : 600
-        return min(baseSyncInterval * pow(2, Double(min(rounds, 4))), maximum)
-    }
-
     private func runAutomaticSync() async {
         guard model.sessionState == .ready,
               scenePhase == .active,
@@ -230,11 +225,9 @@ struct RootView: View {
             return
         }
 
-        var completedRounds = 0
         while !Task.isCancelled {
-            let delay = syncDelay(afterCompletedRounds: completedRounds)
             do {
-                try await Task.sleep(for: .seconds(delay))
+                try await Task.sleep(for: .seconds(baseSyncInterval))
             } catch {
                 return
             }
@@ -246,7 +239,6 @@ struct RootView: View {
                 return
             }
             await model.refresh(silent: true)
-            completedRounds += 1
         }
     }
 }

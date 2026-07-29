@@ -17,9 +17,9 @@ struct SettingsView: View {
     @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
     @AppStorage("restore-play-queue") private var restorePlayQueue = true
     @AppStorage("keep-screen-awake") private var keepScreenAwake = false
-    @AppStorage("server-sync-interval") private var syncInterval = 30.0
+    @AppStorage("server-sync-interval") private var syncInterval = 300.0
     @AppStorage("offline-wifi-only") private var offlineWiFiOnly = true
-    @AppStorage("offline-prefetch-count") private var offlinePrefetchCount = 1
+    @AppStorage("offline-prefetch-count") private var offlinePrefetchCount = 0
     @AppStorage("offline-storage-limit-gb") private var offlineStorageLimitGB = 10.0
 
     var body: some View {
@@ -113,7 +113,7 @@ struct SettingsView: View {
                         Text("15분").tag(900.0)
                     }
                     .tint(Color(uiColor: .secondaryLabel))
-                    Text("앱이 활성 상태일 때만 동기화합니다. 평소에는 좋아요·새 앨범·플레이리스트만 가볍게 갱신하고, 전체 라이브러리는 5분 간격으로 확인합니다. 저전력 모드에서는 주기를 자동으로 늘립니다.")
+                    Text("선택한 주기마다 활성 화면의 변경 사항을 확인하고 전체 홈 데이터는 최대 5분에 한 번 갱신합니다. 재생 중에는 간격을 늘리며 저전력·고온 상태에서는 자동 동기화를 멈춥니다.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -172,6 +172,9 @@ struct SettingsView: View {
                         Text("1곡").tag(1)
                         Text("3곡").tag(3)
                     }
+                    Text("선캐시는 곡 전환을 빠르게 하지만 전체 음원을 미리 저장합니다. 배터리와 데이터 절약을 위해 기본값은 끔이며, 저전력·고온 상태에서는 자동으로 제한됩니다.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Picker("오프라인 용량 제한", selection: $offlineStorageLimitGB) {
                         Text("5 GB").tag(5.0)
                         Text("10 GB").tag(10.0)

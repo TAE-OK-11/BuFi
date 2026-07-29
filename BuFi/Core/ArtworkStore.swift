@@ -88,6 +88,13 @@ actor ArtworkStore {
         paletteMemory.removeAllObjects()
     }
 
+    func deactivate(accountScope: String) {
+        guard activeScope == accountScope else { return }
+        pipeline.cache.removeAll(caches: [.memory])
+        paletteMemory.removeAllObjects()
+        activeScope = nil
+    }
+
     func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
         guard let scope = activeScope else {
             throw URLError(.userAuthenticationRequired)

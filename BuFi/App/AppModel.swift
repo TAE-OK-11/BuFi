@@ -95,6 +95,7 @@ final class AppModel: ObservableObject {
 
     func logout() {
         sessionGeneration += 1
+        let logoutGeneration = sessionGeneration
         let accountScope = client.map {
             AccountScope.identifier(for: $0.credentials)
         }
@@ -104,7 +105,15 @@ final class AppModel: ObservableObject {
         clearFavoriteState()
         secureStore.delete()
         if let accountScope {
-            Task {
+            Task { [weak self] in
+                guard let self,
+                      self.sessionGeneration == logoutGeneration else {
+                    return
+                }
+                await OfflineStore.shared.deactivate(accountScope: accountScope)
+                guard self.sessionGeneration == logoutGeneration else { return }
+                await ArtworkStore.shared.deactivate(accountScope: accountScope)
+                guard self.sessionGeneration == logoutGeneration else { return }
                 await ListeningHistoryStore.shared.deactivate(
                     accountScope: accountScope
                 )
@@ -1320,12 +1329,21 @@ final class AppModel: ObservableObject {
             )
 
         let candidates = await (lastFMCandidates, listenBrainzCandidates)
+        let knownSongs = Self.uniqueSongs(
+            snapshot.starredSongs +
+            snapshot.mostPlayedSongs +
+            snapshot.randomSongs +
+            snapshot.serverRecommendedSongs +
+            snapshot.recommendedSongs
+        )
         async let lastFMSongs = client.matchExternalRecommendations(
             candidates.0,
+            library: knownSongs,
             limit: 8
         )
         async let listenBrainzSongs = client.matchExternalRecommendations(
             candidates.1,
+            library: knownSongs,
             limit: 8
         )
 
@@ -1399,11 +1417,18 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         searchTask?.cancel()
         recommendationTask?.cancel()
+        let previousAccountScope = client.map {
+            AccountScope.identifier(for: $0.credentials)
+        }
         let isReplacingActiveSession = client != nil
         client = nil
         if isReplacingActiveSession {
             AudioEngine.shared.configure(client: nil)
         }
+        if let previousAccountScope {
+            await deactivateStores(accountScope: previousAccountScope)
+        }
+        guard generation == sessionGeneration else { return }
         home = .empty
         searchResults = .empty
         serverVersion = ""
@@ -1414,6 +1439,7 @@ final class AppModel: ObservableObject {
         clearDetailCaches()
         sessionState = .connecting
         errorMessage = nil
+        var activatedAccountScope: String?
         do {
             let client = try OpenSubsonicClient(credentials: credentials)
             async let statusRequest = client.ping()
@@ -1426,13 +1452,20 @@ final class AppModel: ObservableObject {
             await OfflineStore.shared.activate(accountScope: accountScope)
             await ArtworkStore.shared.activate(accountScope: accountScope)
             await ListeningHistoryStore.shared.activate(accountScope: accountScope)
-            guard generation == sessionGeneration else { return }
+            activatedAccountScope = accountScope
+            guard generation == sessionGeneration else {
+                await deactivateStores(accountScope: accountScope)
+                return
+            }
             var snapshot = await mergingListeningHistory(into: loadResult.snapshot)
             snapshot.recommendedSongs = RecommendationMixer.mix(
                 snapshot: snapshot,
                 weights: .current()
             )
-            guard generation == sessionGeneration else { return }
+            guard generation == sessionGeneration else {
+                await deactivateStores(accountScope: accountScope)
+                return
+            }
             if persist { try secureStore.save(credentials) }
 
             reconcileFavoriteStates(
@@ -1444,6 +1477,7 @@ final class AppModel: ObservableObject {
             self.lastFullRefresh = Date()
             self.serverVersion = status.serverVersion ?? status.version ?? ""
             self.sessionState = .ready
+            activatedAccountScope = nil
             AudioEngine.shared.configure(
                 client: client,
                 songFavoriteMutationHandler: { [weak self] song in
@@ -1459,8 +1493,14 @@ final class AppModel: ObservableObject {
                 generation: generation
             )
         } catch is CancellationError {
+            if let activatedAccountScope {
+                await deactivateStores(accountScope: activatedAccountScope)
+            }
             return
         } catch {
+            if let activatedAccountScope {
+                await deactivateStores(accountScope: activatedAccountScope)
+            }
             guard generation == sessionGeneration else { return }
             client = nil
             home = .empty
@@ -1472,5 +1512,11 @@ final class AppModel: ObservableObject {
             sessionState = .signedOut
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func deactivateStores(accountScope: String) async {
+        await OfflineStore.shared.deactivate(accountScope: accountScope)
+        await ArtworkStore.shared.deactivate(accountScope: accountScope)
+        await ListeningHistoryStore.shared.deactivate(accountScope: accountScope)
     }
 }

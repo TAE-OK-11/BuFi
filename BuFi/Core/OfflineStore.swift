@@ -72,6 +72,20 @@ actor OfflineStore {
         indexIsDirty = false
     }
 
+    func deactivate(accountScope: String) {
+        guard activeScope == accountScope else { return }
+        flushPendingWrites(retryOnFailure: false)
+        scopeGeneration &+= 1
+        inFlight.values.forEach { $0.task.cancel() }
+        inFlight.removeAll(keepingCapacity: false)
+        activeScope = nil
+        directory = nil
+        indexURL = nil
+        entries.removeAll(keepingCapacity: false)
+        indexIsDirty = false
+        indexRetryCount = 0
+    }
+
     func localURL(for songID: String) -> URL? {
         guard let directory else { return nil }
         if var entry = entries[songID] {

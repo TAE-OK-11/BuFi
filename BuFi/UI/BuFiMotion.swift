@@ -31,6 +31,7 @@ enum BuFiMotion {
     static let color = Animation.easeInOut(duration: 0.35)
     static let page = Animation.smooth(duration: 0.32, extraBounce: 0)
     static let player = Animation.smooth(duration: 0.38, extraBounce: 0.01)
+    static let miniLyrics = Animation.smooth(duration: 0.38, extraBounce: 0)
     static let lyrics = Animation.smooth(duration: 0.46, extraBounce: 0.02)
     static let lyricsPanel = Animation.smooth(duration: 0.56, extraBounce: 0.06)
 

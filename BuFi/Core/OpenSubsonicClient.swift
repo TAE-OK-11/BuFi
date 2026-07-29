@@ -408,31 +408,54 @@ actor OpenSubsonicClient {
 
     func matchExternalRecommendations(
         _ candidates: [ExternalRecommendationCandidate],
+        library: [Song] = [],
         limit: Int = 10
     ) async -> [Song] {
         var matches: [Song] = []
         var ids = Set<String>()
         for candidate in candidates.prefix(limit) {
             guard !Task.isCancelled else { break }
-            let query = "\(candidate.artist) \(candidate.title)"
-            guard let results = try? await search(query) else { continue }
             let normalizedTitle = Self.normalized(candidate.title)
             let normalizedArtist = Self.normalized(candidate.artist)
-            let match = results.songs.first { song in
+            guard !normalizedTitle.isEmpty else { continue }
+            let localMatch = library.first { song in
                 guard let recordingMBID = candidate.recordingMBID else {
                     return false
                 }
                 return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
                     == .orderedSame
-            } ?? results.songs.first { song in
+            } ?? library.first { song in
                 let title = Self.normalized(song.title)
                 let artist = Self.normalized(song.artist)
                 return title == normalizedTitle &&
-                    (artist == normalizedArtist ||
+                    (!normalizedArtist.isEmpty &&
+                        (artist == normalizedArtist ||
                         artist.contains(normalizedArtist) ||
-                        normalizedArtist.contains(artist))
-            } ?? results.songs.first { song in
-                Self.normalized(song.title).contains(normalizedTitle)
+                        normalizedArtist.contains(artist)))
+            }
+            let match: Song?
+            if let localMatch {
+                match = localMatch
+            } else {
+                let query = "\(candidate.artist) \(candidate.title)"
+                guard let results = try? await search(query) else { continue }
+                match = results.songs.first { song in
+                    guard let recordingMBID = candidate.recordingMBID else {
+                        return false
+                    }
+                    return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
+                        == .orderedSame
+                } ?? results.songs.first { song in
+                    let title = Self.normalized(song.title)
+                    let artist = Self.normalized(song.artist)
+                    return title == normalizedTitle &&
+                        (!normalizedArtist.isEmpty &&
+                            (artist == normalizedArtist ||
+                            artist.contains(normalizedArtist) ||
+                            normalizedArtist.contains(artist)))
+                } ?? results.songs.first { song in
+                    Self.normalized(song.title).contains(normalizedTitle)
+                }
             }
             if let match, ids.insert(match.id).inserted {
                 matches.append(match)

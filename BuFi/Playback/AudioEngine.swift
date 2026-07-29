@@ -613,7 +613,10 @@ final class AudioEngine: NSObject, ObservableObject {
         offlinePrefetchTask?.cancel()
         guard let client, !queue.isEmpty, queue.indices.contains(queueIndex) else { return }
         let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
-        let defaultCount = UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil ? 1 : configured
+        let defaultCount =
+            UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
+                ? 0
+                : configured
         let thermalState = ProcessInfo.processInfo.thermalState
         guard thermalState != .serious, thermalState != .critical else { return }
         let cappedCount = min(max(defaultCount, 0), 3)
@@ -1437,7 +1440,10 @@ final class AudioEngine: NSObject, ObservableObject {
                   let data = try? JSONEncoder().encode(snapshot) else {
                 return
             }
-            if self.queueRestorationEnabled {
+            let containsOnlyServerSongs = snapshot.queue.allSatisfy {
+                $0.externalStreamURL == nil
+            }
+            if self.queueRestorationEnabled && containsOnlyServerSongs {
                 UserDefaults.standard.set(data, forKey: queueStorageKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
@@ -1445,7 +1451,7 @@ final class AudioEngine: NSObject, ObservableObject {
             guard let client,
                   let current = snapshot.currentID,
                   !snapshot.queue.isEmpty,
-                  snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }) else {
+                  containsOnlyServerSongs else {
                 return
             }
             try? await client.savePlayQueue(
@@ -1457,16 +1463,26 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func restoreLocalQueue() {
-        guard let data = UserDefaults.standard.data(forKey: queueStorageKey),
-              let snapshot = try? JSONDecoder().decode(QueueSnapshot.self, from: data),
-              !snapshot.queue.isEmpty else {
+        guard let data = UserDefaults.standard.data(forKey: queueStorageKey) else {
+            return
+        }
+        guard let snapshot = try? JSONDecoder().decode(QueueSnapshot.self, from: data),
+              !snapshot.queue.isEmpty,
+              snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }) else {
+            UserDefaults.standard.removeObject(forKey: queueStorageKey)
             return
         }
         queue = snapshot.queue
-        queueIndex = snapshot.queue.indices.contains(snapshot.index) ? snapshot.index : 0
-        currentSong = snapshot.queue.first(where: { $0.id == snapshot.currentID }) ?? snapshot.queue[queueIndex]
-        elapsed = snapshot.elapsed
-        duration = currentSong?.safeDuration ?? 0
+        queueIndex = snapshot.currentID.flatMap { currentID in
+            snapshot.queue.firstIndex(where: { $0.id == currentID })
+        } ?? (snapshot.queue.indices.contains(snapshot.index) ? snapshot.index : 0)
+        currentSong = snapshot.queue[queueIndex]
+        let restoredElapsed = snapshot.elapsed.isFinite ? max(0, snapshot.elapsed) : 0
+        let restoredDuration = currentSong?.safeDuration ?? 0
+        elapsed = restoredDuration > 0
+            ? min(restoredElapsed, restoredDuration)
+            : restoredElapsed
+        duration = restoredDuration
         isShuffleEnabled = snapshot.shuffle
         repeatMode = snapshot.repeatMode
     }

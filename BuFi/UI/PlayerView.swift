@@ -662,28 +662,29 @@ struct PlayerView: View {
 
     private var miniLyricsWindow: some View {
         ZStack(alignment: .topLeading) {
-            VStack(alignment: .leading, spacing: 11) {
+            VStack(alignment: .leading, spacing: 12) {
                 ForEach(visibleLyrics, id: \.line.id) { item in
                     let distance = max(0, item.index - audio.activeLyricIndex)
                     Text(item.line.text)
-                        .font(
-                            .system(
-                                size: distance == 0 ? 22 : 19,
-                                weight: distance == 0 ? .bold : .semibold
-                            )
-                        )
-                        .tracking(distance == 0 ? -0.48 : -0.30)
+                        .font(.system(size: 20, weight: .bold))
+                        .tracking(-0.40)
                         .foregroundStyle(lyricColor(distance: distance))
+                        .scaleEffect(
+                            distance == 0 ? 1 : 0.98,
+                            anchor: .leading
+                        )
                         .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(miniLyricLineTransition)
                 }
             }
-            .id(audio.activeLyricIndex)
-            .transition(miniLyricsTransition)
         }
-        .animation(allowsMotion ? BuFiMotion.lyrics : .none, value: audio.activeLyricIndex)
+        .animation(
+            allowsMotion ? BuFiMotion.miniLyrics : .none,
+            value: audio.activeLyricIndex
+        )
     }
 
     private var visibleLyrics: [(index: Int, line: LyricLine)] {
@@ -703,11 +704,11 @@ struct PlayerView: View {
         }
     }
 
-    private var miniLyricsTransition: AnyTransition {
+    private var miniLyricLineTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 7).combined(with: .opacity),
-            removal: .offset(y: -4).combined(with: .opacity)
+            insertion: .offset(y: 10).combined(with: .opacity),
+            removal: .offset(y: -8).combined(with: .opacity)
         )
     }
 
@@ -803,7 +804,11 @@ struct PlayerView: View {
 
     private func prefetchUpcomingArtwork(after index: Int) {
         artworkPrefetchTask?.cancel()
-        guard !audio.queue.isEmpty else {
+        let thermalState = ProcessInfo.processInfo.thermalState
+        guard !audio.queue.isEmpty,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled,
+              thermalState != .serious,
+              thermalState != .critical else {
             artworkPrefetchTask = nil
             return
         }
@@ -821,7 +826,21 @@ struct PlayerView: View {
                       let url = await model.artworkURL(id: song.coverArt, size: 900) else {
                     continue
                 }
-                _ = try? await ArtworkStore.shared.image(for: url, pixelSize: 900)
+                guard let image = try? await ArtworkStore.shared.image(
+                    for: url,
+                    pixelSize: 900
+                ) else {
+                    continue
+                }
+                let nextPalette = await ArtworkStore.shared.palette(
+                    for: url,
+                    image: image
+                )
+                guard !Task.isCancelled,
+                      audio.queue.contains(where: { $0.id == song.id }) else {
+                    return
+                }
+                artworkPalettes[song.id] = nextPalette
             }
         }
     }

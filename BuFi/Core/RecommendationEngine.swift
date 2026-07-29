@@ -190,9 +190,13 @@ actor ExternalRecommendationClient {
         limit: Int = 12
     ) async -> [ExternalRecommendationCandidate] {
         guard !username.isEmpty else { return [] }
-        let escaped = username.addingPercentEncoding(
-            withAllowedCharacters: .urlPathAllowed
-        ) ?? username
+        var allowedUsernameCharacters = CharacterSet.alphanumerics
+        allowedUsernameCharacters.insert(charactersIn: "-._~")
+        guard let escaped = username.addingPercentEncoding(
+            withAllowedCharacters: allowedUsernameCharacters
+        ) else {
+            return []
+        }
         guard var components = URLComponents(
             string: "https://api.listenbrainz.org/1/cf/recommendation/user/\(escaped)/recording"
         ) else {

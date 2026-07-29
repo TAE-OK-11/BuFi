@@ -48,9 +48,6 @@ enum PlayerSeekBarAppearance: String, CaseIterable, Identifiable {
         }
     }
 
-    static func resolved(_ rawValue: String) -> PlayerSeekBarAppearance {
-        PlayerSeekBarAppearance(rawValue: rawValue) ?? .liquidGlass
-    }
 }
 
 enum PlayerAppearance: String, CaseIterable, Identifiable {

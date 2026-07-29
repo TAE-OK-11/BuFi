@@ -186,3 +186,5 @@
 "곡으로 라디오 시작" = "Start Track Radio";
 "이 곡과 비슷한 음악을 서버에서 찾지 못했습니다." = "The server could not find music similar to this track.";
 "HTTPS 인터넷 라디오만 안전하게 재생할 수 있습니다." = "Only HTTPS internet radio streams can be played securely.";
+"선택한 주기마다 활성 화면의 변경 사항을 확인하고 전체 홈 데이터는 최대 5분에 한 번 갱신합니다. 재생 중에는 간격을 늘리며 저전력·고온 상태에서는 자동 동기화를 멈춥니다." = "Checks active-screen changes at the selected interval and refreshes full Home data at most once every five minutes. The interval grows during playback, and automatic sync pauses in Low Power Mode or under thermal pressure.";
+"선캐시는 곡 전환을 빠르게 하지만 전체 음원을 미리 저장합니다. 배터리와 데이터 절약을 위해 기본값은 끔이며, 저전력·고온 상태에서는 자동으로 제한됩니다." = "Pre-caching speeds up track changes by storing complete audio files in advance. It is off by default to save battery and data, and is limited automatically in Low Power Mode or under thermal pressure.";
