@@ -7,6 +7,18 @@ struct RecommendationWeights: Sendable {
     var discovery: Double
     var lastFM: Double
     var listenBrainz: Double
+    var behavior: Double
+    var completion: Double
+    var repeatListening: Double
+    var recency: Double
+    var context: Double
+    var localMetadata: Double
+    var playlistAffinity: Double
+    var albumCompletion: Double
+    var forgottenFavorites: Double
+    var artistRotation: Double
+    var timeAwareness: Double
+    var discoveryRatio: Double
 
     static func current(_ defaults: UserDefaults = .standard) -> RecommendationWeights {
         func value(_ key: String, fallback: Double) -> Double {
@@ -19,70 +31,922 @@ struct RecommendationWeights: Sendable {
             serverSimilarity: value("recommendation-weight-server", fallback: 0.90),
             discovery: value("recommendation-weight-discovery", fallback: 0.35),
             lastFM: value("recommendation-weight-lastfm", fallback: 0.55),
-            listenBrainz: value("recommendation-weight-listenbrainz", fallback: 0.55)
+            listenBrainz: value("recommendation-weight-listenbrainz", fallback: 0.55),
+            behavior: value("recommendation-weight-behavior", fallback: 0.85),
+            completion: value("recommendation-weight-completion", fallback: 0.70),
+            repeatListening: value("recommendation-weight-repeat", fallback: 0.55),
+            recency: value("recommendation-weight-recency", fallback: 0.65),
+            context: value("recommendation-weight-context", fallback: 0.60),
+            localMetadata: value("recommendation-weight-metadata", fallback: 0.60),
+            playlistAffinity: value(
+                "recommendation-weight-playlist-affinity",
+                fallback: 0.55
+            ),
+            albumCompletion: value(
+                "recommendation-weight-album-completion",
+                fallback: 0.45
+            ),
+            forgottenFavorites: value(
+                "recommendation-weight-forgotten-favorites",
+                fallback: 0.50
+            ),
+            artistRotation: value(
+                "recommendation-weight-artist-rotation",
+                fallback: 0.45
+            ),
+            timeAwareness: value(
+                "recommendation-weight-time-awareness",
+                fallback: 0.30
+            ),
+            discoveryRatio: value(
+                "recommendation-discovery-ratio",
+                fallback: 0.35
+            )
         )
     }
 }
 
+enum RecommendationPurpose: String, Sendable {
+    case home
+    case daylist
+    case taste
+    case artistMix
+    case discovery
+    case frequent
+    case autoplay
+}
+
+struct RecommendationCandidateContext: Sendable {
+    let snapshot: HomeSnapshot
+    let behavior: RecommendationBehaviorSnapshot
+    let purpose: RecommendationPurpose
+    let limit: Int
+}
+
+protocol RecommendationCandidateProviding: Sendable {
+    var sourceIdentifier: String { get }
+    func candidates(
+        for context: RecommendationCandidateContext
+    ) async -> [Song]
+}
+
+private enum RecommendationFeature: Hashable {
+    case history
+    case favorites
+    case server
+    case discovery
+    case lastFM
+    case listenBrainz
+    case behavior
+    case completion
+    case repeatListening
+    case recency
+    case context
+    case localMetadata
+    case playlistAffinity
+    case albumCompletion
+    case forgottenFavorites
+    case artistRotation
+    case timeAwareness
+    case popularity
+}
+
+private struct RecommendationPreset {
+    let shortTermRatio: Double
+    let featureWeights: [RecommendationFeature: Double]
+
+    static func value(for purpose: RecommendationPurpose) -> RecommendationPreset {
+        switch purpose {
+        case .home, .daylist:
+            RecommendationPreset(
+                shortTermRatio: purpose == .daylist ? 0.70 : 0.58,
+                featureWeights: [
+                    .history: 0.35,
+                    .favorites: 0.20,
+                    .recency: 0.20,
+                    .lastFM: 0.10,
+                    .listenBrainz: 0.10,
+                    .discovery: 0.05,
+                    .server: 0.18,
+                    .behavior: 0.22,
+                    .completion: 0.16,
+                    .repeatListening: 0.10,
+                    .context: 0.15,
+                    .localMetadata: 0.10,
+                    .playlistAffinity: 0.08,
+                    .albumCompletion: 0.07,
+                    .forgottenFavorites: 0.06,
+                    .artistRotation: 0.08,
+                    .timeAwareness: purpose == .daylist ? 0.12 : 0.06,
+                    .popularity: 0.06
+                ]
+            )
+        case .taste:
+            RecommendationPreset(
+                shortTermRatio: 0.30,
+                featureWeights: [
+                    .history: 0.34, .favorites: 0.28, .server: 0.16,
+                    .behavior: 0.22, .completion: 0.18,
+                    .repeatListening: 0.15, .localMetadata: 0.12,
+                    .forgottenFavorites: 0.09, .playlistAffinity: 0.08,
+                    .artistRotation: 0.07
+                ]
+            )
+        case .artistMix:
+            RecommendationPreset(
+                shortTermRatio: 0.45,
+                featureWeights: [
+                    .favorites: 0.24, .server: 0.32, .history: 0.20,
+                    .discovery: 0.10, .lastFM: 0.14,
+                    .listenBrainz: 0.14, .behavior: 0.12,
+                    .localMetadata: 0.18, .artistRotation: 0.05
+                ]
+            )
+        case .discovery:
+            RecommendationPreset(
+                shortTermRatio: 0.55,
+                featureWeights: [
+                    .discovery: 0.35, .lastFM: 0.25,
+                    .listenBrainz: 0.25, .history: 0.15,
+                    .server: 0.22, .context: 0.12,
+                    .localMetadata: 0.10, .artistRotation: 0.12,
+                    .timeAwareness: 0.06, .popularity: 0.06
+                ]
+            )
+        case .frequent:
+            RecommendationPreset(
+                shortTermRatio: 0.42,
+                featureWeights: [
+                    .popularity: 0.40, .completion: 0.20,
+                    .repeatListening: 0.20, .favorites: 0.20,
+                    .history: 0.18, .behavior: 0.16
+                ]
+            )
+        case .autoplay:
+            RecommendationPreset(
+                shortTermRatio: 0.72,
+                featureWeights: [
+                    .context: 0.28, .server: 0.26, .history: 0.18,
+                    .favorites: 0.12, .lastFM: 0.10,
+                    .listenBrainz: 0.10, .behavior: 0.16,
+                    .completion: 0.12, .discovery: 0.08,
+                    .localMetadata: 0.14, .artistRotation: 0.10,
+                    .timeAwareness: 0.08
+                ]
+            )
+        }
+    }
+}
+
+private struct RecommendationProfile {
+    var artists: [String: Double] = [:]
+    var genres: [String: Double] = [:]
+    var moods: [String: Double] = [:]
+
+    func affinity(for song: Song) -> Double {
+        var values: [Double] = []
+        if !song.artist.isEmpty {
+            values.append(artists[RecommendationMixer.normalized(song.artist)] ?? 0)
+        }
+        for genre in ([song.genre].compactMap { $0 } + (song.genres ?? []).map(\.name)) {
+            if !genre.isEmpty {
+                values.append(genres[RecommendationMixer.normalized(genre)] ?? 0)
+            }
+        }
+        for mood in song.moods ?? [] {
+            values.append(moods[RecommendationMixer.normalized(mood)] ?? 0)
+        }
+        return values.max() ?? 0
+    }
+}
+
+private struct RankedRecommendation {
+    let song: Song
+    var score: Double
+    let confidence: Double
+    let isDiscovery: Bool
+    let isNewArtist: Bool
+    let isHiddenGem: Bool
+}
+
+private final class RecommendationMixCache: @unchecked Sendable {
+    struct Value {
+        let createdAt: Date
+        let songs: [Song]
+    }
+
+    private let lock = NSLock()
+    private var values: [String: Value] = [:]
+
+    func value(for key: String, lifetime: TimeInterval, now: Date) -> [Song]? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let value = values[key],
+              now.timeIntervalSince(value.createdAt) < lifetime else {
+            values[key] = nil
+            return nil
+        }
+        return value.songs
+    }
+
+    func insert(_ songs: [Song], for key: String, now: Date) {
+        lock.lock()
+        values[key] = Value(createdAt: now, songs: songs)
+        if values.count > 48 {
+            let retained = values.sorted {
+                $0.value.createdAt > $1.value.createdAt
+            }
+            values = Dictionary(uniqueKeysWithValues: retained.prefix(32))
+        }
+        lock.unlock()
+    }
+
+    func removeAll() {
+        lock.lock()
+        values.removeAll(keepingCapacity: false)
+        lock.unlock()
+    }
+}
+
 enum RecommendationMixer {
+    private static let cache = RecommendationMixCache()
+
     static func mix(
         snapshot: HomeSnapshot,
         weights: RecommendationWeights,
-        limit: Int = 30
+        purpose: RecommendationPurpose = .home,
+        behavior: RecommendationBehaviorSnapshot = .empty,
+        limit: Int = 30,
+        date: Date = Date()
     ) -> [Song] {
-        let favoriteArtists = Set(snapshot.starredSongs.map {
-            normalized($0.artist)
-        })
-        let favoriteGenres = Set(snapshot.starredSongs.compactMap {
-            $0.genre.map(normalized)
-        })
-        let historyArtists = Set(snapshot.mostPlayedSongs.map {
-            normalized($0.artist)
-        })
-        let historyGenres = Set(snapshot.mostPlayedSongs.compactMap {
-            $0.genre.map(normalized)
-        })
+        guard limit > 0 else { return [] }
+        let key = cacheKey(
+            snapshot: snapshot,
+            weights: weights,
+            purpose: purpose,
+            behaviorRevision: behavior.revision,
+            limit: limit,
+            date: date
+        )
+        if let cached = cache.value(
+            for: key,
+            lifetime: cacheLifetime(for: purpose),
+            now: date
+        ) {
+            return cached
+        }
+
+        let preset = RecommendationPreset.value(for: purpose)
+        let allBehaviors = Array(behavior.songs.values)
+        let shortCutoff = date.addingTimeInterval(-14 * 86_400)
+        let longCutoff = date.addingTimeInterval(-365 * 86_400)
+        let shortProfile = profile(
+            from: allBehaviors.filter { $0.lastPlayed >= shortCutoff },
+            date: date
+        )
+        let longProfile = profile(
+            from: allBehaviors.filter { $0.lastPlayed >= longCutoff },
+            date: date
+        )
+        let contextProfile = profile(
+            from: behavior.recentSongs.compactMap { behavior.songs[$0.id] },
+            date: date,
+            appliesDecay: false
+        )
+        let favoriteProfile = profile(
+            from: snapshot.starredSongs.map {
+                behavior.songs[$0.id]
+                    ?? SongBehavior(song: $0, at: date)
+            },
+            date: date,
+            appliesDecay: false
+        )
+
+        let knownSongIDs = Set(
+            snapshot.starredSongs.map(\.id)
+            + snapshot.mostPlayedSongs.map(\.id)
+            + Array(behavior.songs.keys)
+        )
+        let knownArtists = Set(
+            (snapshot.starredSongs + snapshot.mostPlayedSongs)
+                .map { normalized($0.artist) }
+            + allBehaviors.map { normalized($0.song.artist) }
+        )
+        let recentArtists = Set(
+            behavior.recentSongs.prefix(10).map { normalized($0.artist) }
+        )
+        let favoriteGenres = Set(
+            snapshot.starredSongs.flatMap {
+                ([ $0.genre ].compactMap { $0 } + ($0.genres ?? []).map(\.name))
+                    .map(normalized)
+            }
+        )
+
+        let sourceLists: [[Song]] = [
+            snapshot.serverRecommendedSongs,
+            snapshot.sonicRecommendedSongs,
+            snapshot.similarArtistSongs,
+            snapshot.genreRecommendedSongs,
+            snapshot.topArtistSongs,
+            snapshot.recentlyAddedSongs,
+            snapshot.popularSongs,
+            snapshot.playlistAffinitySongs,
+            snapshot.lastFMRecommendedSongs,
+            snapshot.listenBrainzRecommendedSongs,
+            snapshot.randomSongs,
+            snapshot.mostPlayedSongs,
+            snapshot.starredSongs,
+            snapshot.daylistSongs,
+            snapshot.recommendedSongs
+        ]
+        let candidates = unique(sourceLists.flatMap { $0 })
+        guard !candidates.isEmpty else { return [] }
+
         let serverRanks = rankMap(snapshot.serverRecommendedSongs)
+        let sonicRanks = rankMap(snapshot.sonicRecommendedSongs)
+        let similarRanks = rankMap(snapshot.similarArtistSongs)
+        let genreRanks = rankMap(snapshot.genreRecommendedSongs)
+        let topArtistRanks = rankMap(snapshot.topArtistSongs)
+        let recentRanks = rankMap(snapshot.recentlyAddedSongs)
+        let popularRanks = rankMap(snapshot.popularSongs + snapshot.mostPlayedSongs)
+        let playlistRanks = rankMap(snapshot.playlistAffinitySongs)
         let discoveryRanks = rankMap(snapshot.randomSongs)
         let lastFMRanks = rankMap(snapshot.lastFMRecommendedSongs)
         let listenBrainzRanks = rankMap(snapshot.listenBrainzRecommendedSongs)
-
-        let candidates = unique(
-            snapshot.serverRecommendedSongs +
-            snapshot.lastFMRecommendedSongs +
-            snapshot.listenBrainzRecommendedSongs +
-            snapshot.randomSongs
+        let maxRepeat = max(
+            1,
+            allBehaviors.map { log1p(Double($0.repeatCount)) }.max() ?? 1
         )
-        let starredIDs = Set(snapshot.starredSongs.map(\.id))
-        return candidates
-            .filter { !starredIDs.contains($0.id) }
-            .map { song in
-                let artistMatch = favoriteArtists.contains(normalized(song.artist))
-                let genreMatch = song.genre.map { favoriteGenres.contains(normalized($0)) } ?? false
-                let favoriteAffinity = artistMatch ? 1.0 : (genreMatch ? 0.62 : 0)
-                let historyArtistMatch = historyArtists.contains(normalized(song.artist))
-                let historyGenreMatch = song.genre.map {
-                    historyGenres.contains(normalized($0))
-                } ?? false
-                let historyAffinity = historyArtistMatch
-                    ? 1.0
-                    : (historyGenreMatch ? 0.58 : 0)
-                let score =
-                    weights.history * historyAffinity +
-                    weights.favorites * favoriteAffinity +
-                    weights.serverSimilarity * rankScore(song.id, in: serverRanks) +
-                    weights.discovery * rankScore(song.id, in: discoveryRanks) +
-                    weights.lastFM * rankScore(song.id, in: lastFMRanks) +
-                    weights.listenBrainz * rankScore(song.id, in: listenBrainzRanks) +
-                    stableTieBreaker(song.id)
-                return (song, score)
+        let maxPlayCount = max(
+            1,
+            candidates.map { Double($0.playCount ?? 0) }.max()
+                ?? Double(allBehaviors.map(\.playCount).max() ?? 1)
+        )
+        let albumCandidateCounts = Dictionary(
+            grouping: candidates.compactMap { song -> (String, String)? in
+                guard let albumID = song.albumId else { return nil }
+                return (albumID, song.id)
+            },
+            by: { $0.0 }
+        ).mapValues(\.count)
+        let playedAlbumCounts = Dictionary(
+            grouping: allBehaviors.compactMap { value -> String? in
+                guard value.playCount > 0 else { return nil }
+                return value.song.albumId
+            },
+            by: { $0 }
+        ).mapValues(\.count)
+        let isColdStart = behavior.totalPlayCount < 5
+        let thirtyMinuteSeed = Int(date.timeIntervalSince1970 / 1_800)
+
+        var ranked = candidates.map { song -> RankedRecommendation in
+            let songBehavior = behavior.songs[song.id]
+            let shortAffinity = shortProfile.affinity(for: song)
+            let longAffinity = longProfile.affinity(for: song)
+            let historyAffinity =
+                shortAffinity * preset.shortTermRatio
+                + longAffinity * (1 - preset.shortTermRatio)
+            let exactFavorite = song.isStarred ? 1.0 : 0.0
+            let favoriteAffinity = max(
+                exactFavorite,
+                favoriteProfile.affinity(for: song)
+            )
+            let serverScore = [
+                rankScore(song.id, in: serverRanks),
+                rankScore(song.id, in: sonicRanks),
+                rankScore(song.id, in: similarRanks),
+                rankScore(song.id, in: genreRanks),
+                rankScore(song.id, in: topArtistRanks)
+            ].max() ?? 0
+            let behaviorScore = behaviorAffinity(songBehavior)
+            let completionScore = completionAffinity(
+                songBehavior?.averageCompletion
+            )
+            let repeatScore = min(
+                1,
+                log1p(Double(songBehavior?.repeatCount ?? 0)) / maxRepeat
+            )
+            let recencyScore = max(
+                songBehavior.map { timeDecay(since: $0.lastPlayed, now: date) } ?? 0,
+                rankScore(song.id, in: recentRanks)
+            )
+            let metadataScore = localMetadataAffinity(song)
+            let playlistScore = max(
+                rankScore(song.id, in: playlistRanks),
+                songBehavior.map {
+                    1 - exp(-Double($0.playlistAddCount) * 0.65)
+                } ?? 0
+            )
+            let albumProgress = albumCompletionScore(
+                song: song,
+                behavior: songBehavior,
+                playedAlbumCounts: playedAlbumCounts,
+                albumCandidateCounts: albumCandidateCounts
+            )
+            let forgottenScore = forgottenFavoriteScore(
+                song: song,
+                behavior: songBehavior,
+                favoriteAffinity: favoriteAffinity,
+                now: date
+            )
+            let rotationScore = artistRotationScore(
+                song: song,
+                favoriteAffinity: favoriteAffinity,
+                recentArtists: recentArtists
+            )
+            let timeScore = timeAwarenessScore(song, date: date)
+            let popularityScore = max(
+                rankScore(song.id, in: popularRanks),
+                min(1, log1p(Double(song.playCount ?? 0)) / log1p(maxPlayCount))
+            )
+            let features: [RecommendationFeature: Double] = [
+                .history: historyAffinity,
+                .favorites: favoriteAffinity,
+                .server: serverScore,
+                .discovery: rankScore(song.id, in: discoveryRanks),
+                .lastFM: rankScore(song.id, in: lastFMRanks),
+                .listenBrainz: rankScore(song.id, in: listenBrainzRanks),
+                .behavior: behaviorScore,
+                .completion: completionScore,
+                .repeatListening: repeatScore,
+                .recency: recencyScore,
+                .context: contextProfile.affinity(for: song),
+                .localMetadata: metadataScore,
+                .playlistAffinity: playlistScore,
+                .albumCompletion: albumProgress,
+                .forgottenFavorites: forgottenScore,
+                .artistRotation: rotationScore,
+                .timeAwareness: timeScore,
+                .popularity: popularityScore
+            ]
+            let score = weightedScore(
+                features: features,
+                weights: weights,
+                preset: preset,
+                coldStart: isColdStart
+            )
+            let metadataConfidence = metadataConfidence(song)
+            let sourceConfidence = sourceConfidence(
+                song: song,
+                lastFMRanks: lastFMRanks,
+                listenBrainzRanks: listenBrainzRanks,
+                sonicRanks: sonicRanks,
+                similarRanks: similarRanks,
+                favoriteGenres: favoriteGenres
+            )
+            let historyConfidence = historyConfidence(songBehavior)
+            let confidence = historyConfidence
+                * metadataConfidence
+                * sourceConfidence
+            let penalty = negativePreferencePenalty(songBehavior)
+            let jitter = stableJitter(song.id, seed: thirtyMinuteSeed)
+            let finalScore = max(
+                0,
+                score * (0.55 + 0.45 * confidence)
+                    - penalty * 0.28
+                    + jitter
+            )
+            let isDiscovery = !knownSongIDs.contains(song.id)
+            let isNewArtist = !knownArtists.contains(normalized(song.artist))
+            let isHiddenGem = isDiscovery
+                && (song.playCount ?? 0) <= 2
+            return RankedRecommendation(
+                song: song,
+                score: finalScore,
+                confidence: confidence,
+                isDiscovery: isDiscovery,
+                isNewArtist: isNewArtist,
+                isHiddenGem: isHiddenGem
+            )
+        }
+        ranked.sort {
+            if $0.score == $1.score { return $0.song.id < $1.song.id }
+            return $0.score > $1.score
+        }
+        ranked = deduplicated(ranked)
+        ranked = allocateDiscovery(
+            ranked,
+            ratio: purpose == .discovery
+                ? max(0.70, weights.discoveryRatio)
+                : weights.discoveryRatio,
+            limit: limit
+        )
+        let result = diversityReranked(ranked, limit: limit).map(\.song)
+        cache.insert(result, for: key, now: date)
+        return result
+    }
+
+    static func invalidateCache() {
+        cache.removeAll()
+    }
+
+    private static func weightedScore(
+        features: [RecommendationFeature: Double],
+        weights: RecommendationWeights,
+        preset: RecommendationPreset,
+        coldStart: Bool
+    ) -> Double {
+        var userWeights: [RecommendationFeature: Double] = [
+            .history: weights.history,
+            .favorites: weights.favorites,
+            .server: weights.serverSimilarity,
+            .discovery: weights.discovery,
+            .lastFM: weights.lastFM,
+            .listenBrainz: weights.listenBrainz,
+            .behavior: weights.behavior,
+            .completion: weights.completion,
+            .repeatListening: weights.repeatListening,
+            .recency: weights.recency,
+            .context: weights.context,
+            .localMetadata: weights.localMetadata,
+            .playlistAffinity: weights.playlistAffinity,
+            .albumCompletion: weights.albumCompletion,
+            .forgottenFavorites: weights.forgottenFavorites,
+            .artistRotation: weights.artistRotation,
+            .timeAwareness: weights.timeAwareness,
+            .popularity: 0.65
+        ]
+        if coldStart {
+            userWeights[.favorites] = max(userWeights[.favorites] ?? 0, 0.95)
+            userWeights[.localMetadata] = max(
+                userWeights[.localMetadata] ?? 0,
+                0.80
+            )
+            userWeights[.popularity] = 0.78
+            userWeights[.history] = 0.15
+            userWeights[.behavior] = 0.15
+        }
+        var total = 0.0
+        var weightTotal = 0.0
+        for (feature, featureScore) in features {
+            let weight = (preset.featureWeights[feature] ?? 0)
+                * (userWeights[feature] ?? 0)
+            guard weight > 0 else { continue }
+            total += min(max(featureScore, 0), 1) * weight
+            weightTotal += weight
+        }
+        return weightTotal > 0 ? total / weightTotal : 0
+    }
+
+    private static func profile(
+        from values: [SongBehavior],
+        date: Date,
+        appliesDecay: Bool = true
+    ) -> RecommendationProfile {
+        var result = RecommendationProfile()
+        for value in values {
+            let behavior = behaviorAffinity(value)
+            let decay = appliesDecay
+                ? timeDecay(since: value.lastPlayed, now: date)
+                : 1
+            let strength = max(0.05, behavior) * decay
+            if !value.song.artist.isEmpty {
+                result.artists[normalized(value.song.artist), default: 0] += strength
             }
-            .sorted { lhs, rhs in
-                if lhs.1 == rhs.1 { return lhs.0.id < rhs.0.id }
-                return lhs.1 > rhs.1
+            for genre in (
+                [value.song.genre].compactMap { $0 }
+                + (value.song.genres ?? []).map(\.name)
+            ) where !genre.isEmpty {
+                result.genres[normalized(genre), default: 0] += strength
             }
-            .prefix(limit)
-            .map { $0.0 }
+            for mood in value.song.moods ?? [] where !mood.isEmpty {
+                result.moods[normalized(mood), default: 0] += strength
+            }
+        }
+        normalizeMap(&result.artists)
+        normalizeMap(&result.genres)
+        normalizeMap(&result.moods)
+        return result
+    }
+
+    private static func normalizeMap(_ values: inout [String: Double]) {
+        guard let maximum = values.values.max(), maximum > 0 else { return }
+        for key in values.keys {
+            values[key] = min(max((values[key] ?? 0) / maximum, 0), 1)
+        }
+    }
+
+    private static func behaviorAffinity(_ value: SongBehavior?) -> Double {
+        guard let value else { return 0.5 }
+        let positive =
+            Double(value.favoriteCount) * 1.0
+            + Double(value.playlistAddCount) * 0.9
+            + Double(value.manualPlayCount) * 0.6
+            + Double(value.searchPlayCount) * 0.15
+            + Double(value.albumSelectionCount) * 0.12
+            + Double(value.completedCount) * 0.5
+            + Double(value.autoplayCount) * 0.15
+        let negative =
+            Double(value.earlySkipCount) * 0.8
+            + Double(value.repeatedSkipCount) * 1.0
+            + Double(value.queueRemovalCount) * 0.65
+        let positiveNormalized = 1 - exp(-positive / 4)
+        let negativeNormalized = 1 - exp(-negative / 3)
+        return min(
+            max(0.5 + positiveNormalized * 0.5 - negativeNormalized * 0.8, 0),
+            1
+        )
+    }
+
+    private static func completionAffinity(_ completion: Double?) -> Double {
+        guard let completion else { return 0.5 }
+        switch completion {
+        case ..<0.10: 0
+        case ..<0.40: 0.25
+        case ..<0.70: 0.50
+        case ..<0.90: 0.75
+        default: 1
+        }
+    }
+
+    private static func timeDecay(since date: Date, now: Date) -> Double {
+        let days = max(0, now.timeIntervalSince(date) / 86_400)
+        switch days {
+        case ...1: 1.0
+        case ...7: interpolate(days, from: 1, to: 7, high: 1.0, low: 0.9)
+        case ...30: interpolate(days, from: 7, to: 30, high: 0.9, low: 0.7)
+        case ...90: interpolate(days, from: 30, to: 90, high: 0.7, low: 0.5)
+        case ...180: interpolate(days, from: 90, to: 180, high: 0.5, low: 0.3)
+        case ...365: interpolate(days, from: 180, to: 365, high: 0.3, low: 0.15)
+        default: max(0.04, 0.15 * exp(-(days - 365) / 365))
+        }
+    }
+
+    private static func interpolate(
+        _ value: Double,
+        from: Double,
+        to: Double,
+        high: Double,
+        low: Double
+    ) -> Double {
+        guard to > from else { return low }
+        let progress = min(max((value - from) / (to - from), 0), 1)
+        return high + (low - high) * progress
+    }
+
+    private static func localMetadataAffinity(_ song: Song) -> Double {
+        var score = 0.20
+        if !song.artist.isEmpty { score += 0.18 }
+        if !song.album.isEmpty { score += 0.12 }
+        if song.genre?.isEmpty == false || song.genres?.isEmpty == false {
+            score += 0.16
+        }
+        if song.bpm != nil { score += 0.10 }
+        if song.moods?.isEmpty == false { score += 0.10 }
+        if song.musicBrainzId?.isEmpty == false || song.isrc?.isEmpty == false {
+            score += 0.14
+        }
+        return min(score, 1)
+    }
+
+    private static func albumCompletionScore(
+        song: Song,
+        behavior: SongBehavior?,
+        playedAlbumCounts: [String: Int],
+        albumCandidateCounts: [String: Int]
+    ) -> Double {
+        guard behavior == nil,
+              let albumID = song.albumId,
+              let played = playedAlbumCounts[albumID],
+              played >= 2 else {
+            return 0
+        }
+        let available = max(played + 1, albumCandidateCounts[albumID] ?? 0)
+        return min(0.95, Double(played) / Double(available))
+    }
+
+    private static func forgottenFavoriteScore(
+        song: Song,
+        behavior: SongBehavior?,
+        favoriteAffinity: Double,
+        now: Date
+    ) -> Double {
+        guard favoriteAffinity >= 0.55 else { return 0 }
+        guard let lastPlayed = behavior?.lastPlayed else { return 0.45 }
+        let days = now.timeIntervalSince(lastPlayed) / 86_400
+        guard days >= 45 else { return 0 }
+        return min(1, (days - 45) / 180)
+    }
+
+    private static func artistRotationScore(
+        song: Song,
+        favoriteAffinity: Double,
+        recentArtists: Set<String>
+    ) -> Double {
+        guard favoriteAffinity > 0 else { return 0 }
+        return recentArtists.contains(normalized(song.artist))
+            ? favoriteAffinity * 0.15
+            : favoriteAffinity
+    }
+
+    private static func timeAwarenessScore(_ song: Song, date: Date) -> Double {
+        let hour = Calendar.current.component(.hour, from: date)
+        let text = normalized(
+            (
+                [song.genre, song.title].compactMap { $0 }
+                + (song.genres ?? []).map(\.name)
+                + (song.moods ?? [])
+            )
+                .joined(separator: " ")
+        )
+        let calmTokens = ["chill", "ambient", "acoustic", "jazz", "ballad", "sleep", "잔잔"]
+        let activeTokens = ["dance", "edm", "rock", "hip hop", "workout", "upbeat", "댄스"]
+        let bpm = song.bpm ?? 0
+        if hour >= 22 || hour < 6 {
+            return calmTokens.contains(where: text.contains) || (bpm > 0 && bpm < 105)
+                ? 1 : 0.35
+        }
+        if (7...9).contains(hour) || (17...19).contains(hour) {
+            return activeTokens.contains(where: text.contains) || bpm >= 115
+                ? 1 : 0.45
+        }
+        return 0.65
+    }
+
+    private static func metadataConfidence(_ song: Song) -> Double {
+        if song.musicBrainzId?.isEmpty == false || song.isrc?.isEmpty == false {
+            return 1
+        }
+        if !song.artist.isEmpty, !song.title.isEmpty { return 0.95 }
+        if !canonicalTitle(song.title).isEmpty { return 0.85 }
+        return song.title.isEmpty ? 0.20 : 0.40
+    }
+
+    private static func sourceConfidence(
+        song: Song,
+        lastFMRanks: [String: Int],
+        listenBrainzRanks: [String: Int],
+        sonicRanks: [String: Int],
+        similarRanks: [String: Int],
+        favoriteGenres: Set<String>
+    ) -> Double {
+        let lastFM = lastFMRanks[song.id] != nil
+        let listenBrainz = listenBrainzRanks[song.id] != nil
+        if lastFM, listenBrainz {
+            let genres = [song.genre].compactMap { $0 }
+                + (song.genres ?? []).map(\.name)
+            if genres.contains(where: {
+                favoriteGenres.contains(normalized($0))
+            }) {
+                return 0.90
+            }
+            return 0.75
+        }
+        if lastFM || listenBrainz { return 0.45 }
+        if sonicRanks[song.id] != nil { return 0.88 }
+        if similarRanks[song.id] != nil { return 0.80 }
+        return 0.62
+    }
+
+    private static func historyConfidence(_ value: SongBehavior?) -> Double {
+        guard let value else { return 0.48 }
+        let evidence = Double(
+            value.playCount + value.completionSamples + value.skipCount
+        )
+        return min(1, 0.50 + log1p(evidence) / log(41) * 0.50)
+    }
+
+    private static func negativePreferencePenalty(_ value: SongBehavior?) -> Double {
+        guard let value,
+              value.earlySkipCount + value.repeatedSkipCount
+                + value.queueRemovalCount > 1 else {
+            return 0
+        }
+        let raw =
+            Double(value.earlySkipCount) * 0.8
+            + Double(value.repeatedSkipCount)
+            + Double(value.queueRemovalCount) * 0.65
+        return min(1, 1 - exp(-raw / 3))
+    }
+
+    private static func allocateDiscovery(
+        _ values: [RankedRecommendation],
+        ratio: Double,
+        limit: Int
+    ) -> [RankedRecommendation] {
+        let clampedRatio = min(max(ratio, 0), 1)
+        let desiredDiscovery = Int(
+            (Double(limit) * clampedRatio).rounded()
+        )
+        let discoveries = values.filter(\.isDiscovery)
+        let known = values.filter { !$0.isDiscovery }
+        let newArtistTarget = Int(
+            (Double(desiredDiscovery) * 0.40).rounded()
+        )
+        let hiddenGemTarget = Int(
+            (Double(desiredDiscovery) * 0.30).rounded()
+        )
+        var result = Array(
+            discoveries.filter(\.isNewArtist).prefix(newArtistTarget)
+        )
+        var selectedIDs = Set(result.map { $0.song.id })
+        result.append(
+            contentsOf: discoveries
+                .filter {
+                    $0.isHiddenGem && !selectedIDs.contains($0.song.id)
+                }
+                .prefix(hiddenGemTarget)
+        )
+        selectedIDs.formUnion(result.map { $0.song.id })
+        result.append(
+            contentsOf: discoveries
+                .filter { !selectedIDs.contains($0.song.id) }
+                .prefix(max(0, desiredDiscovery - result.count))
+        )
+        result.append(
+            contentsOf: known.prefix(max(0, limit - result.count))
+        )
+        if result.count < limit {
+            selectedIDs = Set(result.map { $0.song.id })
+            result.append(
+                contentsOf: values
+                    .filter { !selectedIDs.contains($0.song.id) }
+                    .prefix(limit - result.count)
+            )
+        }
+        return result.sorted {
+            if $0.score == $1.score { return $0.song.id < $1.song.id }
+            return $0.score > $1.score
+        }
+    }
+
+    private static func diversityReranked(
+        _ values: [RankedRecommendation],
+        limit: Int
+    ) -> [RankedRecommendation] {
+        var remaining = values
+        var result: [RankedRecommendation] = []
+        var artistCounts: [String: Int] = [:]
+        var albumCounts: [String: Int] = [:]
+        while !remaining.isEmpty, result.count < limit {
+            var bestIndex = 0
+            var bestAdjustedScore = -Double.infinity
+            for (index, value) in remaining.enumerated() {
+                let artistCount = artistCounts[normalized(value.song.artist), default: 0]
+                let albumKey = normalized(value.song.albumId ?? value.song.album)
+                let albumCount = albumCounts[albumKey, default: 0]
+                let adjusted = value.score
+                    * diversityFactor(for: artistCount)
+                    * diversityFactor(for: albumCount)
+                if adjusted > bestAdjustedScore {
+                    bestAdjustedScore = adjusted
+                    bestIndex = index
+                }
+            }
+            let selected = remaining.remove(at: bestIndex)
+            result.append(selected)
+            artistCounts[normalized(selected.song.artist), default: 0] += 1
+            albumCounts[
+                normalized(selected.song.albumId ?? selected.song.album),
+                default: 0
+            ] += 1
+        }
+        return result
+    }
+
+    private static func diversityFactor(for existingCount: Int) -> Double {
+        switch existingCount {
+        case 0: 1.0
+        case 1: 0.90
+        case 2: 0.75
+        default: 0.55
+        }
+    }
+
+    private static func deduplicated(
+        _ values: [RankedRecommendation]
+    ) -> [RankedRecommendation] {
+        var keys = Set<String>()
+        return values.filter { value in
+            let key: String
+            if let mbid = value.song.musicBrainzId, !mbid.isEmpty {
+                key = "mbid:\(normalized(mbid))"
+            } else if let isrc = value.song.isrc?.first, !isrc.isEmpty {
+                key = "isrc:\(normalized(isrc))"
+            } else {
+                key = [
+                    normalized(value.song.artist),
+                    canonicalTitle(value.song.title)
+                ].joined(separator: "\u{1F}")
+            }
+            return keys.insert(key).inserted
+        }
+    }
+
+    private static func canonicalTitle(_ value: String) -> String {
+        let folded = normalized(value)
+        let patterns = [
+            #"\s*[\(\[].*?\b(remaster(?:ed)?|deluxe|live|version|edit|mix)\b.*?[\)\]]"#,
+            #"\s+-\s+(remaster(?:ed)?|deluxe|live|version|edit|mix).*$"#
+        ]
+        return patterns.reduce(folded) { current, pattern in
+            current.replacingOccurrences(
+                of: pattern,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+        }
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func rankMap(_ values: [Song]) -> [String: Int] {
@@ -93,7 +957,9 @@ enum RecommendationMixer {
 
     private static func rankScore(_ id: String, in ranks: [String: Int]) -> Double {
         guard let rank = ranks[id] else { return 0 }
-        return 1 / (1 + Double(rank) * 0.12)
+        guard !ranks.isEmpty else { return 0 }
+        if ranks.count == 1 { return 1 }
+        return 1 - Double(rank) / Double(ranks.count)
     }
 
     private static func unique(_ values: [Song]) -> [Song] {
@@ -101,7 +967,7 @@ enum RecommendationMixer {
         return values.filter { ids.insert($0.id).inserted }
     }
 
-    private static func normalized(_ value: String) -> String {
+    fileprivate static func normalized(_ value: String) -> String {
         value.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
             locale: .current
@@ -109,13 +975,74 @@ enum RecommendationMixer {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func stableTieBreaker(_ value: String) -> Double {
+    private static func stableJitter(_ value: String, seed: Int) -> Double {
         var hash: UInt64 = 14_695_981_039_346_656_037
+        hash ^= UInt64(bitPattern: Int64(seed))
         for byte in value.utf8 {
             hash ^= UInt64(byte)
             hash &*= 1_099_511_628_211
         }
-        return Double(hash % 997) / 997_000
+        return (Double(hash % 1_001) / 1_000 - 0.5) * 0.024
+    }
+
+    private static func cacheLifetime(
+        for purpose: RecommendationPurpose
+    ) -> TimeInterval {
+        switch purpose {
+        case .artistMix: 6 * 3_600
+        case .discovery: 24 * 3_600
+        default: 30 * 60
+        }
+    }
+
+    private static func cacheKey(
+        snapshot: HomeSnapshot,
+        weights: RecommendationWeights,
+        purpose: RecommendationPurpose,
+        behaviorRevision: UInt64,
+        limit: Int,
+        date: Date
+    ) -> String {
+        let sources = [
+            snapshot.serverRecommendedSongs,
+            snapshot.sonicRecommendedSongs,
+            snapshot.similarArtistSongs,
+            snapshot.genreRecommendedSongs,
+            snapshot.topArtistSongs,
+            snapshot.recentlyAddedSongs,
+            snapshot.popularSongs,
+            snapshot.playlistAffinitySongs,
+            snapshot.lastFMRecommendedSongs,
+            snapshot.listenBrainzRecommendedSongs,
+            snapshot.randomSongs,
+            snapshot.mostPlayedSongs,
+            snapshot.starredSongs
+        ]
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for song in sources.flatMap({ $0 }) {
+            for byte in song.id.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+        }
+        let weightValues = [
+            weights.history, weights.favorites, weights.serverSimilarity,
+            weights.discovery, weights.lastFM, weights.listenBrainz,
+            weights.behavior, weights.completion, weights.repeatListening,
+            weights.recency, weights.context, weights.localMetadata,
+            weights.playlistAffinity, weights.albumCompletion,
+            weights.forgottenFavorites, weights.artistRotation,
+            weights.timeAwareness, weights.discoveryRatio
+        ].map { String(format: "%.3f", $0) }.joined(separator: ",")
+        let timeBucket = Int(date.timeIntervalSince1970 / 1_800)
+        return [
+            purpose.rawValue,
+            String(limit),
+            String(behaviorRevision),
+            String(hash),
+            String(timeBucket),
+            weightValues
+        ].joined(separator: "|")
     }
 }
 

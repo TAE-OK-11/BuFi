@@ -97,6 +97,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
     private var lastMaintenanceSecond = -1
+    private var behaviorStartRecordedForSongID: String?
+    private var lastPlaybackReportSongID: String?
+    private var lastPlaybackReportState: String?
     private let queueStorageKey = "native-play-queue"
 
     override private init() {
@@ -134,6 +137,7 @@ final class AudioEngine: NSObject, ObservableObject {
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
         self.autoplayContinuationProvider = autoplayContinuationProvider
         if client == nil {
+            finalizeCurrentPlayback(reason: .stopped)
             queueSaveTask?.cancel()
             offlinePrefetchTask?.cancel()
             cancelPlaybackRecovery()
@@ -185,6 +189,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 $0.id == serverQueue.currentID
             } ?? 0
             self.currentSong = serverQueue.songs[self.queueIndex]
+            self.behaviorStartRecordedForSongID = nil
             self.duration = self.currentSong?.safeDuration ?? 0
             let restoredPosition = max(0, serverQueue.position)
             self.elapsed = self.duration > 0 ? min(restoredPosition, self.duration) : restoredPosition
@@ -196,25 +201,40 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    func play(_ song: Song, in sourceQueue: [Song], autoplay: Bool = true) {
+    func play(
+        _ song: Song,
+        in sourceQueue: [Song],
+        autoplay: Bool = true,
+        origin: PlaybackOrigin = .manual
+    ) {
         autoplayTask?.cancel()
         autoplayTask = nil
         autoplayGeneration &+= 1
         autoplayShouldAdvance = false
-        startPlayback(song, in: sourceQueue, preferredIndex: nil, autoplay: autoplay)
+        startPlayback(
+            song,
+            in: sourceQueue,
+            preferredIndex: nil,
+            autoplay: autoplay,
+            origin: origin,
+            transitionReason: .replaced
+        )
     }
 
     private func startPlayback(
         _ song: Song,
         in sourceQueue: [Song],
         preferredIndex: Int?,
-        autoplay: Bool = true
+        autoplay: Bool = true,
+        origin: PlaybackOrigin = .manual,
+        transitionReason: PlaybackEndReason = .replaced
     ) {
         // An explicit selection supersedes a pending server queue restore,
         // including the interval before AVPlayer reaches the playing state.
         serverQueueTask?.cancel()
         cancelPlaybackRecovery()
         let previousSongID = currentSong?.id
+        finalizeCurrentPlayback(reason: transitionReason)
         let normalizedQueue = sourceQueue.isEmpty ? [song] : sourceQueue
         let resolvedIndex: Int
         if let preferredIndex, normalizedQueue.indices.contains(preferredIndex) {
@@ -236,6 +256,7 @@ final class AudioEngine: NSObject, ObservableObject {
         itemObservers.removeAll()
         player.replaceCurrentItem(with: nil)
         currentSong = selectedSong
+        recordPlaybackStart(selectedSong, origin: origin)
         rememberShuffleSelection(selectedSong.id)
         elapsed = 0
         duration = selectedSong.safeDuration
@@ -283,6 +304,10 @@ final class AudioEngine: NSObject, ObservableObject {
         serverQueueTask?.cancel()
         configureAudioSession()
         wantsPlayback = true
+        if let currentSong,
+           behaviorStartRecordedForSongID != currentSong.id {
+            recordPlaybackStart(currentSong, origin: .restored)
+        }
         playbackError = nil
         let needsReload =
             player.currentItem == nil
@@ -399,7 +424,13 @@ final class AudioEngine: NSObject, ObservableObject {
     func next(isAutoAdvance: Bool = false) {
         guard !queue.isEmpty else { return }
         if isAutoAdvance, repeatMode == .one, let song = currentSong {
-            startPlayback(song, in: queue, preferredIndex: queueIndex)
+            startPlayback(
+                song,
+                in: queue,
+                preferredIndex: queueIndex,
+                origin: .autoplay,
+                transitionReason: .completed
+            )
             return
         }
 
@@ -413,7 +444,13 @@ final class AudioEngine: NSObject, ObservableObject {
             requestAutoplayContinuation(advanceWhenReady: true)
             return
         }
-        startPlayback(queue[queueIndex], in: queue, preferredIndex: queueIndex)
+        startPlayback(
+            queue[queueIndex],
+            in: queue,
+            preferredIndex: queueIndex,
+            origin: isAutoAdvance ? .autoplay : .manual,
+            transitionReason: isAutoAdvance ? .completed : .skipped
+        )
     }
 
     private func scheduleAutoplayContinuationIfNeeded() {
@@ -492,13 +529,25 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         guard !queue.isEmpty else { return }
         queueIndex = queueIndex > 0 ? queueIndex - 1 : (repeatMode == .all ? queue.count - 1 : 0)
-        startPlayback(queue[queueIndex], in: queue, preferredIndex: queueIndex)
+        startPlayback(
+            queue[queueIndex],
+            in: queue,
+            preferredIndex: queueIndex,
+            origin: .manual,
+            transitionReason: .skipped
+        )
     }
 
     func playQueueItem(at index: Int) {
         guard queue.indices.contains(index) else { return }
         queueIndex = index
-        startPlayback(queue[index], in: queue, preferredIndex: index)
+        startPlayback(
+            queue[index],
+            in: queue,
+            preferredIndex: index,
+            origin: .queue,
+            transitionReason: .replaced
+        )
     }
 
     func removeQueueItem(at index: Int) {
@@ -507,7 +556,11 @@ final class AudioEngine: NSObject, ObservableObject {
             excludeCurrentAndAdvance()
             return
         }
+        let removedSong = queue[index]
         queue.remove(at: index)
+        Task {
+            await ListeningHistoryStore.shared.recordQueueRemoval(removedSong)
+        }
         if index < queueIndex { queueIndex -= 1 }
         updateRemoteCommands()
         updateNowPlaying()
@@ -589,12 +642,19 @@ final class AudioEngine: NSObject, ObservableObject {
         autoplayTask = nil
         autoplayGeneration &+= 1
         autoplayShouldAdvance = false
+        let removedSongs = Array(queue[(queueIndex + 1)..<queue.count])
         queue.removeSubrange((queueIndex + 1)..<queue.count)
+        Task {
+            for song in removedSongs {
+                await ListeningHistoryStore.shared.recordQueueRemoval(song)
+            }
+        }
         queueDidChange()
     }
 
     func excludeCurrentAndAdvance() {
         guard queue.indices.contains(queueIndex) else { return }
+        finalizeCurrentPlayback(reason: .queueRemoved)
         let removedIndex = queueIndex
         queue.remove(at: removedIndex)
         guard !queue.isEmpty else {
@@ -620,7 +680,13 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         queueIndex = min(removedIndex, queue.count - 1)
-        startPlayback(queue[queueIndex], in: queue, preferredIndex: queueIndex)
+        startPlayback(
+            queue[queueIndex],
+            in: queue,
+            preferredIndex: queueIndex,
+            origin: .queue,
+            transitionReason: .queueRemoved
+        )
     }
 
     func toggleShuffle() {
@@ -1218,6 +1284,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 if player.timeControlStatus == .playing {
                     self.cancelPlaybackRecovery()
                     self.endBackgroundBridge()
+                    self.reportPlaybackState("playing")
+                } else if !self.wantsPlayback {
+                    self.reportPlaybackState("paused")
                 }
                 self.refreshIdleTimerPreference()
                 self.updateRemoteCommands()
@@ -1756,6 +1825,73 @@ final class AudioEngine: NSObject, ObservableObject {
         UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.62)
     }
 
+    private func recordPlaybackStart(
+        _ song: Song,
+        origin: PlaybackOrigin
+    ) {
+        guard song.externalStreamURL == nil else {
+            behaviorStartRecordedForSongID = nil
+            return
+        }
+        behaviorStartRecordedForSongID = song.id
+        reportPlaybackState("starting", song: song, position: 0)
+        Task {
+            await ListeningHistoryStore.shared.recordStart(
+                song,
+                origin: origin
+            )
+        }
+    }
+
+    private func finalizeCurrentPlayback(reason: PlaybackEndReason) {
+        guard let song = currentSong,
+              behaviorStartRecordedForSongID == song.id else {
+            return
+        }
+        behaviorStartRecordedForSongID = nil
+        let playedSeconds = elapsed
+        let resolvedDuration = duration > 0 ? duration : song.safeDuration
+        reportPlaybackState(
+            "stopped",
+            song: song,
+            position: playedSeconds
+        )
+        Task {
+            await ListeningHistoryStore.shared.recordEnd(
+                song,
+                playedSeconds: playedSeconds,
+                duration: resolvedDuration,
+                reason: reason
+            )
+        }
+    }
+
+    private func reportPlaybackState(
+        _ state: String,
+        song: Song? = nil,
+        position: TimeInterval? = nil
+    ) {
+        guard let client,
+              let song = song ?? currentSong,
+              song.externalStreamURL == nil else {
+            return
+        }
+        guard lastPlaybackReportSongID != song.id
+                || lastPlaybackReportState != state else {
+            return
+        }
+        lastPlaybackReportSongID = song.id
+        lastPlaybackReportState = state
+        let resolvedPosition = position ?? elapsed
+        Task {
+            await client.reportPlayback(
+                id: song.id,
+                position: resolvedPosition,
+                state: state
+            )
+        }
+    }
+
     private func submitScrobbleIfNeeded() {
         guard !scrobbled,
               let song = currentSong,
@@ -1766,7 +1902,6 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         scrobbled = true
         Task {
-            await ListeningHistoryStore.shared.record(song)
             try? await client.scrobble(id: song.id, submission: true)
         }
     }

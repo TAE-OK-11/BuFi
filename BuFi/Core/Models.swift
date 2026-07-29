@@ -69,11 +69,20 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
     var playCount: Int? = nil
     var played: String? = nil
     var genre: String? = nil
+    var genres: [SongGenre]? = nil
     var musicBrainzId: String? = nil
+    var isrc: [String]? = nil
+    var bpm: Int? = nil
+    var moods: [String]? = nil
+    var created: String? = nil
     var externalStreamURL: String? = nil
 
     var isStarred: Bool { starred != nil }
     var safeDuration: Double { max(0, duration ?? 0) }
+}
+
+struct SongGenre: Codable, Hashable, Sendable {
+    let name: String
 }
 
 struct Album: Codable, Identifiable, Hashable, Sendable {
@@ -149,6 +158,13 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
     var starredArtists: [Artist] = []
     var artists: [Artist] = []
     var randomSongs: [Song] = []
+    var sonicRecommendedSongs: [Song] = []
+    var similarArtistSongs: [Song] = []
+    var genreRecommendedSongs: [Song] = []
+    var topArtistSongs: [Song] = []
+    var recentlyAddedSongs: [Song] = []
+    var popularSongs: [Song] = []
+    var playlistAffinitySongs: [Song] = []
     var serverRecommendedSongs: [Song] = []
     var lastFMRecommendedSongs: [Song] = []
     var listenBrainzRecommendedSongs: [Song] = []
@@ -251,6 +267,33 @@ struct AlbumListContainer: Decodable {
 
 struct RandomSongsPayload: Decodable {
     let randomSongs: SongContainer?
+}
+
+struct SongsByGenrePayload: Decodable {
+    let songsByGenre: SongContainer?
+}
+
+struct GenresPayload: Decodable {
+    let genres: GenreContainer?
+}
+
+struct GenreContainer: Decodable {
+    let genre: [ServerGenre]?
+}
+
+struct ServerGenre: Decodable, Sendable {
+    let value: String
+    let songCount: Int?
+    let albumCount: Int?
+}
+
+struct OpenSubsonicExtensionsPayload: Decodable {
+    let openSubsonicExtensions: [OpenSubsonicExtension]?
+}
+
+struct OpenSubsonicExtension: Decodable, Sendable {
+    let name: String
+    let versions: [Int]
 }
 
 struct SimilarSongsPayload: Decodable {
