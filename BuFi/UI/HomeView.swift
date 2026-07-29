@@ -9,16 +9,22 @@ enum MusicRoute: Hashable {
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var filter = HomeFilter.all
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 28) {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    BuFiPageHeader(
+                        title: "홈",
+                        subtitle: "내 음악과 새로운 추천을 한곳에서",
+                        systemImage: "waveform"
+                    )
                     filterBar
                     filteredContent
                 }
-                .padding(.top, 24)
+                .padding(.top, 18)
                 .padding(.bottom, 34)
             }
             .background(BuFiScreenBackground())
@@ -57,8 +63,9 @@ struct HomeView: View {
         }
         .id(filter)
         .transition(
-            .opacity.combined(with: .scale(scale: 0.995))
+            .opacity.combined(with: .offset(y: 6))
         )
+        .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
     }
 
     private var musicOverview: some View {
@@ -125,10 +132,7 @@ struct HomeView: View {
                         count: model.home.starredSongs.count,
                         songs: model.home.starredSongs,
                         icon: "heart.fill",
-                        colors: [
-                            Color(red: 0.78, green: 0.16, blue: 0.27),
-                            Color(red: 0.47, green: 0.14, blue: 0.45)
-                        ]
+                        tint: BuFiTheme.accent
                     )
                 }
                 .buttonStyle(BuFiPressStyle())
@@ -144,10 +148,7 @@ struct HomeView: View {
                         count: model.home.mostPlayedSongs.count,
                         songs: model.home.mostPlayedSongs,
                         icon: "chart.bar.fill",
-                        colors: [
-                            Color(red: 0.15, green: 0.46, blue: 0.64),
-                            Color(red: 0.20, green: 0.17, blue: 0.48)
-                        ],
+                        tint: Color(red: 0.20, green: 0.48, blue: 0.70),
                         showsRank: true
                     )
                 }
@@ -163,61 +164,21 @@ struct HomeView: View {
         count: Int,
         songs: [Song],
         icon: String,
-        colors: [Color],
+        tint: Color,
         showsRank: Bool = false
     ) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            LinearGradient(
-                colors: colors,
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            Image(systemName: icon)
-                .font(.system(size: 52, weight: .bold))
-                .foregroundStyle(Color.white.opacity(0.16))
-                .rotationEffect(.degrees(8))
-                .padding(12)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(LocalizedStringKey(title))
-                    .font(.system(size: 17, weight: .bold))
-                    .lineLimit(2)
-                Text(
-                    String(
-                        format: String(localized: "%d곡"),
-                        count
-                    )
-                )
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.72))
-
-                Spacer(minLength: 2)
-
-                ForEach(Array(songs.prefix(2).enumerated()), id: \.element.id) {
-                    index, song in
-                    Text(
-                        showsRank
-                            ? "\(index + 1). \(song.title)"
-                            : song.title
-                    )
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                    .foregroundStyle(.white.opacity(0.88))
-                }
+        BuFiFeatureCard(
+            title: LocalizedStringKey(title),
+            subtitle: String(
+                format: String(localized: "%d곡"),
+                count
+            ),
+            systemImage: icon,
+            tint: tint,
+            details: Array(songs.prefix(2).enumerated()).map { index, song in
+                showsRank ? "\(index + 1). \(song.title)" : song.title
             }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(14)
-        }
-        .frame(width: 176, height: 132)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.7)
-        }
-        .shadow(color: colors.first?.opacity(0.16) ?? .clear, radius: 12, y: 6)
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        )
     }
 
     @ViewBuilder
@@ -269,7 +230,7 @@ struct HomeView: View {
     @ViewBuilder
     private func playlistArtwork(_ playlist: Playlist) -> some View {
         if let cover = playlist.coverArt, !cover.isEmpty {
-            ArtworkView(coverArt: cover, size: 166, cornerRadius: 9)
+            ArtworkView(coverArt: cover, size: 166, cornerRadius: 14)
         } else {
             ZStack {
                 LinearGradient(
@@ -285,7 +246,7 @@ struct HomeView: View {
                     .font(.system(size: 48, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
             }
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
     }
 
@@ -341,7 +302,7 @@ struct HomeView: View {
                                         ArtworkView(
                                             coverArt: song.coverArt,
                                             size: 166,
-                                            cornerRadius: 8
+                                            cornerRadius: 14
                                         )
                                         .frame(width: 166, height: 166)
                                         Text("\(index + 1)")
@@ -400,7 +361,7 @@ struct HomeView: View {
                                     .frame(width: 166, height: 112)
                                     .clipShape(
                                         RoundedRectangle(
-                                            cornerRadius: 12,
+                                            cornerRadius: 18,
                                             style: .continuous
                                         )
                                     )
@@ -457,7 +418,7 @@ struct HomeView: View {
                                 audio.play(song, in: songs)
                             } label: {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    ArtworkView(coverArt: song.coverArt, size: 166, cornerRadius: 7)
+                                    ArtworkView(coverArt: song.coverArt, size: 166, cornerRadius: 14)
                                         .frame(width: 166, height: 166)
                                     Text(song.title)
                                         .font(.system(size: 15, weight: .semibold))

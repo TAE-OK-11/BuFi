@@ -3,17 +3,26 @@ import SwiftUI
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audio: AudioEngine
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var filter = LibraryFilter.playlists
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    BuFiPageHeader(
+                        title: "내 라이브러리",
+                        subtitle: "저장한 음악과 플레이리스트 모아보기",
+                        systemImage: "music.note.list"
+                    )
                     filters
                     content
+                        .id(filter)
+                        .transition(.opacity.combined(with: .offset(y: 6)))
                 }
                 .padding(.top, 18)
                 .padding(.bottom, audio.currentSong == nil ? 56 : 154)
+                .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
             }
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
@@ -40,7 +49,7 @@ struct LibraryView: View {
             if model.home.playlists.isEmpty {
                 empty("플레이리스트가 없습니다", icon: "music.note.list")
             } else {
-                ForEach(model.home.playlists) { playlist in
+                groupedLibraryRows(model.home.playlists) { playlist in
                     NavigationLink(value: MusicRoute.playlist(playlist)) {
                         libraryRow(
                             title: playlist.name,
@@ -60,7 +69,7 @@ struct LibraryView: View {
             if model.home.starredAlbums.isEmpty {
                 empty("저장한 앨범이 없습니다", icon: "square.stack")
             } else {
-                ForEach(model.home.starredAlbums) { album in
+                groupedLibraryRows(model.home.starredAlbums) { album in
                     NavigationLink(value: MusicRoute.album(album)) {
                         libraryRow(
                             title: album.name,
@@ -82,43 +91,72 @@ struct LibraryView: View {
             if model.home.starredSongs.isEmpty {
                 empty("좋아요 표시한 곡이 없습니다", icon: "heart")
             } else {
-                ForEach(model.home.starredSongs) { song in
-                    SongRow(song: song, queue: model.home.starredSongs)
+                BuFiGroupedSurface {
+                    VStack(spacing: 0) {
+                        ForEach(model.home.starredSongs) { song in
+                            SongRow(song: song, queue: model.home.starredSongs)
+                                .padding(.horizontal, 14)
+                            if song.id != model.home.starredSongs.last?.id {
+                                rowSeparator
+                            }
+                        }
+                    }
                 }
-                .padding(.horizontal, 17)
+                .padding(.horizontal, 16)
             }
         }
     }
 
     @ViewBuilder
     private var artistsContent: some View {
-        if allArtists.isEmpty {
+        let artists = allArtists
+        let favorites = artists.filter(\.isStarred).sorted(by: artistSort)
+        let favoriteIDs = Set(favorites.map(\.id))
+        let sections = makeArtistSections(
+            artists.filter { !favoriteIDs.contains($0.id) }
+        )
+
+        if artists.isEmpty {
             empty("아티스트가 없습니다", icon: "person.2")
         } else {
-            if !favoriteArtists.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
+            if !favorites.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
                     librarySectionTitle("좋아요 표시한 아티스트", icon: "heart.fill")
-                    ForEach(favoriteArtists) { artist in
-                        artistRow(artist, favorite: true)
+                    BuFiGroupedSurface {
+                        VStack(spacing: 0) {
+                            ForEach(favorites) { artist in
+                                artistRow(artist, favorite: true)
+                                if artist.id != favorites.last?.id {
+                                    rowSeparator
+                                }
+                            }
+                        }
                     }
+                    .padding(.horizontal, 16)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 12) {
                 librarySectionTitle("모든 아티스트", icon: "textformat")
-                ForEach(artistSections) { section in
-                    Section {
-                        ForEach(section.artists) { artist in
-                            artistRow(artist, favorite: false)
-                        }
-                    } header: {
+                ForEach(sections) { section in
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(section.title)
                             .font(.system(size: 14, weight: .bold))
                             .foregroundStyle(BuFiTheme.accentSoft)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 17)
-                            .padding(.vertical, 7)
-                            .background(BuFiTheme.background.opacity(0.94))
+                            .padding(.horizontal, 20)
+
+                        BuFiGroupedSurface {
+                            VStack(spacing: 0) {
+                                ForEach(section.artists) { artist in
+                                    artistRow(artist, favorite: false)
+                                    if artist.id != section.artists.last?.id {
+                                        rowSeparator
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 16)
                     }
                 }
             }
@@ -133,7 +171,8 @@ struct LibraryView: View {
                         .frame(width: 66, height: 66)
                     Text(artist.name)
                         .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                 }
                 .contentShape(Rectangle())
@@ -165,7 +204,7 @@ struct LibraryView: View {
                 .foregroundStyle(BuFiTheme.accent)
         }
         .font(.system(size: 21, weight: .bold))
-        .padding(.horizontal, 17)
+        .padding(.horizontal, 18)
         .padding(.top, 6)
         .padding(.bottom, 8)
     }
@@ -187,11 +226,13 @@ struct LibraryView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(title)
                     .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(subtitle)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             Image(systemName: "chevron.right")
@@ -201,6 +242,29 @@ struct LibraryView: View {
         .padding(.horizontal, 17)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+    }
+
+    private func groupedLibraryRows<Item: Identifiable, Row: View>(
+        _ items: [Item],
+        @ViewBuilder row: (Item) -> Row
+    ) -> some View {
+        BuFiGroupedSurface {
+            VStack(spacing: 0) {
+                ForEach(items) { item in
+                    row(item)
+                    if item.id != items.last?.id {
+                        rowSeparator
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var rowSeparator: some View {
+        Divider()
+            .padding(.leading, 96)
+            .opacity(0.52)
     }
 
     @ViewBuilder
@@ -258,13 +322,8 @@ struct LibraryView: View {
         return values.values.sorted(by: artistSort)
     }
 
-    private var favoriteArtists: [Artist] {
-        allArtists.filter(\.isStarred).sorted(by: artistSort)
-    }
-
-    private var artistSections: [ArtistSection] {
-        let favoriteIDs = Set(favoriteArtists.map(\.id))
-        let grouped = Dictionary(grouping: allArtists.filter { !favoriteIDs.contains($0.id) }) {
+    private func makeArtistSections(_ artists: [Artist]) -> [ArtistSection] {
+        let grouped = Dictionary(grouping: artists) {
             ArtistSectioning.title(for: $0.name)
         }
         return grouped.keys.sorted(by: ArtistSectioning.sectionSort).map {
