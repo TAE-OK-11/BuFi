@@ -265,6 +265,8 @@ actor ExternalRecommendationClient {
             memoryCapacity: 2 * 1_024 * 1_024,
             diskCapacity: 12 * 1_024 * 1_024
         )
+        configuration.httpMaximumConnectionsPerHost = 2
+        configuration.allowsConstrainedNetworkAccess = false
         session = URLSession(configuration: configuration)
     }
 

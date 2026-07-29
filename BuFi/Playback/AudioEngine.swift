@@ -18,7 +18,12 @@ final class AudioEngine: NSObject, ObservableObject {
     @Published private(set) var lyrics = LyricsDocument.empty
     @Published private(set) var activeLyricIndex = -1
     @Published var playbackError: String?
-    @Published var showPlayer = false
+    @Published var showPlayer = false {
+        didSet {
+            guard oldValue != showPlayer else { return }
+            installPlaybackTimeObserver()
+        }
+    }
     @Published var showFullLyrics = false
     @Published var isShuffleEnabled = false
     @Published var shuffleStyle: ShuffleStyle {
@@ -90,6 +95,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var pendingSeekPosition: TimeInterval?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
+    private var lastMaintenanceSecond = -1
     private let queueStorageKey = "native-play-queue"
 
     override private init() {
@@ -244,6 +250,7 @@ final class AudioEngine: NSObject, ObservableObject {
         playbackError = nil
         wantsPlayback = autoplay
         scrobbled = false
+        lastMaintenanceSecond = -1
         let automaticallyOpensPlayer =
             UserDefaults.standard.object(forKey: "auto-open-player") as? Bool ?? false
         showPlayer = showPlayer || automaticallyOpensPlayer
@@ -307,6 +314,20 @@ final class AudioEngine: NSObject, ObservableObject {
         offlinePrefetchTask = nil
         recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
         player.currentItem?.preferredForwardBufferDuration = 0
+    }
+
+    func handleEnergyConstraints(
+        lowPowerMode: Bool,
+        thermalState: ProcessInfo.ThermalState
+    ) {
+        refreshIdleTimerPreference()
+        guard lowPowerMode
+                || thermalState == .serious
+                || thermalState == .critical else {
+            return
+        }
+        offlinePrefetchTask?.cancel()
+        offlinePrefetchTask = nil
     }
 
     private func pausePlayback(persistsQueue: Bool) {
@@ -705,7 +726,10 @@ final class AudioEngine: NSObject, ObservableObject {
     func refreshIdleTimerPreference() {
         let keepAwake =
             UserDefaults.standard.object(forKey: "keep-screen-awake") as? Bool ?? false
-        UIApplication.shared.isIdleTimerDisabled = keepAwake && isPlaying
+        UIApplication.shared.isIdleTimerDisabled =
+            keepAwake
+            && isPlaying
+            && !ProcessInfo.processInfo.isLowPowerModeEnabled
     }
 
     func toggleCurrentStar() async {
@@ -1199,8 +1223,20 @@ final class AudioEngine: NSObject, ObservableObject {
             }
         }
 
+        installPlaybackTimeObserver()
+    }
+
+    private func installPlaybackTimeObserver() {
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
+        }
+        let refreshInterval = showPlayer ? 0.25 : 0.5
         timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            forInterval: CMTime(
+                seconds: refreshInterval,
+                preferredTimescale: 600
+            ),
             queue: .main
         ) { [weak self] time in
             Task { @MainActor in
@@ -1210,20 +1246,28 @@ final class AudioEngine: NSObject, ObservableObject {
                 if !self.isSeekInFlight, seconds.isFinite {
                     self.elapsed = max(0, seconds)
                 }
-                if let itemDuration = self.player.currentItem?.duration.seconds {
-                    self.updateDuration(using: itemDuration)
-                }
                 if self.duration > 0 {
                     self.elapsed = min(self.elapsed, self.duration)
                 }
                 self.updateActiveLyric()
-                self.submitScrobbleIfNeeded()
-                if Date().timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
-                    self.scheduleQueueSave(immediate: true)
+
+                // UI progress may need four updates per second while the full
+                // player is visible, but duration checks, scrobbling, and
+                // persistence do not. Batch those operations to one wakeup per
+                // playback second.
+                let maintenanceSecond = Int(self.elapsed.rounded(.down))
+                if maintenanceSecond != self.lastMaintenanceSecond {
+                    self.lastMaintenanceSecond = maintenanceSecond
+                    if let itemDuration = self.player.currentItem?.duration.seconds {
+                        self.updateDuration(using: itemDuration)
+                    }
+                    self.submitScrobbleIfNeeded()
+                    if Date().timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
+                        self.scheduleQueueSave(immediate: true)
+                    }
                 }
             }
         }
-
     }
 
     private func updateActiveLyric() {

@@ -26,6 +26,22 @@ references; no source was copied into BuFi.
   while clearing reusable detail/artwork caches and cancelling speculative
   offline prefetch.
 
+## Energy pass
+
+- Ordinary album and artist artwork no longer runs palette extraction unless
+  a screen actually consumes the result.
+- Playback progress refreshes at 4 Hz only while the full player is visible and
+  at 2 Hz elsewhere. Duration checks, scrobbling, and queue persistence are
+  batched to at most once per playback second.
+- Player artwork prefetch is limited to the immediate successor at 600 pixels
+  instead of decoding two 900-pixel successors.
+- Entering Low Power Mode or a serious thermal state cancels optional external
+  recommendation work and offline prefetch without interrupting playback.
+- Low Power Mode restores the system auto-lock behavior even when the optional
+  keep-screen-awake playback setting is enabled.
+- Optional Last.fm and ListenBrainz requests avoid constrained networks and
+  limit connection concurrency.
+
 ## Deliberately not adopted
 
 - BuFi was not migrated from `AVPlayer` to TIDAL's `AVQueuePlayer` architecture.

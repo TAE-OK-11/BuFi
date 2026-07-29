@@ -437,6 +437,19 @@ final class AppModel: ObservableObject {
         artistDetailCache.removeAll(keepingCapacity: false)
     }
 
+    func handleEnergyConstraints(
+        lowPowerMode: Bool,
+        thermalState: ProcessInfo.ThermalState
+    ) {
+        guard lowPowerMode
+                || thermalState == .serious
+                || thermalState == .critical else {
+            return
+        }
+        recommendationTask?.cancel()
+        recommendationTask = nil
+    }
+
     func album(id: String) async throws -> AlbumDetail {
         if let cached = Self.cachedDetail(id: id, cache: &albumDetailCache) {
             return cached

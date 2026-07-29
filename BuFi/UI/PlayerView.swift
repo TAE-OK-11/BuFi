@@ -812,7 +812,11 @@ struct PlayerView: View {
             return
         }
         let start = max(index + 1, 0)
-        let end = min(audio.queue.count, start + 2)
+        // Warming one successor's artwork data and palette is enough to hide a
+        // normal track transition. Fetching two large covers keeps the network
+        // radio and image decoder active longer without improving the
+        // immediately visible animation.
+        let end = min(audio.queue.count, start + 1)
         guard start < end else {
             artworkPrefetchTask = nil
             return
@@ -822,12 +826,12 @@ struct PlayerView: View {
         artworkPrefetchTask = Task(priority: .utility) {
             for song in upcoming {
                 guard !Task.isCancelled,
-                      let url = await model.artworkURL(id: song.coverArt, size: 900) else {
+                      let url = await model.artworkURL(id: song.coverArt, size: 600) else {
                     continue
                 }
                 guard let image = try? await ArtworkStore.shared.image(
                     for: url,
-                    pixelSize: 900
+                    pixelSize: 600
                 ) else {
                     continue
                 }

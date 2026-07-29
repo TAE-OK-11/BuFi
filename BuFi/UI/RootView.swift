@@ -62,10 +62,28 @@ struct RootView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
-            lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            lowPowerMode = currentLowPowerMode
+            model.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
-            thermalState = ProcessInfo.processInfo.thermalState
+            let currentThermalState = ProcessInfo.processInfo.thermalState
+            thermalState = currentThermalState
+            model.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
             model.handleMemoryPressure()

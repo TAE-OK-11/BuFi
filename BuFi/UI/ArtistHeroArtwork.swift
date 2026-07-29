@@ -79,6 +79,12 @@ struct ArtistHeroArtwork: View {
         }
 
         image = loaded
-        onPalette?(await ArtworkStore.shared.palette(for: coverURL, image: loaded))
+        guard let onPalette else { return }
+        let palette = await ArtworkStore.shared.palette(
+            for: coverURL,
+            image: loaded
+        )
+        guard !Task.isCancelled else { return }
+        onPalette(palette)
     }
 }

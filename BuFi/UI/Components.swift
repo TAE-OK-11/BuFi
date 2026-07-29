@@ -303,9 +303,13 @@ struct ArtworkView: View {
                 }
                 guard !Task.isCancelled else { return }
                 image = loaded
-                let palette = await ArtworkStore.shared.palette(for: url, image: loaded)
+                guard let onPalette else { return }
+                let palette = await ArtworkStore.shared.palette(
+                    for: url,
+                    image: loaded
+                )
                 guard !Task.isCancelled else { return }
-                onPalette?(palette)
+                onPalette(palette)
                 return
             }
             guard !Task.isCancelled else { return }
