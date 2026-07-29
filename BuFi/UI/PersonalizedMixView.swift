@@ -7,22 +7,52 @@ struct PersonalizedMixArtwork: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Image(assetName)
-                .resizable()
-                .scaledToFill()
+            if mix.kind == .artist, let coverArt = mix.artworkCoverArt {
+                ArtworkView(
+                    coverArt: coverArt,
+                    size: size,
+                    cornerRadius: 0
+                )
+                .frame(width: size, height: size)
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text(coverTitle)
-                    .font(coverFont)
-                    .tracking(-size * 0.006)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.70)
-                    .fixedSize(horizontal: false, vertical: true)
+                LinearGradient(
+                    colors: [.clear, .black.opacity(0.48)],
+                    startPoint: .center,
+                    endPoint: .bottom
+                )
 
-                Spacer(minLength: 0)
+                VStack {
+                    Spacer()
+                    Text(coverTitle)
+                        .font(coverFont)
+                        .tracking(-size * 0.006)
+                        .foregroundStyle(.black)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.64)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, max(10, size * 0.06))
+                        .padding(.vertical, max(7, size * 0.04))
+                        .background(Color(red: 0.77, green: 1.0, blue: 0.28))
+                        .padding(.bottom, max(12, size * 0.07))
+                }
+            } else {
+                Image(assetName)
+                    .resizable()
+                    .scaledToFill()
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(coverTitle)
+                        .font(coverFont)
+                        .tracking(-size * 0.006)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.70)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(foreground)
+                .padding(max(13, size * 0.075))
             }
-            .foregroundStyle(foreground)
-            .padding(max(13, size * 0.075))
         }
         .frame(width: size, height: size)
         .clipShape(
@@ -50,11 +80,14 @@ struct PersonalizedMixArtwork: View {
         case .genre: "MixGenre"
         case .artist: "MixArtist"
         case .mood:
-            switch mix.id {
-            case "happy-mix": "MixMoodBoost"
-            case "upbeat-mix": "MixWorkoutEnergy"
-            case "chill-mix": "MixChillWaves"
-            default: "MixMood"
+            if mix.id.hasPrefix("happy-mix") {
+                "MixMoodBoost"
+            } else if mix.id.hasPrefix("upbeat-mix") {
+                "MixWorkoutEnergy"
+            } else if mix.id.hasPrefix("chill-mix") {
+                "MixChillWaves"
+            } else {
+                "MixMood"
             }
         case .favorites: "MixLikedSongs"
         case .ranking: "MixTopTracks"
@@ -68,7 +101,11 @@ struct PersonalizedMixArtwork: View {
         case .listenAgain: "LISTEN\nAGAIN"
         case .favorites: "FAVORITES"
         case .ranking: "TOP\nTRACKS"
-        case .genre, .artist, .mood: mix.title.uppercased()
+        case .artist:
+            mix.title
+                .replacingOccurrences(of: " Mix", with: "")
+                .uppercased() + " MIX"
+        case .genre, .mood: mix.title.uppercased()
         }
     }
 
@@ -113,14 +150,17 @@ struct PersonalizedMixCard: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .truncationMode(.tail)
+                .frame(height: 38, alignment: .topLeading)
             Text(mix.subtitle)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .truncationMode(.tail)
+                .frame(height: 34, alignment: .topLeading)
         }
-        .frame(width: width, alignment: .leading)
+        .frame(width: width, height: width + 88, alignment: .topLeading)
+        .clipped()
         .accessibilityElement(children: .combine)
     }
 }
@@ -228,7 +268,7 @@ struct PersonalizedMixDetailView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(mix.songs.enumerated()), id: \.element.id) {
                         index, song in
-                        HStack(spacing: 2) {
+                        HStack(spacing: mix.showsRanking ? 10 : 2) {
                             if mix.showsRanking {
                                 Text("\(index + 1)")
                                     .font(
@@ -244,7 +284,7 @@ struct PersonalizedMixDetailView: View {
                                             : Color.secondary
                                     )
                                     .monospacedDigit()
-                                    .frame(width: 28, alignment: .trailing)
+                                    .frame(width: 24, alignment: .trailing)
                             }
                             SongRow(
                                 song: song,
@@ -257,7 +297,7 @@ struct PersonalizedMixDetailView: View {
 
                         if song.id != mix.songs.last?.id {
                             Divider()
-                                .padding(.leading, mix.showsRanking ? 106 : 78)
+                                .padding(.leading, mix.showsRanking ? 112 : 78)
                                 .opacity(0.50)
                         }
                     }

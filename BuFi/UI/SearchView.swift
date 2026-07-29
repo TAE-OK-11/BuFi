@@ -4,6 +4,8 @@ import UIKit
 struct SearchView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @AppStorage(ArtistMixPreferences.storageKey)
+    private var selectedArtistMixes = "[]"
 
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
@@ -179,7 +181,12 @@ struct SearchView: View {
             }
         case .algorithmPlaylists:
             algorithmPlaylists(
-                PersonalizedMixBuilder.make(snapshot: model.home)
+                PersonalizedMixBuilder.make(
+                    snapshot: model.home,
+                    selectedArtists: ArtistMixPreferences.decode(
+                        selectedArtistMixes
+                    )
+                )
             )
         case .mostPlayed:
             browseCollectionHeader("자주 들은 곡")
@@ -198,10 +205,8 @@ struct SearchView: View {
             ) {
                 ForEach(searchShortcuts) { shortcut in
                     Button {
-                        withAnimation(motionEnabled ? BuFiMotion.content : .none) {
-                            browseMode = shortcut.mode
-                            focused = false
-                        }
+                        browseMode = shortcut.mode
+                        focused = false
                     } label: {
                         BuFiShortcutCard(
                             title: LocalizedStringKey(shortcut.title),
@@ -430,7 +435,10 @@ struct SearchView: View {
             .padding(.top, 32)
         } else {
             LazyVGrid(
-                columns: [GridItem(.flexible()), GridItem(.flexible())],
+                columns: [
+                    GridItem(.flexible(), alignment: .top),
+                    GridItem(.flexible(), alignment: .top)
+                ],
                 alignment: .leading,
                 spacing: 20
             ) {
@@ -463,7 +471,7 @@ struct SearchView: View {
                             Array(model.home.mostPlayedSongs.enumerated()),
                             id: \.element.id
                         ) { index, song in
-                            HStack(spacing: 2) {
+                            HStack(spacing: 10) {
                                 Text("\(index + 1)")
                                     .font(
                                         .system(
@@ -478,7 +486,7 @@ struct SearchView: View {
                                             : Color.secondary
                                     )
                                     .monospacedDigit()
-                                    .frame(width: 28, alignment: .trailing)
+                                    .frame(width: 24, alignment: .trailing)
                                 SongRow(
                                     song: song,
                                     queue: model.home.mostPlayedSongs,
@@ -489,7 +497,7 @@ struct SearchView: View {
                             .padding(.horizontal, 12)
                             if song.id != model.home.mostPlayedSongs.last?.id {
                                 Divider()
-                                    .padding(.leading, 106)
+                                    .padding(.leading, 112)
                                     .opacity(0.50)
                             }
                         }

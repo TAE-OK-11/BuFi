@@ -1181,8 +1181,56 @@ struct PersonalizedMix: Identifiable, Hashable, Sendable {
     let subtitle: String
     let songs: [Song]
     let kind: Kind
+    var artworkCoverArt: String? = nil
 
     var showsRanking: Bool { kind == .ranking }
+}
+
+enum ArtistMixPreferences {
+    static let storageKey = "artist-mix-selected-artists-v1"
+    static let maximumCount = 4
+
+    static func decode(_ value: String) -> [String] {
+        guard let data = value.data(using: .utf8),
+              let artists = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        var seen = Set<String>()
+        return artists.filter {
+            let key = normalized($0)
+            return !key.isEmpty && seen.insert(key).inserted
+        }
+        .prefix(maximumCount)
+        .map { $0 }
+    }
+
+    static func adding(_ artist: String, to value: String) -> String {
+        let trimmed = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return value }
+        let key = normalized(trimmed)
+        let artists = [trimmed] + decode(value).filter {
+            normalized($0) != key
+        }
+        let result = Array(artists.prefix(maximumCount))
+        guard let data = try? JSONEncoder().encode(result),
+              let encoded = String(data: data, encoding: .utf8) else {
+            return value
+        }
+        return encoded
+    }
+
+    static func contains(_ artist: String, in value: String) -> Bool {
+        let key = normalized(artist)
+        return decode(value).contains { normalized($0) == key }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 enum PersonalizedMixBuilder {
@@ -1190,7 +1238,8 @@ enum PersonalizedMixBuilder {
         snapshot: HomeSnapshot,
         date: Date = Date(),
         calendar: Calendar = .current,
-        songLimit: Int = 24
+        songLimit: Int = 24,
+        selectedArtists: [String] = []
     ) -> [PersonalizedMix] {
         let pool = unique(
             snapshot.mostPlayedSongs +
@@ -1245,11 +1294,36 @@ enum PersonalizedMixBuilder {
             containsAny(searchableText($0), tokens: ["pop", "팝"]) &&
                 !kPopMatches.contains($0)
         }
-        let affinityArtists = highestAffinityArtists(
+        let affinityCandidates = highestAffinityArtists(
             in: snapshot,
             fallbackPool: pool,
-            limit: 3
+            limit: 12
         )
+        let customArtists = Array(
+            selectedArtists.prefix(ArtistMixPreferences.maximumCount)
+        )
+        let customArtistKeys = Set(customArtists.map(normalized))
+        var defaultArtists = affinityCandidates.filter {
+            !customArtistKeys.contains(normalized($0))
+        }
+        if let taylorSwift = affinityCandidates.first(where: {
+            normalized($0) == "taylor swift"
+        }) {
+            defaultArtists.removeAll {
+                normalized($0) == "taylor swift"
+            }
+            defaultArtists.insert(taylorSwift, at: 0)
+        }
+        defaultArtists = Array(defaultArtists.prefix(6))
+        let artistArtwork = (
+            snapshot.starredArtists + snapshot.artists +
+            snapshot.recommendedArtists
+        ).reduce(into: [String: String]()) { result, artist in
+            let key = normalized(artist.name)
+            if result[key] == nil, let coverArt = artist.coverArt {
+                result[key] = coverArt
+            }
+        }
 
         var mixes: [PersonalizedMix] = [
             PersonalizedMix(
@@ -1260,21 +1334,21 @@ enum PersonalizedMixBuilder {
                 kind: .daylist
             ),
             PersonalizedMix(
-                id: "repeat-listening",
+                id: "repeat-listening-\(dailySeed)",
                 title: String(localized: "반복 듣기"),
                 subtitle: String(localized: "자주 찾는 곡을 한데 모았어요"),
                 songs: repeatSongs,
                 kind: .repeatListening
             ),
             PersonalizedMix(
-                id: "listen-again",
+                id: "listen-again-\(dailySeed)",
                 title: String(localized: "한 번 더 듣기"),
                 subtitle: String(localized: "최근 취향을 다시 이어 들어보세요"),
                 songs: listenAgain,
                 kind: .listenAgain
             ),
             PersonalizedMix(
-                id: "pop-mix",
+                id: "pop-mix-\(dailySeed)",
                 title: "Pop Mix",
                 subtitle: String(localized: "취향에 맞춘 팝 중심 믹스"),
                 songs: filled(
@@ -1286,7 +1360,7 @@ enum PersonalizedMixBuilder {
                 kind: .genre
             ),
             PersonalizedMix(
-                id: "k-pop-mix",
+                id: "k-pop-mix-\(dailySeed)",
                 title: "K-Pop Mix",
                 subtitle: String(localized: "즐겨 듣는 K-Pop과 비슷한 곡"),
                 songs: filled(
@@ -1299,20 +1373,21 @@ enum PersonalizedMixBuilder {
             )
         ]
 
-        for (index, artist) in affinityArtists.enumerated() {
+        for (index, artist) in (defaultArtists + customArtists).enumerated() {
             mixes.append(
                 artistMix(
                     artist: artist,
                     pool: pool,
                     seed: dailySeed + 53 + index * 7,
-                    limit: songLimit
+                    limit: songLimit,
+                    artworkCoverArt: artistArtwork[normalized(artist)]
                 )
             )
         }
 
         mixes.append(contentsOf: [
             moodMix(
-                id: "happy-mix",
+                id: "happy-mix-\(dailySeed)",
                 title: "Happy Mix",
                 subtitle: String(localized: "기분을 환하게 만드는 음악"),
                 tokens: ["happy", "smile", "joy", "summer", "disco", "funk", "행복", "여름"],
@@ -1321,7 +1396,7 @@ enum PersonalizedMixBuilder {
                 limit: songLimit
             ),
             moodMix(
-                id: "upbeat-mix",
+                id: "upbeat-mix-\(dailySeed)",
                 title: "Upbeat Mix",
                 subtitle: String(localized: "에너지가 필요한 순간을 위한 음악"),
                 tokens: ["dance", "edm", "electronic", "rock", "hip hop", "upbeat", "댄스"],
@@ -1330,7 +1405,7 @@ enum PersonalizedMixBuilder {
                 limit: songLimit
             ),
             moodMix(
-                id: "love-mix",
+                id: "love-mix-\(dailySeed)",
                 title: "Love Mix",
                 subtitle: String(localized: "사랑과 설렘을 담은 음악"),
                 tokens: ["love", "romantic", "romance", "r&b", "soul", "ballad", "사랑"],
@@ -1339,7 +1414,7 @@ enum PersonalizedMixBuilder {
                 limit: songLimit
             ),
             moodMix(
-                id: "chill-mix",
+                id: "chill-mix-\(dailySeed)",
                 title: "Chill Mix",
                 subtitle: String(localized: "편안하게 흐르는 차분한 음악"),
                 tokens: ["chill", "ambient", "acoustic", "jazz", "lo-fi", "indie", "잔잔"],
@@ -1379,7 +1454,8 @@ enum PersonalizedMixBuilder {
         artist: String,
         pool: [Song],
         seed: Int,
-        limit: Int
+        limit: Int,
+        artworkCoverArt: String?
     ) -> PersonalizedMix {
         let normalizedArtist = normalized(artist)
         let primary = ordered(
@@ -1419,14 +1495,12 @@ enum PersonalizedMixBuilder {
             limit: limit
         )
         return PersonalizedMix(
-            id: "artist-\(stableHash(artist, seed: 0))",
+            id: "artist-\(stableHash(artist, seed: seed))",
             title: "\(artist) Mix",
-            subtitle: String(
-                format: String(localized: "%@ 음악과 비슷한 곡"),
-                artist
-            ),
+            subtitle: "Featuring \(artist) and similar artists",
             songs: songs,
-            kind: .artist
+            kind: .artist,
+            artworkCoverArt: artworkCoverArt ?? primary.first?.coverArt
         )
     }
 
@@ -1473,6 +1547,11 @@ enum PersonalizedMixBuilder {
         score(snapshot.mostPlayedSongs, value: 4)
         score(snapshot.starredSongs, value: 3)
         score(snapshot.recommendedSongs, value: 1)
+        for artist in snapshot.starredArtists where !artist.name.isEmpty {
+            let key = normalized(artist.name)
+            scores[key, default: 0] += 5
+            displayNames[key] = artist.name
+        }
         let orderedKeys = scores.keys.sorted(by: {
             let left = scores[$0, default: 0]
             let right = scores[$1, default: 0]

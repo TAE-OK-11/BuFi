@@ -5,6 +5,8 @@ struct MusicDetailView: View {
     @EnvironmentObject private var audio: AudioEngine
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @AppStorage(ArtistMixPreferences.storageKey)
+    private var selectedArtistMixes = "[]"
 
     let route: MusicRoute
 
@@ -23,6 +25,9 @@ struct MusicDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
+                if isArtist, !isLoading {
+                    artistMixControl
+                }
                 if isLoading {
                     ProgressView("불러오는 중…")
                         .frame(maxWidth: .infinity)
@@ -41,10 +46,6 @@ struct MusicDetailView: View {
             }
             .padding(.bottom, audio.currentSong == nil ? 56 : 148)
             .animation(allowsMotion ? BuFiMotion.fade : .none, value: isLoading)
-            .animation(
-                allowsMotion ? BuFiMotion.content : .none,
-                value: audio.currentSong != nil
-            )
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)
@@ -122,7 +123,7 @@ struct MusicDetailView: View {
             ArtworkView(
                 coverArt: coverArt,
                 size: 270,
-                cornerRadius: 10,
+                cornerRadius: 18,
                 onPalette: { nextPalette in
                     withAnimation(allowsMotion ? BuFiMotion.color : .none) {
                         palette = nextPalette
@@ -131,9 +132,9 @@ struct MusicDetailView: View {
             )
             .frame(width: 270, height: 270)
             .shadow(
-                color: .black.opacity(colorScheme == .dark ? 0.34 : 0.18),
-                radius: 24,
-                y: 14
+                color: .black.opacity(colorScheme == .dark ? 0.18 : 0.09),
+                radius: 12,
+                y: 6
             )
 
             VStack(spacing: 7) {
@@ -149,6 +150,17 @@ struct MusicDetailView: View {
                         .foregroundStyle(collectionSubtitleColor)
                         .multilineTextAlignment(.center)
                 }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .background(
+                BuFiTheme.elevated.opacity(0.90),
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(BuFiTheme.separator.opacity(0.24), lineWidth: 0.7)
             }
         }
         .frame(maxWidth: .infinity)
@@ -275,6 +287,41 @@ struct MusicDetailView: View {
         .padding(.horizontal, 22)
         .padding(.top, 2)
         .padding(.bottom, 22)
+    }
+
+    private var artistMixControl: some View {
+        Button {
+            addCurrentArtistMix()
+        } label: {
+            Label(
+                hasCurrentArtistMix ? "Artist Mix Added" : "Create Artist Mix",
+                systemImage: hasCurrentArtistMix
+                    ? "checkmark.circle.fill"
+                    : "sparkles.rectangle.stack"
+            )
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(
+                hasCurrentArtistMix ? Color.primary : BuFiTheme.accentSoft
+            )
+            .padding(.horizontal, 15)
+            .frame(height: 42)
+            .background(
+                BuFiTheme.elevated.opacity(0.92),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .stroke(BuFiTheme.separator.opacity(0.28), lineWidth: 0.7)
+            }
+        }
+        .buttonStyle(BuFiPressStyle())
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+        .accessibilityLabel(
+            hasCurrentArtistMix
+                ? "Artist Mix에 추가됨"
+                : "Artist Mix 만들기"
+        )
     }
 
     private var artistAbout: some View {
@@ -416,22 +463,25 @@ struct MusicDetailView: View {
             .padding(.top, 34)
         } else {
             let rowLayout = preferredSongRowLayout
-            LazyVStack(spacing: 0) {
-                ForEach(songs.indices, id: \.self) { index in
-                    let song = songs[index]
-                    SongRow(
-                        song: song,
-                        queue: songs,
-                        playbackOrigin: isArtist ? .manual : .album,
-                        showsArtwork: true,
-                        artworkSize: isArtist ? 54 : 44,
-                        layout: rowLayout,
-                        fallbackTrackNumber: index + 1,
-                        onMore: { selectedSong = song }
-                    )
-                    .padding(.horizontal, 16)
+            BuFiGroupedSurface {
+                LazyVStack(spacing: 0) {
+                    ForEach(songs.indices, id: \.self) { index in
+                        let song = songs[index]
+                        SongRow(
+                            song: song,
+                            queue: songs,
+                            playbackOrigin: isArtist ? .manual : .album,
+                            showsArtwork: true,
+                            artworkSize: isArtist ? 54 : 44,
+                            layout: rowLayout,
+                            fallbackTrackNumber: index + 1,
+                            onMore: { selectedSong = song }
+                        )
+                        .padding(.horizontal, 12)
+                    }
                 }
             }
+            .padding(.horizontal, 16)
             .padding(.top, isArtist ? 0 : 14)
         }
     }
@@ -515,6 +565,27 @@ struct MusicDetailView: View {
     private var isArtist: Bool {
         if case .artist = route { return true }
         return false
+    }
+
+    private var currentArtistName: String? {
+        guard case .artist(let artist) = route else { return nil }
+        return artist.name
+    }
+
+    private var hasCurrentArtistMix: Bool {
+        guard let currentArtistName else { return false }
+        return ArtistMixPreferences.contains(
+            currentArtistName,
+            in: selectedArtistMixes
+        )
+    }
+
+    private func addCurrentArtistMix() {
+        guard let currentArtistName else { return }
+        selectedArtistMixes = ArtistMixPreferences.adding(
+            currentArtistName,
+            to: selectedArtistMixes
+        )
     }
 
     private var preferredSongRowLayout: SongRowLayout {
