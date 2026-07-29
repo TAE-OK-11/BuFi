@@ -177,20 +177,25 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                 } label: {
                     Text(title(item))
                         .font(.system(size: fontSize, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
                         .foregroundStyle(
                             selection == item
-                                ? Color.white
-                                : Color.white.opacity(0.62)
+                                ? Color.primary
+                                : Color.secondary
                         )
                         .frame(maxWidth: .infinity)
-                        .frame(height: 42)
+                        .frame(height: 40)
                         .background {
                             if selection == item {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(Color.white.opacity(0.14))
+                                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                    .fill(Color.primary.opacity(0.11))
                                     .overlay {
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .stroke(Color.white.opacity(0.13), lineWidth: 0.7)
+                                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                            .stroke(
+                                                BuFiTheme.separator.opacity(0.28),
+                                                lineWidth: 0.7
+                                            )
                                     }
                                     .matchedGeometryEffect(
                                         id: "filter-selection",
@@ -205,95 +210,38 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
             }
         }
         .padding(4)
-        .frame(height: 50)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.black.opacity(0.58))
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.26)
-            }
-        }
+        .frame(height: 48)
+        .background(
+            BuFiTheme.elevated.opacity(0.92),
+            in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(0.09), lineWidth: 0.7)
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(BuFiTheme.separator.opacity(0.34), lineWidth: 0.7)
         }
-        .buFiGlass(cornerRadius: 16, interactive: true)
         .padding(.horizontal, 16)
     }
 }
 
 struct BuFiScreenBackground: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     var body: some View {
-        ZStack {
-            BuFiTheme.background
-            RadialGradient(
-                colors: [
-                    BuFiTheme.deezerGlow.opacity(colorScheme == .dark ? 0.10 : 0.055),
-                    .clear
-                ],
-                center: UnitPoint(x: 0.12, y: 0.02),
-                startRadius: 4,
-                endRadius: 430
-            )
-            RadialGradient(
-                colors: [
-                    BuFiTheme.accent.opacity(colorScheme == .dark ? 0.12 : 0.065),
-                    .clear
-                ],
-                center: UnitPoint(x: 0.92, y: 0.08),
-                startRadius: 8,
-                endRadius: 500
-            )
-            LinearGradient(
-                colors: [
-                    Color.white.opacity(colorScheme == .dark ? 0.025 : 0.14),
-                    .clear,
-                    Color.black.opacity(colorScheme == .dark ? 0.10 : 0.015),
-                    .clear
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .ignoresSafeArea()
+        BuFiTheme.background
+            .ignoresSafeArea()
     }
 }
 
 struct BuFiPageHeader: View {
     let title: LocalizedStringKey
-    let subtitle: LocalizedStringKey
-    let systemImage: String
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 14) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.system(size: 32, weight: .bold))
-                    .tracking(-1.0)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.86)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(subtitle)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+        Text(title)
+            .font(.system(size: 34, weight: .bold))
+            .tracking(-1.15)
+            .lineLimit(2)
+            .minimumScaleFactor(0.86)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            Image(systemName: systemImage)
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(BuFiTheme.accentSoft)
-                .frame(width: 44, height: 44)
-                .background(Color.primary.opacity(0.055))
-                .buFiGlass(cornerRadius: 22)
-                .accessibilityHidden(true)
-        }
-        .padding(.horizontal, 18)
-        .accessibilityElement(children: .combine)
+            .padding(.horizontal, 18)
     }
 }
 
@@ -306,103 +254,61 @@ struct BuFiGroupedSurface<Content: View>: View {
 
     var body: some View {
         content
-            .background {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(BuFiTheme.elevated.opacity(0.88))
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.055), .clear],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                }
-            }
+            .background(
+                BuFiTheme.elevated.opacity(0.92),
+                in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+            )
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(Color.white.opacity(0.09), lineWidth: 0.7)
+                    .stroke(BuFiTheme.separator.opacity(0.26), lineWidth: 0.7)
             }
     }
 }
 
-struct BuFiFeatureCard: View {
+struct BuFiShortcutCard: View {
     let title: LocalizedStringKey
     let subtitle: String
     let systemImage: String
     let tint: Color
-    var details: [String] = []
-    var expandsHorizontally = false
-    var trailingSystemImage = "play.fill"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.16), in: Circle())
-                Spacer(minLength: 10)
-                Image(systemName: trailingSystemImage)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .frame(width: 32, height: 32)
-                    .background(Color.black.opacity(0.18), in: Circle())
-            }
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 40, height: 40)
+                .background(tint.opacity(0.12), in: Circle())
 
-            Spacer(minLength: 12)
-
-            Text(title)
-                .font(.system(size: 18, weight: .bold))
-                .tracking(-0.35)
-                .foregroundStyle(.white)
-                .lineLimit(2)
-
-            Text(subtitle)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.68))
-                .lineLimit(1)
-
-            ForEach(Array(details.prefix(2).enumerated()), id: \.offset) { _, detail in
-                Text(detail)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.80))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 15, weight: .bold))
+                    .tracking(-0.25)
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(subtitle)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.tertiary)
         }
-        .padding(14)
-        .frame(
-            width: expandsHorizontally ? nil : 178,
-            height: 154,
-            alignment: .topLeading
+        .padding(.horizontal, 13)
+        .frame(maxWidth: .infinity, minHeight: 94)
+        .background(
+            BuFiTheme.elevated.opacity(0.92),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
         )
-        .frame(maxWidth: expandsHorizontally ? .infinity : nil)
-        .background {
-            ZStack {
-                LinearGradient(
-                    colors: [
-                        tint.opacity(0.94),
-                        BuFiTheme.deezerGlow.opacity(0.70),
-                        Color.black.opacity(0.68)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                RadialGradient(
-                    colors: [Color.white.opacity(0.24), .clear],
-                    center: UnitPoint(x: 0.18, y: 0.05),
-                    startRadius: 2,
-                    endRadius: 150
-                )
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(BuFiTheme.separator.opacity(0.28), lineWidth: 0.7)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 }
