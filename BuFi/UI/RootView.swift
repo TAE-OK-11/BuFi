@@ -201,7 +201,7 @@ struct RootView: View {
             }
         }
 
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.1, *) {
             tabView
                 .tabViewBottomAccessory(
                     isEnabled: playbackItem.currentSong != nil
@@ -220,7 +220,7 @@ struct RootView: View {
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
 
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.1, *) {
             page
         } else {
             page.safeAreaInset(edge: .bottom, spacing: 10) {
