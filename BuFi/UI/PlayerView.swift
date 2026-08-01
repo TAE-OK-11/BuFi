@@ -780,6 +780,7 @@ private struct PlayerProgressView: View {
 private struct PlayerLyricsCard: View {
     @ObservedObject var lyricsState: LyricsPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @State private var scrollTargetID: Int?
 
     let song: Song
     let primary: Color
@@ -844,11 +845,11 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        ScrollViewReader { proxy in
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(lyricsState.document.lines.indices, id: \.self) { index in
-                        let line = lyricsState.document.lines[index]
+        ScrollView(showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 6) {
+                ForEach(lyricsState.document.lines.indices, id: \.self) { index in
+                    let line = lyricsState.document.lines[index]
+                    VStack(alignment: .leading, spacing: 0) {
                         Text(line.text)
                             .font(.system(size: 20, weight: .bold))
                             .tracking(-0.40)
@@ -863,49 +864,56 @@ private struct PlayerLyricsCard: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .id(line.id)
                             .animation(
                                 motionEnabled ? BuFiMotion.miniLyrics : .none,
                                 value: index == lyricsState.activeIndex
                             )
                     }
+                    .padding(.top, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(line.id)
                 }
-                .padding(.bottom, 8)
             }
-            .scrollDisabled(true)
-            .onAppear {
-                scrollToActiveLine(using: proxy, animated: false)
-            }
-            .onChange(of: lyricsState.activeIndex) { _, _ in
-                scrollToActiveLine(using: proxy, animated: true)
-            }
-            .onChange(of: lyricsState.document.lines.map(\.id)) { _, _ in
-                scrollToActiveLine(using: proxy, animated: false)
-            }
+            .scrollTargetLayout()
+            .padding(.bottom, 8)
+        }
+        .scrollDisabled(true)
+        .scrollPosition(id: $scrollTargetID, anchor: .top)
+        .onAppear {
+            updateScrollTarget(animated: false)
+        }
+        .onChange(of: lyricsState.activeIndex) { _, _ in
+            updateScrollTarget(animated: true)
+        }
+        .onChange(of: lyricsState.document.lines.map(\.id)) { _, _ in
+            updateScrollTarget(animated: false)
+        }
+        .onChange(of: song.id) { _, _ in
+            scrollTargetID = nil
+            updateScrollTarget(animated: false)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .clipped()
     }
 
-    private func scrollToActiveLine(
-        using proxy: ScrollViewProxy,
-        animated: Bool
-    ) {
+    private func updateScrollTarget(animated: Bool) {
         let lines = lyricsState.document.lines
         guard !lines.isEmpty else { return }
         let index = lines.indices.contains(lyricsState.activeIndex)
             ? lyricsState.activeIndex
             : lines.startIndex
-        let action = {
-            proxy.scrollTo(lines[index].id, anchor: UnitPoint(x: 0.5, y: 0.12))
-        }
+        let target = lines[index].id
 
-        DispatchQueue.main.async {
-            if animated, motionEnabled {
-                withAnimation(BuFiMotion.miniLyrics, action)
-            } else {
-                action()
+        if animated, motionEnabled {
+            withAnimation(BuFiMotion.miniLyrics) {
+                scrollTargetID = target
+            }
+        } else {
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                scrollTargetID = target
             }
         }
     }
