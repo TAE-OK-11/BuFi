@@ -27,221 +27,24 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    HStack(spacing: 14) {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [BuFiTheme.accentSoft, BuFiTheme.deezerGlow],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 54, height: 54)
-                            .overlay {
-                                Image(systemName: "music.note")
-                                    .font(.title3.bold())
-                                    .foregroundStyle(.white)
-                            }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("TAE Music")
-                                .font(.headline)
-                            Text(
-                                session.serverVersion.isEmpty
-                                    ? "OpenSubsonic"
-                                    : String(
-                                        format: String(localized: "서버 %@"),
-                                        session.serverVersion
-                                    )
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 6)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 22) {
+                    BuFiPageHeader(title: "설정")
+                    serverCard
+                    appearanceSection
+                    syncSection
+                    recommendationSection
+                    playbackSection
+                    offlineSection
+                    appSection
+                    logoutButton
                 }
-                .listRowBackground(settingsRowBackground)
-
-                Section("화면 및 동작") {
-                    Picker("화면 모드", selection: $appearanceMode) {
-                        ForEach(AppAppearance.allCases) { appearance in
-                            Text(appearance.title).tag(appearance.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .tint(BuFiTheme.accent)
-
-                    Picker("플레이어 스타일", selection: $playerAppearance) {
-                        ForEach(PlayerAppearance.allCases) { appearance in
-                            Text(appearance.title).tag(appearance.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .tint(BuFiTheme.accent)
-
-                    Text("Classic은 최초 플레이어 디자인을 유지합니다. Liquid Glass는 같은 배치에서 재생바만 Apple 디자인으로 변경합니다. Dynamic은 앨범 커버 아래 유리 카드에 곡 정보와 재생 제어를 모아 잠금화면처럼 표시합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    Picker("플레이어 배경", selection: $playerBackgroundAppearance) {
-                        ForEach(PlayerBackgroundAppearance.allCases) { appearance in
-                            Text(appearance.title).tag(appearance.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .tint(BuFiTheme.accent)
-
-                    Text("기본은 Classic과 Liquid Glass에서 앨범 대표색을 단색으로 표시합니다. 다중 컬러는 앨범에서 색이 발견된 위치를 따라 배치하고, 밝게는 화면을 라이트 모드로 바꾸지 않고 추출색 자체를 더 밝고 선명하게 표시합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    Toggle(isOn: $motionEnabled) {
-                        Label("애니메이션 및 모션", systemImage: "sparkles")
-                    }
-                    Text("동작 줄이기, 저전력 모드 또는 기기 온도가 높을 때는 애니메이션을 자동으로 줄입니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Toggle(isOn: $hapticsEnabled) {
-                        Label("햅틱 피드백", systemImage: "waveform.path")
-                    }
-                }
-                .listRowBackground(settingsRowBackground)
-
-                Section("서버 동기화") {
-                    Picker("자동 동기화 주기", selection: $syncInterval) {
-                        Text("30초").tag(30.0)
-                        Text("1분").tag(60.0)
-                        Text("5분").tag(300.0)
-                        Text("15분").tag(900.0)
-                    }
-                    .tint(Color(uiColor: .secondaryLabel))
-                    Text("선택한 주기마다 활성 화면의 변경 사항을 확인하고 전체 홈 데이터는 최대 5분에 한 번 갱신합니다. 재생 중에는 간격을 늘리며 저전력·고온 상태에서는 자동 동기화를 멈춥니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .listRowBackground(settingsRowBackground)
-
-                Section("추천") {
-                    NavigationLink {
-                        RecommendationSettingsView()
-                            .environmentObject(model)
-                    } label: {
-                        Label("추천 알고리즘", systemImage: "wand.and.stars")
-                    }
-                    Text("서버 유사곡, 청취 기록, 좋아요, 새로운 음악과 선택한 외부 서비스를 기기에서 조합합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                .listRowBackground(settingsRowBackground)
-
-                Section("재생") {
-                    Picker("음질", selection: $audio.quality) {
-                        ForEach(StreamQuality.allCases) { quality in
-                            Text(quality.title).tag(quality)
-                        }
-                    }
-                    .tint(Color(uiColor: .secondaryLabel))
-                    Text("자동 음질은 AAC·MP3·ALAC 등 iPhone이 직접 재생할 수 있는 형식은 원본으로 재생하고, FLAC·Opus·Vorbis 등은 서버에서 AAC 256kbps로 변환합니다. 원본 재생이 실패하면 AAC·MP3로 안전하게 전환합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Toggle(isOn: $autoOpenPlayer) {
-                        Label("재생 시 플레이어 자동 열기", systemImage: "rectangle.expand.vertical")
-                    }
-                    Toggle(isOn: $restorePlayQueue) {
-                        Label("재생 대기목록 기억", systemImage: "clock.arrow.circlepath")
-                    }
-                    Toggle(isOn: $algorithmicAutoplayEnabled) {
-                        Label(
-                            "추천곡 계속 재생",
-                            systemImage: "infinity.circle"
-                        )
-                    }
-                    Text("현재 재생목록이 끝나기 전에 서버 유사곡을 미리 추가해 음악이 끊기지 않도록 계속 재생합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Picker("셔플 방식", selection: $audio.shuffleStyle) {
-                        ForEach(ShuffleStyle.allCases) { style in
-                            Text(style.title).tag(style)
-                        }
-                    }
-                    .tint(Color(uiColor: .secondaryLabel))
-                    Text("반복 줄이기는 최근 재생곡을 잠시 피해서 같은 곡이 짧은 간격으로 다시 나오는 현상을 줄입니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Toggle(isOn: $lyricsAutoScroll) {
-                        Label("가사 자동 스크롤", systemImage: "text.line.first.and.arrowtriangle.forward")
-                    }
-                    Toggle(isOn: $keepScreenAwake) {
-                        Label("재생 중 화면 켜두기", systemImage: "sun.max")
-                    }
-                    HStack {
-                        Label("AirPlay", systemImage: "airplayaudio")
-                        Spacer()
-                        AirPlayButton()
-                            .frame(width: 42, height: 34)
-                    }
-                }
-                .listRowBackground(settingsRowBackground)
-
-                Section("오프라인 및 저장 공간") {
-                    Toggle(isOn: $offlineWiFiOnly) {
-                        Label("Wi-Fi에서만 오프라인 저장", systemImage: "wifi")
-                    }
-                    Picker("다음 곡 선캐시", selection: $offlinePrefetchCount) {
-                        Text("끔").tag(0)
-                        Text("1곡").tag(1)
-                        Text("3곡").tag(3)
-                    }
-                    Text("선캐시는 곡 전환을 빠르게 하지만 전체 음원을 미리 저장합니다. 배터리와 데이터 절약을 위해 기본값은 끔이며, 저전력·고온 상태에서는 자동으로 제한됩니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Picker("오프라인 용량 제한", selection: $offlineStorageLimitGB) {
-                        Text("5 GB").tag(5.0)
-                        Text("10 GB").tag(10.0)
-                        Text("25 GB").tag(25.0)
-                        Text("제한 없음").tag(0.0)
-                    }
-                    LabeledContent("오프라인 저장 공간") {
-                        Text(
-                            ByteCountFormatter.string(
-                                fromByteCount: offlineBytes,
-                                countStyle: .file
-                            )
-                        )
-                        .foregroundStyle(.secondary)
-                    }
-                    Button("오프라인 음악 모두 삭제", role: .destructive) {
-                        confirmOfflineRemoval = true
-                    }
-                    Button("앨범 이미지 캐시 비우기") {
-                        confirmArtworkRemoval = true
-                    }
-                }
-                .listRowBackground(settingsRowBackground)
-
-                Section("앱") {
-                    LabeledContent("최소 iOS", value: "17.0")
-                    LabeledContent("버전", value: versionText)
-                    Label("적응형 배터리·메모리 최적화", systemImage: "leaf.fill")
-                    Label("분석·광고 SDK 없음", systemImage: "hand.raised.fill")
-                    NavigationLink("오픈소스 및 라이선스") {
-                        OpenSourceNoticesView()
-                    }
-                }
-                .listRowBackground(settingsRowBackground)
-
-                Section {
-                    Button("로그아웃", role: .destructive) {
-                        model.logout()
-                    }
-                }
-                .listRowBackground(settingsRowBackground)
+                .padding(.top, 18)
+                .padding(.bottom, 34)
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
             .background(BuFiScreenBackground())
-            .navigationTitle("설정")
+            .toolbar(.hidden, for: .navigationBar)
+            .tint(BuFiTheme.accent)
             .task {
                 offlineBytes = await OfflineStore.shared.totalBytes()
             }
@@ -281,8 +84,344 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsRowBackground: Color {
-        BuFiTheme.elevated
+    private var serverCard: some View {
+        BuFiGroupedSurface {
+            HStack(spacing: 14) {
+                Circle()
+                    .fill(BuFiTheme.accent.opacity(0.14))
+                    .frame(width: 52, height: 52)
+                    .overlay {
+                        Image(systemName: "music.note")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(BuFiTheme.accent)
+                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("TAE Music")
+                        .font(.system(size: 18, weight: .bold))
+                    Text(serverDescription)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(BuFiTheme.accent)
+                    .accessibilityLabel("서버 연결됨")
+            }
+            .padding(16)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var appearanceSection: some View {
+        SettingsGroup(title: "화면 및 동작") {
+            VStack(alignment: .leading, spacing: 16) {
+                settingLabel("화면 모드", icon: "circle.lefthalf.filled")
+                Picker("화면 모드", selection: $appearanceMode) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                settingsDivider
+
+                settingLabel("플레이어 스타일", icon: "music.note.house")
+                Picker("플레이어 스타일", selection: $playerAppearance) {
+                    ForEach(PlayerAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                settingsNote("Classic은 기존 디자인을 유지하고 Liquid Glass는 재생바만 Apple 스타일로 표시합니다. Dynamic은 잠금화면처럼 제어 요소를 유리 카드에 모읍니다.")
+
+                settingsDivider
+
+                settingLabel("플레이어 배경", icon: "paintpalette.fill")
+                Picker("플레이어 배경", selection: $playerBackgroundAppearance) {
+                    ForEach(PlayerBackgroundAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                settingsNote("기본은 대표색을 단색으로, 다중 컬러는 앨범 속 색의 위치를 반영합니다. 밝게는 추출색만 더 밝고 선명하게 표시합니다.")
+
+                settingsDivider
+
+                Toggle(isOn: $motionEnabled) {
+                    Label("애니메이션 및 모션", systemImage: "sparkles")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                settingsNote("동작 줄이기, 저전력 모드 또는 기기 온도가 높을 때는 자동으로 모션을 줄입니다.")
+                Toggle(isOn: $hapticsEnabled) {
+                    Label("햅틱 피드백", systemImage: "waveform.path")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var syncSection: some View {
+        SettingsGroup(title: "서버 동기화") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    settingLabel("자동 동기화 주기", icon: "arrow.triangle.2.circlepath")
+                    Spacer(minLength: 8)
+                    Picker("자동 동기화 주기", selection: $syncInterval) {
+                        Text("30초").tag(30.0)
+                        Text("1분").tag(60.0)
+                        Text("5분").tag(300.0)
+                        Text("15분").tag(900.0)
+                    }
+                    .labelsHidden()
+                    .tint(.secondary)
+                }
+                settingsNote("활성 화면을 선택한 주기로 확인합니다. 재생 중에는 간격을 늘리고 저전력·고온 상태에서는 자동 동기화를 멈춥니다.")
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var recommendationSection: some View {
+        SettingsGroup(title: "추천") {
+            NavigationLink {
+                RecommendationSettingsView()
+                    .environmentObject(model)
+            } label: {
+                HStack(spacing: 12) {
+                    settingIcon("wand.and.stars")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("추천 알고리즘")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("취향 가중치와 외부 추천 서비스")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var playbackSection: some View {
+        SettingsGroup(title: "재생") {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    settingLabel("음질", icon: "waveform")
+                    Spacer(minLength: 8)
+                    Picker("음질", selection: $audio.quality) {
+                        ForEach(StreamQuality.allCases) { quality in
+                            Text(quality.title).tag(quality)
+                        }
+                    }
+                    .labelsHidden()
+                    .tint(.secondary)
+                }
+                settingsNote("자동은 iPhone이 지원하는 형식은 원본으로 재생하고, 지원하지 않는 형식은 서버에서 AAC 256kbps로 변환합니다.")
+
+                settingsDivider
+
+                settingsToggle("플레이어 자동 열기", icon: "rectangle.expand.vertical", value: $autoOpenPlayer)
+                settingsToggle("재생 대기목록 기억", icon: "clock.arrow.circlepath", value: $restorePlayQueue)
+                settingsToggle("추천곡 계속 재생", icon: "infinity.circle", value: $algorithmicAutoplayEnabled)
+                settingsNote("재생목록이 끝나기 전에 서버 유사곡을 추가해 음악이 끊기지 않도록 합니다.")
+
+                settingsDivider
+
+                HStack(spacing: 12) {
+                    settingLabel("셔플 방식", icon: "shuffle")
+                    Spacer(minLength: 8)
+                    Picker("셔플 방식", selection: $audio.shuffleStyle) {
+                        ForEach(ShuffleStyle.allCases) { style in
+                            Text(style.title).tag(style)
+                        }
+                    }
+                    .labelsHidden()
+                    .tint(.secondary)
+                }
+                settingsNote("반복 줄이기는 최근 재생곡을 피해서 같은 곡이 짧은 간격으로 나오는 현상을 줄입니다.")
+
+                settingsDivider
+
+                settingsToggle("가사 자동 스크롤", icon: "text.line.first.and.arrowtriangle.forward", value: $lyricsAutoScroll)
+                settingsToggle("재생 중 화면 켜두기", icon: "sun.max", value: $keepScreenAwake)
+                HStack(spacing: 12) {
+                    settingLabel("AirPlay", icon: "airplayaudio")
+                    Spacer()
+                    AirPlayButton()
+                        .frame(width: 42, height: 34)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var offlineSection: some View {
+        SettingsGroup(title: "오프라인 및 저장 공간") {
+            VStack(alignment: .leading, spacing: 14) {
+                settingsToggle("Wi-Fi에서만 저장", icon: "wifi", value: $offlineWiFiOnly)
+
+                settingsDivider
+
+                HStack(spacing: 12) {
+                    settingLabel("다음 곡 선캐시", icon: "arrow.down.circle")
+                    Spacer(minLength: 8)
+                    Picker("다음 곡 선캐시", selection: $offlinePrefetchCount) {
+                        Text("끔").tag(0)
+                        Text("1곡").tag(1)
+                        Text("3곡").tag(3)
+                    }
+                    .labelsHidden()
+                    .tint(.secondary)
+                }
+                settingsNote("선캐시는 곡 전환을 빠르게 하지만 전체 음원을 미리 저장합니다. 저전력·고온 상태에서는 자동으로 제한됩니다.")
+
+                HStack(spacing: 12) {
+                    settingLabel("용량 제한", icon: "externaldrive")
+                    Spacer(minLength: 8)
+                    Picker("오프라인 용량 제한", selection: $offlineStorageLimitGB) {
+                        Text("5 GB").tag(5.0)
+                        Text("10 GB").tag(10.0)
+                        Text("25 GB").tag(25.0)
+                        Text("제한 없음").tag(0.0)
+                    }
+                    .labelsHidden()
+                    .tint(.secondary)
+                }
+
+                HStack {
+                    Text("사용 중인 저장 공간")
+                    Spacer()
+                    Text(offlineStorageText)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+
+                settingsDivider
+
+                Button("오프라인 음악 모두 삭제", role: .destructive) {
+                    confirmOfflineRemoval = true
+                }
+                Button("앨범 이미지 캐시 비우기") {
+                    confirmArtworkRemoval = true
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var appSection: some View {
+        SettingsGroup(title: "앱") {
+            VStack(alignment: .leading, spacing: 14) {
+                LabeledContent("최소 iOS", value: "17.0")
+                LabeledContent("버전", value: versionText)
+                settingsDivider
+                Label("적응형 배터리·메모리 최적화", systemImage: "leaf.fill")
+                    .foregroundStyle(.primary)
+                Label("분석·광고 SDK 없음", systemImage: "hand.raised.fill")
+                    .foregroundStyle(.primary)
+                settingsDivider
+                NavigationLink {
+                    OpenSourceNoticesView()
+                } label: {
+                    HStack {
+                        Label("오픈소스 및 라이선스", systemImage: "doc.text")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var logoutButton: some View {
+        Button(role: .destructive) {
+            model.logout()
+        } label: {
+            Text("로그아웃")
+                .font(.system(size: 16, weight: .bold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .buFiSurface(
+                    cornerRadius: 18,
+                    fill: BuFiTheme.accent.opacity(0.10),
+                    stroke: BuFiTheme.accent.opacity(0.22)
+                )
+        }
+        .buttonStyle(BuFiPressStyle())
+        .padding(.horizontal, 16)
+    }
+
+    private func settingsToggle(
+        _ title: LocalizedStringKey,
+        icon: String,
+        value: Binding<Bool>
+    ) -> some View {
+        Toggle(isOn: value) {
+            settingLabel(title, icon: icon)
+        }
+        .font(.system(size: 16, weight: .semibold))
+    }
+
+    private func settingLabel(
+        _ title: LocalizedStringKey,
+        icon: String
+    ) -> some View {
+        Label {
+            Text(title)
+                .font(.system(size: 16, weight: .semibold))
+        } icon: {
+            settingIcon(icon)
+        }
+    }
+
+    private func settingIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(BuFiTheme.accent)
+            .frame(width: 30, height: 30)
+            .background(BuFiTheme.accent.opacity(0.11), in: Circle())
+    }
+
+    private func settingsNote(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.system(size: 12.5))
+            .foregroundStyle(.secondary)
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var settingsDivider: some View {
+        Divider()
+            .overlay(BuFiTheme.separator.opacity(0.34))
+    }
+
+    private var serverDescription: String {
+        session.serverVersion.isEmpty
+            ? "OpenSubsonic"
+            : String(
+                format: String(localized: "서버 %@"),
+                session.serverVersion
+            )
+    }
+
+    private var offlineStorageText: String {
+        ByteCountFormatter.string(
+            fromByteCount: offlineBytes,
+            countStyle: .file
+        )
     }
 
     private var versionText: String {
@@ -293,6 +432,71 @@ struct SettingsView: View {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
             ?? "15"
         return "\(version) (\(build))"
+    }
+}
+
+private struct SettingsGroup<Content: View>: View {
+    let title: LocalizedStringKey
+    let content: Content
+
+    init(
+        title: LocalizedStringKey,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text(title)
+                .font(.system(size: 22, weight: .bold))
+                .tracking(-0.45)
+                .padding(.horizontal, 2)
+            BuFiGroupedSurface {
+                content
+                    .padding(16)
+            }
+        }
+    }
+}
+
+private struct SettingsActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 46)
+            .background(
+                isEnabled ? BuFiTheme.accent : Color.secondary.opacity(0.28),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.98 : 1)
+            .animation(
+                motionEnabled ? BuFiMotion.tap : .none,
+                value: configuration.isPressed
+            )
+    }
+}
+
+private extension View {
+    func settingsTextField() -> some View {
+        textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .padding(.horizontal, 14)
+            .frame(height: 50)
+            .background(
+                Color.primary.opacity(0.055),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(BuFiTheme.separator.opacity(0.30), lineWidth: 0.7)
+            }
     }
 }
 
@@ -335,130 +539,121 @@ private struct RecommendationSettingsView: View {
     private var discoveryRatio = 0.35
 
     var body: some View {
-        List {
-            Section("핵심 추천 가중치") {
-                weightRow("청취 기록 취향", value: $historyWeight)
-                weightRow("좋아요 취향", value: $favoriteWeight)
-                weightRow("서버 유사곡·Sonic", value: $serverWeight)
-                weightRow("새로운 음악 발견", value: $discoveryWeight)
-                weightRow("Last.fm 유사곡", value: $lastFMWeight)
-                weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
-                weightRow("재생 행동", value: $behaviorWeight)
-                weightRow("완주율", value: $completionWeight)
-                weightRow("반복 재생", value: $repeatWeight)
-                weightRow("최근 취향", value: $recencyWeight)
-                weightRow("현재 세션 흐름", value: $contextWeight)
-            }
-            .listRowBackground(BuFiTheme.elevated)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                BuFiPageHeader(title: "추천 알고리즘")
 
-            Section("발견 비율") {
-                weightRow("새로운 곡·아티스트 비율", value: $discoveryRatio)
-                Text("점수에 곱하지 않고 최종 목록에서 익숙한 음악과 새로운 음악의 구성 비율을 조절합니다.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            .listRowBackground(BuFiTheme.elevated)
-
-            Section("고급 추천 신호") {
-                weightRow("장르·BPM·분위기 메타데이터", value: $metadataWeight)
-                weightRow("플레이리스트 연관성", value: $playlistAffinityWeight)
-                weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
-                weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
-                weightRow("아티스트 순환", value: $artistRotationWeight)
-                weightRow("시간대 맞춤", value: $timeAwarenessWeight)
-                Button("기본값으로 복원") {
-                    historyWeight = 0.70
-                    favoriteWeight = 0.80
-                    serverWeight = 0.90
-                    discoveryWeight = 0.35
-                    lastFMWeight = 0.55
-                    listenBrainzWeight = 0.55
-                    behaviorWeight = 0.85
-                    completionWeight = 0.70
-                    repeatWeight = 0.55
-                    recencyWeight = 0.65
-                    contextWeight = 0.60
-                    metadataWeight = 0.60
-                    playlistAffinityWeight = 0.55
-                    albumCompletionWeight = 0.45
-                    forgottenFavoritesWeight = 0.50
-                    artistRotationWeight = 0.45
-                    timeAwarenessWeight = 0.30
-                    discoveryRatio = 0.35
-                    model.rebuildRecommendations()
-                }
-                Text("모든 입력은 0~1로 정규화되며, 낮은 메타데이터 매칭 신뢰도와 반복 조기 스킵은 별도의 감점으로 반영됩니다.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            .listRowBackground(BuFiTheme.elevated)
-
-            Section("Last.fm") {
-                SecureField(
-                    session.hasLastFMAPIKey
-                        ? "저장된 API 키 교체"
-                        : "Last.fm API 키",
-                    text: $lastFMAPIKey
-                )
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                Button(session.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
-                    model.saveLastFMAPIKey(lastFMAPIKey)
-                    lastFMAPIKey = ""
-                }
-                .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if session.hasLastFMAPIKey {
-                    Button("Last.fm 연동 해제", role: .destructive) {
-                        model.saveLastFMAPIKey("")
+                SettingsGroup(title: "핵심 추천 가중치") {
+                    VStack(spacing: 18) {
+                        weightRow("청취 기록 취향", value: $historyWeight)
+                        weightRow("좋아요 취향", value: $favoriteWeight)
+                        weightRow("서버 유사곡·Sonic", value: $serverWeight)
+                        weightRow("새로운 음악 발견", value: $discoveryWeight)
+                        weightRow("Last.fm 유사곡", value: $lastFMWeight)
+                        weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
+                        weightRow("재생 행동", value: $behaviorWeight)
+                        weightRow("완주율", value: $completionWeight)
+                        weightRow("반복 재생", value: $repeatWeight)
+                        weightRow("최근 취향", value: $recencyWeight)
+                        weightRow("현재 세션 흐름", value: $contextWeight)
                     }
                 }
-                Text("Last.fm track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            .listRowBackground(BuFiTheme.elevated)
+                .padding(.horizontal, 16)
 
-            Section("ListenBrainz") {
-                TextField("ListenBrainz 사용자 이름", text: $listenBrainzUsername)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField(
-                    session.hasListenBrainzToken
-                        ? "저장된 토큰 유지 또는 교체"
-                        : "사용자 토큰",
-                    text: $listenBrainzToken
-                )
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                Button("ListenBrainz 설정 저장") {
-                    model.saveListenBrainz(
-                        username: listenBrainzUsername,
-                        token: listenBrainzToken
-                    )
-                    listenBrainzToken = ""
-                }
-                .disabled(
-                    listenBrainzUsername
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                        .isEmpty
-                )
-                if session.hasListenBrainzToken || !session.listenBrainzUsername.isEmpty {
-                    Button("ListenBrainz 연동 해제", role: .destructive) {
-                        model.removeListenBrainz()
-                        listenBrainzUsername = ""
-                        listenBrainzToken = ""
+                SettingsGroup(title: "발견 비율") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        weightRow("새로운 곡·아티스트 비율", value: $discoveryRatio)
+                        settingsDescription("점수에 곱하지 않고 최종 목록에서 익숙한 음악과 새로운 음악의 구성 비율을 조절합니다.")
                     }
                 }
-                Text("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 존재하는 곡만 매칭합니다.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "고급 추천 신호") {
+                    VStack(alignment: .leading, spacing: 18) {
+                        weightRow("장르·BPM·분위기 메타데이터", value: $metadataWeight)
+                        weightRow("플레이리스트 연관성", value: $playlistAffinityWeight)
+                        weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
+                        weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
+                        weightRow("아티스트 순환", value: $artistRotationWeight)
+                        weightRow("시간대 맞춤", value: $timeAwarenessWeight)
+                        Button("기본값으로 복원") {
+                            restoreDefaults()
+                        }
+                        .font(.system(size: 15, weight: .semibold))
+                        settingsDescription("모든 입력은 0~1로 정규화되며, 낮은 메타데이터 매칭 신뢰도와 반복 조기 스킵은 별도로 감점합니다.")
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "Last.fm") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        SecureField(
+                            session.hasLastFMAPIKey
+                                ? "저장된 API 키 교체"
+                                : "Last.fm API 키",
+                            text: $lastFMAPIKey
+                        )
+                        .settingsTextField()
+                        Button(session.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
+                            model.saveLastFMAPIKey(lastFMAPIKey)
+                            lastFMAPIKey = ""
+                        }
+                        .buttonStyle(SettingsActionButtonStyle())
+                        .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if session.hasLastFMAPIKey {
+                            Button("Last.fm 연동 해제", role: .destructive) {
+                                model.saveLastFMAPIKey("")
+                            }
+                        }
+                        settingsDescription("track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "ListenBrainz") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        TextField("사용자 이름", text: $listenBrainzUsername)
+                            .settingsTextField()
+                        SecureField(
+                            session.hasListenBrainzToken
+                                ? "저장된 토큰 유지 또는 교체"
+                                : "사용자 토큰",
+                            text: $listenBrainzToken
+                        )
+                        .settingsTextField()
+                        Button("ListenBrainz 설정 저장") {
+                            model.saveListenBrainz(
+                                username: listenBrainzUsername,
+                                token: listenBrainzToken
+                            )
+                            listenBrainzToken = ""
+                        }
+                        .buttonStyle(SettingsActionButtonStyle())
+                        .disabled(
+                            listenBrainzUsername
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                                .isEmpty
+                        )
+                        if session.hasListenBrainzToken || !session.listenBrainzUsername.isEmpty {
+                            Button("ListenBrainz 연동 해제", role: .destructive) {
+                                model.removeListenBrainz()
+                                listenBrainzUsername = ""
+                                listenBrainzToken = ""
+                            }
+                        }
+                        settingsDescription("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 있는 곡만 매칭합니다.")
+                    }
+                }
+                .padding(.horizontal, 16)
             }
-            .listRowBackground(BuFiTheme.elevated)
+            .padding(.top, 18)
+            .padding(.bottom, 34)
         }
-        .scrollContentBackground(.hidden)
         .background(BuFiScreenBackground())
-        .navigationTitle("추천 알고리즘")
+        .toolbar(.visible, for: .navigationBar)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .tint(BuFiTheme.accent)
         .onAppear {
             listenBrainzUsername = session.listenBrainzUsername
         }
@@ -482,98 +677,153 @@ private struct RecommendationSettingsView: View {
                     model.rebuildRecommendations()
                 }
         }
-        .padding(.vertical, 3)
+    }
+
+    private func settingsDescription(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.system(size: 12.5))
+            .foregroundStyle(.secondary)
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func restoreDefaults() {
+        historyWeight = 0.70
+        favoriteWeight = 0.80
+        serverWeight = 0.90
+        discoveryWeight = 0.35
+        lastFMWeight = 0.55
+        listenBrainzWeight = 0.55
+        behaviorWeight = 0.85
+        completionWeight = 0.70
+        repeatWeight = 0.55
+        recencyWeight = 0.65
+        contextWeight = 0.60
+        metadataWeight = 0.60
+        playlistAffinityWeight = 0.55
+        albumCompletionWeight = 0.45
+        forgottenFavoritesWeight = 0.50
+        artistRotationWeight = 0.45
+        timeAwarenessWeight = 0.30
+        discoveryRatio = 0.35
+        model.rebuildRecommendations()
     }
 }
 
 private struct OpenSourceNoticesView: View {
     var body: some View {
-        List {
-            Section("BuFi") {
-                Text("Copyright © 2026 TAE-OK-11")
-                Text("GNU GPL v3 or later")
-                Text("BuFi는 SwiftUI, AVFoundation, MediaPlayer, Core Graphics, CryptoKit, Keychain, URLSession 등 Apple 시스템 프레임워크를 중심으로 구현됩니다.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("빌드 도구") {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("XcodeGen").font(.headline)
-                    Text("MIT License · Copyright © Yonas Kolb")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("재생 호환성") {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Amperfy").font(.headline)
-                    Text("GNU GPL v3")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("Subsonic 스트림 MIME 처리와 오디오 세션 패턴을 Amperfy의 GPLv3 구현에서 적용했습니다. 전체 대응 소스는 BuFi 공개 저장소에서 제공합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("SwiftSonic") {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("SwiftSonic").font(.headline)
-                    Text("MIT License · Copyright © 2026 Mathieu Dubart")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("인증된 스트림·아트워크·다운로드 URL 생성에 사용합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("Nuke") {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Nuke").font(.headline)
-                    Text("MIT License · Copyright © Alexander Grebenyuk and contributors")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("앨범 이미지 다운샘플링, 요청 병합, 메모리 및 디스크 캐싱에 사용합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("Cassette 참고 구조") {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Cassette").font(.headline)
-                    Text("MPL-2.0 · 구조와 동작 방식 참고, 소스 파일 직접 복사 없음")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("독립 재생 매니저, 최소 UI 관찰 상태, 오프라인 우선 설계를 참고했습니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("네트워크 압축") {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Zstandard").font(.headline)
-                    Text("BSD 3-Clause · Meta Platforms, Inc. and contributors")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Text("Foundation이 직접 해제하지 않은 HTTP zstd 응답을 안전하게 처리합니다.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("라이선스 전문") {
-                NavigationLink {
-                    ThirdPartyLicensesView()
-                } label: {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label("제3자 라이선스 전문", systemImage: "doc.text")
-                        Text("SwiftSonic, Nuke 및 Zstandard의 공식 라이선스 전문")
-                            .font(.footnote)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                BuFiPageHeader(title: "오픈소스")
+
+                SettingsGroup(title: "BuFi") {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Copyright © 2026 TAE-OK-11")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("GNU GPL v3 or later")
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
+                        Text("SwiftUI, AVFoundation, MediaPlayer, Core Graphics, CryptoKit, Keychain과 URLSession을 중심으로 구현됩니다.")
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "사용한 오픈소스") {
+                    VStack(alignment: .leading, spacing: 16) {
+                        notice(
+                            "XcodeGen",
+                            license: "MIT License · Copyright © Yonas Kolb",
+                            detail: "재현 가능한 Xcode 프로젝트 생성에 사용합니다."
+                        )
+                        Divider()
+                        notice(
+                            "Amperfy",
+                            license: "GNU GPL v3",
+                            detail: "Subsonic 스트림 MIME 처리와 오디오 세션 패턴을 적용했습니다."
+                        )
+                        Divider()
+                        notice(
+                            "SwiftSonic",
+                            license: "MIT License · Copyright © 2026 Mathieu Dubart",
+                            detail: "인증된 스트림·아트워크·다운로드 URL 생성에 사용합니다."
+                        )
+                        Divider()
+                        notice(
+                            "Nuke",
+                            license: "MIT License · Copyright © Alexander Grebenyuk and contributors",
+                            detail: "이미지 다운샘플링, 요청 병합과 메모리·디스크 캐싱에 사용합니다."
+                        )
+                        Divider()
+                        notice(
+                            "Cassette",
+                            license: "MPL-2.0 · 구조 참고, 소스 직접 복사 없음",
+                            detail: "독립 재생 매니저와 오프라인 우선 설계를 참고했습니다."
+                        )
+                        Divider()
+                        notice(
+                            "Zstandard",
+                            license: "BSD 3-Clause · Meta Platforms, Inc. and contributors",
+                            detail: "Foundation이 직접 해제하지 않은 HTTP zstd 응답을 처리합니다."
+                        )
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "라이선스 전문") {
+                    NavigationLink {
+                        ThirdPartyLicensesView()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(BuFiTheme.accent)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("제3자 라이선스 전문")
+                                    .font(.system(size: 16, weight: .semibold))
+                                Text("SwiftSonic, Nuke 및 Zstandard")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
             }
+            .padding(.top, 18)
+            .padding(.bottom, 34)
         }
-        .navigationTitle("오픈소스")
+        .background(BuFiScreenBackground())
+        .toolbar(.visible, for: .navigationBar)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .tint(BuFiTheme.accent)
+    }
+
+    private func notice(
+        _ title: LocalizedStringKey,
+        license: LocalizedStringKey,
+        detail: LocalizedStringKey
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 16, weight: .bold))
+            Text(license)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+            Text(detail)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
