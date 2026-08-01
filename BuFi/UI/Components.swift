@@ -441,7 +441,10 @@ enum SongRowLayout: Equatable {
 
 struct SongRow: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
+    @EnvironmentObject private var playbackItem: PlaybackItemState
+
+    private let audio = AudioEngine.shared
 
     let song: Song
     let queue: [Song]
@@ -455,6 +458,7 @@ struct SongRow: View {
 
     @ViewBuilder
     var body: some View {
+        let _ = favoriteOverrides.values
         Group {
             if layout == .compactAlbum {
                 compactAlbumRow
@@ -493,7 +497,7 @@ struct SongRow: View {
     }
 
     private var compactAlbumRow: some View {
-        let isCurrentSong = audio.currentSong?.id == song.id
+        let isCurrentSong = playbackItem.currentSong?.id == song.id
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
@@ -565,7 +569,7 @@ struct SongRow: View {
     }
 
     private var standardRow: some View {
-        let isCurrentSong = audio.currentSong?.id == song.id
+        let isCurrentSong = playbackItem.currentSong?.id == song.id
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {

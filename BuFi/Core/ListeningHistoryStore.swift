@@ -190,6 +190,7 @@ actor ListeningHistoryStore {
     private var entries: [String: SongBehavior] = [:]
     private var revision: UInt64 = 0
     private var lastStartedSongID: String?
+    private var persistenceTask: Task<Void, Never>?
 
     private init() {}
 
@@ -219,6 +220,7 @@ actor ListeningHistoryStore {
 
     func deactivate(accountScope: String) {
         guard activeScope == accountScope else { return }
+        flushPendingWrites()
         activeScope = nil
         entries.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
@@ -318,18 +320,6 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
-    func recordPlaylistAdd(_ song: Song) {
-        guard activeScope != nil,
-              song.externalStreamURL == nil else {
-            return
-        }
-        var value = entries[song.id] ?? SongBehavior(song: song, at: Date())
-        value.song = song
-        value.playlistAddCount += 1
-        entries[song.id] = value
-        didMutate()
-    }
-
     func recordFavorite(_ song: Song, enabled: Bool) {
         guard activeScope != nil,
               song.externalStreamURL == nil else {
@@ -373,6 +363,8 @@ actor ListeningHistoryStore {
 
     func clear() {
         guard activeScope != nil else { return }
+        persistenceTask?.cancel()
+        persistenceTask = nil
         entries.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
         UserDefaults.standard.removeObject(forKey: storageKey)
@@ -391,11 +383,19 @@ actor ListeningHistoryStore {
 
     private func didMutate() {
         revision &+= 1
-        trimAndPersist()
+        trimEntriesIfNeeded()
+        schedulePersistence()
         RecommendationMixer.invalidateCache()
     }
 
-    private func trimAndPersist() {
+    func flushPendingWrites() {
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        guard activeScope != nil else { return }
+        persist()
+    }
+
+    private func trimEntriesIfNeeded() {
         if entries.count > 700 {
             let retained = entries.values
                 .sorted { $0.lastPlayed > $1.lastPlayed }
@@ -404,6 +404,21 @@ actor ListeningHistoryStore {
                 ($0.song.id, $0)
             })
         }
+    }
+
+    private func schedulePersistence() {
+        persistenceTask?.cancel()
+        let scope = activeScope
+        persistenceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            await self?.flushScheduledPersistence(scope: scope)
+        }
+    }
+
+    private func flushScheduledPersistence(scope: String?) {
+        guard activeScope == scope else { return }
+        persistenceTask = nil
         persist()
     }
 

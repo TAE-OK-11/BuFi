@@ -3,7 +3,8 @@ import UIKit
 
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var library: HomeLibraryState
+    @EnvironmentObject private var playbackItem: PlaybackItemState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var filter = LibraryFilter.playlists
 
@@ -14,11 +15,10 @@ struct LibraryView: View {
                     BuFiPageHeader(title: "내 라이브러리")
                     filters
                     content
-                        .id(filter)
                         .transition(.opacity)
                 }
                 .padding(.top, 18)
-                .padding(.bottom, audio.currentSong == nil ? 56 : 154)
+                .padding(.bottom, playbackItem.currentSong == nil ? 56 : 154)
                 .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
             }
             .background(BuFiScreenBackground())
@@ -43,10 +43,10 @@ struct LibraryView: View {
     private var content: some View {
         switch filter {
         case .playlists:
-            if model.home.playlists.isEmpty {
+            if library.snapshot.playlists.isEmpty {
                 empty("플레이리스트가 없습니다", icon: "music.note.list")
             } else {
-                groupedLibraryRows(model.home.playlists) { playlist in
+                groupedLibraryRows(library.snapshot.playlists) { playlist in
                     NavigationLink(value: MusicRoute.playlist(playlist)) {
                         libraryRow(
                             title: playlist.name,
@@ -63,7 +63,7 @@ struct LibraryView: View {
                 }
             }
         case .albums:
-            if model.home.starredAlbums.isEmpty {
+            if library.snapshot.starredAlbums.isEmpty {
                 empty("저장한 앨범이 없습니다", icon: "square.stack")
             } else {
                 LazyVGrid(
@@ -74,7 +74,7 @@ struct LibraryView: View {
                     alignment: .leading,
                     spacing: 24
                 ) {
-                    ForEach(model.home.starredAlbums) { album in
+                    ForEach(library.snapshot.starredAlbums) { album in
                         NavigationLink(value: MusicRoute.album(album)) {
                             AlbumCard(
                                 album: album,
@@ -92,15 +92,15 @@ struct LibraryView: View {
         case .artists:
             artistsContent
         case .songs:
-            if model.home.starredSongs.isEmpty {
+            if library.snapshot.starredSongs.isEmpty {
                 empty("좋아요 표시한 곡이 없습니다", icon: "heart")
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(model.home.starredSongs) { song in
-                            SongRow(song: song, queue: model.home.starredSongs)
+                        ForEach(library.snapshot.starredSongs) { song in
+                            SongRow(song: song, queue: library.snapshot.starredSongs)
                                 .padding(.horizontal, 14)
-                            if song.id != model.home.starredSongs.last?.id {
+                            if song.id != library.snapshot.starredSongs.last?.id {
                                 rowSeparator
                             }
                         }
@@ -347,8 +347,8 @@ struct LibraryView: View {
 
     private var allArtists: [Artist] {
         var values: [String: Artist] = [:]
-        for artist in model.home.artists { values[artist.id] = artist }
-        for artist in model.home.starredArtists {
+        for artist in library.snapshot.artists { values[artist.id] = artist }
+        for artist in library.snapshot.starredArtists {
             var starred = artist
             if starred.starred == nil {
                 starred.starred = ISO8601DateFormatter().string(from: Date())

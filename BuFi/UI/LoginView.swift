@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSessionState
 
     @State private var server = ""
     @State private var username = ""
@@ -80,7 +81,7 @@ struct LoginView: View {
                     }
                     .padding(.top, 34)
 
-                    if let error = model.errorMessage {
+                    if let error = session.errorMessage {
                         Text(error)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.red)
@@ -89,11 +90,11 @@ struct LoginView: View {
 
                     Button(action: connect) {
                         HStack {
-                            if model.sessionState == .connecting {
+                            if session.phase == .connecting {
                                 ProgressView().tint(.white)
                             }
                             Text(
-                                model.sessionState == .connecting
+                                session.phase == .connecting
                                     ? String(localized: "연결 중…")
                                     : String(localized: "서버에 연결")
                             )
@@ -108,7 +109,7 @@ struct LoginView: View {
                         server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         password.isEmpty ||
-                        model.sessionState == .connecting
+                        session.phase == .connecting
                     )
                     .buttonStyle(BuFiPressStyle())
                     .padding(.top, 22)

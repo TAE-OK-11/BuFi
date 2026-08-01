@@ -9,7 +9,16 @@ struct BuFiApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
+                .environmentObject(model.session)
+                .environmentObject(model.library)
+                .environmentObject(model.searchContent)
+                .environmentObject(model.favorites)
                 .environmentObject(audio)
+                .environmentObject(audio.itemState)
+                .environmentObject(audio.activityState)
+                .environmentObject(audio.controlState)
+                .environmentObject(audio.queueState)
+                .environmentObject(audio.presentation)
                 .tint(BuFiTheme.accent)
         }
     }

@@ -19,17 +19,105 @@ final class LyricsPlaybackState: ObservableObject {
 }
 
 @MainActor
+final class PlaybackItemState: ObservableObject {
+    @Published fileprivate(set) var currentSong: Song?
+
+    fileprivate func setCurrentSong(_ value: Song?) {
+        guard currentSong != value else { return }
+        currentSong = value
+    }
+}
+
+@MainActor
+final class PlaybackActivityState: ObservableObject {
+    @Published fileprivate(set) var isPlaying = false
+
+    fileprivate func setPlaying(_ value: Bool) {
+        guard isPlaying != value else { return }
+        isPlaying = value
+    }
+}
+
+@MainActor
+final class PlaybackControlState: ObservableObject {
+    @Published fileprivate(set) var isBuffering = false
+    @Published fileprivate(set) var wantsPlayback = false
+
+    fileprivate func setBuffering(_ value: Bool) {
+        guard isBuffering != value else { return }
+        isBuffering = value
+    }
+
+    fileprivate func setWantsPlayback(_ value: Bool) {
+        guard wantsPlayback != value else { return }
+        wantsPlayback = value
+    }
+}
+
+@MainActor
+final class PlaybackQueueState: ObservableObject {
+    @Published fileprivate(set) var songs: [Song] = []
+    @Published fileprivate(set) var index = -1
+
+    fileprivate func setSongs(_ value: [Song]) {
+        guard songs != value else { return }
+        songs = value
+    }
+
+    fileprivate func setIndex(_ value: Int) {
+        guard index != value else { return }
+        index = value
+    }
+}
+
+@MainActor
+final class PlayerPresentationState: ObservableObject {
+    @Published var playbackError: String?
+    @Published var showPlayer = false
+    @Published var showFullLyrics = false
+}
+
+@MainActor
 final class AudioEngine: NSObject, ObservableObject {
     static let shared = AudioEngine()
 
-    @Published private(set) var currentSong: Song?
-    @Published private(set) var queue: [Song] = []
-    @Published private(set) var queueIndex = -1
-    @Published private(set) var isPlaying = false
-    @Published private(set) var isBuffering = false
-    @Published private(set) var wantsPlayback = false
+    let itemState = PlaybackItemState()
+    let activityState = PlaybackActivityState()
+    let controlState = PlaybackControlState()
+    let queueState = PlaybackQueueState()
+    let presentation = PlayerPresentationState()
     let timeline = PlaybackTimeline()
     let lyricsState = LyricsPlaybackState()
+
+    private(set) var currentSong: Song? {
+        get { itemState.currentSong }
+        set { itemState.setCurrentSong(newValue) }
+    }
+
+    private(set) var queue: [Song] {
+        get { queueState.songs }
+        set { queueState.setSongs(newValue) }
+    }
+
+    private(set) var queueIndex: Int {
+        get { queueState.index }
+        set { queueState.setIndex(newValue) }
+    }
+
+    private(set) var isPlaying: Bool {
+        get { activityState.isPlaying }
+        set { activityState.setPlaying(newValue) }
+    }
+
+    private(set) var isBuffering: Bool {
+        get { controlState.isBuffering }
+        set { controlState.setBuffering(newValue) }
+    }
+
+    private(set) var wantsPlayback: Bool {
+        get { controlState.wantsPlayback }
+        set { controlState.setWantsPlayback(newValue) }
+    }
 
     private(set) var elapsed: TimeInterval {
         get { timeline.elapsed }
@@ -59,14 +147,28 @@ final class AudioEngine: NSObject, ObservableObject {
             }
         }
     }
-    @Published var playbackError: String?
-    @Published var showPlayer = false {
-        didSet {
-            guard oldValue != showPlayer else { return }
+    var playbackError: String? {
+        get { presentation.playbackError }
+        set {
+            guard presentation.playbackError != newValue else { return }
+            presentation.playbackError = newValue
+        }
+    }
+    var showPlayer: Bool {
+        get { presentation.showPlayer }
+        set {
+            guard presentation.showPlayer != newValue else { return }
+            presentation.showPlayer = newValue
             installPlaybackTimeObserver()
         }
     }
-    @Published var showFullLyrics = false
+    var showFullLyrics: Bool {
+        get { presentation.showFullLyrics }
+        set {
+            guard presentation.showFullLyrics != newValue else { return }
+            presentation.showFullLyrics = newValue
+        }
+    }
     @Published var isShuffleEnabled = false
     @Published var shuffleStyle: ShuffleStyle {
         didSet {

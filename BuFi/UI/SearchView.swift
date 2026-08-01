@@ -3,6 +3,8 @@ import UIKit
 
 struct SearchView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var library: HomeLibraryState
+    @EnvironmentObject private var searchContent: SearchContentState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
@@ -129,7 +131,7 @@ struct SearchView: View {
             browseMain
         case .favoriteSongs:
             browseCollectionHeader("좋아요 곡")
-            if model.home.starredSongs.isEmpty {
+            if library.snapshot.starredSongs.isEmpty {
                 ContentUnavailableView(
                     "좋아요 표시한 곡이 없습니다",
                     systemImage: "heart"
@@ -138,10 +140,10 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(model.home.starredSongs) { song in
-                            SongRow(song: song, queue: model.home.starredSongs)
+                        ForEach(library.snapshot.starredSongs) { song in
+                            SongRow(song: song, queue: library.snapshot.starredSongs)
                                 .padding(.horizontal, 14)
-                            if song.id != model.home.starredSongs.last?.id {
+                            if song.id != library.snapshot.starredSongs.last?.id {
                                 rowSeparator
                             }
                         }
@@ -151,7 +153,7 @@ struct SearchView: View {
             }
         case .favoriteAlbums:
             browseCollectionHeader("좋아요 앨범")
-            if model.home.starredAlbums.isEmpty {
+            if library.snapshot.starredAlbums.isEmpty {
                 ContentUnavailableView(
                     "저장한 앨범이 없습니다",
                     systemImage: "square.stack"
@@ -166,7 +168,7 @@ struct SearchView: View {
                     alignment: .leading,
                     spacing: 20
                 ) {
-                    ForEach(model.home.starredAlbums) { album in
+                    ForEach(library.snapshot.starredAlbums) { album in
                         NavigationLink(value: MusicRoute.album(album)) {
                             AlbumCard(
                                 album: album,
@@ -182,7 +184,7 @@ struct SearchView: View {
         case .algorithmPlaylists:
             algorithmPlaylists(
                 PersonalizedMixBuilder.make(
-                    snapshot: model.home,
+                    snapshot: library.snapshot,
                     selectedArtists: ArtistMixPreferences.decode(
                         selectedArtistMixes
                     )
@@ -220,14 +222,14 @@ struct SearchView: View {
             }
             .padding(.horizontal, 16)
 
-            if !model.home.recommendedArtists.isEmpty {
+            if !library.snapshot.recommendedArtists.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionTitle(title: "추천 아티스트")
                         .padding(.horizontal, 16)
                         .padding(.top, 2)
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: 16) {
-                            ForEach(model.home.recommendedArtists.prefix(12)) {
+                            ForEach(library.snapshot.recommendedArtists.prefix(12)) {
                                 artist in
                                 NavigationLink(value: MusicRoute.artist(artist)) {
                                     VStack(spacing: 8) {
@@ -290,21 +292,21 @@ struct SearchView: View {
 
     @ViewBuilder
     private var results: some View {
-        if model.isSearching {
+        if searchContent.isSearching {
             HStack {
                 Spacer()
                 ProgressView("검색 중…")
                 Spacer()
             }
             .padding(.top, 48)
-        } else if model.searchResults.isEmpty {
+        } else if searchContent.results.isEmpty {
             ContentUnavailableView.search(text: query)
                 .padding(.top, 42)
         } else {
             VStack(alignment: .leading, spacing: 22) {
-                if !model.searchResults.artists.isEmpty {
+                if !searchContent.results.artists.isEmpty {
                     resultSection("아티스트") {
-                        ForEach(model.searchResults.artists) { artist in
+                        ForEach(searchContent.results.artists) { artist in
                             NavigationLink(value: MusicRoute.artist(artist)) {
                                 HStack(spacing: 13) {
                                     ArtworkView(
@@ -327,15 +329,15 @@ struct SearchView: View {
                                 .padding(.vertical, 7)
                             }
                             .buttonStyle(.plain)
-                            if artist.id != model.searchResults.artists.last?.id {
+                            if artist.id != searchContent.results.artists.last?.id {
                                 rowSeparator
                             }
                         }
                     }
                 }
-                if !model.searchResults.albums.isEmpty {
+                if !searchContent.results.albums.isEmpty {
                     resultSection("앨범") {
-                        ForEach(model.searchResults.albums) { album in
+                        ForEach(searchContent.results.albums) { album in
                             NavigationLink(value: MusicRoute.album(album)) {
                                 HStack(spacing: 13) {
                                     ArtworkView(
@@ -362,23 +364,23 @@ struct SearchView: View {
                                 .padding(.vertical, 7)
                             }
                             .buttonStyle(.plain)
-                            if album.id != model.searchResults.albums.last?.id {
+                            if album.id != searchContent.results.albums.last?.id {
                                 rowSeparator
                             }
                         }
                     }
                 }
-                if !model.searchResults.songs.isEmpty {
+                if !searchContent.results.songs.isEmpty {
                     resultSection("곡") {
-                        ForEach(model.searchResults.songs) { song in
+                        ForEach(searchContent.results.songs) { song in
                             SongRow(
                                 song: song,
-                                queue: model.searchResults.songs,
+                                queue: searchContent.results.songs,
                                 playbackOrigin: .search,
                                 textLineLimit: 2
                             )
                             .padding(.horizontal, 14)
-                            if song.id != model.searchResults.songs.last?.id {
+                            if song.id != searchContent.results.songs.last?.id {
                                 rowSeparator
                             }
                         }
@@ -458,7 +460,7 @@ struct SearchView: View {
 
     private var rankedSongs: some View {
         Group {
-            if model.home.mostPlayedSongs.isEmpty {
+            if library.snapshot.mostPlayedSongs.isEmpty {
                 ContentUnavailableView(
                     "청취 순위가 아직 없습니다",
                     systemImage: "chart.bar"
@@ -468,7 +470,7 @@ struct SearchView: View {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
                         ForEach(
-                            Array(model.home.mostPlayedSongs.enumerated()),
+                            Array(library.snapshot.mostPlayedSongs.enumerated()),
                             id: \.element.id
                         ) { index, song in
                             HStack(spacing: 10) {
@@ -489,13 +491,13 @@ struct SearchView: View {
                                     .frame(width: 24, alignment: .trailing)
                                 SongRow(
                                     song: song,
-                                    queue: model.home.mostPlayedSongs,
+                                    queue: library.snapshot.mostPlayedSongs,
                                     artworkSize: 52,
                                     textLineLimit: 2
                                 )
                             }
                             .padding(.horizontal, 12)
-                            if song.id != model.home.mostPlayedSongs.last?.id {
+                            if song.id != library.snapshot.mostPlayedSongs.last?.id {
                                 Divider()
                                     .padding(.leading, 112)
                                     .opacity(0.50)

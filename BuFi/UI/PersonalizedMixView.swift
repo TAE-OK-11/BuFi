@@ -166,9 +166,10 @@ struct PersonalizedMixCard: View {
 }
 
 struct PersonalizedMixDetailView: View {
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackItem: PlaybackItemState
 
     let mix: PersonalizedMix
+    private let audio = AudioEngine.shared
 
     var body: some View {
         ScrollView {
@@ -178,7 +179,7 @@ struct PersonalizedMixDetailView: View {
                 songs
             }
             .padding(.top, 12)
-            .padding(.bottom, audio.currentSong == nil ? 56 : 148)
+            .padding(.bottom, playbackItem.currentSong == nil ? 56 : 148)
         }
         .background(BuFiScreenBackground())
         .navigationBarTitleDisplayMode(.inline)

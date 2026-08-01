@@ -3,7 +3,13 @@ import UIKit
 
 struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var library: HomeLibraryState
+    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var playbackControl: PlaybackControlState
+    @EnvironmentObject private var playbackQueue: PlaybackQueueState
+    @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
@@ -24,11 +30,12 @@ struct PlayerView: View {
     }
 
     var body: some View {
+        let _ = favoriteOverrides.values
         GeometryReader { proxy in
             ZStack {
                 background
 
-                if let song = audio.currentSong {
+                if let song = playbackItem.currentSong {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(song)
@@ -60,14 +67,14 @@ struct PlayerView: View {
                         .padding(.horizontal, 22)
                         .padding(.bottom, max(proxy.safeAreaInsets.bottom, 18) + 10)
                     }
-                    .opacity(audio.showFullLyrics ? 0 : 1)
-                    .allowsHitTesting(!audio.showFullLyrics)
-                    .accessibilityHidden(audio.showFullLyrics)
+                    .opacity(playerPresentation.showFullLyrics ? 0 : 1)
+                    .allowsHitTesting(!playerPresentation.showFullLyrics)
+                    .accessibilityHidden(playerPresentation.showFullLyrics)
                 } else {
                     ContentUnavailableView("재생 중인 곡이 없습니다", systemImage: "music.note")
                 }
 
-                if audio.showFullLyrics {
+                if playerPresentation.showFullLyrics {
                     FullLyricsView(
                         palette: palette,
                         seekBarAppearance: resolvedSeekBarAppearance,
@@ -79,7 +86,7 @@ struct PlayerView: View {
                         .zIndex(20)
                 }
             }
-            .animation(allowsMotion ? BuFiMotion.lyricsPanel : .none, value: audio.showFullLyrics)
+            .animation(allowsMotion ? BuFiMotion.lyricsPanel : .none, value: playerPresentation.showFullLyrics)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQueue) {
@@ -88,24 +95,24 @@ struct PlayerView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-        .onChange(of: audio.queueIndex) { oldIndex, index in
+        .onChange(of: playbackQueue.index) { oldIndex, index in
             transitionDirection = index >= oldIndex ? 1 : -1
             applyCachedPalette(at: index)
             syncArtworkPage(to: index, animated: true)
             prefetchUpcomingArtwork(after: index)
         }
-        .onChange(of: audio.currentSong?.id) { _, _ in
-            applyCachedPalette(at: audio.queueIndex)
+        .onChange(of: playbackItem.currentSong?.id) { _, _ in
+            applyCachedPalette(at: playbackQueue.index)
         }
-        .onChange(of: audio.queue.map(\.id)) { _, _ in
+        .onChange(of: playbackQueue.songs.map(\.id)) { _, _ in
             pruneArtworkPalettes()
-            syncArtworkPage(to: audio.queueIndex, animated: false)
-            prefetchUpcomingArtwork(after: audio.queueIndex)
+            syncArtworkPage(to: playbackQueue.index, animated: false)
+            prefetchUpcomingArtwork(after: playbackQueue.index)
         }
         .onAppear {
-            applyCachedPalette(at: audio.queueIndex)
-            syncArtworkPage(to: audio.queueIndex, animated: false)
-            prefetchUpcomingArtwork(after: audio.queueIndex)
+            applyCachedPalette(at: playbackQueue.index)
+            syncArtworkPage(to: playbackQueue.index, animated: false)
+            prefetchUpcomingArtwork(after: playbackQueue.index)
         }
         .onDisappear {
             artworkPrefetchTask?.cancel()
@@ -326,7 +333,7 @@ struct PlayerView: View {
         let viewportWidth = max(240, availableWidth - 44)
         let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
         let sideInset = max(0, (viewportWidth - edge) / 2)
-        let songs = audio.queue.isEmpty ? [song] : audio.queue
+        let songs = playbackQueue.songs.isEmpty ? [song] : playbackQueue.songs
         let animatesTransition = allowsMotion
 
         return ScrollView(.horizontal) {
@@ -364,9 +371,10 @@ struct PlayerView: View {
         .contentShape(Rectangle())
         .onChange(of: artworkPage) { oldPage, page in
             guard let index = page else { return }
-            let oldIndex = oldPage ?? audio.queueIndex
+            let oldIndex = oldPage ?? playbackQueue.index
             transitionDirection = index >= oldIndex ? 1 : -1
-            guard index != audio.queueIndex, audio.queue.indices.contains(index) else { return }
+            guard index != playbackQueue.index,
+                  playbackQueue.songs.indices.contains(index) else { return }
             audio.playQueueItem(at: index)
         }
     }
@@ -478,21 +486,21 @@ struct PlayerView: View {
                 Circle()
                     .fill(playerPrimary)
                     .frame(width: diameter, height: diameter)
-                if audio.isBuffering {
+                if playbackControl.isBuffering {
                     ProgressView()
                         .tint(playerButtonForeground)
                 } else {
-                    Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
+                    Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
                         .font(.system(size: iconSize, weight: .bold))
                         .foregroundStyle(playerButtonForeground)
-                        .offset(x: audio.wantsPlayback ? 0 : 2)
+                        .offset(x: playbackControl.wantsPlayback ? 0 : 2)
                         .contentTransition(.symbolEffect(.replace))
                 }
             }
         }
         .buttonStyle(BuFiPressStyle())
-        .animation(allowsMotion ? BuFiMotion.tap : .none, value: audio.wantsPlayback)
-        .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
+        .animation(allowsMotion ? BuFiMotion.tap : .none, value: playbackControl.wantsPlayback)
+        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
 
     private func utilityRow(
@@ -561,7 +569,7 @@ struct PlayerView: View {
     }
 
     private func artistRoute(for song: Song) -> MusicRoute? {
-        let artists = model.home.starredArtists + model.home.artists
+        let artists = library.snapshot.starredArtists + library.snapshot.artists
         if let artistID = song.artistId {
             let artist = artists.first(where: { $0.id == artistID }) ?? Artist(
                 id: artistID,
@@ -581,7 +589,7 @@ struct PlayerView: View {
     }
 
     private func syncArtworkPage(to index: Int, animated: Bool) {
-        let resolved = audio.queue.indices.contains(index) ? index : 0
+        let resolved = playbackQueue.songs.indices.contains(index) ? index : 0
         if animated && allowsMotion {
             withAnimation(BuFiMotion.trackPage) {
                 artworkPage = resolved
@@ -597,28 +605,28 @@ struct PlayerView: View {
         at index: Int
     ) {
         artworkPalettes[song.id] = nextPalette
-        guard index == artworkPage || song.id == audio.currentSong?.id else { return }
+        guard index == artworkPage || song.id == playbackItem.currentSong?.id else { return }
         if palette != nextPalette {
             palette = nextPalette
         }
     }
 
     private func applyCachedPalette(at index: Int) {
-        guard audio.queue.indices.contains(index) else { return }
-        let song = audio.queue[index]
+        guard playbackQueue.songs.indices.contains(index) else { return }
+        let song = playbackQueue.songs[index]
         guard let cached = artworkPalettes[song.id], palette != cached else { return }
         palette = cached
     }
 
     private func pruneArtworkPalettes() {
-        let activeIDs = Set(audio.queue.map(\.id))
+        let activeIDs = Set(playbackQueue.songs.map(\.id))
         artworkPalettes = artworkPalettes.filter { activeIDs.contains($0.key) }
     }
 
     private func prefetchUpcomingArtwork(after index: Int) {
         artworkPrefetchTask?.cancel()
         let thermalState = ProcessInfo.processInfo.thermalState
-        guard !audio.queue.isEmpty,
+        guard !playbackQueue.songs.isEmpty,
               !ProcessInfo.processInfo.isLowPowerModeEnabled,
               thermalState != .serious,
               thermalState != .critical else {
@@ -630,12 +638,12 @@ struct PlayerView: View {
         // normal track transition. Fetching two large covers keeps the network
         // radio and image decoder active longer without improving the
         // immediately visible animation.
-        let end = min(audio.queue.count, start + 1)
+        let end = min(playbackQueue.songs.count, start + 1)
         guard start < end else {
             artworkPrefetchTask = nil
             return
         }
-        let upcoming = Array(audio.queue[start..<end])
+        let upcoming = Array(playbackQueue.songs[start..<end])
 
         artworkPrefetchTask = Task(priority: .utility) {
             for song in upcoming {
@@ -654,7 +662,7 @@ struct PlayerView: View {
                     image: image
                 )
                 guard !Task.isCancelled,
-                      audio.queue.contains(where: { $0.id == song.id }) else {
+                      playbackQueue.songs.contains(where: { $0.id == song.id }) else {
                     return
                 }
                 artworkPalettes[song.id] = nextPalette
@@ -708,7 +716,6 @@ struct PlayerView: View {
 }
 
 private struct PlayerProgressView: View {
-    @EnvironmentObject private var audio: AudioEngine
     @ObservedObject var timeline: PlaybackTimeline
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
@@ -718,6 +725,7 @@ private struct PlayerProgressView: View {
 
     @State private var scrubValue: Double = 0
     @State private var isScrubbing = false
+    private let audio = AudioEngine.shared
 
     var body: some View {
         let duration = timeline.duration.isFinite ? max(0, timeline.duration) : 0
@@ -889,7 +897,7 @@ private struct PlayerLyricsCard: View {
 }
 
 private struct FullLyricsView: View {
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackItem: PlaybackItemState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
@@ -899,6 +907,7 @@ private struct FullLyricsView: View {
     let lyricsState: LyricsPlaybackState
 
     @State private var dragOffset: CGFloat = 0
+    private let audio = AudioEngine.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -920,10 +929,10 @@ private struct FullLyricsView: View {
             }
             Spacer()
             VStack(spacing: 3) {
-                Text(audio.currentSong?.title ?? "가사")
+                Text(playbackItem.currentSong?.title ?? "가사")
                     .font(.system(size: 15, weight: .bold))
                     .lineLimit(1)
-                Text(audio.currentSong?.artist ?? "")
+                Text(playbackItem.currentSong?.artist ?? "")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(lyricsSecondary)
                     .lineLimit(1)
@@ -1082,7 +1091,7 @@ private struct FullLyricsList: View {
 }
 
 private struct FullLyricsFooter: View {
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @ObservedObject var timeline: PlaybackTimeline
 
@@ -1090,6 +1099,7 @@ private struct FullLyricsFooter: View {
     let primary: Color
     let secondary: Color
     let playButtonForeground: Color
+    private let audio = AudioEngine.shared
 
     var body: some View {
         VStack(spacing: 7) {
@@ -1106,18 +1116,18 @@ private struct FullLyricsFooter: View {
                     Circle()
                         .fill(primary)
                         .frame(width: 72, height: 72)
-                    if audio.isBuffering {
+                    if playbackControl.isBuffering {
                         ProgressView()
                             .tint(playButtonForeground)
                     } else {
                         Image(
-                            systemName: audio.wantsPlayback
+                            systemName: playbackControl.wantsPlayback
                                 ? "pause.fill"
                                 : "play.fill"
                         )
                         .font(.system(size: 29, weight: .bold))
                         .foregroundStyle(playButtonForeground)
-                        .offset(x: audio.wantsPlayback ? 0 : 2)
+                        .offset(x: playbackControl.wantsPlayback ? 0 : 2)
                         .contentTransition(.symbolEffect(.replace))
                     }
                 }
@@ -1125,9 +1135,9 @@ private struct FullLyricsFooter: View {
             .buttonStyle(BuFiPressStyle())
             .animation(
                 motionEnabled ? BuFiMotion.tap : .none,
-                value: audio.wantsPlayback
+                value: playbackControl.wantsPlayback
             )
-            .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
+            .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
         }
         .padding(.horizontal, 24)
         .padding(.top, 10)
@@ -1317,18 +1327,19 @@ private struct PlayerPaletteBackground: View, Equatable {
 }
 
 private struct QueueView: View {
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackQueue: PlaybackQueueState
     @Environment(\.dismiss) private var dismiss
     @State private var confirmClear = false
+    private let audio = AudioEngine.shared
 
     var body: some View {
         NavigationStack {
             Group {
-                if audio.queue.isEmpty {
+                if playbackQueue.songs.isEmpty {
                     ContentUnavailableView("재생목록이 비어 있습니다", systemImage: "list.bullet")
                 } else {
                     List {
-                        ForEach(Array(audio.queue.enumerated()), id: \.offset) { index, song in
+                        ForEach(Array(playbackQueue.songs.enumerated()), id: \.offset) { index, song in
                             Button {
                                 audio.playQueueItem(at: index)
                                 dismiss()
@@ -1338,7 +1349,7 @@ private struct QueueView: View {
                                         .frame(width: 48, height: 48)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
-                                            .foregroundStyle(index == audio.queueIndex ? BuFiTheme.accentSoft : Color.primary)
+                                            .foregroundStyle(index == playbackQueue.index ? BuFiTheme.accentSoft : Color.primary)
                                             .lineLimit(1)
                                         Text(song.artist)
                                             .font(.caption)
@@ -1346,7 +1357,7 @@ private struct QueueView: View {
                                             .lineLimit(1)
                                     }
                                     Spacer()
-                                    if index == audio.queueIndex {
+                                    if index == playbackQueue.index {
                                         Image(systemName: "speaker.wave.2.fill")
                                             .foregroundStyle(BuFiTheme.accent)
                                     }

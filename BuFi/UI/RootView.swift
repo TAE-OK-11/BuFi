@@ -10,7 +10,11 @@ enum AppTab: Hashable {
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var session: AppSessionState
+    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var playbackActivity: PlaybackActivityState
+    @EnvironmentObject private var playbackQueue: PlaybackQueueState
+    @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tab: AppTab = .home
@@ -23,10 +27,11 @@ struct RootView: View {
     @AppStorage("server-sync-interval") private var syncInterval = 300.0
 
     private let tabHaptic = UISelectionFeedbackGenerator()
+    private let audio = AudioEngine.shared
 
     var body: some View {
         Group {
-            switch model.sessionState {
+            switch session.phase {
             case .signedOut:
                 LoginView()
                     .transition(.opacity.combined(with: .scale(scale: 0.985)))
@@ -43,7 +48,7 @@ struct RootView: View {
                     .transition(.opacity)
             }
         }
-        .animation(effectiveMotion ? BuFiMotion.fade : .none, value: model.sessionState)
+        .animation(effectiveMotion ? BuFiMotion.fade : .none, value: session.phase)
         .preferredColorScheme(AppAppearance(rawValue: appearanceMode)?.colorScheme)
         .environment(\.buFiMotionEnabled, effectiveMotion)
         .transaction { transaction in
@@ -59,6 +64,7 @@ struct RootView: View {
             guard phase != .active else { return }
             Task(priority: .utility) {
                 await OfflineStore.shared.flushPendingWrites()
+                await ListeningHistoryStore.shared.flushPendingWrites()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
@@ -95,30 +101,35 @@ struct RootView: View {
         .alert(
             "오류",
             isPresented: Binding(
-                get: { model.errorMessage != nil && model.sessionState == .ready },
-                set: { if !$0 { model.errorMessage = nil } }
+                get: { session.errorMessage != nil && session.phase == .ready },
+                set: { if !$0 { session.errorMessage = nil } }
             )
         ) {
-            Button("확인", role: .cancel) { model.errorMessage = nil }
+            Button("확인", role: .cancel) { session.errorMessage = nil }
         } message: {
-            Text(model.errorMessage ?? "")
+            Text(session.errorMessage ?? "")
         }
         .alert(
             "재생 오류",
             isPresented: Binding(
-                get: { audio.playbackError != nil },
-                set: { if !$0 { audio.playbackError = nil } }
+                get: { playerPresentation.playbackError != nil },
+                set: { if !$0 { playerPresentation.playbackError = nil } }
             )
         ) {
-            Button("확인", role: .cancel) { audio.playbackError = nil }
+            Button("확인", role: .cancel) { playerPresentation.playbackError = nil }
         } message: {
-            Text(audio.playbackError ?? "")
+            Text(playerPresentation.playbackError ?? "")
         }
-        .fullScreenCover(isPresented: $audio.showPlayer) {
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { playerPresentation.showPlayer },
+                set: { audio.showPlayer = $0 }
+            )
+        ) {
             NavigationStack {
                 PlayerView(
-                    initialArtworkPage: audio.queue.indices.contains(audio.queueIndex)
-                        ? audio.queueIndex
+                    initialArtworkPage: playbackQueue.songs.indices.contains(playbackQueue.index)
+                        ? playbackQueue.index
                         : 0
                 )
                     .navigationDestination(for: MusicRoute.self) { route in
@@ -174,6 +185,23 @@ struct RootView: View {
                 .tag(AppTab.settings)
         }
         .tint(BuFiTheme.accent)
+        .safeAreaInset(edge: .bottom, spacing: 10) {
+            if playbackItem.currentSong != nil {
+                LegacyMiniPlayerView()
+                    .frame(height: 60)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+                    .transition(
+                        effectiveMotion
+                            ? .move(edge: .bottom).combined(with: .opacity)
+                            : .opacity
+                    )
+            }
+        }
+        .animation(
+            effectiveMotion ? BuFiMotion.content : .none,
+            value: playbackItem.currentSong != nil
+        )
         .onChange(of: tab) { _, _ in
             if hapticsEnabled && !lowPowerMode {
                 tabHaptic.selectionChanged()
@@ -196,23 +224,10 @@ struct RootView: View {
         content
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
-            .safeAreaInset(edge: .bottom, spacing: 10) {
-                if audio.currentSong != nil {
-                    LegacyMiniPlayerView()
-                        .frame(height: 60)
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 6)
-                        .transition(effectiveMotion ? .move(edge: .bottom).combined(with: .opacity) : .opacity)
-                }
-            }
-            .animation(
-                effectiveMotion ? BuFiMotion.content : .none,
-                value: audio.currentSong != nil
-            )
     }
 
     private var syncTaskID: String {
-        "\(model.sessionState)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)-\(audio.isPlaying)"
+        "\(session.phase)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)-\(playbackActivity.isPlaying)"
     }
 
     private var thermalKey: String {
@@ -232,21 +247,21 @@ struct RootView: View {
         case .serious, .critical:
             return max(selected, 900)
         case .fair:
-            return max(selected, audio.isPlaying ? 300 : 120)
+            return max(selected, playbackActivity.isPlaying ? 300 : 120)
         case .nominal:
             break
         @unknown default:
             return max(selected, 900)
         }
 
-        if audio.isPlaying {
+        if playbackActivity.isPlaying {
             return max(selected, 180)
         }
         return selected
     }
 
     private func runAutomaticSync() async {
-        guard model.sessionState == .ready,
+        guard session.phase == .ready,
               scenePhase == .active,
               !lowPowerMode,
               !isThermallyConstrained else {
@@ -260,7 +275,7 @@ struct RootView: View {
                 return
             }
 
-            guard model.sessionState == .ready,
+            guard session.phase == .ready,
                   scenePhase == .active,
                   !lowPowerMode,
                   !isThermallyConstrained else {

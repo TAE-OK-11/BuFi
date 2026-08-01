@@ -8,6 +8,7 @@ enum MusicRoute: Hashable {
 
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var library: HomeLibraryState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
@@ -61,14 +62,13 @@ struct HomeView: View {
                 )
             }
         }
-        .id(filter)
         .transition(.opacity)
         .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
     }
 
     private var personalizedMixes: [PersonalizedMix] {
         PersonalizedMixBuilder.make(
-            snapshot: model.home,
+            snapshot: library.snapshot,
             selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
         )
     }
@@ -76,8 +76,8 @@ struct HomeView: View {
     private func allContent(mixes: [PersonalizedMix]) -> some View {
         VStack(alignment: .leading, spacing: 28) {
             shortcuts
-            albumSection("오늘 골라본 앨범", albums: model.home.randomAlbums)
-            albumSection("좋아하는 앨범", albums: model.home.starredAlbums)
+            albumSection("오늘 골라본 앨범", albums: library.snapshot.randomAlbums)
+            albumSection("좋아하는 앨범", albums: library.snapshot.starredAlbums)
             albumSection("취향을 닮은 앨범", albums: recommendedAlbums)
             artistSection("즐겨 듣는 아티스트", artists: primaryArtists)
             personalizedMixSection(
@@ -90,10 +90,10 @@ struct HomeView: View {
             )
             albumSection(
                 "최근 감상",
-                albums: model.home.recentlyPlayedAlbums
+                albums: library.snapshot.recentlyPlayedAlbums
             )
-            albumSection("다시 찾는 앨범", albums: model.home.frequentAlbums)
-            albumSection("새로 만나는 음악", albums: model.home.recentAlbums)
+            albumSection("다시 찾는 앨범", albums: library.snapshot.frequentAlbums)
+            albumSection("새로 만나는 음악", albums: library.snapshot.recentAlbums)
             playlistSection(showEmpty: false)
             radioSection
         }
@@ -131,7 +131,7 @@ struct HomeView: View {
         ) {
             NavigationLink(
                 value: PersonalizedMixBuilder.favoriteSongs(
-                    model.home.starredSongs
+                    library.snapshot.starredSongs
                 )
             ) {
                 BuFiShortcutCard(
@@ -141,11 +141,11 @@ struct HomeView: View {
                 )
             }
             .buttonStyle(BuFiPressStyle())
-            .disabled(model.home.starredSongs.isEmpty)
+            .disabled(library.snapshot.starredSongs.isEmpty)
 
             NavigationLink(
                 value: PersonalizedMixBuilder.mostPlayedSongs(
-                    model.home.mostPlayedSongs
+                    library.snapshot.mostPlayedSongs
                 )
             ) {
                 BuFiShortcutCard(
@@ -155,7 +155,7 @@ struct HomeView: View {
                 )
             }
             .buttonStyle(BuFiPressStyle())
-            .disabled(model.home.mostPlayedSongs.isEmpty)
+            .disabled(library.snapshot.mostPlayedSongs.isEmpty)
         }
         .padding(.horizontal, 16)
     }
@@ -186,7 +186,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private func playlistSection(showEmpty: Bool) -> some View {
-        if model.home.playlists.isEmpty {
+        if library.snapshot.playlists.isEmpty {
             if showEmpty {
                 ContentUnavailableView(
                     "플레이리스트가 없습니다",
@@ -201,7 +201,7 @@ struct HomeView: View {
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
-                        ForEach(model.home.playlists) { playlist in
+                        ForEach(library.snapshot.playlists) { playlist in
                             NavigationLink(value: MusicRoute.playlist(playlist)) {
                                 VStack(alignment: .leading, spacing: 8) {
                                     playlistArtwork(playlist)
@@ -282,13 +282,13 @@ struct HomeView: View {
 
     @ViewBuilder
     private var radioSection: some View {
-        if !model.home.radioStations.isEmpty {
+        if !library.snapshot.radioStations.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 SectionTitle(title: "라이브 라디오")
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: 15) {
-                        ForEach(model.home.radioStations.prefix(12)) { station in
+                        ForEach(library.snapshot.radioStations.prefix(12)) { station in
                             Button {
                                 model.playInternetRadio(station)
                             } label: {
@@ -357,31 +357,31 @@ struct HomeView: View {
     }
 
     private var primaryArtists: [Artist] {
-        if !model.home.starredArtists.isEmpty {
-            return model.home.starredArtists
+        if !library.snapshot.starredArtists.isEmpty {
+            return library.snapshot.starredArtists
         }
-        return Array(model.home.artists.prefix(12))
+        return Array(library.snapshot.artists.prefix(12))
     }
 
     private var featuredArtists: [Artist] {
         let songSources =
-            model.home.starredSongs +
-            model.home.mostPlayedSongs +
-            model.home.recommendedSongs +
-            model.home.randomSongs
+            library.snapshot.starredSongs +
+            library.snapshot.mostPlayedSongs +
+            library.snapshot.recommendedSongs +
+            library.snapshot.randomSongs
         let artistSources =
-            model.home.recommendedArtists +
-            model.home.starredArtists +
-            model.home.artists
+            library.snapshot.recommendedArtists +
+            library.snapshot.starredArtists +
+            library.snapshot.artists
 
         var taylor = artistSources.first {
             normalizedArtistName($0.name) == "taylor swift"
         }
         if taylor == nil,
            let album = (
-               model.home.starredAlbums +
-               model.home.randomAlbums +
-               model.home.recentAlbums
+               library.snapshot.starredAlbums +
+               library.snapshot.randomAlbums +
+               library.snapshot.recentAlbums
            ).first(where: {
                normalizedArtistName($0.artist) == "taylor swift"
            }),
@@ -420,9 +420,9 @@ struct HomeView: View {
         }
 
         append(taylor)
-        model.home.starredArtists.forEach { append($0) }
-        model.home.recommendedArtists.forEach { append($0) }
-        model.home.artists.forEach { append($0) }
+        library.snapshot.starredArtists.forEach { append($0) }
+        library.snapshot.recommendedArtists.forEach { append($0) }
+        library.snapshot.artists.forEach { append($0) }
         return Array(values.prefix(12))
     }
 
@@ -436,11 +436,11 @@ struct HomeView: View {
 
     private var recommendedAlbums: [Album] {
         let sourceAlbums =
-            model.home.randomAlbums +
-            model.home.recentAlbums +
-            model.home.frequentAlbums +
-            model.home.recentlyPlayedAlbums +
-            model.home.starredAlbums
+            library.snapshot.randomAlbums +
+            library.snapshot.recentAlbums +
+            library.snapshot.frequentAlbums +
+            library.snapshot.recentlyPlayedAlbums +
+            library.snapshot.starredAlbums
         var albumsByID: [String: Album] = [:]
         for album in sourceAlbums where albumsByID[album.id] == nil {
             albumsByID[album.id] = album
@@ -448,7 +448,7 @@ struct HomeView: View {
 
         var result: [Album] = []
         var seen = Set<String>()
-        for song in model.home.recommendedSongs {
+        for song in library.snapshot.recommendedSongs {
             guard let albumID = song.albumId,
                   !albumID.isEmpty,
                   seen.insert(albumID).inserted else {
