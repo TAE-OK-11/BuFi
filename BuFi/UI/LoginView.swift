@@ -142,13 +142,9 @@ struct LoginView: View {
             TextField(LocalizedStringKey(title), text: text)
                 .textContentType(contentType)
                 .focused($focus, equals: field)
-                .submitLabel(field == .server ? .next : field == .username ? .next : .go)
+                .submitLabel(.next)
                 .onSubmit {
-                    switch field {
-                    case .server: focus = .username
-                    case .username: focus = .password
-                    case .password: connect()
-                    }
+                    focus = field == .server ? .username : .password
                 }
         }
         .padding(.horizontal, 16)

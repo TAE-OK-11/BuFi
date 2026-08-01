@@ -41,7 +41,6 @@ struct HomeView: View {
         BuFiFilterBar(
             items: HomeFilter.allCases,
             selection: $filter,
-            fontSize: 13,
             title: { $0.title }
         )
     }
@@ -232,16 +231,12 @@ struct HomeView: View {
             ArtworkView(coverArt: cover, size: 166, cornerRadius: 14)
         } else {
             ZStack {
-                BuFiTheme.elevated
                 Image(systemName: "music.note.list")
                     .font(.system(size: 46, weight: .semibold))
                     .foregroundStyle(BuFiTheme.accentSoft)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(BuFiTheme.separator.opacity(0.28), lineWidth: 0.7)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .buFiSurface(cornerRadius: 14, clipsContent: true)
         }
     }
 
@@ -294,28 +289,15 @@ struct HomeView: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 10) {
                                     ZStack {
-                                        BuFiTheme.elevated
                                         Image(systemName: "radio.fill")
                                             .font(.system(size: 40, weight: .semibold))
                                             .foregroundStyle(BuFiTheme.accentSoft)
                                     }
                                     .frame(width: 166, height: 112)
-                                    .clipShape(
-                                        RoundedRectangle(
-                                            cornerRadius: 18,
-                                            style: .continuous
-                                        )
+                                    .buFiSurface(
+                                        cornerRadius: 18,
+                                        clipsContent: true
                                     )
-                                    .overlay {
-                                        RoundedRectangle(
-                                            cornerRadius: 18,
-                                            style: .continuous
-                                        )
-                                        .stroke(
-                                            BuFiTheme.separator.opacity(0.28),
-                                            lineWidth: 0.7
-                                        )
-                                    }
                                     Text(station.name)
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(.primary)

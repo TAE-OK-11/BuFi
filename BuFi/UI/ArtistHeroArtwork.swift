@@ -6,9 +6,10 @@ struct ArtistHeroArtwork: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let coverArt: String?
-    var height: CGFloat = 360
-    var cornerRadius: CGFloat = 24
     var onPalette: ((ArtworkPalette) -> Void)?
+
+    private let height: CGFloat = 360
+    private let cornerRadius: CGFloat = 24
 
     @State private var image: UIImage?
 

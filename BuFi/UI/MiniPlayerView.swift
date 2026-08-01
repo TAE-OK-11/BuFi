@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct LegacyMiniPlayerView: View {
+struct MiniPlayerView: View {
     @EnvironmentObject private var playbackItem: PlaybackItemState
     @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled

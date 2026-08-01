@@ -44,7 +44,7 @@ struct RootView: View {
                 }
                 .transition(.opacity)
             case .ready:
-                appContent
+                tabs
                     .transition(.opacity)
             }
         }
@@ -162,12 +162,9 @@ struct RootView: View {
         )
     }
 
-    private var appContent: some View {
-        tabs
-    }
-
+    @ViewBuilder
     private var tabs: some View {
-        TabView(selection: $tab) {
+        let tabView = TabView(selection: $tab) {
             tabPage(HomeView(), tag: .home)
                 .tabItem { Label("홈", systemImage: "house.fill") }
                 .tag(AppTab.home)
@@ -185,19 +182,6 @@ struct RootView: View {
                 .tag(AppTab.settings)
         }
         .tint(BuFiTheme.accent)
-        .safeAreaInset(edge: .bottom, spacing: 10) {
-            if playbackItem.currentSong != nil {
-                LegacyMiniPlayerView()
-                    .frame(height: 60)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
-                    .transition(
-                        effectiveMotion
-                            ? .move(edge: .bottom).combined(with: .opacity)
-                            : .opacity
-                    )
-            }
-        }
         .animation(
             effectiveMotion ? BuFiMotion.content : .none,
             value: playbackItem.currentSong != nil
@@ -216,14 +200,47 @@ struct RootView: View {
                 pageProgress = 1
             }
         }
+
+        if #available(iOS 26.0, *) {
+            tabView
+                .tabViewBottomAccessory(
+                    isEnabled: playbackItem.currentSong != nil
+                ) {
+                    miniPlayer
+                }
+        } else {
+            tabView
+        }
     }
 
     @ViewBuilder
     private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
         let activeProgress = tab == tag && effectiveMotion ? pageProgress : 1
-        content
+        let page = content
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
+
+        if #available(iOS 26.0, *) {
+            page
+        } else {
+            page.safeAreaInset(edge: .bottom, spacing: 10) {
+                if tab == tag, playbackItem.currentSong != nil {
+                    miniPlayer
+                        .padding(.bottom, 6)
+                }
+            }
+        }
+    }
+
+    private var miniPlayer: some View {
+        MiniPlayerView()
+            .frame(height: 60)
+            .padding(.horizontal, 8)
+            .transition(
+                effectiveMotion
+                    ? .move(edge: .bottom).combined(with: .opacity)
+                    : .opacity
+            )
     }
 
     private var syncTaskID: String {

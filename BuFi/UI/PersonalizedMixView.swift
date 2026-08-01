@@ -2,8 +2,8 @@ import SwiftUI
 
 struct PersonalizedMixArtwork: View {
     let mix: PersonalizedMix
-    var size: CGFloat = 166
-    var cornerRadius: CGFloat = 16
+    let size: CGFloat
+    let cornerRadius: CGFloat
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -55,13 +55,12 @@ struct PersonalizedMixArtwork: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        .buFiSurface(
+            cornerRadius: cornerRadius,
+            fill: .clear,
+            stroke: BuFiTheme.separator.opacity(0.26),
+            clipsContent: true
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.26), lineWidth: 0.7)
-        }
         .accessibilityHidden(true)
     }
 
