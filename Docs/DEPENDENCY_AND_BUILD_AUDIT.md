@@ -62,9 +62,15 @@ a build-time project generator.
   during migration are fixed instead of being suppressed or downgraded.
 - Release retains speed optimization, whole-module compilation, documented
   LLVM link-time optimization, dead-code stripping, dSYMs, disabled assertions,
-  stripped Swift symbols, and disabled testability. `-Ounchecked` is
+  and disabled testability. `-Ounchecked` is
   intentionally not used because removing overflow and runtime safety checks is
   unsuitable for a stabilization build.
+- Xcode 26.3 through 27 beta can corrupt dyld chained fixups when Archive runs
+  `strip -S -T` on some Swift 6 binaries (FB23528109), producing a device-only
+  crash before `main()`. BuFi therefore keeps LTO and dead-code stripping but
+  uses `STRIP_STYLE = non-global` and `STRIP_SWIFT_SYMBOLS = NO`. CI also passes
+  both values as command-line overrides so SwiftPM product targets inherit the
+  workaround.
 - The undocumented user-defined `SWIFT_LTO` setting and the C-only
   `GCC_OPTIMIZATION_LEVEL` override were removed. The app target is Swift, while
   the zstd C target is owned by SwiftPM.

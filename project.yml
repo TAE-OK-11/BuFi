@@ -47,9 +47,12 @@ settings:
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
       ASSETCATALOG_COMPILER_OPTIMIZATION: space
       COPY_PHASE_STRIP: YES
-      STRIP_STYLE: all
+      # Xcode 26.3-27 beta strip -S -T can corrupt dyld chained fixups in
+      # Swift 6 binaries (FB23528109). Keep safe non-global stripping until
+      # the affected toolchains are retired.
+      STRIP_STYLE: non-global
       STRIP_INSTALLED_PRODUCT: YES
-      STRIP_SWIFT_SYMBOLS: YES
+      STRIP_SWIFT_SYMBOLS: NO
       VALIDATE_PRODUCT: YES
 packages:
   SwiftSonic:
@@ -89,7 +92,7 @@ targets:
       properties:
         CFBundleDisplayName: BuFi
         CFBundleShortVersionString: "1.4.0"
-        CFBundleVersion: "15"
+        CFBundleVersion: "16"
         CFBundleLocalizations:
           - ko
           - en
@@ -111,7 +114,7 @@ targets:
         GENERATE_INFOPLIST_FILE: false
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         MARKETING_VERSION: "1.4.0"
-        CURRENT_PROJECT_VERSION: "15"
+        CURRENT_PROJECT_VERSION: "16"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_ASSET_PATHS: ""
     scheme:
