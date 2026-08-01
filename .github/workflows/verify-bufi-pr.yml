@@ -96,15 +96,15 @@ jobs:
           mkdir -p build/Payload
           ditto "$APP_PATH" build/Payload/BuFi.app
           cd build
-          /usr/bin/zip -qry BuFi-1.4.0-build17-unsigned.ipa Payload
-          shasum -a 256 BuFi-1.4.0-build17-unsigned.ipa > BuFi-1.4.0-build17-unsigned.ipa.sha256
+          /usr/bin/zip -qry BuFi-1.4.0-build18-unsigned.ipa Payload
+          shasum -a 256 BuFi-1.4.0-build18-unsigned.ipa > BuFi-1.4.0-build18-unsigned.ipa.sha256
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v7
         with:
-          name: BuFi-1.4.0-build17-unsigned
+          name: BuFi-1.4.0-build18-unsigned
           path: |
-            build/BuFi-1.4.0-build17-unsigned.ipa
-            build/BuFi-1.4.0-build17-unsigned.ipa.sha256
+            build/BuFi-1.4.0-build18-unsigned.ipa
+            build/BuFi-1.4.0-build18-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 14
 
