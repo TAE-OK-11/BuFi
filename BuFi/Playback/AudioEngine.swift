@@ -4,6 +4,21 @@ import MediaPlayer
 import UIKit
 
 @MainActor
+final class PlaybackTimeline: ObservableObject {
+    // Kept outside AudioEngine's publisher so a 4 Hz progress tick does not
+    // invalidate artwork, palette backgrounds, queue controls, and the app root.
+    @Published fileprivate(set) var elapsed: TimeInterval = 0
+    @Published fileprivate(set) var duration: TimeInterval = 0
+}
+
+@MainActor
+final class LyricsPlaybackState: ObservableObject {
+    // Lyric highlighting has its own render boundary for the same reason.
+    @Published fileprivate(set) var document = LyricsDocument.empty
+    @Published fileprivate(set) var activeIndex = -1
+}
+
+@MainActor
 final class AudioEngine: NSObject, ObservableObject {
     static let shared = AudioEngine()
 
@@ -13,10 +28,37 @@ final class AudioEngine: NSObject, ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var isBuffering = false
     @Published private(set) var wantsPlayback = false
-    @Published private(set) var elapsed: TimeInterval = 0
-    @Published private(set) var duration: TimeInterval = 0
-    @Published private(set) var lyrics = LyricsDocument.empty
-    @Published private(set) var activeLyricIndex = -1
+    let timeline = PlaybackTimeline()
+    let lyricsState = LyricsPlaybackState()
+
+    private(set) var elapsed: TimeInterval {
+        get { timeline.elapsed }
+        set {
+            if timeline.elapsed != newValue {
+                timeline.elapsed = newValue
+            }
+        }
+    }
+    private(set) var duration: TimeInterval {
+        get { timeline.duration }
+        set {
+            if timeline.duration != newValue {
+                timeline.duration = newValue
+            }
+        }
+    }
+    private(set) var lyrics: LyricsDocument {
+        get { lyricsState.document }
+        set { lyricsState.document = newValue }
+    }
+    private(set) var activeLyricIndex: Int {
+        get { lyricsState.activeIndex }
+        set {
+            if lyricsState.activeIndex != newValue {
+                lyricsState.activeIndex = newValue
+            }
+        }
+    }
     @Published var playbackError: String?
     @Published var showPlayer = false {
         didSet {
@@ -347,6 +389,7 @@ final class AudioEngine: NSObject, ObservableObject {
         thermalState: ProcessInfo.ThermalState
     ) {
         refreshIdleTimerPreference()
+        installPlaybackTimeObserver()
         guard lowPowerMode
                 || thermalState == .serious
                 || thermalState == .critical else {
@@ -1302,7 +1345,13 @@ final class AudioEngine: NSObject, ObservableObject {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil
         }
-        let refreshInterval = showPlayer ? 0.25 : 0.5
+        let processInfo = ProcessInfo.processInfo
+        let canUseSmoothRefresh =
+            showPlayer
+            && !processInfo.isLowPowerModeEnabled
+            && processInfo.thermalState != .serious
+            && processInfo.thermalState != .critical
+        let refreshInterval = canUseSmoothRefresh ? 0.25 : 0.5
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(
                 seconds: refreshInterval,
@@ -1343,7 +1392,10 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func updateActiveLyric() {
         guard lyrics.synced, !lyrics.lines.isEmpty else {
-            activeLyricIndex = lyrics.lines.isEmpty ? -1 : 0
+            let nextIndex = lyrics.lines.isEmpty ? -1 : 0
+            if activeLyricIndex != nextIndex {
+                activeLyricIndex = nextIndex
+            }
             return
         }
         let index = Self.lastIndex(in: lyrics.lines, notAfter: elapsed)

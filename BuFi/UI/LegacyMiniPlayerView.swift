@@ -73,16 +73,7 @@ struct LegacyMiniPlayerView: View {
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)
 
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Color.white.opacity(0.18)
-                            Color.white
-                                .frame(
-                                    width: proxy.size.width *
-                                    min(max(audio.elapsed / max(audio.duration, 1), 0), 1)
-                                )
-                        }
-                    }
+                    MiniPlayerProgressView(timeline: audio.timeline)
                     .frame(height: 2)
                     .allowsHitTesting(false)
                 }
@@ -130,5 +121,28 @@ struct LegacyMiniPlayerView: View {
             insertion: .offset(y: 5).combined(with: .opacity),
             removal: .offset(y: -4).combined(with: .opacity)
         )
+    }
+}
+
+private struct MiniPlayerProgressView: View {
+    @ObservedObject var timeline: PlaybackTimeline
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Color.white.opacity(0.18)
+                Color.white
+                    .frame(width: proxy.size.width * progress)
+            }
+        }
+    }
+
+    private var progress: CGFloat {
+        guard timeline.elapsed.isFinite,
+              timeline.duration.isFinite,
+              timeline.duration > 0 else {
+            return 0
+        }
+        return CGFloat(min(max(timeline.elapsed / timeline.duration, 0), 1))
     }
 }
