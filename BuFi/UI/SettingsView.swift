@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSessionState
     @EnvironmentObject private var audio: AudioEngine
     @State private var offlineBytes: Int64 = 0
     @State private var confirmOfflineRemoval = false
@@ -47,11 +48,11 @@ struct SettingsView: View {
                             Text("TAE Music")
                                 .font(.headline)
                             Text(
-                                model.serverVersion.isEmpty
+                                session.serverVersion.isEmpty
                                     ? "OpenSubsonic"
                                     : String(
                                         format: String(localized: "서버 %@"),
-                                        model.serverVersion
+                                        session.serverVersion
                                     )
                             )
                             .font(.caption)
@@ -297,6 +298,7 @@ struct SettingsView: View {
 
 private struct RecommendationSettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSessionState
     @State private var lastFMAPIKey = ""
     @State private var listenBrainzUsername = ""
     @State private var listenBrainzToken = ""
@@ -393,19 +395,19 @@ private struct RecommendationSettingsView: View {
 
             Section("Last.fm") {
                 SecureField(
-                    model.hasLastFMAPIKey
+                    session.hasLastFMAPIKey
                         ? "저장된 API 키 교체"
                         : "Last.fm API 키",
                     text: $lastFMAPIKey
                 )
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                Button(model.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
+                Button(session.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
                     model.saveLastFMAPIKey(lastFMAPIKey)
                     lastFMAPIKey = ""
                 }
                 .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if model.hasLastFMAPIKey {
+                if session.hasLastFMAPIKey {
                     Button("Last.fm 연동 해제", role: .destructive) {
                         model.saveLastFMAPIKey("")
                     }
@@ -421,7 +423,7 @@ private struct RecommendationSettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 SecureField(
-                    model.hasListenBrainzToken
+                    session.hasListenBrainzToken
                         ? "저장된 토큰 유지 또는 교체"
                         : "사용자 토큰",
                     text: $listenBrainzToken
@@ -440,7 +442,7 @@ private struct RecommendationSettingsView: View {
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .isEmpty
                 )
-                if model.hasListenBrainzToken || !model.listenBrainzUsername.isEmpty {
+                if session.hasListenBrainzToken || !session.listenBrainzUsername.isEmpty {
                     Button("ListenBrainz 연동 해제", role: .destructive) {
                         model.removeListenBrainz()
                         listenBrainzUsername = ""
@@ -458,7 +460,7 @@ private struct RecommendationSettingsView: View {
         .navigationTitle("추천 알고리즘")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            listenBrainzUsername = model.listenBrainzUsername
+            listenBrainzUsername = session.listenBrainzUsername
         }
     }
 

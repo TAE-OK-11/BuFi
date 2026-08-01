@@ -2,6 +2,82 @@ import Combine
 import Foundation
 
 @MainActor
+final class AppSessionState: ObservableObject {
+    @Published fileprivate(set) var phase: AppModel.SessionState = .signedOut
+    @Published fileprivate(set) var serverVersion = ""
+    @Published fileprivate(set) var hasLastFMAPIKey = false
+    @Published fileprivate(set) var hasListenBrainzToken = false
+    @Published fileprivate(set) var listenBrainzUsername = ""
+    @Published var errorMessage: String?
+
+    fileprivate func setPhase(_ value: AppModel.SessionState) {
+        guard phase != value else { return }
+        phase = value
+    }
+
+    fileprivate func setServerVersion(_ value: String) {
+        guard serverVersion != value else { return }
+        serverVersion = value
+    }
+
+    fileprivate func setHasLastFMAPIKey(_ value: Bool) {
+        guard hasLastFMAPIKey != value else { return }
+        hasLastFMAPIKey = value
+    }
+
+    fileprivate func setHasListenBrainzToken(_ value: Bool) {
+        guard hasListenBrainzToken != value else { return }
+        hasListenBrainzToken = value
+    }
+
+    fileprivate func setListenBrainzUsername(_ value: String) {
+        guard listenBrainzUsername != value else { return }
+        listenBrainzUsername = value
+    }
+
+    fileprivate func setErrorMessage(_ value: String?) {
+        guard errorMessage != value else { return }
+        errorMessage = value
+    }
+}
+
+@MainActor
+final class HomeLibraryState: ObservableObject {
+    @Published fileprivate(set) var snapshot = HomeSnapshot.empty
+
+    fileprivate func setSnapshot(_ value: HomeSnapshot) {
+        guard snapshot != value else { return }
+        snapshot = value
+    }
+}
+
+@MainActor
+final class SearchContentState: ObservableObject {
+    @Published fileprivate(set) var results = SearchResults.empty
+    @Published fileprivate(set) var isSearching = false
+
+    fileprivate func setResults(_ value: SearchResults) {
+        guard results != value else { return }
+        results = value
+    }
+
+    fileprivate func setSearching(_ value: Bool) {
+        guard isSearching != value else { return }
+        isSearching = value
+    }
+}
+
+@MainActor
+final class FavoriteOverrideState: ObservableObject {
+    @Published fileprivate(set) var values: [String: Bool] = [:]
+
+    fileprivate func setValues(_ value: [String: Bool]) {
+        guard values != value else { return }
+        values = value
+    }
+}
+
+@MainActor
 final class AppModel: ObservableObject {
     enum SessionState: Equatable {
         case signedOut
@@ -30,17 +106,60 @@ final class AppModel: ObservableObject {
         let rollbackState: Bool?
     }
 
-    @Published private(set) var sessionState: SessionState = .signedOut
-    @Published private(set) var home = HomeSnapshot.empty
-    @Published private(set) var searchResults = SearchResults.empty
-    @Published private(set) var isRefreshing = false
-    @Published private(set) var isSearching = false
-    @Published private(set) var serverVersion = ""
-    @Published private(set) var favoriteOverrides: [String: Bool] = [:]
-    @Published private(set) var hasLastFMAPIKey = false
-    @Published private(set) var hasListenBrainzToken = false
-    @Published private(set) var listenBrainzUsername = ""
-    @Published var errorMessage: String?
+    let session = AppSessionState()
+    let library = HomeLibraryState()
+    let searchContent = SearchContentState()
+    let favorites = FavoriteOverrideState()
+
+    private(set) var sessionState: SessionState {
+        get { session.phase }
+        set { session.setPhase(newValue) }
+    }
+
+    private(set) var home: HomeSnapshot {
+        get { library.snapshot }
+        set { library.setSnapshot(newValue) }
+    }
+
+    private(set) var searchResults: SearchResults {
+        get { searchContent.results }
+        set { searchContent.setResults(newValue) }
+    }
+
+    private(set) var isSearching: Bool {
+        get { searchContent.isSearching }
+        set { searchContent.setSearching(newValue) }
+    }
+
+    private(set) var serverVersion: String {
+        get { session.serverVersion }
+        set { session.setServerVersion(newValue) }
+    }
+
+    private(set) var hasLastFMAPIKey: Bool {
+        get { session.hasLastFMAPIKey }
+        set { session.setHasLastFMAPIKey(newValue) }
+    }
+
+    private(set) var hasListenBrainzToken: Bool {
+        get { session.hasListenBrainzToken }
+        set { session.setHasListenBrainzToken(newValue) }
+    }
+
+    private(set) var listenBrainzUsername: String {
+        get { session.listenBrainzUsername }
+        set { session.setListenBrainzUsername(newValue) }
+    }
+
+    var errorMessage: String? {
+        get { session.errorMessage }
+        set { session.setErrorMessage(newValue) }
+    }
+
+    private var favoriteOverrides: [String: Bool] {
+        get { favorites.values }
+        set { favorites.setValues(newValue) }
+    }
 
     private(set) var client: OpenSubsonicClient?
     private let secureStore = SecureStore()
@@ -48,6 +167,7 @@ final class AppModel: ObservableObject {
     private var recommendationTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var lastFullRefresh = Date.distantPast
+    private var lastHomeSnapshotSave = Date.distantPast
     private var sessionGeneration = 0
     private var searchGeneration = 0
     private var homeRevision = 0
@@ -143,9 +263,9 @@ final class AppModel: ObservableObject {
         home = .empty
         searchResults = .empty
         isSearching = false
-        isRefreshing = false
         refreshInFlight = false
         lastFullRefresh = .distantPast
+        lastHomeSnapshotSave = .distantPast
         clearDetailCaches()
         sessionState = .signedOut
         serverVersion = ""
@@ -158,11 +278,9 @@ final class AppModel: ObservableObject {
         let revision = homeRevision
         let previousHome = home
         refreshInFlight = true
-        if !silent { isRefreshing = true }
         defer {
             if generation == sessionGeneration {
                 refreshInFlight = false
-                if !silent { isRefreshing = false }
             }
         }
 
@@ -186,12 +304,20 @@ final class AppModel: ObservableObject {
                 authoritative: loadResult.hasAuthoritativeStarredState
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
-            if home != resolvedSnapshot { home = resolvedSnapshot }
-            let accountScope = AccountScope.identifier(for: client.credentials)
-            await HomeSnapshotStore.shared.save(
-                resolvedSnapshot,
-                accountScope: accountScope
-            )
+            let snapshotChanged = home != resolvedSnapshot
+            if snapshotChanged { home = resolvedSnapshot }
+            let now = Date()
+            if snapshotChanged
+                || now.timeIntervalSince(lastHomeSnapshotSave) >= 3_600 {
+                let accountScope = AccountScope.identifier(for: client.credentials)
+                await HomeSnapshotStore.shared.save(
+                    resolvedSnapshot,
+                    accountScope: accountScope
+                )
+                guard generation == sessionGeneration,
+                      self.client === client else { return }
+                lastHomeSnapshotSave = now
+            }
             if needsFullRefresh {
                 scheduleExternalRecommendationRefresh(
                     client: client,
@@ -307,7 +433,7 @@ final class AppModel: ObservableObject {
         snapshot.serverRecommendedSongs = Self.uniqueSongs(
             serverValues + snapshot.serverRecommendedSongs
         )
-        let ranked = RecommendationMixer.mix(
+        let ranked = await Self.recommendations(
             snapshot: snapshot,
             weights: .current(),
             purpose: .autoplay,
@@ -337,32 +463,23 @@ final class AppModel: ObservableObject {
     func saveLastFMAPIKey(_ value: String) {
         let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
+            var snapshot = home
+            snapshot.lastFMRecommendedSongs = []
             if key.isEmpty {
                 secureStore.deleteSecret(account: Self.lastFMKeyAccount)
                 hasLastFMAPIKey = false
-                var snapshot = home
-                snapshot.lastFMRecommendedSongs = []
-                snapshot.recommendedSongs = RecommendationMixer.mix(
-                    snapshot: snapshot,
-                    weights: .current()
-                )
-                home = snapshot
             } else {
                 try secureStore.saveSecret(key, account: Self.lastFMKeyAccount)
                 hasLastFMAPIKey = true
-                var snapshot = home
-                snapshot.lastFMRecommendedSongs = []
-                snapshot.recommendedSongs = RecommendationMixer.mix(
-                    snapshot: snapshot,
-                    weights: .current()
-                )
-                home = snapshot
             }
+            home = snapshot
             if let client {
                 scheduleExternalRecommendationRefresh(
                     client: client,
                     generation: sessionGeneration
                 )
+            } else {
+                rebuildRecommendations()
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -389,16 +506,14 @@ final class AppModel: ObservableObject {
             }
             var snapshot = home
             snapshot.listenBrainzRecommendedSongs = []
-            snapshot.recommendedSongs = RecommendationMixer.mix(
-                snapshot: snapshot,
-                weights: .current()
-            )
             home = snapshot
             if let client {
                 scheduleExternalRecommendationRefresh(
                     client: client,
                     generation: sessionGeneration
                 )
+            } else {
+                rebuildRecommendations()
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -412,10 +527,6 @@ final class AppModel: ObservableObject {
         listenBrainzUsername = ""
         var snapshot = home
         snapshot.listenBrainzRecommendedSongs = []
-        snapshot.recommendedSongs = RecommendationMixer.mix(
-            snapshot: snapshot,
-            weights: .current()
-        )
         home = snapshot
         if let client {
             scheduleExternalRecommendationRefresh(
@@ -424,6 +535,7 @@ final class AppModel: ObservableObject {
             )
         } else {
             recommendationTask?.cancel()
+            rebuildRecommendations()
         }
     }
 
@@ -435,18 +547,22 @@ final class AppModel: ObservableObject {
                 .recommendationSnapshot()
             guard generation == self.sessionGeneration else { return }
             var snapshot = self.home
-            snapshot.recommendedSongs = RecommendationMixer.mix(
+            let weights = RecommendationWeights.current()
+            async let recommendations = Self.recommendations(
                 snapshot: snapshot,
-                weights: .current(),
+                weights: weights,
                 behavior: behavior
             )
-            snapshot.daylistSongs = RecommendationMixer.mix(
+            async let daylist = Self.recommendations(
                 snapshot: snapshot,
-                weights: .current(),
+                weights: weights,
                 purpose: .daylist,
                 behavior: behavior,
                 limit: 24
             )
+            snapshot.recommendedSongs = await recommendations
+            snapshot.daylistSongs = await daylist
+            guard generation == self.sessionGeneration else { return }
             if snapshot != self.home { self.home = snapshot }
         }
     }
@@ -1483,20 +1599,41 @@ final class AppModel: ObservableObject {
     ) async -> HomeSnapshot {
         var value = await mergingListeningHistory(into: snapshot)
         let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
-        value.recommendedSongs = RecommendationMixer.mix(
+        let weights = RecommendationWeights.current()
+        async let recommendations = Self.recommendations(
             snapshot: value,
-            weights: .current(),
+            weights: weights,
             behavior: behavior
         )
-        value.recommendedArtists = resolvedRecommendedArtists(in: value)
-        value.daylistSongs = RecommendationMixer.mix(
+        async let daylist = Self.recommendations(
             snapshot: value,
-            weights: .current(),
+            weights: weights,
             purpose: .daylist,
             behavior: behavior,
             limit: 24
         )
+        value.recommendedSongs = await recommendations
+        value.recommendedArtists = resolvedRecommendedArtists(in: value)
+        value.daylistSongs = await daylist
         return value
+    }
+
+    nonisolated private static func recommendations(
+        snapshot: HomeSnapshot,
+        weights: RecommendationWeights,
+        purpose: RecommendationPurpose = .home,
+        behavior: RecommendationBehaviorSnapshot = .empty,
+        limit: Int = 30
+    ) async -> [Song] {
+        await Task.detached(priority: .userInitiated) {
+            RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: weights,
+                purpose: purpose,
+                behavior: behavior,
+                limit: limit
+            )
+        }.value
     }
 
     private func resolvedRecommendedArtists(
@@ -1651,21 +1788,29 @@ final class AppModel: ObservableObject {
                   self.client === client else {
                 return
             }
-            value.recommendedSongs = RecommendationMixer.mix(
+            let weights = RecommendationWeights.current()
+            async let recommendations = Self.recommendations(
                 snapshot: value,
-                weights: .current(),
+                weights: weights,
                 behavior: behavior
             )
-            value.recommendedArtists = self.resolvedRecommendedArtists(
-                in: value
-            )
-            value.daylistSongs = RecommendationMixer.mix(
+            async let daylist = Self.recommendations(
                 snapshot: value,
-                weights: .current(),
+                weights: weights,
                 purpose: .daylist,
                 behavior: behavior,
                 limit: 24
             )
+            value.recommendedSongs = await recommendations
+            value.recommendedArtists = self.resolvedRecommendedArtists(
+                in: value
+            )
+            value.daylistSongs = await daylist
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration,
+                  self.client === client else {
+                return
+            }
             value = self.applyingFavoriteOverrides(to: value)
             if value != self.home {
                 self.home = value
@@ -1702,7 +1847,7 @@ final class AppModel: ObservableObject {
         searchResults = .empty
         serverVersion = ""
         refreshInFlight = false
-        isRefreshing = false
+        lastHomeSnapshotSave = .distantPast
         isSearching = false
         clearFavoriteState()
         clearDetailCaches()
@@ -1745,6 +1890,7 @@ final class AppModel: ObservableObject {
             self.client = client
             self.home = applyingFavoriteOverrides(to: snapshot)
             self.lastFullRefresh = .distantPast
+            self.lastHomeSnapshotSave = .distantPast
             self.serverVersion = status.serverVersion ?? status.version ?? ""
             self.sessionState = .ready
             activatedAccountScope = nil
@@ -1787,7 +1933,7 @@ final class AppModel: ObservableObject {
             searchResults = .empty
             serverVersion = ""
             refreshInFlight = false
-            isRefreshing = false
+            lastHomeSnapshotSave = .distantPast
             isSearching = false
             sessionState = .signedOut
             errorMessage = error.localizedDescription

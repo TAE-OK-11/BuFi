@@ -76,20 +76,6 @@ enum RecommendationPurpose: String, Sendable {
     case autoplay
 }
 
-struct RecommendationCandidateContext: Sendable {
-    let snapshot: HomeSnapshot
-    let behavior: RecommendationBehaviorSnapshot
-    let purpose: RecommendationPurpose
-    let limit: Int
-}
-
-protocol RecommendationCandidateProviding: Sendable {
-    var sourceIdentifier: String { get }
-    func candidates(
-        for context: RecommendationCandidateContext
-    ) async -> [Song]
-}
-
 private enum RecommendationFeature: Hashable {
     case history
     case favorites

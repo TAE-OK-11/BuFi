@@ -2,13 +2,15 @@ import SwiftUI
 
 struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
+    @EnvironmentObject private var playbackItem: PlaybackItemState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
 
     let route: MusicRoute
+    private let audio = AudioEngine.shared
 
     @State private var title = ""
     @State private var subtitle = ""
@@ -22,6 +24,7 @@ struct MusicDetailView: View {
     @State private var artistAlbumCount = 0
 
     var body: some View {
+        let _ = favoriteOverrides.values
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
@@ -44,7 +47,7 @@ struct MusicDetailView: View {
                     if isArtist, !artistBiography.isEmpty { artistAbout }
                 }
             }
-            .padding(.bottom, audio.currentSong == nil ? 56 : 148)
+            .padding(.bottom, playbackItem.currentSong == nil ? 56 : 148)
             .animation(allowsMotion ? BuFiMotion.fade : .none, value: isLoading)
         }
         .background(background)
@@ -745,12 +748,14 @@ private enum ArtistReleaseGroup {
 
 private struct SongActionsSheet: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @Environment(\.dismiss) private var dismiss
 
     let song: Song
+    private let audio = AudioEngine.shared
 
     var body: some View {
+        let _ = favoriteOverrides.values
         VStack(spacing: 4) {
             Capsule()
                 .fill(.secondary.opacity(0.45))

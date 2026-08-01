@@ -1,15 +1,17 @@
 import SwiftUI
 
 struct LegacyMiniPlayerView: View {
-    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var palette = ArtworkPalette.fallback
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
+    private let audio = AudioEngine.shared
 
     var body: some View {
-        if let song = audio.currentSong {
+        if let song = playbackItem.currentSong {
             ZStack {
                 Button {
                     audio.showPlayer = true
@@ -63,12 +65,12 @@ struct LegacyMiniPlayerView: View {
                         Button {
                             audio.togglePlayback()
                         } label: {
-                            Image(systemName: audio.wantsPlayback ? "pause.fill" : "play.fill")
+                            Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
                                 .font(.system(size: 21, weight: .semibold))
                                 .frame(width: 40, height: 40)
                         }
                         .buttonStyle(BuFiPressStyle())
-                        .accessibilityLabel(audio.wantsPlayback ? "일시정지" : "재생")
+                        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
                     }
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)

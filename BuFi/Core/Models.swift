@@ -126,7 +126,6 @@ struct InternetRadioStation: Codable, Identifiable, Hashable, Sendable {
     let id: String
     var name: String
     var streamUrl: String
-    var homePageUrl: String?
     var coverArt: String?
 
     var playableSong: Song {
@@ -184,7 +183,7 @@ struct HomeLoadResult: Sendable {
     var hasAuthoritativeStarredState: Bool
 }
 
-struct SearchResults: Sendable {
+struct SearchResults: Equatable, Sendable {
     var artists: [Artist] = []
     var albums: [Album] = []
     var songs: [Song] = []
