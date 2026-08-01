@@ -246,6 +246,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lastPlaybackReportState: String?
     private let queueStorageKey = "native-play-queue"
     private var queueRestoreTask: Task<Void, Never>?
+    private var lastPersistedQueue: [Song]?
 
     override private init() {
         quality = StreamQuality(
@@ -294,6 +295,7 @@ final class AudioEngine: NSObject, ObservableObject {
             isSeekInFlight = false
             pendingSeekPosition = nil
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
+            lastPersistedQueue = nil
             queueRestoreTask?.cancel()
             queueRestoreTask = nil
             Task { await AppDatabase.shared.clearQueue() }
@@ -937,6 +939,7 @@ final class AudioEngine: NSObject, ObservableObject {
         } else {
             queueSaveTask?.cancel()
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
+            lastPersistedQueue = nil
             Task { await AppDatabase.shared.clearQueue() }
         }
     }
@@ -2077,6 +2080,7 @@ final class AudioEngine: NSObject, ObservableObject {
             repeatMode: repeatMode
         )
         let restorationEnabled = queueRestorationEnabled
+        let replacingItems = snapshot.queue != lastPersistedQueue
         queueSaveTask = Task {
             if !immediate { try? await Task.sleep(for: .milliseconds(450)) }
             guard !Task.isCancelled else { return }
@@ -2085,10 +2089,16 @@ final class AudioEngine: NSObject, ObservableObject {
                 $0.externalStreamURL == nil
             }
             if restorationEnabled && containsOnlyServerSongs {
-                _ = await AppDatabase.shared.saveQueue(snapshot)
+                let saved = await AppDatabase.shared.saveQueue(
+                    snapshot,
+                    replacingItems: replacingItems
+                )
+                guard !Task.isCancelled else { return }
+                if saved { lastPersistedQueue = snapshot.queue }
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
+                lastPersistedQueue = nil
                 await AppDatabase.shared.clearQueue()
             }
             guard let client,
@@ -2108,17 +2118,18 @@ final class AudioEngine: NSObject, ObservableObject {
     private func restoreLocalQueue() {
         queueRestoreTask?.cancel()
         queueRestoreTask = Task { [weak self] in
+            guard let self else { return }
             var snapshot = await AppDatabase.shared.loadQueue()
             if snapshot == nil,
-               let data = UserDefaults.standard.data(forKey: queueStorageKey),
+               let data = UserDefaults.standard.data(forKey: self.queueStorageKey),
                let legacy = try? JSONDecoder().decode(QueueSnapshot.self, from: data),
                !legacy.queue.isEmpty,
                legacy.queue.allSatisfy({ $0.externalStreamURL == nil }),
                await AppDatabase.shared.saveQueue(legacy) {
                 snapshot = legacy
-                UserDefaults.standard.removeObject(forKey: queueStorageKey)
+                UserDefaults.standard.removeObject(forKey: self.queueStorageKey)
             }
-            guard !Task.isCancelled, let self, let snapshot,
+            guard !Task.isCancelled, let snapshot,
                   !snapshot.queue.isEmpty,
                   snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }),
                   self.queue.isEmpty,
@@ -2129,6 +2140,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func applyRestoredQueue(_ snapshot: QueueSnapshot) {
+        lastPersistedQueue = snapshot.queue
         queue = snapshot.queue
         queueIndex = snapshot.currentID.flatMap { currentID in
             snapshot.queue.firstIndex(where: { $0.id == currentID })

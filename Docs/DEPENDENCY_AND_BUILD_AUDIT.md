@@ -6,16 +6,17 @@ Audit date: 2026-07-28
 
 | Project | License | BuFi decision |
 | --- | --- | --- |
-| [SwiftSonic 0.8.3](https://github.com/CassetteLab/swiftsonic) | MIT | Keep and pin. It is a dependency-free, actor-based OpenSubsonic client, and BuFi uses it for authenticated media URLs. |
+| [SwiftSonic 0.9.0](https://github.com/CassetteLab/swiftsonic) | MIT | Keep and pin. It is a dependency-free, actor-based OpenSubsonic client, and BuFi uses it for authenticated media URLs. |
+| [GRDB.swift 7.11.1](https://github.com/groue/GRDB.swift) | MIT | Keep and pin. It supplies the transactional SQLite persistence layer and requires Swift 6.1 or later. |
 | [Nuke 13.0.6](https://github.com/kean/Nuke/releases/tag/13.0.6) | MIT | Keep and pin the `Nuke` core product. Remove the unused `NukeUI` product to reduce the build and link graph. |
 | [Zstandard 1.5.7](https://github.com/facebook/zstd/releases/tag/v1.5.7) | BSD 3-Clause | Keep and pin. It provides the `libzstd` SwiftPM product used by BuFi's bounded HTTP content decoder. |
 | [Amperfy](https://github.com/BLeeEZ/amperfy) | GPLv3 | Continue using selected compatibility and audio-session patterns with attribution. Do not add the complete app as a package. |
 | [Cassette](https://github.com/CassetteLab/cassette) | MPL-2.0 for current source | Continue as an architectural reference only. It is an application, not a reusable package required by BuFi. |
 
-The linked packages fit BuFi's iOS 17 floor: SwiftSonic supports iOS 16 and
-Swift 5.9+, Nuke 13 supports iOS 15 and is validated for Xcode 26, and zstd's
-manifest supports iOS 9. Cassette currently requires iOS 18 and is therefore
-not a suitable source-level dependency for BuFi's supported range.
+The linked packages fit BuFi's iOS 17 floor: SwiftSonic supports iOS 16, GRDB
+supports iOS 13, Nuke 13 supports iOS 15, and zstd's manifest supports iOS 9.
+Cassette currently requires iOS 18 and is therefore not a suitable source-level
+dependency for BuFi's supported range.
 
 No additional playback framework was added. Replacing the working AVPlayer-based
 engine with Cassette's AudioStreaming stack would be a high-risk architectural
@@ -24,7 +25,7 @@ background playback, route recovery, and compatibility fallback paths.
 
 ## Reproducibility
 
-The three linked packages use `exactVersion` constraints in `project.yml`.
+The four linked packages use `exactVersion` constraints in `project.yml`.
 XcodeGen generates a new project in CI, so unconstrained `from` requirements
 would otherwise allow a new dependency release to enter a build without a BuFi
 source change. Updates should be deliberate and validated by both CI jobs.
@@ -32,7 +33,8 @@ source change. Updates should be deliberate and validated by both CI jobs.
 ## Distribution notices
 
 `BuFi/Resources/ThirdPartyLicenses.txt` bundles the verbatim license files from
-the pinned SwiftSonic 0.8.3, Nuke 13.0.6, and Zstandard 1.5.7 tags. The
+the pinned SwiftSonic 0.9.0, GRDB.swift 7.11.1, Nuke 13.0.6, and Zstandard
+1.5.7 tags. The
 open-source settings screen opens this resource inside the app, satisfying the
 linked packages' requirement to reproduce their copyright, permission,
 condition, and disclaimer text with a binary distribution.
@@ -53,12 +55,11 @@ a build-time project generator.
   [2.45.4 ProjectSpec](https://github.com/yonaskolb/XcodeGen/blob/2.45.4/Docs/ProjectSpec.md))
   while recording Xcode 26.6 as the last-upgrade version. Xcode 27 can open and
   build this format without a source migration.
-- `SWIFT_VERSION` is `5.0`, which selects the Swift 5 language mode supported by
-  current Xcode toolchains. `5.10` is a compiler release number, not a valid
-  Xcode language-mode value.
-- `SWIFT_STRICT_CONCURRENCY` is `complete`. In Swift 5 mode this surfaces
-  potential data races as migration warnings without turning them into Swift 6
-  errors.
+- `SWIFT_VERSION` is `6.0`, selecting the latest stable Swift language mode.
+  Xcode 26.6 supplies the newer Swift 6.2 compiler while the language-mode value
+  remains `6.0`; compiler point releases are not separate Xcode language modes.
+- Swift 6 makes complete concurrency checking mandatory. Build warnings found
+  during migration are fixed instead of being suppressed or downgraded.
 - Release retains speed optimization, whole-module compilation, documented
   LLVM link-time optimization, dead-code stripping, dSYMs, disabled assertions,
   stripped Swift symbols, and disabled testability. `-Ounchecked` is

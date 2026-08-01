@@ -18,7 +18,7 @@ enum PlaybackEndReason: String, Codable, Sendable {
     case stopped
 }
 
-struct SongBehavior: Codable, Sendable {
+struct SongBehavior: Codable, Sendable, Equatable {
     var song: Song
     var playCount: Int
     var firstPlayed: Date
@@ -486,8 +486,15 @@ actor ListeningHistoryStore {
             deletedIDs: deleted,
             scope: scope
         ) else { return }
-        dirtySongIDs.subtract(dirty.keys)
-        deletedSongIDs.subtract(deleted)
+        // The actor can accept a newer playback event while the database write
+        // is suspended. Only acknowledge the exact values that were written;
+        // otherwise the newer mutation must remain dirty for the next flush.
+        for (id, savedValue) in dirty where entries[id] == savedValue {
+            dirtySongIDs.remove(id)
+        }
+        for id in deleted where entries[id] == nil {
+            deletedSongIDs.remove(id)
+        }
     }
 
     private func markDirty(_ songID: String) {

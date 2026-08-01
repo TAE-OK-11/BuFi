@@ -375,16 +375,21 @@ actor AppDatabase {
     }
 
     @discardableResult
-    func saveQueue(_ snapshot: QueueSnapshot) async -> Bool {
+    func saveQueue(
+        _ snapshot: QueueSnapshot,
+        replacingItems: Bool = true
+    ) async -> Bool {
         guard let pool else { return false }
         do {
             try await pool.write { db in
-                try db.execute(sql: "DELETE FROM queue_item")
-                try db.execute(sql: "DELETE FROM queue_state")
-                guard !snapshot.queue.isEmpty else { return }
+                guard !snapshot.queue.isEmpty else {
+                    try db.execute(sql: "DELETE FROM queue_item")
+                    try db.execute(sql: "DELETE FROM queue_state")
+                    return
+                }
                 try db.execute(
                     sql: """
-                    INSERT INTO queue_state
+                    INSERT OR REPLACE INTO queue_state
                         (id, current_song_id, current_index, elapsed, shuffle, repeat_mode, updated_at)
                     VALUES (1, ?, ?, ?, ?, ?, ?)
                     """,
@@ -394,6 +399,8 @@ actor AppDatabase {
                         Date().timeIntervalSince1970
                     ]
                 )
+                guard replacingItems else { return }
+                try db.execute(sql: "DELETE FROM queue_item")
                 for (position, song) in snapshot.queue.enumerated() {
                     try db.execute(
                         sql: "INSERT INTO queue_item (position, song_data) VALUES (?, ?)",

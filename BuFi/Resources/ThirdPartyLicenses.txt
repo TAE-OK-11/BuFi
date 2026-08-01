@@ -1,9 +1,9 @@
 THIRD-PARTY LICENSES
 ====================
 
-GRDB.swift 7.10.0
-Source: https://github.com/groue/GRDB.swift/tree/v7.10.0
-License file: https://github.com/groue/GRDB.swift/blob/v7.10.0/LICENSE
+GRDB.swift 7.11.1
+Source: https://github.com/groue/GRDB.swift/tree/v7.11.1
+License file: https://github.com/groue/GRDB.swift/blob/v7.11.1/LICENSE
 
 MIT License
 
@@ -29,9 +29,9 @@ SOFTWARE.
 
 -------------------------------------------------------------------------------
 
-SwiftSonic 0.8.3
-Source: https://github.com/CassetteLab/swiftsonic/tree/v0.8.3
-License file: https://github.com/CassetteLab/swiftsonic/blob/v0.8.3/LICENSE
+SwiftSonic 0.9.0
+Source: https://github.com/CassetteLab/swiftsonic/tree/v0.9.0
+License file: https://github.com/CassetteLab/swiftsonic/blob/v0.9.0/LICENSE
 
 MIT License
 
