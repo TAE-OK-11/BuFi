@@ -2118,6 +2118,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private func restoreLocalQueue() {
         queueRestoreTask?.cancel()
         queueRestoreTask = Task { [weak self] in
+            guard let self else { return }
             var snapshot = await AppDatabase.shared.loadQueue()
             if snapshot == nil,
                let data = UserDefaults.standard.data(forKey: self.queueStorageKey),
@@ -2128,7 +2129,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 snapshot = legacy
                 UserDefaults.standard.removeObject(forKey: self.queueStorageKey)
             }
-            guard !Task.isCancelled, let self, let snapshot,
+            guard !Task.isCancelled, let snapshot,
                   !snapshot.queue.isEmpty,
                   snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }),
                   self.queue.isEmpty,
