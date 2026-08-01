@@ -14,7 +14,7 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.0"
+    SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     TARGETED_DEVICE_FAMILY: "1"
@@ -92,7 +92,7 @@ targets:
       properties:
         CFBundleDisplayName: BuFi
         CFBundleShortVersionString: "1.4.0"
-        CFBundleVersion: "17"
+        CFBundleVersion: "18"
         CFBundleLocalizations:
           - ko
           - en
@@ -114,7 +114,7 @@ targets:
         GENERATE_INFOPLIST_FILE: false
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         MARKETING_VERSION: "1.4.0"
-        CURRENT_PROJECT_VERSION: "17"
+        CURRENT_PROJECT_VERSION: "18"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_ASSET_PATHS: ""
     scheme:
