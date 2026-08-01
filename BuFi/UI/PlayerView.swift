@@ -814,7 +814,7 @@ private struct PlayerLyricsCard: View {
                 Button(action: onOpen) {
                     miniLyricsWindow
                         .frame(maxWidth: .infinity)
-                        .frame(height: 154, alignment: .top)
+                        .frame(height: 178, alignment: .top)
                         .clipped()
                 }
                 .buttonStyle(.plain)
@@ -844,55 +844,77 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(visibleLyrics, id: \.line.id) { item in
-                let distance = max(0, item.index - lyricsState.activeIndex)
-                Text(item.line.text)
-                    .font(.system(size: 20, weight: .bold))
-                    .tracking(-0.40)
-                    .foregroundStyle(lyricColor(distance: distance))
-                    .scaleEffect(distance == 0 ? 1 : 0.98, anchor: .leading)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .transition(miniLyricsTransition)
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(lyricsState.document.lines.indices, id: \.self) { index in
+                        let line = lyricsState.document.lines[index]
+                        Text(line.text)
+                            .font(.system(size: 20, weight: .bold))
+                            .tracking(-0.40)
+                            .foregroundStyle(lyricColor(for: index))
+                            .scaleEffect(
+                                motionEnabled
+                                    ? (index == lyricsState.activeIndex ? 1 : 0.985)
+                                    : 1,
+                                anchor: .leading
+                            )
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id(line.id)
+                            .animation(
+                                motionEnabled ? BuFiMotion.miniLyrics : .none,
+                                value: index == lyricsState.activeIndex
+                            )
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+            .scrollDisabled(true)
+            .onAppear {
+                scrollToActiveLine(using: proxy, animated: false)
+            }
+            .onChange(of: lyricsState.activeIndex) { _, _ in
+                scrollToActiveLine(using: proxy, animated: true)
+            }
+            .onChange(of: lyricsState.document.lines.map(\.id)) { _, _ in
+                scrollToActiveLine(using: proxy, animated: false)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .clipped()
-        .animation(
-            motionEnabled ? BuFiMotion.miniLyrics : .none,
-            value: lyricsState.activeIndex
-        )
     }
 
-    private var visibleLyrics: [(index: Int, line: LyricLine)] {
+    private func scrollToActiveLine(
+        using proxy: ScrollViewProxy,
+        animated: Bool
+    ) {
         let lines = lyricsState.document.lines
-        guard !lines.isEmpty else { return [] }
-        let active = lines.indices.contains(lyricsState.activeIndex)
+        guard !lines.isEmpty else { return }
+        let index = lines.indices.contains(lyricsState.activeIndex)
             ? lyricsState.activeIndex
-            : 0
-        let end = min(lines.count, active + 3)
-        return (active..<end).map { (index: $0, line: lines[$0]) }
-    }
+            : lines.startIndex
+        let action = {
+            proxy.scrollTo(lines[index].id, anchor: UnitPoint(x: 0.5, y: 0.12))
+        }
 
-    private func lyricColor(distance: Int) -> Color {
-        switch distance {
-        case 0: primary
-        case 1: primary.opacity(0.62)
-        case 2: primary.opacity(0.42)
-        default: primary.opacity(0.28)
+        DispatchQueue.main.async {
+            if animated, motionEnabled {
+                withAnimation(BuFiMotion.miniLyrics, action)
+            } else {
+                action()
+            }
         }
     }
 
-    private var miniLyricsTransition: AnyTransition {
-        guard motionEnabled else { return .opacity }
-        return .asymmetric(
-            insertion: .offset(y: 6).combined(with: .opacity),
-            removal: .offset(y: -6).combined(with: .opacity)
-        )
+    private func lyricColor(for index: Int) -> Color {
+        if index == lyricsState.activeIndex { return primary }
+        if index < lyricsState.activeIndex { return primary.opacity(0.28) }
+        let distance = max(1, index - lyricsState.activeIndex)
+        return primary.opacity(max(0.26, 0.62 - (Double(distance - 1) * 0.12)))
     }
 }
 
