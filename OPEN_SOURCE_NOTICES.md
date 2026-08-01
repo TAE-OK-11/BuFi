@@ -32,10 +32,22 @@ BuFi links SwiftSonic for salted-token authentication support and authenticated
 stream, artwork, and download URL construction.
 
 - Project: <https://github.com/CassetteLab/swiftsonic>
-- Version: 0.8.3
+- Version: 0.9.0
 - License: MIT
 - Copyright: 2026 Mathieu Dubart
-- License text: <https://github.com/CassetteLab/swiftsonic/blob/v0.8.3/LICENSE>
+- License text: <https://github.com/CassetteLab/swiftsonic/blob/v0.9.0/LICENSE>
+- Bundled notice: `BuFi/Resources/ThirdPartyLicenses.txt`
+
+## GRDB.swift
+
+BuFi links GRDB for transactional, actor-isolated playback history, offline
+metadata, home-cache, and play-queue persistence.
+
+- Project: <https://github.com/groue/GRDB.swift>
+- Version: 7.11.1
+- License: MIT
+- Copyright: 2015-2025 Gwendal Roué
+- License text: <https://github.com/groue/GRDB.swift/blob/v7.11.1/LICENSE>
 - Bundled notice: `BuFi/Resources/ThirdPartyLicenses.txt`
 
 ## Nuke

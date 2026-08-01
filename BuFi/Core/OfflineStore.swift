@@ -4,7 +4,7 @@ import Foundation
 actor OfflineStore {
     static let shared = OfflineStore()
 
-    private struct Entry: Codable, Sendable {
+    private struct Entry: Codable, Sendable, Equatable {
         var fileName: String
         var byteCount: Int64
         var lastAccessedAt: Date
@@ -494,8 +494,16 @@ actor OfflineStore {
             deletedIDs: deleted,
             scope: scope
         ) else { return false }
-        dirtySongIDs.subtract(dirty.keys)
-        deletedSongIDs.subtract(deleted)
+        // A read or download can update an entry while the database actor is
+        // writing. Do not clear a newer value merely because an older snapshot
+        // completed successfully.
+        for (id, savedValue) in dirty
+            where entries[id].map(Self.databaseEntry) == savedValue {
+            dirtySongIDs.remove(id)
+        }
+        for id in deleted where entries[id] == nil {
+            deletedSongIDs.remove(id)
+        }
         if let indexURL { try? FileManager.default.removeItem(at: indexURL) }
         return true
     }

@@ -81,6 +81,26 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(restored?.elapsed, 42)
         XCTAssertEqual(restored?.repeatMode, .all)
 
+        let stateOnlyUpdate = QueueSnapshot(
+            queue: [first, second],
+            currentID: first.id,
+            index: 0,
+            elapsed: 84,
+            shuffle: false,
+            repeatMode: .one
+        )
+        let stateSaved = await context.database.saveQueue(
+            stateOnlyUpdate,
+            replacingItems: false
+        )
+        XCTAssertTrue(stateSaved)
+        let stateRestored = await context.database.loadQueue()
+        XCTAssertEqual(stateRestored?.queue, [first, second])
+        XCTAssertEqual(stateRestored?.currentID, first.id)
+        XCTAssertEqual(stateRestored?.elapsed, 84)
+        XCTAssertEqual(stateRestored?.shuffle, false)
+        XCTAssertEqual(stateRestored?.repeatMode, .one)
+
         let snapshot = HomeSnapshot(starredSongs: [first])
         let snapshotSaved = await context.database.saveHomeSnapshot(
             snapshot,

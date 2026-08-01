@@ -548,20 +548,13 @@ final class AppModel: ObservableObject {
             guard generation == self.sessionGeneration else { return }
             var snapshot = self.home
             let weights = RecommendationWeights.current()
-            async let recommendations = Self.recommendations(
+            let sections = await Self.recommendationSections(
                 snapshot: snapshot,
                 weights: weights,
                 behavior: behavior
             )
-            async let daylist = Self.recommendations(
-                snapshot: snapshot,
-                weights: weights,
-                purpose: .daylist,
-                behavior: behavior,
-                limit: 24
-            )
-            snapshot.recommendedSongs = await recommendations
-            snapshot.daylistSongs = await daylist
+            snapshot.recommendedSongs = sections.recommended
+            snapshot.daylistSongs = sections.daylist
             guard generation == self.sessionGeneration else { return }
             if snapshot != self.home { self.home = snapshot }
         }
@@ -1600,21 +1593,14 @@ final class AppModel: ObservableObject {
         var value = await mergingListeningHistory(into: snapshot)
         let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
         let weights = RecommendationWeights.current()
-        async let recommendations = Self.recommendations(
+        let sections = await Self.recommendationSections(
             snapshot: value,
             weights: weights,
             behavior: behavior
         )
-        async let daylist = Self.recommendations(
-            snapshot: value,
-            weights: weights,
-            purpose: .daylist,
-            behavior: behavior,
-            limit: 24
-        )
-        value.recommendedSongs = await recommendations
+        value.recommendedSongs = sections.recommended
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
-        value.daylistSongs = await daylist
+        value.daylistSongs = sections.daylist
         return value
     }
 
@@ -1633,6 +1619,29 @@ final class AppModel: ObservableObject {
                 behavior: behavior,
                 limit: limit
             )
+        }.value
+    }
+
+    nonisolated private static func recommendationSections(
+        snapshot: HomeSnapshot,
+        weights: RecommendationWeights,
+        behavior: RecommendationBehaviorSnapshot
+    ) async -> (recommended: [Song], daylist: [Song]) {
+        await Task.detached(priority: .userInitiated) {
+            let recommended = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: weights,
+                behavior: behavior
+            )
+            guard !Task.isCancelled else { return (recommended, []) }
+            let daylist = RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: weights,
+                purpose: .daylist,
+                behavior: behavior,
+                limit: 24
+            )
+            return (recommended, daylist)
         }.value
     }
 
@@ -1789,23 +1798,16 @@ final class AppModel: ObservableObject {
                 return
             }
             let weights = RecommendationWeights.current()
-            async let recommendations = Self.recommendations(
+            let sections = await Self.recommendationSections(
                 snapshot: value,
                 weights: weights,
                 behavior: behavior
             )
-            async let daylist = Self.recommendations(
-                snapshot: value,
-                weights: weights,
-                purpose: .daylist,
-                behavior: behavior,
-                limit: 24
-            )
-            value.recommendedSongs = await recommendations
+            value.recommendedSongs = sections.recommended
             value.recommendedArtists = self.resolvedRecommendedArtists(
                 in: value
             )
-            value.daylistSongs = await daylist
+            value.daylistSongs = sections.daylist
             guard !Task.isCancelled,
                   generation == self.sessionGeneration,
                   self.client === client else {
