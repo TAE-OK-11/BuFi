@@ -35,19 +35,9 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 }
 
-enum PlayerSeekBarAppearance: String, CaseIterable, Identifiable {
+enum PlayerSeekBarAppearance {
     case classic
     case liquidGlass
-
-    var id: String { rawValue }
-
-    var title: LocalizedStringKey {
-        switch self {
-        case .classic: "클래식"
-        case .liquidGlass: "Liquid Glass"
-        }
-    }
-
 }
 
 enum PlayerAppearance: String, CaseIterable, Identifiable {
@@ -141,9 +131,53 @@ private struct BuFiGlassModifier: ViewModifier {
     }
 }
 
+private struct BuFiSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let fill: Color
+    let stroke: Color
+    let lineWidth: CGFloat
+    let clipsContent: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(
+            cornerRadius: cornerRadius,
+            style: .continuous
+        )
+        if clipsContent {
+            content
+                .background(fill, in: shape)
+                .clipShape(shape)
+                .overlay { shape.stroke(stroke, lineWidth: lineWidth) }
+        } else {
+            content
+                .background(fill, in: shape)
+                .overlay { shape.stroke(stroke, lineWidth: lineWidth) }
+        }
+    }
+}
+
 extension View {
     func buFiGlass(cornerRadius: CGFloat, interactive: Bool = false) -> some View {
         modifier(BuFiGlassModifier(cornerRadius: cornerRadius, interactive: interactive))
+    }
+
+    func buFiSurface(
+        cornerRadius: CGFloat,
+        fill: Color = BuFiTheme.elevated.opacity(0.92),
+        stroke: Color = BuFiTheme.separator.opacity(0.28),
+        lineWidth: CGFloat = 0.7,
+        clipsContent: Bool = false
+    ) -> some View {
+        modifier(
+            BuFiSurfaceModifier(
+                cornerRadius: cornerRadius,
+                fill: fill,
+                stroke: stroke,
+                lineWidth: lineWidth,
+                clipsContent: clipsContent
+            )
+        )
     }
 }
 
@@ -161,7 +195,6 @@ struct BuFiPressStyle: ButtonStyle {
 struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
     let items: [Item]
     @Binding var selection: Item
-    var fontSize: CGFloat = 14
     let title: (Item) -> LocalizedStringKey
 
     @Environment(\.buFiMotionEnabled) private var motionEnabled
@@ -176,7 +209,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                     }
                 } label: {
                     Text(title(item))
-                        .font(.system(size: fontSize, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                         .foregroundStyle(
@@ -211,14 +244,10 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
         }
         .padding(4)
         .frame(height: 48)
-        .background(
-            BuFiTheme.elevated.opacity(0.92),
-            in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+        .buFiSurface(
+            cornerRadius: 17,
+            stroke: BuFiTheme.separator.opacity(0.34)
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.34), lineWidth: 0.7)
-        }
         .padding(.horizontal, 16)
     }
 }
@@ -254,15 +283,11 @@ struct BuFiGroupedSurface<Content: View>: View {
 
     var body: some View {
         content
-            .background(
-                BuFiTheme.elevated.opacity(0.92),
-                in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .buFiSurface(
+                cornerRadius: 22,
+                stroke: BuFiTheme.separator.opacity(0.26),
+                clipsContent: true
             )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(BuFiTheme.separator.opacity(0.26), lineWidth: 0.7)
-            }
     }
 }
 
@@ -302,14 +327,7 @@ struct BuFiShortcutCard: View {
         }
         .padding(.horizontal, 13)
         .frame(maxWidth: .infinity, minHeight: 94)
-        .background(
-            BuFiTheme.elevated.opacity(0.92),
-            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(BuFiTheme.separator.opacity(0.28), lineWidth: 0.7)
-        }
+        .buFiSurface(cornerRadius: 18)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .accessibilityElement(children: .combine)
     }
@@ -320,9 +338,8 @@ struct ArtworkView: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let coverArt: String?
-    var remoteURL: String?
-    var size: CGFloat = 300
-    var cornerRadius: CGFloat = 8
+    let size: CGFloat
+    let cornerRadius: CGFloat
     var onPalette: ((ArtworkPalette) -> Void)?
 
     @State private var image: UIImage?
@@ -352,31 +369,22 @@ struct ArtworkView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: "\(coverArt ?? "")-\(remoteURL ?? "")-\(Int(size))") {
+        .task(id: "\(coverArt ?? "")-\(Int(size))") {
             image = nil
-            var candidates: [URL] = []
-            if let remoteURL,
-               let url = URL(string: remoteURL),
-               url.scheme?.lowercased() == "https" {
-                candidates.append(url)
-            }
             if let coverURL = await model.artworkURL(id: coverArt, size: Int(size * 2)) {
-                candidates.append(coverURL)
-            }
-
-            for url in candidates {
                 guard !Task.isCancelled else { return }
                 guard let loaded = try? await ArtworkStore.shared.image(
-                    for: url,
+                    for: coverURL,
                     pixelSize: max(size * UIScreen.main.scale, 96)
                 ) else {
-                    continue
+                    onPalette?(.fallback)
+                    return
                 }
                 guard !Task.isCancelled else { return }
                 image = loaded
                 guard let onPalette else { return }
                 let palette = await ArtworkStore.shared.palette(
-                    for: url,
+                    for: coverURL,
                     image: loaded
                 )
                 guard !Task.isCancelled else { return }
@@ -449,7 +457,6 @@ struct SongRow: View {
     let song: Song
     let queue: [Song]
     var playbackOrigin: PlaybackOrigin = .manual
-    var showsArtwork = true
     var artworkSize: CGFloat = 54
     var layout: SongRowLayout = .standard
     var fallbackTrackNumber: Int?
@@ -576,14 +583,12 @@ struct SongRow: View {
                 audio.play(song, in: queue, origin: playbackOrigin)
             } label: {
                 HStack(spacing: 12) {
-                    if showsArtwork {
-                        ArtworkView(
-                            coverArt: song.coverArt,
-                            size: artworkSize,
-                            cornerRadius: max(5, artworkSize * 0.11)
-                        )
-                        .frame(width: artworkSize, height: artworkSize)
-                    }
+                    ArtworkView(
+                        coverArt: song.coverArt,
+                        size: artworkSize,
+                        cornerRadius: max(5, artworkSize * 0.11)
+                    )
+                    .frame(width: artworkSize, height: artworkSize)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(song.title)
                             .font(.system(size: 16, weight: .semibold))
@@ -646,20 +651,12 @@ struct SongRow: View {
 
 struct SectionTitle: View {
     let title: String
-    var trailing: String?
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(LocalizedStringKey(title))
-                .font(.system(size: 24, weight: .bold))
-                .tracking(-0.6)
-            Spacer()
-            if let trailing {
-                Text(LocalizedStringKey(trailing))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
+        Text(LocalizedStringKey(title))
+            .font(.system(size: 24, weight: .bold))
+            .tracking(-0.6)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

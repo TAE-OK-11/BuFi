@@ -75,8 +75,6 @@ struct MusicDetailView: View {
         ZStack(alignment: .bottomLeading) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
-                height: 360,
-                cornerRadius: 24,
                 onPalette: { nextPalette in
                     withAnimation(allowsMotion ? BuFiMotion.color : .none) {
                         palette = nextPalette
@@ -157,14 +155,11 @@ struct MusicDetailView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
-            .background(
-                BuFiTheme.elevated.opacity(0.90),
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .buFiSurface(
+                cornerRadius: 20,
+                fill: BuFiTheme.elevated.opacity(0.90),
+                stroke: BuFiTheme.separator.opacity(0.24)
             )
-            .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(BuFiTheme.separator.opacity(0.24), lineWidth: 0.7)
-            }
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 24)
@@ -308,14 +303,7 @@ struct MusicDetailView: View {
             )
             .padding(.horizontal, 15)
             .frame(height: 42)
-            .background(
-                BuFiTheme.elevated.opacity(0.92),
-                in: Capsule()
-            )
-            .overlay {
-                Capsule()
-                    .stroke(BuFiTheme.separator.opacity(0.28), lineWidth: 0.7)
-            }
+            .buFiSurface(cornerRadius: 21)
         }
         .buttonStyle(BuFiPressStyle())
         .padding(.horizontal, 20)
@@ -339,14 +327,12 @@ struct MusicDetailView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 20)
-        .background(
-            BuFiTheme.elevated,
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        .buFiSurface(
+            cornerRadius: 20,
+            fill: BuFiTheme.elevated,
+            stroke: contrastSeparator,
+            lineWidth: 0.8
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(contrastSeparator, lineWidth: 0.8)
-        }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.08 : 0.035), radius: 12, y: 5)
         .padding(.horizontal, 16)
         .padding(.top, 28)
@@ -474,7 +460,6 @@ struct MusicDetailView: View {
                             song: song,
                             queue: songs,
                             playbackOrigin: isArtist ? .manual : .album,
-                            showsArtwork: true,
                             artworkSize: isArtist ? 54 : 44,
                             layout: rowLayout,
                             fallbackTrackNumber: index + 1,
@@ -524,13 +509,6 @@ struct MusicDetailView: View {
         content
             .foregroundStyle(detailControlForeground)
             .frame(width: diameter, height: diameter)
-            .background(detailControlFill, in: Circle())
-            .overlay {
-                Circle().stroke(
-                    detailControlStroke,
-                    lineWidth: colorScheme == .dark ? 0.7 : 1.0
-                )
-            }
             .shadow(
                 color: .black.opacity(colorScheme == .dark ? 0.12 : 0.045),
                 radius: 8,
@@ -541,14 +519,6 @@ struct MusicDetailView: View {
 
     private var detailControlForeground: Color {
         colorScheme == .dark ? .white.opacity(0.92) : .black.opacity(0.78)
-    }
-
-    private var detailControlFill: Color {
-        colorScheme == .dark ? .white.opacity(0.10) : .black.opacity(0.065)
-    }
-
-    private var detailControlStroke: Color {
-        colorScheme == .dark ? .white.opacity(0.16) : .black.opacity(0.16)
     }
 
     private var collectionTitleColor: Color {

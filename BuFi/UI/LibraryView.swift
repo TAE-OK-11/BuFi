@@ -34,7 +34,6 @@ struct LibraryView: View {
         BuFiFilterBar(
             items: LibraryFilter.allCases,
             selection: $filter,
-            fontSize: 13,
             title: { $0.title }
         )
     }
@@ -55,7 +54,6 @@ struct LibraryView: View {
                                 playlist.songCount ?? 0
                             ),
                             cover: playlist.coverArt,
-                            circle: false,
                             placeholderIcon: "music.note.list"
                         )
                     }
@@ -150,7 +148,7 @@ struct LibraryView: View {
                         BuFiGroupedSurface {
                             VStack(spacing: 0) {
                                 ForEach(section.artists) { artist in
-                                    artistRow(artist, favorite: false)
+                                    artistRow(artist)
                                     if artist.id != section.artists.last?.id {
                                         rowSeparator
                                     }
@@ -200,7 +198,7 @@ struct LibraryView: View {
         .frame(width: 108, alignment: .top)
     }
 
-    private func artistRow(_ artist: Artist, favorite: Bool) -> some View {
+    private func artistRow(_ artist: Artist) -> some View {
         HStack(spacing: 8) {
             NavigationLink(value: MusicRoute.artist(artist)) {
                 HStack(spacing: 12) {
@@ -223,15 +221,13 @@ struct LibraryView: View {
             Button {
                 Task { await model.toggleStar(artist: artist) }
             } label: {
-                Image(systemName: favorite ? "heart.fill" : "heart")
+                Image(systemName: "heart")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(
-                        favorite ? BuFiTheme.accent : Color.secondary
-                    )
+                    .foregroundStyle(Color.secondary)
                     .frame(width: 38, height: 38)
             }
             .buttonStyle(BuFiPressStyle())
-            .accessibilityLabel(favorite ? "좋아요 취소" : "좋아요 표시")
+            .accessibilityLabel("좋아요 표시")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
@@ -253,15 +249,13 @@ struct LibraryView: View {
         title: String,
         subtitle: String,
         cover: String?,
-        circle: Bool,
         placeholderIcon: String
     ) -> some View {
-        let artworkSize: CGFloat = circle ? 56 : 64
+        let artworkSize: CGFloat = 64
         return HStack(spacing: 12) {
             libraryArtwork(
                 cover: cover,
                 size: artworkSize,
-                circle: circle,
                 placeholderIcon: placeholderIcon
             )
             .frame(width: artworkSize, height: artworkSize)
@@ -314,14 +308,13 @@ struct LibraryView: View {
     private func libraryArtwork(
         cover: String?,
         size: CGFloat,
-        circle: Bool,
         placeholderIcon: String
     ) -> some View {
         if let cover, !cover.isEmpty {
             ArtworkView(
                 coverArt: cover,
                 size: size,
-                cornerRadius: circle ? size / 2 : 12
+                cornerRadius: 12
             )
         } else {
             ZStack {
@@ -332,7 +325,7 @@ struct LibraryView: View {
             }
             .clipShape(
                 RoundedRectangle(
-                    cornerRadius: circle ? size / 2 : 12,
+                    cornerRadius: 12,
                     style: .continuous
                 )
             )

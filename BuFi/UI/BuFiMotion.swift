@@ -49,14 +49,4 @@ enum BuFiMotion {
             return false
         }
     }
-
-    static func isEnabled(userPreference: Bool, reduceMotion: Bool) -> Bool {
-        let processInfo = ProcessInfo.processInfo
-        return isEnabled(
-            userPreference: userPreference,
-            reduceMotion: reduceMotion,
-            lowPowerMode: processInfo.isLowPowerModeEnabled,
-            thermalState: processInfo.thermalState
-        )
-    }
 }

@@ -23,7 +23,7 @@ struct SearchView: View {
                         searchField
                         Group {
                             if isSearchSession {
-                                searchSessionContent
+                                results
                             } else {
                                 browse
                             }
@@ -104,7 +104,6 @@ struct SearchView: View {
         .foregroundStyle(.primary)
         .padding(.horizontal, 16)
         .frame(minHeight: 58)
-        .background(Color.primary.opacity(0.05))
         .buFiGlass(cornerRadius: 20, interactive: true)
         .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -118,10 +117,6 @@ struct SearchView: View {
         .padding(.horizontal, 16)
         .onTapGesture { focused = true }
         .animation(motionEnabled ? BuFiMotion.fade : .none, value: focused)
-    }
-
-    private var searchSessionContent: some View {
-        results
     }
 
     @ViewBuilder
@@ -271,7 +266,6 @@ struct SearchView: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .bold))
                     .frame(width: 38, height: 38)
-                    .background(Color.primary.opacity(0.05), in: Circle())
                     .buFiGlass(cornerRadius: 19, interactive: true)
             }
             .buttonStyle(.plain)
