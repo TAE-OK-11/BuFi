@@ -55,11 +55,13 @@ a build-time project generator.
   [2.45.4 ProjectSpec](https://github.com/yonaskolb/XcodeGen/blob/2.45.4/Docs/ProjectSpec.md))
   while recording Xcode 26.6 as the last-upgrade version. Xcode 27 can open and
   build this format without a source migration.
-- `SWIFT_VERSION` is `6.0`, selecting the latest stable Swift language mode.
-  Xcode 26.6 supplies the newer Swift 6.2 compiler while the language-mode value
-  remains `6.0`; compiler point releases are not separate Xcode language modes.
-- Swift 6 makes complete concurrency checking mandatory. Build warnings found
-  during migration are fixed instead of being suppressed or downgraded.
+- The BuFi app and test targets use `SWIFT_VERSION = 5.0` for the more mature
+  Swift 5 language mode while still compiling with the current Xcode toolchain.
+  SwiftSonic and GRDB keep the Swift language modes declared by their own
+  package manifests, so the pinned current releases remain available.
+- `SWIFT_STRICT_CONCURRENCY = complete` remains enabled. Potential data races
+  stay visible as migration diagnostics without Swift 6 language mode turning
+  every diagnostic into a hard compilation error.
 - Release retains speed optimization, whole-module compilation, documented
   LLVM link-time optimization, dead-code stripping, dSYMs, disabled assertions,
   and disabled testability. `-Ounchecked` is
