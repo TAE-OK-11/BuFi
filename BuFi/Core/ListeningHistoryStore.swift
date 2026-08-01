@@ -91,6 +91,50 @@ struct SongBehavior: Codable, Sendable {
         consecutiveSkips = 0
     }
 
+    init(
+        song: Song,
+        playCount: Int,
+        firstPlayed: Date,
+        lastPlayed: Date,
+        completedCount: Int,
+        skipCount: Int,
+        earlySkipCount: Int,
+        repeatedSkipCount: Int,
+        repeatCount: Int,
+        manualPlayCount: Int,
+        searchPlayCount: Int,
+        albumSelectionCount: Int,
+        playlistPlayCount: Int,
+        autoplayCount: Int,
+        queueRemovalCount: Int,
+        playlistAddCount: Int,
+        favoriteCount: Int,
+        totalCompletion: Double,
+        completionSamples: Int,
+        consecutiveSkips: Int
+    ) {
+        self.song = song
+        self.playCount = playCount
+        self.firstPlayed = firstPlayed
+        self.lastPlayed = lastPlayed
+        self.completedCount = completedCount
+        self.skipCount = skipCount
+        self.earlySkipCount = earlySkipCount
+        self.repeatedSkipCount = repeatedSkipCount
+        self.repeatCount = repeatCount
+        self.manualPlayCount = manualPlayCount
+        self.searchPlayCount = searchPlayCount
+        self.albumSelectionCount = albumSelectionCount
+        self.playlistPlayCount = playlistPlayCount
+        self.autoplayCount = autoplayCount
+        self.queueRemovalCount = queueRemovalCount
+        self.playlistAddCount = playlistAddCount
+        self.favoriteCount = favoriteCount
+        self.totalCompletion = totalCompletion
+        self.completionSamples = completionSamples
+        self.consecutiveSkips = consecutiveSkips
+    }
+
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         song = try values.decode(Song.self, forKey: .song)
@@ -191,38 +235,37 @@ actor ListeningHistoryStore {
     private var revision: UInt64 = 0
     private var lastStartedSongID: String?
     private var persistenceTask: Task<Void, Never>?
+    private var dirtySongIDs: Set<String> = []
+    private var deletedSongIDs: Set<String> = []
 
     private init() {}
 
-    func activate(accountScope: String) {
+    func activate(accountScope: String) async {
         guard activeScope != accountScope else { return }
         activeScope = accountScope
-        if let data = UserDefaults.standard.data(forKey: storageKey),
-           let values = try? JSONDecoder().decode(
-               [String: SongBehavior].self,
-               from: data
-           ) {
-            entries = values
-        } else if let data = UserDefaults.standard.data(forKey: legacyStorageKey),
-                  let values = try? JSONDecoder().decode(
-                      [String: SongBehavior].self,
-                      from: data
-                  ) {
-            entries = values
-            persist()
-            UserDefaults.standard.removeObject(forKey: legacyStorageKey)
-        } else {
-            entries = [:]
+        entries = await AppDatabase.shared.loadListeningHistory(scope: accountScope)
+        if entries.isEmpty, let legacyEntries = loadLegacyEntries() {
+            entries = legacyEntries
+            if await AppDatabase.shared.replaceListeningHistory(
+                legacyEntries,
+                scope: accountScope
+            ) {
+                removeLegacyStorage()
+            }
         }
+        dirtySongIDs.removeAll(keepingCapacity: true)
+        deletedSongIDs.removeAll(keepingCapacity: true)
         revision &+= 1
         lastStartedSongID = nil
     }
 
-    func deactivate(accountScope: String) {
+    func deactivate(accountScope: String) async {
         guard activeScope == accountScope else { return }
-        flushPendingWrites()
+        await flushPendingWrites()
         activeScope = nil
         entries.removeAll(keepingCapacity: false)
+        dirtySongIDs.removeAll(keepingCapacity: false)
+        deletedSongIDs.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
         revision &+= 1
     }
@@ -258,6 +301,7 @@ actor ListeningHistoryStore {
             break
         }
         entries[song.id] = value
+        markDirty(song.id)
         lastStartedSongID = song.id
         didMutate()
     }
@@ -305,6 +349,7 @@ actor ListeningHistoryStore {
             value.consecutiveSkips = 0
         }
         entries[song.id] = value
+        markDirty(song.id)
         didMutate()
     }
 
@@ -317,6 +362,7 @@ actor ListeningHistoryStore {
         value.song = song
         value.queueRemovalCount += 1
         entries[song.id] = value
+        markDirty(song.id)
         didMutate()
     }
 
@@ -329,6 +375,7 @@ actor ListeningHistoryStore {
         value.song = song
         value.favoriteCount = max(0, value.favoriteCount + (enabled ? 1 : -1))
         entries[song.id] = value
+        markDirty(song.id)
         didMutate()
     }
 
@@ -361,14 +408,16 @@ actor ListeningHistoryStore {
         )
     }
 
-    func clear() {
-        guard activeScope != nil else { return }
+    func clear() async {
+        guard let scope = activeScope else { return }
         persistenceTask?.cancel()
         persistenceTask = nil
         entries.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
-        UserDefaults.standard.removeObject(forKey: storageKey)
-        UserDefaults.standard.removeObject(forKey: legacyStorageKey)
+        dirtySongIDs.removeAll(keepingCapacity: true)
+        deletedSongIDs.removeAll(keepingCapacity: true)
+        await AppDatabase.shared.clearListeningHistory(scope: scope)
+        removeLegacyStorage()
         revision &+= 1
         RecommendationMixer.invalidateCache()
     }
@@ -388,11 +437,11 @@ actor ListeningHistoryStore {
         RecommendationMixer.invalidateCache()
     }
 
-    func flushPendingWrites() {
+    func flushPendingWrites() async {
         persistenceTask?.cancel()
         persistenceTask = nil
         guard activeScope != nil else { return }
-        persist()
+        await persist()
     }
 
     private func trimEntriesIfNeeded() {
@@ -400,9 +449,12 @@ actor ListeningHistoryStore {
             let retained = entries.values
                 .sorted { $0.lastPlayed > $1.lastPlayed }
                 .prefix(600)
-            entries = Dictionary(uniqueKeysWithValues: retained.map {
+            let retainedEntries = Dictionary(uniqueKeysWithValues: retained.map {
                 ($0.song.id, $0)
             })
+            deletedSongIDs.formUnion(entries.keys.filter { retainedEntries[$0] == nil })
+            dirtySongIDs.subtract(deletedSongIDs)
+            entries = retainedEntries
         }
     }
 
@@ -416,14 +468,47 @@ actor ListeningHistoryStore {
         }
     }
 
-    private func flushScheduledPersistence(scope: String?) {
+    private func flushScheduledPersistence(scope: String?) async {
         guard activeScope == scope else { return }
         persistenceTask = nil
-        persist()
+        await persist()
     }
 
-    private func persist() {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
-        UserDefaults.standard.set(data, forKey: storageKey)
+    private func persist() async {
+        guard let scope = activeScope,
+              !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty else { return }
+        let dirty = Dictionary(uniqueKeysWithValues: dirtySongIDs.compactMap { id in
+            entries[id].map { (id, $0) }
+        })
+        let deleted = deletedSongIDs
+        guard await AppDatabase.shared.applyListeningHistory(
+            dirty,
+            deletedIDs: deleted,
+            scope: scope
+        ) else { return }
+        dirtySongIDs.subtract(dirty.keys)
+        deletedSongIDs.subtract(deleted)
+    }
+
+    private func markDirty(_ songID: String) {
+        dirtySongIDs.insert(songID)
+        deletedSongIDs.remove(songID)
+    }
+
+    private func loadLegacyEntries() -> [String: SongBehavior]? {
+        for key in [storageKey, legacyStorageKey] {
+            guard let data = UserDefaults.standard.data(forKey: key),
+                  let values = try? JSONDecoder().decode(
+                      [String: SongBehavior].self,
+                      from: data
+                  ) else { continue }
+            return values
+        }
+        return nil
+    }
+
+    private func removeLegacyStorage() {
+        UserDefaults.standard.removeObject(forKey: storageKey)
+        UserDefaults.standard.removeObject(forKey: legacyStorageKey)
     }
 }

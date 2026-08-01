@@ -29,6 +29,8 @@ actor OfflineStore {
     private var indexSaveTask: Task<Void, Never>?
     private var indexIsDirty = false
     private var indexRetryCount = 0
+    private var dirtySongIDs: Set<String> = []
+    private var deletedSongIDs: Set<String> = []
 
     init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -44,10 +46,10 @@ actor OfflineStore {
         Self.removeLegacyUnscopedFiles(in: root)
     }
 
-    func activate(accountScope: String) {
+    func activate(accountScope: String) async {
         guard activeScope != accountScope else { return }
 
-        flushPendingWrites(retryOnFailure: false)
+        await flushPendingWrites(retryOnFailure: false)
         scopeGeneration &+= 1
         inFlight.values.forEach { $0.task.cancel() }
         inFlight.removeAll()
@@ -68,13 +70,53 @@ actor OfflineStore {
         activeScope = accountScope
         directory = scopedDirectory
         indexURL = scopedIndexURL
-        entries = Self.loadEntries(indexURL: scopedIndexURL, directory: scopedDirectory)
+        let databaseEntries = await AppDatabase.shared.loadOfflineEntries(
+            scope: accountScope
+        )
+        entries = databaseEntries.reduce(into: [:]) { result, pair in
+            let entry = Entry(
+                fileName: pair.value.fileName,
+                byteCount: pair.value.byteCount,
+                lastAccessedAt: pair.value.lastAccessedAt
+            )
+            if FileManager.default.fileExists(
+                atPath: scopedDirectory.appendingPathComponent(entry.fileName).path
+            ) {
+                result[pair.key] = entry
+            }
+        }
+        let missingDatabaseIDs = Set(databaseEntries.keys).subtracting(entries.keys)
+        if !missingDatabaseIDs.isEmpty {
+            _ = await AppDatabase.shared.applyOfflineEntries(
+                [:],
+                deletedIDs: missingDatabaseIDs,
+                scope: accountScope
+            )
+        }
+        if entries.isEmpty {
+            let legacyEntries = Self.loadEntries(
+                indexURL: scopedIndexURL,
+                directory: scopedDirectory
+            )
+            if !legacyEntries.isEmpty {
+                entries = legacyEntries
+                let migrated = legacyEntries.mapValues(Self.databaseEntry)
+                if await AppDatabase.shared.replaceOfflineEntries(
+                    migrated,
+                    scope: accountScope
+                ) {
+                    try? FileManager.default.removeItem(at: scopedIndexURL)
+                }
+            }
+        }
+        dirtySongIDs.removeAll(keepingCapacity: true)
+        deletedSongIDs.removeAll(keepingCapacity: true)
         indexIsDirty = false
     }
 
-    func deactivate(accountScope: String) {
+    func deactivate(accountScope: String) async {
         guard activeScope == accountScope else { return }
-        flushPendingWrites(retryOnFailure: false)
+        await flushPendingWrites(retryOnFailure: false)
         scopeGeneration &+= 1
         inFlight.values.forEach { $0.task.cancel() }
         inFlight.removeAll(keepingCapacity: false)
@@ -84,6 +126,8 @@ actor OfflineStore {
         entries.removeAll(keepingCapacity: false)
         indexIsDirty = false
         indexRetryCount = 0
+        dirtySongIDs.removeAll(keepingCapacity: false)
+        deletedSongIDs.removeAll(keepingCapacity: false)
     }
 
     func localURL(for songID: String) -> URL? {
@@ -92,12 +136,14 @@ actor OfflineStore {
             let url = directory.appendingPathComponent(entry.fileName)
             guard FileManager.default.fileExists(atPath: url.path) else {
                 entries[songID] = nil
+                markDeleted(songID)
                 scheduleIndexPersistence()
                 return nil
             }
             if Date().timeIntervalSince(entry.lastAccessedAt) > 3_600 {
                 entry.lastAccessedAt = Date()
                 entries[songID] = entry
+                markDirty(songID)
                 scheduleIndexPersistence()
             }
             return url
@@ -273,6 +319,7 @@ actor OfflineStore {
                 byteCount: byteCount,
                 lastAccessedAt: Date()
             )
+            markDirty(songID)
             try enforceStorageLimit(keeping: songID)
             scheduleIndexPersistence()
             return destination
@@ -282,7 +329,7 @@ actor OfflineStore {
         }
     }
 
-    func removeAll() throws {
+    func removeAll() async throws {
         guard let directory else { return }
         scopeGeneration &+= 1
         inFlight.values.forEach { $0.task.cancel() }
@@ -305,6 +352,11 @@ actor OfflineStore {
             if FileManager.default.fileExists(atPath: url.path) {
                 result[pair.key] = pair.value
             }
+        }
+        if let scope = activeScope {
+            await AppDatabase.shared.clearOfflineEntries(scope: scope)
+            dirtySongIDs = Set(entries.keys)
+            deletedSongIDs.removeAll(keepingCapacity: true)
         }
         scheduleIndexPersistence(immediate: true)
         if let firstError { throw firstError }
@@ -329,23 +381,22 @@ actor OfflineStore {
         Set(entries.keys)
     }
 
-    func flushPendingWrites() {
-        flushPendingWrites(retryOnFailure: true)
+    func flushPendingWrites() async {
+        await flushPendingWrites(retryOnFailure: true)
     }
 
-    private func flushPendingWrites(retryOnFailure: Bool) {
+    private func flushPendingWrites(retryOnFailure: Bool) async {
         indexSaveTask?.cancel()
         indexSaveTask = nil
-        persistIndexIfNeeded(retryOnFailure: retryOnFailure)
+        await persistIndexIfNeeded(retryOnFailure: retryOnFailure)
     }
 
-    private func persistIndexIfNeeded(retryOnFailure: Bool) {
+    private func persistIndexIfNeeded(retryOnFailure: Bool) async {
         guard indexIsDirty else { return }
-        do {
-            try persistIndex()
+        if await persistIndex() {
             indexIsDirty = false
             indexRetryCount = 0
-        } catch {
+        } else {
             guard retryOnFailure else { return }
             indexRetryCount += 1
             guard indexRetryCount <= 3 else { return }
@@ -377,6 +428,7 @@ actor OfflineStore {
                     try FileManager.default.removeItem(at: url)
                 }
                 entries[id] = nil
+                markDeleted(id)
                 total -= entry.byteCount
             } catch {
                 // Keep the index entry when deletion fails so storage accounting
@@ -402,10 +454,10 @@ actor OfflineStore {
         }
     }
 
-    private func flushScheduledIndex(for generation: UInt64) {
+    private func flushScheduledIndex(for generation: UInt64) async {
         guard generation == scopeGeneration else { return }
         indexSaveTask = nil
-        persistIndexIfNeeded(retryOnFailure: true)
+        await persistIndexIfNeeded(retryOnFailure: true)
     }
 
     private func clearInFlight(taskKey: String, token: UUID) {
@@ -431,15 +483,21 @@ actor OfflineStore {
         inFlight[taskKey] = nil
     }
 
-    private func persistIndex() throws {
-        guard let indexURL else { return }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(entries)
-        try data.write(
-            to: indexURL,
-            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
-        )
+    private func persistIndex() async -> Bool {
+        guard let scope = activeScope else { return false }
+        let dirty = Dictionary(uniqueKeysWithValues: dirtySongIDs.compactMap { id in
+            entries[id].map { (id, Self.databaseEntry($0)) }
+        })
+        let deleted = deletedSongIDs
+        guard await AppDatabase.shared.applyOfflineEntries(
+            dirty,
+            deletedIDs: deleted,
+            scope: scope
+        ) else { return false }
+        dirtySongIDs.subtract(dirty.keys)
+        deletedSongIDs.subtract(deleted)
+        if let indexURL { try? FileManager.default.removeItem(at: indexURL) }
+        return true
     }
 
     private func legacyFileURL(songID: String, directory: URL) -> URL {
@@ -471,6 +529,24 @@ actor OfflineStore {
                 atPath: directory.appendingPathComponent(entry.fileName).path
             )
         }
+    }
+
+    private func markDirty(_ songID: String) {
+        dirtySongIDs.insert(songID)
+        deletedSongIDs.remove(songID)
+    }
+
+    private func markDeleted(_ songID: String) {
+        deletedSongIDs.insert(songID)
+        dirtySongIDs.remove(songID)
+    }
+
+    private static func databaseEntry(_ entry: Entry) -> OfflineDatabaseEntry {
+        OfflineDatabaseEntry(
+            fileName: entry.fileName,
+            byteCount: entry.byteCount,
+            lastAccessedAt: entry.lastAccessedAt
+        )
     }
 
     private static func makeDownloadSession(allowsExpensiveAccess: Bool) -> URLSession {

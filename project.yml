@@ -61,6 +61,9 @@ packages:
   Zstandard:
     url: https://github.com/facebook/zstd.git
     exactVersion: 1.5.7
+  GRDB:
+    url: https://github.com/groue/GRDB.swift.git
+    exactVersion: 7.10.0
 targets:
   BuFi:
     type: application
@@ -79,6 +82,8 @@ targets:
         product: Nuke
       - package: Zstandard
         product: libzstd
+      - package: GRDB
+        product: GRDB
     info:
       path: BuFi/Resources/Info.plist
       properties:
