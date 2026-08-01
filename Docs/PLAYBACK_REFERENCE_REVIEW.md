@@ -1,12 +1,12 @@
 # Playback stability reference review
 
-Reviewed on 2026-07-29. These projects were used as architectural
+Reviewed on 2026-08-01. These projects were used as architectural
 references; no source was copied into BuFi.
 
 | Project | Reviewed revision | License | Patterns applied to BuFi |
 | --- | --- | --- | --- |
 | Pocket Casts iOS | `9af186a` | MPL-2.0 | Keep queue state separate from the active player, persist progress in batches, treat interruption and route events as explicit playback state transitions, and avoid blocking the UI while audio-session work is negotiated. |
-| TIDAL iOS SDK | `95c8a8b` | Apache-2.0 | Serialize player-side operations, coalesce monitor-driven work, keep observer lifetimes tied to the active item, cancel obsolete tasks, and preserve active playback while releasing speculative resources. |
+| TIDAL iOS SDK | `41aed3a` | Apache-2.0 | Serialize player-side operations, coalesce keyed requests, keep AVPlayer observer lifetimes tied to their owner, use bounded constrained-network scheduling and jittered backoff, cancel obsolete tasks, and preserve active playback while releasing speculative resources. |
 | Telegram iOS | `6ad963e` | The project README requires source publication for license compliance; bundled components carry their own licenses | Keep UI mutations on the main thread, serialize dependent transactions, bound reusable caches, and release derived data under memory pressure. |
 
 ## Resulting BuFi decisions
@@ -22,6 +22,12 @@ references; no source was copied into BuFi.
   cannot create an unbounded set of activation tasks.
 - Queue JSON encoding runs at utility priority instead of blocking player UI
   updates.
+- Timeline publication remains periodic for efficient seek-bar updates, while
+  synchronized lyrics use boundary-time events and generation-checked immediate
+  recalculation after seeks, recovery, and item replacement.
+- Safe read-only OpenSubsonic requests use a small, jittered retry budget and
+  respect server `Retry-After`; authentication, decoding, cancellation, and
+  mutation failures are never retried automatically.
 - A memory warning keeps the active item and in-flight visible detail requests,
   while clearing reusable detail/artwork caches and cancelling speculative
   offline prefetch.
@@ -79,3 +85,7 @@ Official references:
 - Pocket Casts and Telegram implementation code was not copied. This keeps
   BuFi's licensing boundaries clear and makes the changes fit its existing
   SwiftUI/OpenSubsonic design.
+- TIDAL's repository does not provide a reusable SwiftUI player design, a lyric
+  synchronization engine, or artwork-palette extraction. BuFi therefore keeps
+  its established UI and implements those capabilities locally instead of
+  introducing an unrelated SDK dependency.

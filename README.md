@@ -13,7 +13,7 @@ It is designed around the iOS media stack rather than a web view.
 - Built-in speaker/route/interruption recovery and Subsonic MIME compatibility handling adapted from Amperfy
 - Synchronized OpenSubsonic lyrics with smoothly morphing compact/full-screen views and multiline lyric wrapping
 - Apple Music-led visual system with Spotify-style separated artwork paging, a subtle Deezer accent, and an optional native Liquid Glass seek bar on iOS 26+ while retaining Classic transport controls
-- Core Graphics dominant-color clustering and an adaptive player background
+- Deterministic OKLab artwork clustering with neutral-cover support, spatial multicolor fields, and a versioned GRDB palette cache
 - Nuke-backed artwork request coalescing, caching, and downsampling
 - HTTP/3-capable API requests plus gzip, Brotli, and bounded Zstandard response decoding
 - Korean (default), English, and Japanese localization
@@ -42,7 +42,8 @@ Select your development team in Xcode to install the app on a physical device.
 ## Unsigned IPA
 
 The `iOS Build` GitHub Actions workflow builds with code signing disabled and
-publishes `BuFi-unsigned.ipa` as a workflow artifact. An unsigned IPA cannot be
+publishes `BuFi-1.0.0-build1-unsigned.ipa` and its SHA-256 checksum as workflow
+artifacts. An unsigned IPA cannot be
 installed directly on stock iOS; it must be signed by the user or a signing
 service before installation.
 
@@ -56,12 +57,14 @@ advertising SDKs.
 
 XcodeGen is used only to generate the project. BuFi links
 [SwiftSonic](https://github.com/CassetteLab/swiftsonic),
+[GRDB](https://github.com/groue/GRDB.swift),
 [Nuke](https://github.com/kean/Nuke), and the
-[Zstandard](https://github.com/facebook/zstd) reference decoder. Playback
+[Zstandard](https://github.com/facebook/zstd) reference decoder, and bundles
+the [Unbounded](https://github.com/google/fonts/tree/main/ofl/unbounded) font. Playback
 compatibility and audio-session patterns are adapted from
-[Amperfy](https://github.com/BLeeEZ/amperfy), while
-[Cassette](https://github.com/CassetteLab/cassette) is an architectural
-reference only. Attribution and license details are in
+[Amperfy](https://github.com/BLeeEZ/amperfy). TIDAL iOS SDK, Pocket Casts,
+Telegram, and Cassette are architecture references only and are not linked.
+Attribution and license details for distributed components are in
 `OPEN_SOURCE_NOTICES.md`; the dependency and build decisions are recorded in
 `Docs/DEPENDENCY_AND_BUILD_AUDIT.md`. Complete corresponding BuFi source
 remains available in this public repository under GPLv3-or-later. The verbatim
