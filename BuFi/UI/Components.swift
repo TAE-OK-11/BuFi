@@ -336,6 +336,7 @@ struct BuFiShortcutCard: View {
 struct ArtworkView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @Environment(\.displayScale) private var displayScale
 
     let coverArt: String?
     let size: CGFloat
@@ -369,13 +370,13 @@ struct ArtworkView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: "\(coverArt ?? "")-\(Int(size))") {
+        .task(id: "\(coverArt ?? "")-\(Int(size * displayScale))") {
             image = nil
             if let coverURL = await model.artworkURL(id: coverArt, size: Int(size * 2)) {
                 guard !Task.isCancelled else { return }
                 guard let loaded = try? await ArtworkStore.shared.image(
                     for: coverURL,
-                    pixelSize: max(size * UIScreen.main.scale, 96)
+                    pixelSize: max(size * displayScale, 96)
                 ) else {
                     onPalette?(.fallback)
                     return

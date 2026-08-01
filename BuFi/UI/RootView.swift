@@ -26,7 +26,6 @@ struct RootView: View {
     @AppStorage("motion-enabled") private var motionEnabled = true
     @AppStorage("server-sync-interval") private var syncInterval = 300.0
 
-    private let tabHaptic = UISelectionFeedbackGenerator()
     private let audio = AudioEngine.shared
 
     var body: some View {
@@ -56,9 +55,6 @@ struct RootView: View {
         }
         .task(id: syncTaskID) {
             await runAutomaticSync()
-        }
-        .onAppear {
-            if hapticsEnabled && !lowPowerMode { tabHaptic.prepare() }
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase != .active else { return }
@@ -186,11 +182,10 @@ struct RootView: View {
             effectiveMotion ? BuFiMotion.content : .none,
             value: playbackItem.currentSong != nil
         )
+        .sensoryFeedback(.selection, trigger: tab) { _, _ in
+            hapticsEnabled && !lowPowerMode
+        }
         .onChange(of: tab) { _, _ in
-            if hapticsEnabled && !lowPowerMode {
-                tabHaptic.selectionChanged()
-                tabHaptic.prepare()
-            }
             guard effectiveMotion else {
                 pageProgress = 1
                 return
