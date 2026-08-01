@@ -4,6 +4,7 @@ import UIKit
 struct ArtistHeroArtwork: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @Environment(\.displayScale) private var displayScale
 
     let coverArt: String?
     var onPalette: ((ArtworkPalette) -> Void)?
@@ -54,7 +55,7 @@ struct ArtistHeroArtwork: View {
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: "\(coverArt ?? "")-\(Int(height))") {
+        .task(id: "\(coverArt ?? "")-\(Int(height * displayScale))") {
             await loadImage()
         }
         .accessibilityHidden(true)
@@ -72,7 +73,7 @@ struct ArtistHeroArtwork: View {
               !Task.isCancelled,
               let loaded = try? await ArtworkStore.shared.image(
                   for: coverURL,
-                  pixelSize: max(height * UIScreen.main.scale, 480)
+                  pixelSize: max(height * displayScale, 480)
               ),
               !Task.isCancelled else {
             onPalette?(.fallback)
