@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
     @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackItem: PlaybackItemState
     @State private var offlineBytes: Int64 = 0
     @State private var confirmOfflineRemoval = false
     @State private var confirmArtworkRemoval = false
@@ -40,7 +41,7 @@ struct SettingsView: View {
                     logoutButton
                 }
                 .padding(.top, 18)
-                .padding(.bottom, 34)
+                .padding(.bottom, playbackItem.currentSong == nil ? 34 : 110)
             }
             .background(BuFiScreenBackground())
             .toolbar(.hidden, for: .navigationBar)
@@ -503,6 +504,7 @@ private extension View {
 private struct RecommendationSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
+    @EnvironmentObject private var playbackItem: PlaybackItemState
     @State private var lastFMAPIKey = ""
     @State private var listenBrainzUsername = ""
     @State private var listenBrainzToken = ""
@@ -647,7 +649,7 @@ private struct RecommendationSettingsView: View {
                 .padding(.horizontal, 16)
             }
             .padding(.top, 18)
-            .padding(.bottom, 34)
+            .padding(.bottom, playbackItem.currentSong == nil ? 34 : 110)
         }
         .background(BuFiScreenBackground())
         .toolbar(.visible, for: .navigationBar)
@@ -711,6 +713,8 @@ private struct RecommendationSettingsView: View {
 }
 
 private struct OpenSourceNoticesView: View {
+    @EnvironmentObject private var playbackItem: PlaybackItemState
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
@@ -799,7 +803,7 @@ private struct OpenSourceNoticesView: View {
                 .padding(.horizontal, 16)
             }
             .padding(.top, 18)
-            .padding(.bottom, 34)
+            .padding(.bottom, playbackItem.currentSong == nil ? 34 : 110)
         }
         .background(BuFiScreenBackground())
         .toolbar(.visible, for: .navigationBar)
@@ -828,6 +832,7 @@ private struct OpenSourceNoticesView: View {
 }
 
 private struct ThirdPartyLicensesView: View {
+    @EnvironmentObject private var playbackItem: PlaybackItemState
     private let contents: String
 
     init(bundle: Bundle = .main) {
@@ -850,6 +855,7 @@ private struct ThirdPartyLicensesView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
                 .padding()
+                .padding(.bottom, playbackItem.currentSong == nil ? 0 : 76)
         }
         .background(BuFiScreenBackground())
         .navigationTitle("제3자 라이선스 전문")

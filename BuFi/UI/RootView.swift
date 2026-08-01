@@ -8,6 +8,17 @@ enum AppTab: Hashable {
     case settings
 }
 
+private struct MiniPlayerPlacementPreferenceKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+
+    static func reduce(
+        value: inout Anchor<CGRect>?,
+        nextValue: () -> Anchor<CGRect>?
+    ) {
+        value = nextValue() ?? value
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
@@ -192,13 +203,16 @@ struct RootView: View {
             }
         }
 
-        // Keep one accessory outside the individual tab pages so its artwork and
-        // palette tasks survive tab changes while the inset reserves scroll space.
         tabView
-            .safeAreaInset(edge: .bottom, spacing: 10) {
-                if playbackItem.currentSong != nil {
-                    miniPlayer
-                        .padding(.bottom, 6)
+            .overlayPreferenceValue(MiniPlayerPlacementPreferenceKey.self) { anchor in
+                GeometryReader { proxy in
+                    if let anchor, playbackItem.currentSong != nil {
+                        let frame = proxy[anchor]
+                        miniPlayer
+                            .frame(width: frame.width, height: frame.height)
+                            .position(x: frame.midX, y: frame.midY)
+                            .zIndex(10)
+                    }
                 }
             }
             .animation(
@@ -212,6 +226,18 @@ struct RootView: View {
         return content
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
+            .safeAreaInset(edge: .bottom, spacing: 10) {
+                if playbackItem.currentSong != nil {
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 60)
+                        .anchorPreference(
+                            key: MiniPlayerPlacementPreferenceKey.self,
+                            value: .bounds
+                        ) { $0 }
+                        .padding(.bottom, 6)
+                }
+            }
     }
 
     private var miniPlayer: some View {

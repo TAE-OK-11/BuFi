@@ -780,7 +780,6 @@ private struct PlayerProgressView: View {
 private struct PlayerLyricsCard: View {
     @ObservedObject var lyricsState: LyricsPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
-    @State private var scrollTargetID: Int?
 
     let song: Song
     let primary: Color
@@ -845,77 +844,67 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 6) {
-                ForEach(lyricsState.document.lines.indices, id: \.self) { index in
-                    let line = lyricsState.document.lines[index]
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(line.text)
-                            .font(.system(size: 20, weight: .bold))
-                            .tracking(-0.40)
-                            .foregroundStyle(lyricColor(for: index))
-                            .scaleEffect(
-                                motionEnabled
-                                    ? (index == lyricsState.activeIndex ? 1 : 0.985)
-                                    : 1,
-                                anchor: .leading
-                            )
-                            .lineLimit(nil)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .animation(
-                                motionEnabled ? BuFiMotion.miniLyrics : .none,
-                                value: index == lyricsState.activeIndex
-                            )
+        ZStack(alignment: .topLeading) {
+            if let activeLyric {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(activeLyric.line.text)
+                        .font(.system(size: 20, weight: .bold))
+                        .tracking(-0.40)
+                        .foregroundStyle(primary)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(upcomingLyrics, id: \.line.id) { item in
+                            Text(item.line.text)
+                                .font(.system(size: 20, weight: .bold))
+                                .tracking(-0.40)
+                                .foregroundStyle(lyricColor(for: item.index))
+                                .scaleEffect(
+                                    motionEnabled ? 0.985 : 1,
+                                    anchor: .leading
+                                )
+                                .lineLimit(nil)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
-                    .padding(.top, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .id(line.id)
                 }
+                .padding(.top, 6)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .id("\(song.id)-\(activeLyric.line.id)")
+                .transition(miniLyricsTransition)
             }
-            .scrollTargetLayout()
-            .padding(.bottom, 8)
-        }
-        .scrollDisabled(true)
-        .scrollPosition(id: $scrollTargetID, anchor: .top)
-        .onAppear {
-            updateScrollTarget(animated: false)
-        }
-        .onChange(of: lyricsState.activeIndex) { _, _ in
-            updateScrollTarget(animated: true)
-        }
-        .onChange(of: lyricsState.document.lines.map(\.id)) { _, _ in
-            updateScrollTarget(animated: false)
-        }
-        .onChange(of: song.id) { _, _ in
-            scrollTargetID = nil
-            updateScrollTarget(animated: false)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .clipped()
+        .animation(
+            motionEnabled ? BuFiMotion.miniLyrics : .none,
+            value: lyricsState.activeIndex
+        )
     }
 
-    private func updateScrollTarget(animated: Bool) {
+    private var activeLyric: (index: Int, line: LyricLine)? {
         let lines = lyricsState.document.lines
-        guard !lines.isEmpty else { return }
+        guard !lines.isEmpty else { return nil }
         let index = lines.indices.contains(lyricsState.activeIndex)
             ? lyricsState.activeIndex
             : lines.startIndex
-        let target = lines[index].id
+        return (index: index, line: lines[index])
+    }
 
-        if animated, motionEnabled {
-            withAnimation(BuFiMotion.miniLyrics) {
-                scrollTargetID = target
-            }
-        } else {
-            var transaction = Transaction(animation: nil)
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                scrollTargetID = target
-            }
-        }
+    private var upcomingLyrics: [(index: Int, line: LyricLine)] {
+        guard let activeLyric else { return [] }
+        let lines = lyricsState.document.lines
+        let start = activeLyric.index + 1
+        let end = min(lines.endIndex, start + 6)
+        guard start < end else { return [] }
+        return (start..<end).map { (index: $0, line: lines[$0]) }
     }
 
     private func lyricColor(for index: Int) -> Color {
@@ -923,6 +912,14 @@ private struct PlayerLyricsCard: View {
         if index < lyricsState.activeIndex { return primary.opacity(0.28) }
         let distance = max(1, index - lyricsState.activeIndex)
         return primary.opacity(max(0.26, 0.62 - (Double(distance - 1) * 0.12)))
+    }
+
+    private var miniLyricsTransition: AnyTransition {
+        guard motionEnabled else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(y: 5).combined(with: .opacity),
+            removal: .opacity
+        )
     }
 }
 
