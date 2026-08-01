@@ -178,10 +178,6 @@ struct RootView: View {
                 .tag(AppTab.settings)
         }
         .tint(BuFiTheme.accent)
-        .animation(
-            effectiveMotion ? BuFiMotion.content : .none,
-            value: playbackItem.currentSong != nil
-        )
         .sensoryFeedback(.selection, trigger: tab) { _, _ in
             hapticsEnabled && !lowPowerMode
         }
@@ -196,22 +192,26 @@ struct RootView: View {
             }
         }
 
+        // Keep one accessory outside the individual tab pages so its artwork and
+        // palette tasks survive tab changes while the inset reserves scroll space.
         tabView
+            .safeAreaInset(edge: .bottom, spacing: 10) {
+                if playbackItem.currentSong != nil {
+                    miniPlayer
+                        .padding(.bottom, 6)
+                }
+            }
+            .animation(
+                effectiveMotion ? BuFiMotion.content : .none,
+                value: playbackItem.currentSong != nil
+            )
     }
 
-    @ViewBuilder
     private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
         let activeProgress = tab == tag && effectiveMotion ? pageProgress : 1
-        let page = content
+        return content
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
-
-        page.safeAreaInset(edge: .bottom, spacing: 10) {
-            if tab == tag, playbackItem.currentSong != nil {
-                miniPlayer
-                    .padding(.bottom, 6)
-            }
-        }
     }
 
     private var miniPlayer: some View {
