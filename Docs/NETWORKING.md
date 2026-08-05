@@ -25,6 +25,10 @@ radio scheduling, and background behavior integrated with iOS.
   disabled for authenticated API and download sessions. BuFi's own scoped image
   and offline caches remain in control.
 
+HTTP/3 is opportunistic: the origin, proxy, network path, and current iOS
+transport policy must all permit QUIC. A failed or unavailable QUIC attempt falls
+back to the system HTTP/2 or HTTP/1.1 path without changing OpenSubsonic behavior.
+
 ## System-managed features
 
 AVPlayer/AVURLAsset does not expose the `assumesHTTP3Capable` switch. Streaming
