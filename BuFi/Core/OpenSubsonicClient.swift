@@ -74,13 +74,13 @@ actor OpenSubsonicClient {
             )
         )
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 18
-        configuration.timeoutIntervalForResource = 60
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCache = nil
-        configuration.httpMaximumConnectionsPerHost = 4
-        configuration.waitsForConnectivity = true
+        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
+            requestTimeout: 18,
+            resourceTimeout: 60,
+            maximumConnectionsPerHost: 6,
+            allowsExpensiveNetworkAccess: true,
+            allowsConstrainedNetworkAccess: true
+        )
         self.session = URLSession(
             configuration: configuration,
             delegate: HTTPSOnlyURLSessionDelegate(),
@@ -232,13 +232,10 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.insecureServerURL
         }
         var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(
-            acceptsZstandard ? "zstd, br, gzip" : "br, gzip",
-            forHTTPHeaderField: "Accept-Encoding"
+        ModernNetworkPolicy.prepareAPIRequest(
+            &request,
+            acceptsZstandard: acceptsZstandard
         )
-        request.assumesHTTP3Capable = true
 
         let (encodedData, response) = try await session.data(for: request)
         try Task.checkCancellation()

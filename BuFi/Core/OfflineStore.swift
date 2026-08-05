@@ -186,7 +186,9 @@ actor OfflineStore {
             guard remote.scheme?.lowercased() == "https" else {
                 throw OpenSubsonicError.insecureServerURL
             }
-            let (temporary, response) = try await session.download(from: remote)
+            var request = URLRequest(url: remote)
+            ModernNetworkPolicy.prepareMediaRequest(&request)
+            let (temporary, response) = try await session.download(for: request)
             try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse else {
                 throw OpenSubsonicError.invalidResponse
@@ -558,15 +560,13 @@ actor OfflineStore {
     }
 
     private static func makeDownloadSession(allowsExpensiveAccess: Bool) -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 60 * 60
-        configuration.waitsForConnectivity = true
-        configuration.httpMaximumConnectionsPerHost = 2
-        configuration.allowsExpensiveNetworkAccess = allowsExpensiveAccess
-        configuration.allowsConstrainedNetworkAccess = allowsExpensiveAccess
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCache = nil
+        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
+            requestTimeout: 30,
+            resourceTimeout: 60 * 60,
+            maximumConnectionsPerHost: 2,
+            allowsExpensiveNetworkAccess: allowsExpensiveAccess,
+            allowsConstrainedNetworkAccess: allowsExpensiveAccess
+        )
         return URLSession(
             configuration: configuration,
             delegate: HTTPSOnlyURLSessionDelegate(),
