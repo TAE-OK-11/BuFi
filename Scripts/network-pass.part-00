@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def replace_once(relative_path: str, old: str, new: str) -> None:
+    path = ROOT / relative_path
+    text = path.read_text(encoding="utf-8")
+    if old not in text:
+        raise SystemExit(f"Expected block not found in {relative_path}: {old[:120]!r}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+replace_once(
+    "BuFi/Core/ModernNetworkPolicy.swift",
+    '''        configuration.httpMaximumConnectionsPerHost = maximumConnectionsPerHost
+        configuration.waitsForConnectivity = true
+''',
+    '''        configuration.httpMaximumConnectionsPerHost = maximumConnectionsPerHost
+        // This affects only the HTTP/1.1 fallback. HTTP/2 and HTTP/3 continue
+        // to multiplex streams through CFNetwork's native transport stack.
+        configuration.httpShouldUsePipelining = true
+        configuration.waitsForConnectivity = true
+''',
+)
+
+replace_once(
+    "BuFi/Core/OpenSubsonicClient.swift",
+    '''    private let swiftSonic: SwiftSonicClient
+    private var supportedExtensions: Set<String>?
+
+    private struct ServerRecommendationSources: Sendable {
+''',
+    '''    private let swiftSonic: SwiftSonicClient
+    private var supportedExtensions: Set<String>?
+
+    private struct TransportResponse: Sendable {
+        let data: Data
+    }
+
+    private struct CachedAPIResponse: Sendable {
+        let data: Data
+        let storedAt: Date
+    }
+
+    private struct InFlightAPIRequest {
+        let token: UUID
+        let task: Task<TransportResponse, Error>
+    }
+
+    private static let responseCacheLimit = 128
+    private var responseCache: [String: CachedAPIResponse] = [:]
+    private var responseCacheOrder: [String] = []
+    private var inFlightResponses: [String: InFlightAPIRequest] = [:]
+
+    private struct ServerRecommendationSources: Sendable {
+''',
+)
+
+old_request_block = '''    func request<Payload: Decodable>(
+        _ endpoint: String,
+        parameters: [String: String] = [:]
+    ) async throws -> Payload {
+        let url = try endpointURL(endpoint, parameters: parameters)
+        return try await decodeResponse(from: url)
+    }
+
+    private func request<Payload: Decodable>(
+        _ endpoint: String,
+        queryItems: [URLQueryItem]
+    ) async throws -> Payload {
+        let url = try endpointURL(endpoint, queryItems: queryItems)
+        return try await decodeResponse(from: url)
+    }
+
+    private func bestEffortRequest<Payload: Decodable>(
+        _ endpoint: String,
+        parameters: [String: String] = [:]
+    ) async throws -> Payload? {
+        do {
+            return try await request(endpoint, parameters: parameters)
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            return nil
+        }
+    }
+
+    private struct DecoderCapture: Decodable {
+        let decoder: Decoder
+        init(from decoder: Decoder) throws {
+            self.decoder = decoder
+        }
+    }
+
+    private func decodeResponse<Payload: Decodable>(from url: URL) async throws -> Payload {
+        let (data, http) = try await responseData(from: url, acceptsZstandard: true)
+        guard (200..<300).contains(http.statusCode) else {
+            throw OpenSubsonicError.http(http.statusCode)
+        }
+
+        let capture = try decoder.decode(DecoderCapture.self, from: data)
+        let statusEnvelope = try StatusEnvelope(from: capture.decoder)
+        guard statusEnvelope.response.status == "ok" else {
+            throw OpenSubsonicError.server(
+                code: statusEnvelope.response.error?.code,
+                message: statusEnvelope.response.error?.message
+                    ?? String(localized: "서버 요청이 실패했습니다.")
+            )
+        }
+        return try APIEnvelope<Payload>(from: capture.decoder).response
+    }
+
+    func ping() async throws -> StatusBody {
+        let url = try endpointURL("ping")
+        let (data, http) = try await responseData(from: url, acceptsZstandard: true)
+
+        guard (200..<300).contains(http.statusCode) else {
+            throw OpenSubsonicError.http(http.statusCode)
+        }
+        let envelope = try decoder.decode(StatusEnvelope.self, from: data)
+        guard envelope.response.status == "ok" else {
+            throw OpenSubsonicError.server(
+                code: envelope.response.error?.code,
+                message: envelope.response.error?.message
+                    ?? String(localized: "서버 연결에 실패했습니다.")
+            )
+        }
+        return envelope.response
+    }
+
+    private func responseData(
+        from url: URL,
+        acceptsZstandard: Bool
+    ) async throws -> (Data, HTTPURLResponse) {
+        guard url.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
+        }
+        var request = URLRequest(url: url)
+        ModernNetworkPolicy.prepareAPIRequest(
+            &request,
+            acceptsZstandard: acceptsZstandard
+        )
+
+        let (encodedData, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard encodedData.count <= Self.maximumResponseBytes else {
+            throw URLError(.dataLengthExceedsMaximum)
