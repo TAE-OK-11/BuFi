@@ -24,7 +24,7 @@ radio scheduling, and background behavior integrated with iOS.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's own scoped image
   and offline caches remain in control.
-- Identical OpenSubsonic requests share one in-flight transfer. A small bounded
+- Identical OpenSubsonic requests share one in-flight transfer. A 16 MiB bounded
   actor-local response cache absorbs overlapping view/recommendation bursts,
   while mutation and playback-report endpoints always bypass it.
 - Structured lyrics are retained for up to six hours and the next two queued

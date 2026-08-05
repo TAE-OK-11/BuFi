@@ -54,8 +54,11 @@ actor OpenSubsonicClient {
     }
 
     private static let responseCacheLimit = 128
+    private static let responseCacheByteLimit = 16 * 1_024 * 1_024
+    private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
     private var responseCache: [String: CachedAPIResponse] = [:]
     private var responseCacheOrder: [String] = []
+    private var responseCacheBytes = 0
     private var inFlightResponses: [String: InFlightAPIRequest] = [:]
 
     private struct ServerRecommendationSources: Sendable {
@@ -212,6 +215,10 @@ actor OpenSubsonicClient {
 
         if ttl > 0 {
             storeResponse(data, for: cacheKey)
+        } else if endpoint != "ping" {
+            // A successful mutation can invalidate any cached library, queue,
+            // recommendation, or favorite response from the same account.
+            clearResponseCache()
         }
         return try APIEnvelope<Payload>(from: capture.decoder).response
     }
@@ -337,6 +344,7 @@ actor OpenSubsonicClient {
         guard let value = responseCache[key] else { return nil }
         guard Date().timeIntervalSince(value.storedAt) <= lifetime else {
             responseCache[key] = nil
+            responseCacheBytes = max(0, responseCacheBytes - value.data.count)
             responseCacheOrder.removeAll { $0 == key }
             return nil
         }
@@ -346,13 +354,26 @@ actor OpenSubsonicClient {
     }
 
     private func storeResponse(_ data: Data, for key: String) {
+        guard data.count <= Self.maximumCachedResponseBytes else { return }
+        if let existing = responseCache[key] {
+            responseCacheBytes = max(0, responseCacheBytes - existing.data.count)
+        }
         responseCache[key] = CachedAPIResponse(data: data, storedAt: Date())
+        responseCacheBytes += data.count
         responseCacheOrder.removeAll { $0 == key }
         responseCacheOrder.append(key)
-        while responseCacheOrder.count > Self.responseCacheLimit {
+        while responseCacheOrder.count > Self.responseCacheLimit
+                || responseCacheBytes > Self.responseCacheByteLimit {
             let evicted = responseCacheOrder.removeFirst()
-            responseCache[evicted] = nil
+            if let removed = responseCache.removeValue(forKey: evicted) {
+                responseCacheBytes = max(0, responseCacheBytes - removed.data.count)
+            }
         }
+    }
+
+    private func clearResponseCache() {
+        clearResponseCache()
+        responseCacheBytes = 0
     }
 
     private static func responseCacheKey(
