@@ -20,6 +20,22 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: codex/instant-skip-preparation
+      - name: Refresh README patch marker
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Scripts/apply-instant-skip-preparation.py')
+          text = path.read_text()
+          text = text.replace(
+              '- In-flight API request coalescing, bounded response reuse, and energy-aware next-track lyric/artwork prefetching\\n',
+              '- In-flight API request coalescing, a 16 MiB bounded response cache, and energy-aware next-track lyrics/artwork prefetching\\n'
+          )
+          text = text.replace(
+              '- In-flight API request coalescing, bounded response reuse, and energy-aware next-track lyric/artwork/AVURLAsset preparation for instant skips\\n',
+              '- In-flight API request coalescing, a 16 MiB bounded response cache, and energy-aware next-track lyrics/artwork/AVURLAsset preparation for instant skips\\n'
+          )
+          path.write_text(text)
+          PY
       - name: Apply patch
         run: python3 Scripts/apply-instant-skip-preparation.py
       - name: Commit changes
