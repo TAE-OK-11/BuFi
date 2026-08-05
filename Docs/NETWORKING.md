@@ -26,7 +26,8 @@ radio scheduling, and background behavior integrated with iOS.
   and offline caches remain in control.
 - Identical OpenSubsonic requests share one in-flight transfer. A 16 MiB bounded
   actor-local response cache absorbs overlapping view/recommendation bursts,
-  while mutation and playback-report endpoints always bypass it.
+  while mutation and playback-report endpoints always bypass it. Successful
+  mutations immediately invalidate cached read responses for the account.
 - Structured lyrics are retained for up to six hours and the next two queued
   tracks have lyrics and 360 px artwork warmed opportunistically. Low Power
   Mode, serious thermal pressure, logout, and memory warnings cancel or trim
