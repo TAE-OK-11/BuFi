@@ -216,6 +216,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var serverQueueTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
+    private var networkPrefetchTask: Task<Void, Never>?
     private var autoplayTask: Task<Void, Never>?
     private var nowPlayingSongID: String?
     private var nowPlayingArtworkKey: String?
@@ -286,6 +287,8 @@ final class AudioEngine: NSObject, ObservableObject {
             finalizeCurrentPlayback(reason: .stopped)
             queueSaveTask?.cancel()
             offlinePrefetchTask?.cancel()
+            networkPrefetchTask?.cancel()
+            networkPrefetchTask = nil
             cancelPlaybackRecovery()
             itemLoadTask?.cancel()
             lyricsTask?.cancel()
@@ -434,6 +437,7 @@ final class AudioEngine: NSObject, ObservableObject {
             resumeFrom: 0
         )
         loadLyrics(for: selectedSong)
+        scheduleNetworkPrefetch()
         scheduleOfflinePrefetch()
         scheduleQueueSave()
         updateNowPlaying()
@@ -488,6 +492,11 @@ final class AudioEngine: NSObject, ObservableObject {
         // a system memory warning.
         offlinePrefetchTask?.cancel()
         offlinePrefetchTask = nil
+        networkPrefetchTask?.cancel()
+        networkPrefetchTask = nil
+        if let client {
+            Task { await client.trimTransientNetworkCaches() }
+        }
         recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
         player.currentItem?.preferredForwardBufferDuration = 0
     }
@@ -505,6 +514,8 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         offlinePrefetchTask?.cancel()
         offlinePrefetchTask = nil
+        networkPrefetchTask?.cancel()
+        networkPrefetchTask = nil
     }
 
     private func pausePlayback(persistsQueue: Bool) {
@@ -664,6 +675,7 @@ final class AudioEngine: NSObject, ObservableObject {
             self.queue.append(contentsOf: additions)
             self.updateRemoteCommands()
             self.updateNowPlaying()
+            self.scheduleNetworkPrefetch()
             self.scheduleOfflinePrefetch()
             self.scheduleQueueSave(immediate: true)
             if shouldAdvance {
@@ -881,6 +893,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private func queueDidChange() {
         updateRemoteCommands()
         updateNowPlaying()
+        scheduleNetworkPrefetch()
         scheduleOfflinePrefetch()
         scheduleQueueSave(immediate: true)
     }
@@ -1079,6 +1092,57 @@ final class AudioEngine: NSObject, ObservableObject {
         case "wav", "wave": "audio/wav"
         case "aif", "aiff": "audio/aiff"
         default: song.contentType
+        }
+    }
+
+    private func scheduleNetworkPrefetch() {
+        networkPrefetchTask?.cancel()
+        guard let client,
+              queue.indices.contains(queueIndex),
+              queueIndex + 1 < queue.count else {
+            networkPrefetchTask = nil
+            return
+        }
+
+        let processInfo = ProcessInfo.processInfo
+        guard !processInfo.isLowPowerModeEnabled,
+              processInfo.thermalState != .serious,
+              processInfo.thermalState != .critical else {
+            networkPrefetchTask = nil
+            return
+        }
+
+        let upperBound = min(queue.count, queueIndex + 3)
+        let upcoming = Array(queue[(queueIndex + 1)..<upperBound])
+            .filter { $0.externalStreamURL == nil }
+        guard !upcoming.isEmpty else {
+            networkPrefetchTask = nil
+            return
+        }
+
+        networkPrefetchTask = Task(priority: .utility) { [weak self] in
+            async let lyricsPrefetch: Void = client.prefetchLyrics(
+                songIDs: upcoming.map(\.id)
+            )
+
+            var coverURLs: [URL] = []
+            var seenCoverIDs = Set<String>()
+            for song in upcoming {
+                guard !Task.isCancelled else { return }
+                guard let coverID = song.coverArt,
+                      seenCoverIDs.insert(coverID).inserted,
+                      let url = try? await client.coverURL(id: coverID, size: 360) else {
+                    continue
+                }
+                coverURLs.append(url)
+            }
+            await ArtworkStore.shared.prefetch(
+                urls: coverURLs,
+                pixelSize: 360
+            )
+            await lyricsPrefetch
+            guard !Task.isCancelled else { return }
+            self?.networkPrefetchTask = nil
         }
     }
 
