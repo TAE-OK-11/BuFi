@@ -1,0 +1,75 @@
+                    continue
+                }
+                coverURLs.append(url)
+            }
+            await ArtworkStore.shared.prefetch(
+                urls: coverURLs,
+                pixelSize: 360
+            )
+            await lyricsPrefetch
+            guard !Task.isCancelled else { return }
+            self?.networkPrefetchTask = nil
+        }
+    }
+
+    private func scheduleOfflinePrefetch() {
+''',
+)
+
+replace_once(
+    "BuFiTests/ModernNetworkPolicyTests.swift",
+    '''    func testMediaRequestPreservesByteRangeSemantics() throws {
+''',
+    '''    func testSessionConfigurationReusesFallbackConnections() {
+        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
+            requestTimeout: 10,
+            resourceTimeout: 20,
+            maximumConnectionsPerHost: 6,
+            allowsExpensiveNetworkAccess: true,
+            allowsConstrainedNetworkAccess: true
+        )
+
+        XCTAssertTrue(configuration.waitsForConnectivity)
+        XCTAssertTrue(configuration.httpShouldUsePipelining)
+        XCTAssertEqual(configuration.httpMaximumConnectionsPerHost, 6)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+    }
+
+    func testMediaRequestPreservesByteRangeSemantics() throws {
+''',
+)
+
+replace_once(
+    "Docs/NETWORKING.md",
+    '''- Cookies, ambient credential storage, and URLSession response caches are
+  disabled for authenticated API and download sessions. BuFi's own scoped image
+  and offline caches remain in control.
+
+HTTP/3 is opportunistic:''',
+    '''- Cookies, ambient credential storage, and URLSession response caches are
+  disabled for authenticated API and download sessions. BuFi's own scoped image
+  and offline caches remain in control.
+- Identical OpenSubsonic requests share one in-flight transfer. A small bounded
+  actor-local response cache absorbs overlapping view/recommendation bursts,
+  while mutation and playback-report endpoints always bypass it.
+- Structured lyrics are retained for up to six hours and the next two queued
+  tracks have lyrics and 360 px artwork warmed opportunistically. Low Power
+  Mode, serious thermal pressure, logout, and memory warnings cancel or trim
+  speculative work immediately.
+- HTTP/1.1 pipelining is enabled only as a legacy fallback optimization; modern
+  HTTP/2 and HTTP/3 paths continue to use native stream multiplexing.
+
+HTTP/3 is opportunistic:''',
+)
+
+replace_once(
+    "README.md",
+    '''- HTTP/3 racing for API, artwork, and offline downloads; HTTP/2 fallback; gzip, Brotli, and bounded Zstandard API decoding
+''',
+    '''- HTTP/3 racing for API, artwork, and offline downloads; HTTP/2 fallback; gzip, Brotli, and bounded Zstandard API decoding
+- In-flight API request coalescing, bounded response reuse, and energy-aware next-track lyric/artwork prefetching
+''',
+)
+
+print("Applied BuFi network performance pass.")
