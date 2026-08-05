@@ -1,0 +1,40 @@
+name: Apply network performance pass
+
+on:
+  push:
+    branches:
+      - codex/network-performance-pass
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/network-performance-pass
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply source changes
+        run: |
+          cat Scripts/network-pass.part-* > Scripts/apply-network-performance-pass.py
+          python Scripts/apply-network-performance-pass.py
+
+      - name: Remove one-shot patch files
+        run: |
+          rm -f Scripts/network-pass.part-* \
+            Scripts/apply-network-performance-pass.py \
+            .github/workflows/apply-network-performance-pass.yml
+
+      - name: Commit optimized networking
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Optimize network request reuse and prefetching"
+          git push
