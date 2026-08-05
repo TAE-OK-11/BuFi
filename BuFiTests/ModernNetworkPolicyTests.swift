@@ -30,6 +30,22 @@ final class ModernNetworkPolicyTests: XCTestCase {
         XCTAssertTrue(request.assumesHTTP3Capable)
     }
 
+    func testSessionConfigurationReusesFallbackConnections() {
+        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
+            requestTimeout: 10,
+            resourceTimeout: 20,
+            maximumConnectionsPerHost: 6,
+            allowsExpensiveNetworkAccess: true,
+            allowsConstrainedNetworkAccess: true
+        )
+
+        XCTAssertTrue(configuration.waitsForConnectivity)
+        XCTAssertTrue(configuration.httpShouldUsePipelining)
+        XCTAssertEqual(configuration.httpMaximumConnectionsPerHost, 6)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+    }
+
     func testMediaRequestPreservesByteRangeSemantics() throws {
         var request = URLRequest(
             url: try XCTUnwrap(URL(string: "https://example.com/rest/stream.view"))

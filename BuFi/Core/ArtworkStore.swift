@@ -115,6 +115,15 @@ actor ArtworkStore {
         return image
     }
 
+    func prefetch(urls: [URL], pixelSize: CGFloat) async {
+        guard activeScope != nil else { return }
+        var seen = Set<URL>()
+        for url in urls.prefix(2) where seen.insert(url).inserted {
+            guard !Task.isCancelled else { return }
+            _ = try? await image(for: url, pixelSize: pixelSize)
+            await Task.yield()
+        }
+    }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
         guard let scope = activeScope, !Task.isCancelled else { return .fallback }
