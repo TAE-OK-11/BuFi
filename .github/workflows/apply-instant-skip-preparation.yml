@@ -1,0 +1,30 @@
+name: Apply instant skip preparation
+
+on:
+  push:
+    branches:
+      - codex/instant-skip-preparation
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: codex/instant-skip-preparation
+      - name: Apply patch
+        run: python3 Scripts/apply-instant-skip-preparation.py
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Playback/AudioEngine.swift Docs/NETWORKING.md README.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Prepare upcoming streams for instant skips"
+          git push origin HEAD:codex/instant-skip-preparation
