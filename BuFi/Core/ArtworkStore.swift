@@ -100,8 +100,10 @@ actor ArtworkStore {
             throw URLError(.userAuthenticationRequired)
         }
         let requestedPixelSize = min(max(pixelSize, 64), 1_536)
+        var urlRequest = URLRequest(url: url)
+        ModernNetworkPolicy.prepareImageRequest(&urlRequest)
         let request = ImageRequest(
-            url: url,
+            urlRequest: urlRequest,
             processors: [.resize(width: requestedPixelSize)]
         )
         let scopedPipeline = pipeline
@@ -204,6 +206,16 @@ actor ArtworkStore {
             name: name,
             sizeLimit: 256 * 1_024 * 1_024
         )
+        configuration.dataLoader = DataLoader(
+            configuration: ModernNetworkPolicy.makeEphemeralConfiguration(
+                requestTimeout: 20,
+                resourceTimeout: 120,
+                maximumConnectionsPerHost: 6,
+                allowsExpensiveNetworkAccess: true,
+                allowsConstrainedNetworkAccess: true
+            )
+        )
+        configuration.maximumResponseDataSize = 32 * 1_024 * 1_024
         configuration.isTaskCoalescingEnabled = true
         configuration.isProgressiveDecodingEnabled = false
         configuration.dataCachePolicy = .automatic
