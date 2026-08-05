@@ -372,7 +372,8 @@ actor OpenSubsonicClient {
     }
 
     private func clearResponseCache() {
-        clearResponseCache()
+        responseCache.removeAll(keepingCapacity: false)
+        responseCacheOrder.removeAll(keepingCapacity: false)
         responseCacheBytes = 0
     }
 
@@ -1266,8 +1267,7 @@ actor OpenSubsonicClient {
     func trimTransientNetworkCaches() {
         inFlightResponses.values.forEach { $0.task.cancel() }
         inFlightResponses.removeAll(keepingCapacity: false)
-        responseCache.removeAll(keepingCapacity: false)
-        responseCacheOrder.removeAll(keepingCapacity: false)
+        clearResponseCache()
     }
 
     func streamURL(
