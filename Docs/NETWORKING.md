@@ -30,9 +30,11 @@ radio scheduling, and background behavior integrated with iOS.
   mutations immediately invalidate cached read responses for the account, and
   only payloads that decode successfully enter the cache.
 - Structured lyrics are retained for up to six hours and the next two queued
-  tracks have lyrics and 360 px artwork warmed opportunistically. Low Power
-  Mode, serious thermal pressure, logout, and memory warnings cancel or trim
-  speculative work immediately.
+  tracks have lyrics, 360 px artwork, authenticated stream URLs, and reusable
+  `AVURLAsset` metadata warmed opportunistically. A manual skip consumes the
+  same partially or fully prepared asset while the page animation runs instead
+  of opening a duplicate request. Low Power Mode, serious thermal pressure,
+  logout, and memory warnings cancel or trim speculative work immediately.
 - HTTP/1.1 pipelining is enabled only as a legacy fallback optimization; modern
   HTTP/2 and HTTP/3 paths continue to use native stream multiplexing.
 

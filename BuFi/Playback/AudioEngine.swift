@@ -183,6 +183,7 @@ final class AudioEngine: NSObject, ObservableObject {
         didSet {
             UserDefaults.standard.set(quality.rawValue, forKey: "stream-quality")
             guard oldValue != quality, currentSong != nil else { return }
+            discardPreparedPlaybackAssets()
             restartPlaybackPlan(resumeFrom: elapsed)
         }
     }
@@ -194,6 +195,14 @@ final class AudioEngine: NSObject, ObservableObject {
     private struct PlaybackResource {
         let url: URL
         let mimeType: String?
+    }
+
+    private struct PreparedPlaybackAsset {
+        let key: String
+        let songID: String
+        let compatibilityFormat: String
+        let mimeType: String?
+        let asset: AVURLAsset
     }
 
     private var nowPlayingSession: MPNowPlayingSession?
@@ -217,6 +226,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
     private var networkPrefetchTask: Task<Void, Never>?
+    private var preparedPlaybackAssets: [String: PreparedPlaybackAsset] = [:]
+    private var preparedPlaybackAssetOrder: [String] = []
+    private var preparedPlaybackWarmupTasks: [String: Task<Void, Never>] = [:]
     private var autoplayTask: Task<Void, Never>?
     private var nowPlayingSongID: String?
     private var nowPlayingArtworkKey: String?
@@ -289,6 +301,7 @@ final class AudioEngine: NSObject, ObservableObject {
             offlinePrefetchTask?.cancel()
             networkPrefetchTask?.cancel()
             networkPrefetchTask = nil
+            discardPreparedPlaybackAssets()
             cancelPlaybackRecovery()
             itemLoadTask?.cancel()
             lyricsTask?.cancel()
@@ -494,6 +507,7 @@ final class AudioEngine: NSObject, ObservableObject {
         offlinePrefetchTask = nil
         networkPrefetchTask?.cancel()
         networkPrefetchTask = nil
+        discardPreparedPlaybackAssets()
         if let client {
             Task { await client.trimTransientNetworkCaches() }
         }
@@ -516,6 +530,7 @@ final class AudioEngine: NSObject, ObservableObject {
         offlinePrefetchTask = nil
         networkPrefetchTask?.cancel()
         networkPrefetchTask = nil
+        discardPreparedPlaybackAssets()
     }
 
     private func pausePlayback(persistsQueue: Bool) {
@@ -974,7 +989,8 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func playbackResource(
         for song: Song,
-        compatibilityFormat: String?
+        compatibilityFormat: String?,
+        allowLocalSource: Bool = true
     ) async throws -> PlaybackResource {
         if let value = song.externalStreamURL,
            let url = URL(string: value),
@@ -983,7 +999,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         // A downloaded source avoids radio use and is attempted once. If the
         // system rejects it, later codec fallbacks bypass the local source.
-        if fallbackIndex == 0,
+        if allowLocalSource,
            compatibilityFormat?.lowercased() == "raw",
            let local = await OfflineStore.shared.localURL(for: song.id) {
             return PlaybackResource(
@@ -1095,6 +1111,137 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
+    private static let preparedPlaybackAssetLimit = 3
+
+    private static func preparedPlaybackKey(
+        songID: String,
+        quality: StreamQuality,
+        compatibilityFormat: String
+    ) -> String {
+        [songID, quality.rawValue, compatibilityFormat.lowercased()]
+            .joined(separator: "|")
+    }
+
+    private static func makeURLAsset(
+        url: URL,
+        mimeType: String?
+    ) -> AVURLAsset {
+        // Some OpenSubsonic servers omit or generalize Content-Type. Preserve
+        // the same out-of-band hint used by active playback while warming the
+        // exact asset that will later be handed to AVPlayer.
+        let options: [String: Any] = mimeType.map {
+            ["AVURLAssetOutOfBandMIMETypeKey": $0]
+        } ?? [:]
+        return AVURLAsset(url: url, options: options)
+    }
+
+    private func preparePlaybackAsset(for song: Song) {
+        guard song.externalStreamURL == nil else { return }
+        let preparedQuality = quality
+        let compatibilityFormat = Self.initialCompatibilityFormat(
+            for: preparedQuality,
+            song: song
+        )
+        let key = Self.preparedPlaybackKey(
+            songID: song.id,
+            quality: preparedQuality,
+            compatibilityFormat: compatibilityFormat
+        )
+        guard preparedPlaybackAssets[key] == nil,
+              preparedPlaybackWarmupTasks[key] == nil else {
+            return
+        }
+
+        let task = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            do {
+                let resource = try await self.playbackResource(
+                    for: song,
+                    compatibilityFormat: compatibilityFormat,
+                    allowLocalSource: true
+                )
+                guard !Task.isCancelled,
+                      self.quality == preparedQuality,
+                      self.queue.contains(where: { $0.id == song.id }) else {
+                    self.preparedPlaybackWarmupTasks[key] = nil
+                    return
+                }
+
+                let asset = Self.makeURLAsset(
+                    url: resource.url,
+                    mimeType: resource.mimeType
+                )
+                self.storePreparedPlaybackAsset(
+                    PreparedPlaybackAsset(
+                        key: key,
+                        songID: song.id,
+                        compatibilityFormat: compatibilityFormat,
+                        mimeType: resource.mimeType,
+                        asset: asset
+                    )
+                )
+
+                do {
+                    // This opens the transport, validates the stream response,
+                    // and loads enough AVFoundation metadata that a skip can
+                    // reuse the same asset during the page transition.
+                    _ = try await asset.load(.isPlayable)
+                } catch {
+                    if self.preparedPlaybackAssets[key]?.asset === asset {
+                        self.preparedPlaybackAssets[key] = nil
+                        self.preparedPlaybackAssetOrder.removeAll { $0 == key }
+                    }
+                }
+            } catch {
+                // Warming is speculative. Active playback retains its normal
+                // codec fallback and recovery path if preparation fails.
+            }
+            self.preparedPlaybackWarmupTasks[key] = nil
+        }
+        preparedPlaybackWarmupTasks[key] = task
+    }
+
+    private func storePreparedPlaybackAsset(_ prepared: PreparedPlaybackAsset) {
+        preparedPlaybackAssets[prepared.key] = prepared
+        preparedPlaybackAssetOrder.removeAll { $0 == prepared.key }
+        preparedPlaybackAssetOrder.append(prepared.key)
+        while preparedPlaybackAssetOrder.count > Self.preparedPlaybackAssetLimit {
+            let evicted = preparedPlaybackAssetOrder.removeFirst()
+            preparedPlaybackAssets[evicted] = nil
+            preparedPlaybackWarmupTasks.removeValue(forKey: evicted)?.cancel()
+        }
+    }
+
+    private func takePreparedPlaybackAsset(
+        for song: Song,
+        compatibilityFormat: String?
+    ) -> PreparedPlaybackAsset? {
+        guard let compatibilityFormat else { return nil }
+        let key = Self.preparedPlaybackKey(
+            songID: song.id,
+            quality: quality,
+            compatibilityFormat: compatibilityFormat
+        )
+        guard let prepared = preparedPlaybackAssets.removeValue(forKey: key),
+              prepared.songID == song.id,
+              prepared.compatibilityFormat == compatibilityFormat else {
+            return nil
+        }
+        preparedPlaybackAssetOrder.removeAll { $0 == key }
+        // Do not cancel an in-progress AVAsset warmup after handing that same
+        // asset to the active player. Dropping our task handle lets it finish
+        // while AVPlayer immediately consumes the partially warmed resource.
+        preparedPlaybackWarmupTasks[key] = nil
+        return prepared
+    }
+
+    private func discardPreparedPlaybackAssets() {
+        preparedPlaybackWarmupTasks.values.forEach { $0.cancel() }
+        preparedPlaybackWarmupTasks.removeAll(keepingCapacity: false)
+        preparedPlaybackAssets.removeAll(keepingCapacity: false)
+        preparedPlaybackAssetOrder.removeAll(keepingCapacity: false)
+    }
+
     private func scheduleNetworkPrefetch() {
         networkPrefetchTask?.cancel()
         guard let client,
@@ -1118,6 +1265,13 @@ final class AudioEngine: NSObject, ObservableObject {
         guard !upcoming.isEmpty else {
             networkPrefetchTask = nil
             return
+        }
+
+        // Prepare the actual AVURLAsset in addition to lyrics and artwork.
+        // The player consumes this same object on skip, so work completed while
+        // the current song is playing is not discarded or repeated.
+        for song in upcoming {
+            preparePlaybackAsset(for: song)
         }
 
         networkPrefetchTask = Task(priority: .utility) { [weak self] in
@@ -1207,12 +1361,26 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         activeCompatibilityFormat = compatibilityFormat
         isBuffering = wantsPlayback
+
+        if let prepared = takePreparedPlaybackAsset(
+            for: song,
+            compatibilityFormat: compatibilityFormat
+        ) {
+            replacePlayerItem(
+                asset: prepared.asset,
+                mimeType: prepared.mimeType,
+                resumePosition: resumePosition
+            )
+            return
+        }
+
         itemLoadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let resource = try await self.playbackResource(
                     for: song,
-                    compatibilityFormat: compatibilityFormat
+                    compatibilityFormat: compatibilityFormat,
+                    allowLocalSource: self.fallbackIndex == 0
                 )
                 guard !Task.isCancelled,
                       self.itemLoadGeneration == generation,
@@ -1239,15 +1407,20 @@ final class AudioEngine: NSObject, ObservableObject {
         mimeType: String?,
         resumePosition: TimeInterval
     ) {
+        replacePlayerItem(
+            asset: Self.makeURLAsset(url: url, mimeType: mimeType),
+            mimeType: mimeType,
+            resumePosition: resumePosition
+        )
+    }
+
+    private func replacePlayerItem(
+        asset: AVURLAsset,
+        mimeType: String?,
+        resumePosition: TimeInterval
+    ) {
         cancelPlaybackRecovery()
-        // Amperfy uses an out-of-band MIME hint before handing Subsonic
-        // streams to its player. Some servers omit or generalize Content-Type,
-        // so applying the same GPLv3-covered compatibility pattern keeps
-        // Core AVFoundation from rejecting an otherwise valid audio stream.
-        let options: [String: Any] = mimeType.map {
-            ["AVURLAssetOutOfBandMIMETypeKey": $0]
-        } ?? [:]
-        let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
+        let item = AVPlayerItem(asset: asset)
         // Let AVFoundation adapt buffering to throughput and decoder cost.
         // Large fixed buffers increase system-resource demand.
         item.preferredForwardBufferDuration = 0
