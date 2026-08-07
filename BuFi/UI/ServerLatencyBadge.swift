@@ -6,6 +6,7 @@ struct ServerLatencyBadge: View {
     @State private var latencyMilliseconds: Double?
     @State private var isMeasuring = false
     @State private var measurementFailed = false
+    @State private var measurementGeneration: UInt64 = 0
 
     var body: some View {
         Button {
@@ -66,24 +67,33 @@ struct ServerLatencyBadge: View {
 
     @MainActor
     private func measure() async {
-        guard !isMeasuring, let client else {
-            if client == nil {
-                latencyMilliseconds = nil
-                measurementFailed = true
-            }
+        measurementGeneration &+= 1
+        let generation = measurementGeneration
+
+        guard let client else {
+            latencyMilliseconds = nil
+            measurementFailed = false
+            isMeasuring = false
             return
         }
 
         isMeasuring = true
         measurementFailed = false
-        defer { isMeasuring = false }
+        defer {
+            if measurementGeneration == generation {
+                isMeasuring = false
+            }
+        }
 
         do {
-            latencyMilliseconds = try await client.measuredServerLatency()
+            let latency = try await client.measuredServerLatency()
+            guard measurementGeneration == generation else { return }
+            latencyMilliseconds = latency
             measurementFailed = false
         } catch is CancellationError {
             return
         } catch {
+            guard measurementGeneration == generation else { return }
             latencyMilliseconds = nil
             measurementFailed = true
         }
