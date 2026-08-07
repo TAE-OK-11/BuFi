@@ -61,7 +61,7 @@ struct ServerLatencyBadge: View {
     }
 
     private var clientIdentifier: ObjectIdentifier? {
-        client.map(ObjectIdentifier.init)
+        client.map { ObjectIdentifier($0) }
     }
 
     @MainActor
