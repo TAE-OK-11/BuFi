@@ -6,7 +6,6 @@ extension OpenSubsonicClient {
     /// HTTP/3 or fallback transport, and the server's `ping.view` handling.
     func measuredServerLatency(sampleCount: Int = 3) async throws -> Double {
         let count = min(max(sampleCount, 1), 5)
-        let url = try endpointURL("ping")
         let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
             requestTimeout: 8,
             resourceTimeout: 12,
@@ -26,6 +25,10 @@ extension OpenSubsonicClient {
 
         for index in 0..<count {
             try Task.checkCancellation()
+            // Generate fresh OpenSubsonic authentication material for every
+            // sample, matching normal API request behavior rather than reusing
+            // the same salt/token across the diagnostic sequence.
+            let url = try endpointURL("ping")
             var request = URLRequest(url: url)
             ModernNetworkPolicy.prepareHealthCheckRequest(&request)
 
@@ -51,6 +54,9 @@ extension OpenSubsonicClient {
                 encodedData,
                 contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
             )
+            guard data.count <= 2 * 1_024 * 1_024 else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
             let envelope = try JSONDecoder().decode(
                 DiagnosticPingEnvelope.self,
                 from: data
