@@ -88,10 +88,13 @@ enum ModernNetworkPolicy {
         )
     }
 
-    static func prepareHealthCheckRequest(_ request: inout URLRequest) {
+    static func prepareHealthCheckRequest(
+        _ request: inout URLRequest,
+        acceptsZstandard: Bool = true
+    ) {
         prepareJSONRequest(
             &request,
-            acceptsZstandard: true,
+            acceptsZstandard: acceptsZstandard,
             cachePolicy: .reloadIgnoringLocalCacheData
         )
         request.timeoutInterval = 8
