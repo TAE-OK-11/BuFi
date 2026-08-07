@@ -40,6 +40,9 @@ extension OpenSubsonicClient {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                guard Self.isRetryableDiagnosticFailure(error) else {
+                    throw error
+                }
                 lastError = error
             }
             attempts += 1
@@ -55,7 +58,20 @@ extension OpenSubsonicClient {
         // Median suppresses one-off DNS/radio scheduling spikes and also lets a
         // single transient request failure avoid turning the Settings badge red.
         let ordered = samples.sorted()
-        return ordered[ordered.count / 2]
+        let middle = ordered.count / 2
+        if ordered.count.isMultiple(of: 2) {
+            return (ordered[middle - 1] + ordered[middle]) / 2
+        }
+        return ordered[middle]
+    }
+
+    private static func isRetryableDiagnosticFailure(_ error: Error) -> Bool {
+        if NetworkResiliencePolicy.shouldRetry(error) { return true }
+        guard let subsonicError = error as? OpenSubsonicError else { return false }
+        if case .http(let statusCode) = subsonicError {
+            return NetworkResiliencePolicy.shouldRetryHTTPStatus(statusCode)
+        }
+        return false
     }
 
     private func measuredServerLatencySample(
