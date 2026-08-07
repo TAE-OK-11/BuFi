@@ -24,32 +24,57 @@ extension OpenSubsonicClient {
         samples.reserveCapacity(count)
 
         for index in 0..<count {
-            try Task.checkCancellation()
-            // Generate fresh OpenSubsonic authentication material for every
-            // sample, matching normal API request behavior rather than reusing
-            // the same salt/token across the diagnostic sequence.
-            let url = try endpointURL("ping")
-            var request = URLRequest(url: url)
-            ModernNetworkPolicy.prepareHealthCheckRequest(&request)
+            samples.append(
+                try await measuredServerLatencySample(
+                    session: session,
+                    acceptsZstandard: true
+                )
+            )
+            if index + 1 < count {
+                try await Task.sleep(for: .milliseconds(80))
+            }
+        }
 
-            let startedAt = Date()
-            let (encodedData, response) = try await session.data(for: request)
-            let elapsed = Date().timeIntervalSince(startedAt) * 1_000
-            try Task.checkCancellation()
+        // Median suppresses a one-off DNS/radio scheduling spike while still
+        // reflecting the path the app actually uses.
+        let ordered = samples.sorted()
+        return ordered[ordered.count / 2]
+    }
 
-            guard encodedData.count <= 2 * 1_024 * 1_024 else {
-                throw URLError(.dataLengthExceedsMaximum)
-            }
-            guard let http = response as? HTTPURLResponse else {
-                throw OpenSubsonicError.invalidResponse
-            }
-            guard http.url?.scheme?.lowercased() == "https" else {
-                throw OpenSubsonicError.insecureServerURL
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                throw OpenSubsonicError.http(http.statusCode)
-            }
+    private func measuredServerLatencySample(
+        session: URLSession,
+        acceptsZstandard: Bool
+    ) async throws -> Double {
+        try Task.checkCancellation()
+        // Generate fresh OpenSubsonic authentication material for every
+        // attempt, matching normal API request behavior rather than reusing
+        // the same salt/token across diagnostics or a compatibility retry.
+        let url = try endpointURL("ping")
+        var request = URLRequest(url: url)
+        ModernNetworkPolicy.prepareHealthCheckRequest(
+            &request,
+            acceptsZstandard: acceptsZstandard
+        )
 
+        let startedAt = Date()
+        let (encodedData, response) = try await session.data(for: request)
+        let elapsed = Date().timeIntervalSince(startedAt) * 1_000
+        try Task.checkCancellation()
+
+        guard encodedData.count <= 2 * 1_024 * 1_024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        guard http.url?.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw OpenSubsonicError.http(http.statusCode)
+        }
+
+        do {
             let data = try HTTPContentDecoder.decode(
                 encodedData,
                 contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
@@ -68,17 +93,15 @@ extension OpenSubsonicClient {
                         ?? String(localized: "서버 연결에 실패했습니다.")
                 )
             }
-
-            samples.append(elapsed)
-            if index + 1 < count {
-                try await Task.sleep(for: .milliseconds(80))
-            }
+            return elapsed
+        } catch let error as URLError
+            where acceptsZstandard && error.code == .cannotDecodeContentData {
+            try Task.checkCancellation()
+            return try await measuredServerLatencySample(
+                session: session,
+                acceptsZstandard: false
+            )
         }
-
-        // Median suppresses a one-off DNS/radio scheduling spike while still
-        // reflecting the path the app actually uses.
-        let ordered = samples.sorted()
-        return ordered[ordered.count / 2]
     }
 }
 
