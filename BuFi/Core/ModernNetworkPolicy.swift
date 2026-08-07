@@ -124,8 +124,26 @@ enum ModernNetworkPolicy {
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
     }
 
-    static func prepareRedirect(_ request: inout URLRequest) {
+    /// Reapplies safe transport semantics after an HTTPS redirect. URLSession
+    /// may synthesize a new request and drop non-default request properties;
+    /// preserving these values keeps media byte ranges and JSON compression
+    /// behavior stable across CDN or object-storage redirects. Sensitive
+    /// headers such as Authorization are intentionally never copied here.
+    static func prepareRedirect(
+        _ request: inout URLRequest,
+        inheriting originalRequest: URLRequest? = nil
+    ) {
         prepareHTTP3Request(&request)
+        guard let originalRequest else { return }
+
+        request.cachePolicy = originalRequest.cachePolicy
+        request.timeoutInterval = originalRequest.timeoutInterval
+        request.networkServiceType = originalRequest.networkServiceType
+        for header in ["Accept", "Accept-Encoding"] {
+            if let value = originalRequest.value(forHTTPHeaderField: header) {
+                request.setValue(value, forHTTPHeaderField: header)
+            }
+        }
     }
 
     private static func prepareJSONRequest(

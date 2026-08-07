@@ -123,4 +123,67 @@ final class ModernNetworkPolicyTests: XCTestCase {
         XCTAssertEqual(request.networkServiceType, .avStreaming)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
     }
+
+    func testMediaRedirectRetainsRangeSafeTransportPolicy() throws {
+        var original = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://music.example.com/rest/download.view"))
+        )
+        ModernNetworkPolicy.prepareMediaRequest(&original)
+        original.timeoutInterval = 37
+        original.setValue(
+            "Bearer source-secret",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        var redirected = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://cdn.example.net/object/audio"))
+        )
+        ModernNetworkPolicy.prepareRedirect(
+            &redirected,
+            inheriting: original
+        )
+
+        XCTAssertTrue(redirected.assumesHTTP3Capable)
+        XCTAssertEqual(redirected.networkServiceType, .avStreaming)
+        XCTAssertEqual(redirected.timeoutInterval, 37)
+        XCTAssertEqual(redirected.cachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertEqual(
+            redirected.value(forHTTPHeaderField: "Accept-Encoding"),
+            "identity"
+        )
+        XCTAssertEqual(
+            redirected.value(forHTTPHeaderField: "Accept"),
+            "audio/*, application/octet-stream;q=0.9, */*;q=0.1"
+        )
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testAPIRedirectRetainsCompressionFallbackChoice() throws {
+        var original = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://music.example.com/rest/ping.view"))
+        )
+        ModernNetworkPolicy.prepareAPIRequest(
+            &original,
+            acceptsZstandard: false
+        )
+
+        var redirected = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://api.example.net/ping"))
+        )
+        ModernNetworkPolicy.prepareRedirect(
+            &redirected,
+            inheriting: original
+        )
+
+        XCTAssertTrue(redirected.assumesHTTP3Capable)
+        XCTAssertEqual(redirected.networkServiceType, .responsiveData)
+        XCTAssertEqual(
+            redirected.value(forHTTPHeaderField: "Accept-Encoding"),
+            "br, gzip"
+        )
+        XCTAssertEqual(
+            redirected.value(forHTTPHeaderField: "Accept"),
+            "application/json"
+        )
+    }
 }

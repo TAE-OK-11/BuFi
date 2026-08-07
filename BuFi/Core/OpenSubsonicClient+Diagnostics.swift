@@ -5,7 +5,9 @@ extension OpenSubsonicClient {
     /// ICMP echo. The result therefore includes DNS/connection reuse, TLS,
     /// HTTP/3 or fallback transport, and the server's `ping.view` handling.
     func measuredServerLatency(sampleCount: Int = 3) async throws -> Double {
-        let count = min(max(sampleCount, 1), 5)
+        let targetCount = min(max(sampleCount, 1), 5)
+        let minimumSuccessfulSamples = min(targetCount, 2)
+        let maximumAttempts = targetCount + 2
         let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
             requestTimeout: 8,
             resourceTimeout: 12,
@@ -21,85 +23,150 @@ extension OpenSubsonicClient {
         defer { session.invalidateAndCancel() }
 
         var samples: [Double] = []
-        samples.reserveCapacity(count)
+        samples.reserveCapacity(targetCount)
+        var lastError: Error?
+        var attempts = 0
 
-        for index in 0..<count {
-            samples.append(
-                try await measuredServerLatencySample(
-                    session: session,
-                    acceptsZstandard: true
+        while samples.count < targetCount, attempts < maximumAttempts {
+            try Task.checkCancellation()
+            do {
+                samples.append(
+                    try await measuredServerLatencySample(
+                        session: session,
+                        acceptsZstandard: true,
+                        transientRetriesRemaining: 1
+                    )
                 )
-            )
-            if index + 1 < count {
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard Self.isRetryableDiagnosticFailure(error) else {
+                    throw error
+                }
+                lastError = error
+            }
+            attempts += 1
+            if samples.count < targetCount, attempts < maximumAttempts {
                 try await Task.sleep(for: .milliseconds(80))
             }
         }
 
-        // Median suppresses a one-off DNS/radio scheduling spike while still
-        // reflecting the path the app actually uses.
+        guard samples.count >= minimumSuccessfulSamples else {
+            throw lastError ?? URLError(.cannotConnectToHost)
+        }
+
+        // Median suppresses one-off DNS/radio scheduling spikes and also lets a
+        // single transient request failure avoid turning the Settings badge red.
         let ordered = samples.sorted()
-        return ordered[ordered.count / 2]
+        let middle = ordered.count / 2
+        if ordered.count.isMultiple(of: 2) {
+            return (ordered[middle - 1] + ordered[middle]) / 2
+        }
+        return ordered[middle]
+    }
+
+    private static func isRetryableDiagnosticFailure(_ error: Error) -> Bool {
+        if NetworkResiliencePolicy.shouldRetry(error) { return true }
+        guard let subsonicError = error as? OpenSubsonicError else { return false }
+        if case .http(let statusCode) = subsonicError {
+            return NetworkResiliencePolicy.shouldRetryHTTPStatus(statusCode)
+        }
+        return false
     }
 
     private func measuredServerLatencySample(
         session: URLSession,
-        acceptsZstandard: Bool
+        acceptsZstandard: Bool,
+        transientRetriesRemaining: Int
     ) async throws -> Double {
-        try Task.checkCancellation()
-        // Generate fresh OpenSubsonic authentication material for every
-        // attempt, matching normal API request behavior rather than reusing
-        // the same salt/token across diagnostics or a compatibility retry.
-        let url = try endpointURL("ping")
-        var request = URLRequest(url: url)
-        ModernNetworkPolicy.prepareHealthCheckRequest(
-            &request,
-            acceptsZstandard: acceptsZstandard
-        )
-
-        let startedAt = Date()
-        let (encodedData, response) = try await session.data(for: request)
-        let elapsed = Date().timeIntervalSince(startedAt) * 1_000
-        try Task.checkCancellation()
-
-        guard encodedData.count <= 2 * 1_024 * 1_024 else {
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw OpenSubsonicError.invalidResponse
-        }
-        guard http.url?.scheme?.lowercased() == "https" else {
-            throw OpenSubsonicError.insecureServerURL
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw OpenSubsonicError.http(http.statusCode)
-        }
-
         do {
-            let data = try HTTPContentDecoder.decode(
-                encodedData,
-                contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+            try Task.checkCancellation()
+            // Generate fresh OpenSubsonic authentication material for every
+            // attempt, matching normal API request behavior rather than reusing
+            // the same salt/token across diagnostics or a compatibility retry.
+            let url = try endpointURL("ping")
+            var request = URLRequest(url: url)
+            ModernNetworkPolicy.prepareHealthCheckRequest(
+                &request,
+                acceptsZstandard: acceptsZstandard
             )
-            guard data.count <= 2 * 1_024 * 1_024 else {
+
+            let startedAt = Date()
+            let (encodedData, response) = try await session.data(for: request)
+            let elapsed = Date().timeIntervalSince(startedAt) * 1_000
+            try Task.checkCancellation()
+
+            guard encodedData.count <= 2 * 1_024 * 1_024 else {
                 throw URLError(.dataLengthExceedsMaximum)
             }
-            let envelope = try JSONDecoder().decode(
-                DiagnosticPingEnvelope.self,
-                from: data
-            )
-            guard envelope.response.status == "ok" else {
-                throw OpenSubsonicError.server(
-                    code: envelope.response.error?.code,
-                    message: envelope.response.error?.message
-                        ?? String(localized: "서버 연결에 실패했습니다.")
+            guard let http = response as? HTTPURLResponse else {
+                throw OpenSubsonicError.invalidResponse
+            }
+            guard http.url?.scheme?.lowercased() == "https" else {
+                throw OpenSubsonicError.insecureServerURL
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                if transientRetriesRemaining > 0,
+                   NetworkResiliencePolicy.shouldRetryHTTPStatus(http.statusCode) {
+                    try await Task.sleep(
+                        for: NetworkResiliencePolicy.retryDelay(
+                            afterAttempt: 1 - transientRetriesRemaining
+                        )
+                    )
+                    return try await measuredServerLatencySample(
+                        session: session,
+                        acceptsZstandard: acceptsZstandard,
+                        transientRetriesRemaining: transientRetriesRemaining - 1
+                    )
+                }
+                throw OpenSubsonicError.http(http.statusCode)
+            }
+
+            do {
+                let data = try HTTPContentDecoder.decode(
+                    encodedData,
+                    contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+                )
+                guard data.count <= 2 * 1_024 * 1_024 else {
+                    throw URLError(.dataLengthExceedsMaximum)
+                }
+                let envelope = try JSONDecoder().decode(
+                    DiagnosticPingEnvelope.self,
+                    from: data
+                )
+                guard envelope.response.status == "ok" else {
+                    throw OpenSubsonicError.server(
+                        code: envelope.response.error?.code,
+                        message: envelope.response.error?.message
+                            ?? String(localized: "서버 연결에 실패했습니다.")
+                    )
+                }
+                return elapsed
+            } catch let error as URLError
+                where acceptsZstandard && error.code == .cannotDecodeContentData {
+                try Task.checkCancellation()
+                return try await measuredServerLatencySample(
+                    session: session,
+                    acceptsZstandard: false,
+                    transientRetriesRemaining: transientRetriesRemaining
                 )
             }
-            return elapsed
-        } catch let error as URLError
-            where acceptsZstandard && error.code == .cannotDecodeContentData {
-            try Task.checkCancellation()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard transientRetriesRemaining > 0,
+                  NetworkResiliencePolicy.shouldRetry(error) else {
+                throw error
+            }
+            try await Task.sleep(
+                for: NetworkResiliencePolicy.retryDelay(
+                    afterAttempt: 1 - transientRetriesRemaining
+                )
+            )
             return try await measuredServerLatencySample(
                 session: session,
-                acceptsZstandard: false
+                acceptsZstandard: acceptsZstandard,
+                transientRetriesRemaining: transientRetriesRemaining - 1
             )
         }
     }

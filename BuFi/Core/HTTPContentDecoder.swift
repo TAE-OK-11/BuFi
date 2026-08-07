@@ -6,16 +6,38 @@ enum HTTPContentDecoder {
     private static let maximumDecodedBytes = 64 * 1_024 * 1_024
 
     static func decode(_ data: Data, contentEncoding: String?) throws -> Data {
-        guard data.count >= zstandardMagic.count,
-              data.starts(with: zstandardMagic) else {
+        guard isZstandardFrame(data) else {
             // URLSession expands gzip and Brotli, and newer CFNetwork versions
             // may also expand zstd before returning the body.
             return data
         }
-        guard contentEncoding?.localizedCaseInsensitiveContains("zstd") != false else {
+        guard declaresZstandard(contentEncoding) != false else {
             return data
         }
         return try decompressZstandard(data)
+    }
+
+    private static func declaresZstandard(_ value: String?) -> Bool? {
+        guard let value else { return nil }
+        return value
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+            .contains("zstd")
+    }
+
+    private static func isZstandardFrame(_ data: Data) -> Bool {
+        guard data.count >= 4 else { return false }
+        if data.starts(with: zstandardMagic) { return true }
+
+        // RFC 8878 permits skippable frames before a normal Zstandard frame.
+        // Their little-endian magic range is 0x184D2A50...0x184D2A5F.
+        let prefix = Array(data.prefix(4))
+        return (0x50...0x5F).contains(prefix[0])
+            && prefix[1] == 0x2A
+            && prefix[2] == 0x4D
+            && prefix[3] == 0x18
     }
 
     private static func decompressZstandard(_ data: Data) throws -> Data {
