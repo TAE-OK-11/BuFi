@@ -9,12 +9,7 @@ enum NetworkResiliencePolicy {
         .cannotFindHost,
         .cannotConnectToHost,
         .dnsLookupFailed,
-        .networkConnectionLost,
-        .notConnectedToInternet,
-        .internationalRoamingOff,
-        .callIsActive,
-        .dataNotAllowed,
-        .secureConnectionFailed
+        .networkConnectionLost
     ]
 
     static func shouldRetry(_ error: Error) -> Bool {
