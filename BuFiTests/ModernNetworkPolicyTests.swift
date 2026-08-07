@@ -130,11 +130,14 @@ final class ModernNetworkPolicyTests: XCTestCase {
         )
         ModernNetworkPolicy.prepareMediaRequest(&original)
         original.timeoutInterval = 37
+        original.setValue(
+            "Bearer source-secret",
+            forHTTPHeaderField: "Authorization"
+        )
 
         var redirected = URLRequest(
             url: try XCTUnwrap(URL(string: "https://cdn.example.net/object/audio"))
         )
-        redirected.setValue("Bearer must-not-survive", forHTTPHeaderField: "Authorization")
         ModernNetworkPolicy.prepareRedirect(
             &redirected,
             inheriting: original
@@ -152,11 +155,7 @@ final class ModernNetworkPolicyTests: XCTestCase {
             redirected.value(forHTTPHeaderField: "Accept"),
             "audio/*, application/octet-stream;q=0.9, */*;q=0.1"
         )
-        // The policy never copies sensitive headers from the original request.
-        XCTAssertEqual(
-            redirected.value(forHTTPHeaderField: "Authorization"),
-            "Bearer must-not-survive"
-        )
+        XCTAssertNil(redirected.value(forHTTPHeaderField: "Authorization"))
     }
 
     func testAPIRedirectRetainsCompressionFallbackChoice() throws {
