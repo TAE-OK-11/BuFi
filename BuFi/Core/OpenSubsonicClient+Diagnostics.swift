@@ -75,9 +75,9 @@ extension OpenSubsonicClient {
                 acceptsZstandard: acceptsZstandard
             )
 
-            let startedAt = ContinuousClock.now
+            let startedAt = Date()
             let (encodedData, response) = try await session.data(for: request)
-            let elapsed = startedAt.duration(to: .now)
+            let elapsed = Date().timeIntervalSince(startedAt) * 1_000
             try Task.checkCancellation()
 
             guard encodedData.count <= 2 * 1_024 * 1_024 else {
@@ -125,7 +125,7 @@ extension OpenSubsonicClient {
                             ?? String(localized: "서버 연결에 실패했습니다.")
                     )
                 }
-                return elapsed.timeInterval * 1_000
+                return elapsed
             } catch let error as URLError
                 where acceptsZstandard && error.code == .cannotDecodeContentData {
                 try Task.checkCancellation()
@@ -153,14 +153,6 @@ extension OpenSubsonicClient {
                 transientRetriesRemaining: transientRetriesRemaining - 1
             )
         }
-    }
-}
-
-private extension Duration {
-    var timeInterval: TimeInterval {
-        let components = components
-        return TimeInterval(components.seconds)
-            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
     }
 }
 
