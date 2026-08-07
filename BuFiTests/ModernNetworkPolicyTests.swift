@@ -61,6 +61,23 @@ final class ModernNetworkPolicyTests: XCTestCase {
         XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
         XCTAssertEqual(request.timeoutInterval, 8)
         XCTAssertEqual(request.networkServiceType, .responsiveData)
+        XCTAssertEqual(
+            request.value(forHTTPHeaderField: "Accept-Encoding"),
+            "zstd, br, gzip"
+        )
+
+        var compatibilityRequest = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://example.com/rest/ping.view"))
+        )
+        ModernNetworkPolicy.prepareHealthCheckRequest(
+            &compatibilityRequest,
+            acceptsZstandard: false
+        )
+        XCTAssertTrue(compatibilityRequest.assumesHTTP3Capable)
+        XCTAssertEqual(
+            compatibilityRequest.value(forHTTPHeaderField: "Accept-Encoding"),
+            "br, gzip"
+        )
     }
 
     func testSessionConfigurationReusesFallbackConnections() {
