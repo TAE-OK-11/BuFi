@@ -78,30 +78,14 @@ struct ServerLatencyBadge: View {
         measurementFailed = false
         defer { isMeasuring = false }
 
-        var samples: [Double] = []
-        samples.reserveCapacity(3)
-
-        for index in 0..<3 {
-            if Task.isCancelled { return }
-            let startedAt = Date()
-            do {
-                _ = try await client.ping()
-            } catch is CancellationError {
-                return
-            } catch {
-                latencyMilliseconds = nil
-                measurementFailed = true
-                return
-            }
-            samples.append(Date().timeIntervalSince(startedAt) * 1_000)
-            if index < 2 {
-                try? await Task.sleep(for: .milliseconds(80))
-            }
+        do {
+            latencyMilliseconds = try await client.measuredServerLatency()
+            measurementFailed = false
+        } catch is CancellationError {
+            return
+        } catch {
+            latencyMilliseconds = nil
+            measurementFailed = true
         }
-
-        guard !Task.isCancelled, !samples.isEmpty else { return }
-        let ordered = samples.sorted()
-        latencyMilliseconds = ordered[ordered.count / 2]
-        measurementFailed = false
     }
 }
