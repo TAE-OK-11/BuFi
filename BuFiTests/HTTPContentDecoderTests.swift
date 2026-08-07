@@ -36,10 +36,11 @@ final class HTTPContentDecoderTests: XCTestCase {
         }
     }
 
-    func testSkippableFrameIsRecognizedAsZstandard() {
+    func testEmptySkippableFrameIsDecodedAsZstandard() throws {
         let data = Data([0x50, 0x2A, 0x4D, 0x18, 0x00, 0x00, 0x00, 0x00])
-        XCTAssertThrowsError(
-            try HTTPContentDecoder.decode(data, contentEncoding: "zstd")
+        XCTAssertEqual(
+            try HTTPContentDecoder.decode(data, contentEncoding: "zstd"),
+            Data()
         )
     }
 }
