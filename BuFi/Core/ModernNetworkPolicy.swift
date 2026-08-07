@@ -35,22 +35,75 @@ enum ModernNetworkPolicy {
         return configuration
     }
 
+    /// Cached variant for public metadata services such as recommendation APIs.
+    /// It keeps the same connection, privacy, and fallback policy as BuFi's
+    /// authenticated traffic while allowing small JSON responses to be reused.
+    static func makeCachedConfiguration(
+        requestTimeout: TimeInterval,
+        resourceTimeout: TimeInterval,
+        maximumConnectionsPerHost: Int,
+        memoryCapacity: Int,
+        diskCapacity: Int,
+        allowsExpensiveNetworkAccess: Bool = true,
+        allowsConstrainedNetworkAccess: Bool = false
+    ) -> URLSessionConfiguration {
+        let configuration = makeEphemeralConfiguration(
+            requestTimeout: requestTimeout,
+            resourceTimeout: resourceTimeout,
+            maximumConnectionsPerHost: maximumConnectionsPerHost,
+            allowsExpensiveNetworkAccess: allowsExpensiveNetworkAccess,
+            allowsConstrainedNetworkAccess: allowsConstrainedNetworkAccess
+        )
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.urlCache = URLCache(
+            memoryCapacity: memoryCapacity,
+            diskCapacity: diskCapacity
+        )
+        return configuration
+    }
+
     static func prepareAPIRequest(
         _ request: inout URLRequest,
         acceptsZstandard: Bool
     ) {
-        prepareHTTP3Request(&request)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(
-            acceptsZstandard ? modernContentEncodings : compatibilityContentEncodings,
-            forHTTPHeaderField: "Accept-Encoding"
+        prepareJSONRequest(
+            &request,
+            acceptsZstandard: acceptsZstandard,
+            cachePolicy: .reloadIgnoringLocalCacheData
         )
+    }
+
+    /// Applies the same HTTP/3-first policy to public JSON services. Callers
+    /// that pass the response through `HTTPContentDecoder` can advertise zstd;
+    /// callers relying only on CFNetwork decoding can disable it and retain
+    /// Brotli/gzip compatibility.
+    static func prepareExternalAPIRequest(
+        _ request: inout URLRequest,
+        acceptsZstandard: Bool
+    ) {
+        prepareJSONRequest(
+            &request,
+            acceptsZstandard: acceptsZstandard,
+            cachePolicy: .returnCacheDataElseLoad
+        )
+    }
+
+    static func prepareHealthCheckRequest(
+        _ request: inout URLRequest,
+        acceptsZstandard: Bool = true
+    ) {
+        prepareJSONRequest(
+            &request,
+            acceptsZstandard: acceptsZstandard,
+            cachePolicy: .reloadIgnoringLocalCacheData
+        )
+        request.timeoutInterval = 8
     }
 
     static func prepareImageRequest(_ request: inout URLRequest) {
         prepareHTTP3Request(&request)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.networkServiceType = .responsiveData
         request.setValue("image/*, */*;q=0.8", forHTTPHeaderField: "Accept")
         // CFNetwork natively expands Brotli and gzip. zstd is intentionally not
         // advertised here because Nuke receives bytes outside BuFi's zstd decoder.
@@ -60,6 +113,7 @@ enum ModernNetworkPolicy {
     static func prepareMediaRequest(_ request: inout URLRequest) {
         prepareHTTP3Request(&request)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.networkServiceType = .avStreaming
         request.setValue(
             "audio/*, application/octet-stream;q=0.9, */*;q=0.1",
             forHTTPHeaderField: "Accept"
@@ -72,6 +126,21 @@ enum ModernNetworkPolicy {
 
     static func prepareRedirect(_ request: inout URLRequest) {
         prepareHTTP3Request(&request)
+    }
+
+    private static func prepareJSONRequest(
+        _ request: inout URLRequest,
+        acceptsZstandard: Bool,
+        cachePolicy: URLRequest.CachePolicy
+    ) {
+        prepareHTTP3Request(&request)
+        request.cachePolicy = cachePolicy
+        request.networkServiceType = .responsiveData
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            acceptsZstandard ? modernContentEncodings : compatibilityContentEncodings,
+            forHTTPHeaderField: "Accept-Encoding"
+        )
     }
 
     private static func prepareHTTP3Request(_ request: inout URLRequest) {
