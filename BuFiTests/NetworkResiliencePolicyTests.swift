@@ -16,6 +16,11 @@ final class NetworkResiliencePolicyTests: XCTestCase {
         )
         XCTAssertFalse(
             NetworkResiliencePolicy.shouldRetry(
+                URLError(.notConnectedToInternet)
+            )
+        )
+        XCTAssertFalse(
+            NetworkResiliencePolicy.shouldRetry(
                 URLError(.badURL)
             )
         )
