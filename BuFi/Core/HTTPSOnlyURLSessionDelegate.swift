@@ -16,7 +16,10 @@ final class HTTPSOnlyURLSessionDelegate: NSObject, URLSessionTaskDelegate, @unch
             return
         }
         var redirectedRequest = request
-        ModernNetworkPolicy.prepareRedirect(&redirectedRequest)
+        ModernNetworkPolicy.prepareRedirect(
+            &redirectedRequest,
+            inheriting: task.currentRequest ?? task.originalRequest
+        )
         completionHandler(redirectedRequest)
     }
 }
