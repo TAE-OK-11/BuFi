@@ -135,9 +135,7 @@ struct RootView: View {
         ) {
             NavigationStack {
                 PlayerView(
-                    initialArtworkPage: playbackQueue.songs.indices.contains(playbackQueue.index)
-                        ? playbackQueue.index
-                        : 0
+                    initialArtworkPage: currentArtworkPageID
                 )
                     .navigationDestination(for: MusicRoute.self) { route in
                         MusicDetailView(route: route)
@@ -146,7 +144,25 @@ struct RootView: View {
             .environmentObject(model)
             .environmentObject(audio)
             .environment(\.buFiMotionEnabled, effectiveMotion)
+            .id(playerPresentation.presentationID)
         }
+    }
+
+    private var currentArtworkPageID: PlayerArtworkPageID? {
+        if playbackQueue.songs.indices.contains(playbackQueue.index) {
+            let song = playbackQueue.songs[playbackQueue.index]
+            return PlayerArtworkPageID(
+                queueIndex: playbackQueue.index,
+                songID: song.id,
+                coverArtID: song.coverArt
+            )
+        }
+        guard let song = playbackItem.currentSong else { return nil }
+        return PlayerArtworkPageID(
+            queueIndex: 0,
+            songID: song.id,
+            coverArtID: song.coverArt
+        )
     }
 
     private var isThermallyConstrained: Bool {

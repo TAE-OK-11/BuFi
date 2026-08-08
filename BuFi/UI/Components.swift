@@ -6,8 +6,14 @@ enum BuFiTheme {
     static let accent = Color(red: 0.98, green: 0.20, blue: 0.34)
     static let accentSoft = Color(red: 1.00, green: 0.38, blue: 0.46)
     static let deezerGlow = Color(red: 0.56, green: 0.26, blue: 0.98)
-    static let background = Color(uiColor: .systemBackground)
-    static let elevated = Color(uiColor: .secondarySystemBackground)
+    static let background = Color(uiColor: UIColor { traits in
+        if traits.userInterfaceStyle == .dark { return .systemBackground }
+        return UIColor(red: 0.969, green: 0.969, blue: 0.980, alpha: 1)
+    })
+    static let elevated = Color(uiColor: UIColor { traits in
+        if traits.userInterfaceStyle == .dark { return .secondarySystemBackground }
+        return UIColor(red: 0.997, green: 0.997, blue: 1.000, alpha: 1)
+    })
     static let separator = Color(uiColor: .separator)
 }
 

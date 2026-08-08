@@ -4,7 +4,7 @@ struct MiniPlayerView: View {
     @EnvironmentObject private var playbackItem: PlaybackItemState
     @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
-    @State private var palette = ArtworkPalette.fallback
+    @Environment(\.colorScheme) private var colorScheme
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
@@ -32,8 +32,7 @@ struct MiniPlayerView: View {
                         ArtworkView(
                             coverArt: song.coverArt,
                             size: 50,
-                            cornerRadius: 5,
-                            onPalette: { palette = $0 }
+                            cornerRadius: 5
                         )
                         .frame(width: 50, height: 50)
 
@@ -45,7 +44,7 @@ struct MiniPlayerView: View {
                                     .minimumScaleFactor(0.82)
                                 Text(song.artist)
                                     .font(.system(size: 13))
-                                    .foregroundStyle(.white.opacity(0.78))
+                                    .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.76)
                             }
@@ -59,7 +58,7 @@ struct MiniPlayerView: View {
                             value: song.id
                         )
 
-                        AirPlayButton(lightContent: true)
+                        AirPlayButton(lightContent: colorScheme == .dark)
                             .frame(width: 36, height: 36)
 
                         Button {
@@ -86,34 +85,21 @@ struct MiniPlayerView: View {
             .frame(height: playerHeight)
             .fixedSize(horizontal: false, vertical: true)
             .clipped()
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .background {
-                ZStack {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(palette.top).opacity(0.78),
-                                    Color(palette.bottom).opacity(0.82)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                }
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(BuFiTheme.elevated)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(.white.opacity(0.14), lineWidth: 0.6)
+                    .stroke(BuFiTheme.separator.opacity(0.32), lineWidth: 0.7)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .shadow(color: .black.opacity(0.20), radius: 12, y: 6)
-            .animation(motionEnabled ? BuFiMotion.color : .none, value: palette)
-            .onChange(of: song.id) { _, _ in
-                palette = .fallback
-            }
+            .shadow(
+                color: .black.opacity(colorScheme == .dark ? 0.20 : 0.09),
+                radius: colorScheme == .dark ? 12 : 9,
+                y: colorScheme == .dark ? 6 : 4
+            )
         }
     }
 
@@ -132,8 +118,8 @@ private struct MiniPlayerProgressView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Color.white.opacity(0.18)
-                Color.white
+                Color.secondary.opacity(0.18)
+                BuFiTheme.accent
                     .frame(width: proxy.size.width * progress)
             }
         }

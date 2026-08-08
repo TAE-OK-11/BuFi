@@ -478,7 +478,7 @@ struct MusicDetailView: View {
         ZStack {
             LinearGradient(
                 colors: [
-                    Color(palette.top).opacity(colorScheme == .dark ? 0.92 : 0.34),
+                    Color(palette.top).opacity(colorScheme == .dark ? 0.92 : 0.18),
                     BuFiTheme.background
                 ],
                 startPoint: .top,
@@ -487,8 +487,8 @@ struct MusicDetailView: View {
             if colorScheme == .light {
                 LinearGradient(
                     colors: [
-                        Color.white.opacity(0.16),
-                        Color.white.opacity(0.70),
+                        Color.white.opacity(0.10),
+                        Color.white.opacity(0.50),
                         BuFiTheme.background
                     ],
                     startPoint: .top,
