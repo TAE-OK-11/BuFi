@@ -9,7 +9,6 @@ enum MusicRoute: Hashable {
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var library: HomeLibraryState
-    @EnvironmentObject private var playbackItem: PlaybackItemState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
@@ -24,7 +23,7 @@ struct HomeView: View {
                     filteredContent
                 }
                 .padding(.top, 18)
-                .padding(.bottom, playbackItem.currentSong == nil ? 34 : 110)
+                .buFiMiniPlayerContentClearance()
             }
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }

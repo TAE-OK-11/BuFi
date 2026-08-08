@@ -1810,7 +1810,7 @@ actor ExternalRecommendationClient {
             &request,
             acceptsZstandard: false
         )
-        request.setValue("BuFi/1.4.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("BuFi/1.0.0", forHTTPHeaderField: "User-Agent")
         if let token, !token.isEmpty {
             request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         }

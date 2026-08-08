@@ -36,7 +36,6 @@ settings:
       SWIFT_COMPILATION_MODE: wholemodule
       SWIFT_SERIALIZE_DEBUGGING_OPTIONS: NO
       LLVM_LTO: YES
-      GCC_OPTIMIZATION_LEVEL: "3"
       DEAD_CODE_STRIPPING: YES
       DEPLOYMENT_POSTPROCESSING: YES
       ENABLE_NS_ASSERTIONS: NO
@@ -75,7 +74,10 @@ targets:
       - path: BuFi
         excludes:
           - Resources/Info.plist
+          - Resources/PrivacyInfo.xcprivacy
           - Resources/ThirdPartyLicenses.txt
+      - path: BuFi/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
       - path: BuFi/Resources/ThirdPartyLicenses.txt
         buildPhase: resources
     dependencies:
@@ -91,8 +93,8 @@ targets:
       path: BuFi/Resources/Info.plist
       properties:
         CFBundleDisplayName: BuFi
-        CFBundleShortVersionString: "1.4.0"
-        CFBundleVersion: "19"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
         CFBundleLocalizations:
           - ko
           - en
@@ -113,8 +115,8 @@ targets:
         PRODUCT_NAME: BuFi
         GENERATE_INFOPLIST_FILE: false
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        MARKETING_VERSION: "1.4.0"
-        CURRENT_PROJECT_VERSION: "19"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_ASSET_PATHS: ""
     scheme:

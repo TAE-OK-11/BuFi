@@ -11,8 +11,10 @@ actor AppDatabase {
     static let shared = AppDatabase()
 
     private let pool: DatabasePool?
+    private let currentDate: @Sendable () -> Date
 
     private init() {
+        currentDate = { Date() }
         do {
             let support = FileManager.default.urls(
                 for: .applicationSupportDirectory,
@@ -40,7 +42,11 @@ actor AppDatabase {
         }
     }
 
-    init(databaseURL: URL) throws {
+    init(
+        databaseURL: URL,
+        currentDate: @escaping @Sendable () -> Date = { Date() }
+    ) throws {
+        self.currentDate = currentDate
         pool = try Self.makePool(path: databaseURL.path)
     }
 
@@ -345,6 +351,156 @@ actor AppDatabase {
         }
     }
 
+    func loadArtworkPalette(
+        scope: String,
+        artworkKey: String,
+        engineVersion: Int
+    ) async -> ArtworkPalette? {
+        guard let pool,
+              !scope.isEmpty,
+              scope.utf8.count <= 512,
+              !artworkKey.isEmpty,
+              artworkKey.utf8.count <= 4_096,
+              engineVersion > 0 else { return nil }
+        let wallClock = currentDate().timeIntervalSince1970
+        do {
+            return try await pool.write { db in
+                guard let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT palette_data FROM artwork_palette_cache
+                    WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
+                    """,
+                    arguments: [scope, artworkKey, engineVersion]
+                ) else {
+                    return nil
+                }
+
+                let data: Data = row["palette_data"]
+                guard let palette = try? Self.decode(ArtworkPalette.self, from: data) else {
+                    try db.execute(
+                        sql: """
+                        DELETE FROM artwork_palette_cache
+                        WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
+                        """,
+                        arguments: [scope, artworkKey, engineVersion]
+                    )
+                    return nil
+                }
+                let accessedAt = try Self.nextPaletteAccessTimestamp(
+                    in: db,
+                    wallClock: wallClock
+                )
+                try db.execute(
+                    sql: """
+                    UPDATE artwork_palette_cache SET last_accessed_at = ?
+                    WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
+                    """,
+                    arguments: [
+                        accessedAt,
+                        scope,
+                        artworkKey,
+                        engineVersion
+                    ]
+                )
+                return palette
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    @discardableResult
+    func saveArtworkPalette(
+        _ palette: ArtworkPalette,
+        scope: String,
+        artworkKey: String,
+        engineVersion: Int,
+        maximumEntriesPerScope: Int = 384,
+        maximumTotalEntries: Int = 1_024
+    ) async -> Bool {
+        guard let pool,
+              !scope.isEmpty,
+              scope.utf8.count <= 512,
+              !artworkKey.isEmpty,
+              artworkKey.utf8.count <= 4_096,
+              engineVersion > 0,
+              let data = try? Self.encode(palette),
+              data.count <= 32_768 else { return false }
+
+        let totalLimit = min(max(maximumTotalEntries, 1), 4_096)
+        let scopedLimit = min(
+            min(max(maximumEntriesPerScope, 1), 2_048),
+            totalLimit
+        )
+        let wallClock = currentDate().timeIntervalSince1970
+        do {
+            try await pool.write { db in
+                let accessedAt = try Self.nextPaletteAccessTimestamp(
+                    in: db,
+                    wallClock: wallClock
+                )
+                // A palette is meaningful only to the engine version that produced it.
+                // Removing older representations of the same artwork prevents stale
+                // versions from consuming the bounded cache indefinitely.
+                try db.execute(
+                    sql: """
+                    DELETE FROM artwork_palette_cache
+                    WHERE account_scope = ? AND artwork_key = ? AND engine_version <> ?
+                    """,
+                    arguments: [scope, artworkKey, engineVersion]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO artwork_palette_cache (
+                        account_scope, artwork_key, engine_version,
+                        palette_data, byte_count, last_accessed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_scope, artwork_key, engine_version) DO UPDATE SET
+                        palette_data = excluded.palette_data,
+                        byte_count = excluded.byte_count,
+                        last_accessed_at = excluded.last_accessed_at
+                    """,
+                    arguments: [
+                        scope,
+                        artworkKey,
+                        engineVersion,
+                        data,
+                        data.count,
+                        accessedAt
+                    ]
+                )
+                try Self.pruneArtworkPalettes(
+                    in: db,
+                    scope: scope,
+                    maximumEntries: scopedLimit
+                )
+                try Self.pruneArtworkPalettes(
+                    in: db,
+                    maximumEntries: totalLimit
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func clearArtworkPalettes(scope: String) async {
+        try? await pool?.write { db in
+            try db.execute(
+                sql: "DELETE FROM artwork_palette_cache WHERE account_scope = ?",
+                arguments: [scope]
+            )
+        }
+    }
+
+    func clearAllArtworkPalettes() async {
+        try? await pool?.write { db in
+            try db.execute(sql: "DELETE FROM artwork_palette_cache")
+        }
+    }
+
     func loadQueue() async -> QueueSnapshot? {
         guard let pool else { return nil }
         do {
@@ -425,6 +581,21 @@ actor AppDatabase {
         Date(timeIntervalSince1970: timestamp)
     }
 
+    private static func nextPaletteAccessTimestamp(
+        in db: Database,
+        wallClock: Double
+    ) throws -> Double {
+        let persisted: Double? = try Double.fetchOne(
+            db,
+            sql: """
+            SELECT last_accessed_at FROM artwork_palette_cache
+            ORDER BY last_accessed_at DESC LIMIT 1
+            """
+        )
+        guard let persisted, persisted.isFinite else { return wallClock }
+        return max(wallClock, persisted.nextUp)
+    }
+
     private static func encode<Value: Encodable>(_ value: Value) throws -> Data {
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
@@ -436,6 +607,63 @@ actor AppDatabase {
         from data: Data
     ) throws -> Value {
         try PropertyListDecoder().decode(type, from: data)
+    }
+
+    private static func pruneArtworkPalettes(
+        in db: Database,
+        scope: String,
+        maximumEntries: Int
+    ) throws {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT artwork_key, engine_version FROM artwork_palette_cache
+            WHERE account_scope = ?
+            ORDER BY last_accessed_at DESC, artwork_key ASC, engine_version DESC
+            LIMIT -1 OFFSET ?
+            """,
+            arguments: [scope, maximumEntries]
+        )
+        for row in rows {
+            let artworkKey: String = row["artwork_key"]
+            let engineVersion: Int = row["engine_version"]
+            try db.execute(
+                sql: """
+                DELETE FROM artwork_palette_cache
+                WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
+                """,
+                arguments: [scope, artworkKey, engineVersion]
+            )
+        }
+    }
+
+    private static func pruneArtworkPalettes(
+        in db: Database,
+        maximumEntries: Int
+    ) throws {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT account_scope, artwork_key, engine_version
+            FROM artwork_palette_cache
+            ORDER BY last_accessed_at DESC, account_scope ASC,
+                     artwork_key ASC, engine_version DESC
+            LIMIT -1 OFFSET ?
+            """,
+            arguments: [maximumEntries]
+        )
+        for row in rows {
+            let scope: String = row["account_scope"]
+            let artworkKey: String = row["artwork_key"]
+            let engineVersion: Int = row["engine_version"]
+            try db.execute(
+                sql: """
+                DELETE FROM artwork_palette_cache
+                WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
+                """,
+                arguments: [scope, artworkKey, engineVersion]
+            )
+        }
     }
 
     private static func makePool(path: String) throws -> DatabasePool {
@@ -553,6 +781,25 @@ actor AppDatabase {
                     position INTEGER PRIMARY KEY,
                     song_data BLOB NOT NULL
                 );
+                """)
+        }
+        migrator.registerMigration("create-artwork-palette-cache-v3") { db in
+            try db.execute(sql: """
+                CREATE TABLE artwork_palette_cache (
+                    account_scope TEXT NOT NULL,
+                    artwork_key TEXT NOT NULL,
+                    engine_version INTEGER NOT NULL CHECK(engine_version > 0),
+                    palette_data BLOB NOT NULL,
+                    byte_count INTEGER NOT NULL CHECK(byte_count > 0 AND byte_count <= 32768),
+                    last_accessed_at DOUBLE NOT NULL,
+                    PRIMARY KEY (account_scope, artwork_key, engine_version)
+                ) WITHOUT ROWID;
+                CREATE INDEX artwork_palette_cache_scope_lru
+                    ON artwork_palette_cache(
+                        account_scope, last_accessed_at DESC, artwork_key
+                    );
+                CREATE INDEX artwork_palette_cache_global_lru
+                    ON artwork_palette_cache(last_accessed_at DESC);
                 """)
         }
         return migrator

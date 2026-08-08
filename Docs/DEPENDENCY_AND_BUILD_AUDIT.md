@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-07-28
+Audit date: 2026-08-01
 
 ## Decisions
 
@@ -12,6 +12,7 @@ Audit date: 2026-07-28
 | [Zstandard 1.5.7](https://github.com/facebook/zstd/releases/tag/v1.5.7) | BSD 3-Clause | Keep and pin. It provides the `libzstd` SwiftPM product used by BuFi's bounded HTTP content decoder. |
 | [Amperfy](https://github.com/BLeeEZ/amperfy) | GPLv3 | Continue using selected compatibility and audio-session patterns with attribution. Do not add the complete app as a package. |
 | [Cassette](https://github.com/CassetteLab/cassette) | MPL-2.0 for current source | Continue as an architectural reference only. It is an application, not a reusable package required by BuFi. |
+| [TIDAL iOS SDK](https://github.com/tidal-music/tidal-sdk-ios) | Apache-2.0 | Architecture reference only at revision `41aed3a`. Adopt bounded task scheduling, keyed in-flight request coalescing, jittered retry, and observer ownership patterns without linking or copying the SDK. |
 
 The linked packages fit BuFi's iOS 17 floor: SwiftSonic supports iOS 16, GRDB
 supports iOS 13, Nuke 13 supports iOS 15, and zstd's manifest supports iOS 9.
@@ -34,7 +35,7 @@ source change. Updates should be deliberate and validated by both CI jobs.
 
 `BuFi/Resources/ThirdPartyLicenses.txt` bundles the verbatim license files from
 the pinned SwiftSonic 0.9.0, GRDB.swift 7.11.1, Nuke 13.0.6, and Zstandard
-1.5.7 tags. The
+1.5.7 tags, plus the SIL Open Font License for the bundled Unbounded font. The
 open-source settings screen opens this resource inside the app, satisfying the
 linked packages' requirement to reproduce their copyright, permission,
 condition, and disclaimer text with a binary distribution.
@@ -57,8 +58,8 @@ a build-time project generator.
   build this format without a source migration.
 - The BuFi app and test targets use `SWIFT_VERSION = 5.0`. Swift 6 build 18
   passed Xcode 26.6 and Xcode 27 compilation but still terminated at launch on
-  an iOS 27 beta device, while Swift 5 build 17 launched successfully. Build 19
-  therefore restores the proven Swift 5 language mode until the device-only
+  an iOS 27 beta device, while the equivalent Swift 5 build launched successfully.
+  Release 1.0.0 therefore uses the proven Swift 5 language mode until the device-only
   incompatibility can be isolated with an actionable crash report.
 - `SWIFT_STRICT_CONCURRENCY = complete` remains enabled so potential data races
   continue to be diagnosed without making Swift 6 language mode a deployment
@@ -99,11 +100,24 @@ Swift 6 in
   remains a clean Release build.
 - Pull requests run only the verification workflow; the artifact workflow runs
   after changes reach `main`, avoiding duplicate builds.
+- The required Xcode 26.6 job runs the unit-test bundle on an available iPhone
+  simulator and then keeps the installed app alive for a launch smoke interval.
+  This specifically catches the launch-time regressions that a compile-only job
+  cannot detect. Physical iOS 17 and iOS 27 beta devices remain release gates.
 
 Runner availability and installed toolchains are verified against GitHub's
 [macOS 26 image manifest](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md),
 [Xcode 27 image manifest](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-Readme.md),
 and [Xcode 27 public preview announcement](https://github.com/actions/runner-images/issues/14404).
+
+## Privacy manifest
+
+`BuFi/Resources/PrivacyInfo.xcprivacy` declares that BuFi does not track users
+and contains no tracking-domain list. It reports the app's use of its own
+`UserDefaults` container with Apple's `CA92.1` approved reason. Credentials
+remain in Keychain and no analytics or advertising SDK is present. Any future
+required-reason API or data collection must update this manifest and the App
+Store privacy answers in the same release.
 
 ## Energy note
 

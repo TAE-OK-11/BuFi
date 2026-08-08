@@ -3,7 +3,6 @@ import SwiftUI
 struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
-    @EnvironmentObject private var playbackItem: PlaybackItemState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
@@ -47,7 +46,7 @@ struct MusicDetailView: View {
                     if isArtist, !artistBiography.isEmpty { artistAbout }
                 }
             }
-            .padding(.bottom, playbackItem.currentSong == nil ? 56 : 148)
+            .buFiMiniPlayerContentClearance(idle: 56, playing: 148)
             .animation(allowsMotion ? BuFiMotion.fade : .none, value: isLoading)
         }
         .background(background)

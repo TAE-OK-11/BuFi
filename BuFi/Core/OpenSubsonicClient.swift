@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import OSLog
 import SwiftSonic
 
 enum OpenSubsonicError: LocalizedError, Equatable {
@@ -32,25 +33,52 @@ actor OpenSubsonicClient {
     static let apiVersion = "1.16.1"
     static let clientName = "BuFi"
     private static let maximumResponseBytes = 64 * 1_024 * 1_024
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "BuFi",
+        category: "OpenSubsonic"
+    )
 
     let credentials: ServerCredentials
     private let session: URLSession
     private let decoder: JSONDecoder
     private let swiftSonic: SwiftSonicClient
+    private let retryPolicy = ReadRequestRetryPolicy()
     private var supportedExtensions: Set<String>?
+    private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
 
-    private struct TransportResponse: Sendable {
+    private enum RequestSemantics {
+        case readOnly
+        case mutation
+    }
+
+    private struct ReadRequestKey: Hashable, Sendable {
+        let endpoint: String
+        let queryItems: [String]
+
+        init(endpoint: String, queryItems: [URLQueryItem]) {
+            self.endpoint = endpoint
+            self.queryItems = queryItems
+                .map { "\($0.name)=\($0.value ?? "")" }
+                .sorted()
+        }
+    }
+
+    private struct HTTPResponseData: @unchecked Sendable {
         let data: Data
+        let response: HTTPURLResponse
+    }
+
+    private struct ZstandardNegotiationError: Error, Sendable {}
+
+    private struct InFlightReadRequest {
+        let token: UUID
+        let task: Task<Void, Never>
+        var waiters: [UUID: CheckedContinuation<HTTPResponseData, Error>]
     }
 
     private struct CachedAPIResponse: Sendable {
         let data: Data
         let storedAt: Date
-    }
-
-    private struct InFlightAPIRequest {
-        let token: UUID
-        let task: Task<TransportResponse, Error>
     }
 
     private static let responseCacheLimit = 128
@@ -59,7 +87,6 @@ actor OpenSubsonicClient {
     private var responseCache: [String: CachedAPIResponse] = [:]
     private var responseCacheOrder: [String] = []
     private var responseCacheBytes = 0
-    private var inFlightResponses: [String: InFlightAPIRequest] = [:]
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -175,55 +202,95 @@ actor OpenSubsonicClient {
         return url
     }
 
-    func request<Payload: Decodable>(
+    private func readRequest<Payload: Decodable>(
         _ endpoint: String,
         parameters: [String: String] = [:]
     ) async throws -> Payload {
         let queryItems = parameters
             .sorted { $0.key < $1.key }
             .map { URLQueryItem(name: $0.key, value: $0.value) }
-        return try await request(endpoint, queryItems: queryItems)
+        return try await performRequest(
+            endpoint,
+            queryItems: queryItems,
+            semantics: .readOnly
+        )
     }
 
-    private func request<Payload: Decodable>(
+    private func mutationRequest<Payload: Decodable>(
+        _ endpoint: String,
+        parameters: [String: String]
+    ) async throws -> Payload {
+        try await performRequest(
+            endpoint,
+            queryItems: parameters
+                .sorted { $0.key < $1.key }
+                .map { URLQueryItem(name: $0.key, value: $0.value) },
+            semantics: .mutation
+        )
+    }
+
+    private func mutationRequest<Payload: Decodable>(
         _ endpoint: String,
         queryItems: [URLQueryItem]
+    ) async throws -> Payload {
+        try await performRequest(
+            endpoint,
+            queryItems: queryItems,
+            semantics: .mutation
+        )
+    }
+
+    private func performRequest<Payload: Decodable>(
+        _ endpoint: String,
+        queryItems: [URLQueryItem],
+        semantics: RequestSemantics
     ) async throws -> Payload {
         let url = try endpointURL(endpoint, queryItems: queryItems)
         let cacheKey = Self.responseCacheKey(
             endpoint: endpoint,
             queryItems: queryItems
         )
-        let ttl = Self.responseCacheLifetime(for: endpoint)
-
-        let data: Data
-        if ttl > 0, let cached = cachedResponse(for: cacheKey, lifetime: ttl) {
-            data = cached
-        } else {
-            data = try await responseData(from: url, cacheKey: cacheKey)
+        let cacheLifetime = Self.responseCacheLifetime(for: endpoint)
+        do {
+            let response: HTTPResponseData
+            switch semantics {
+            case .readOnly:
+                if cacheLifetime > 0,
+                   let cached = cachedResponse(
+                    for: cacheKey,
+                    lifetime: cacheLifetime
+                   ) {
+                    return try decodeResponseData(cached)
+                }
+                response = try await coalescedReadResponse(
+                    from: url,
+                    key: ReadRequestKey(
+                        endpoint: endpoint,
+                        queryItems: queryItems
+                    )
+                )
+            case .mutation:
+                response = try await responseData(
+                    from: url,
+                    allowsRetry: false
+                )
+            }
+            let payload: Payload = try decodeResponse(response)
+            switch semantics {
+            case .readOnly where cacheLifetime > 0:
+                // Store only a body that decoded into the endpoint's expected
+                // payload, never an HTTP or schema error response.
+                storeResponse(response.data, for: cacheKey)
+            case .mutation:
+                clearResponseCache()
+            default:
+                break
+            }
+            return payload
+        } catch {
+            logFailure(error, endpoint: endpoint)
+            throw error
         }
-
-        let capture = try decoder.decode(DecoderCapture.self, from: data)
-        let statusEnvelope = try StatusEnvelope(from: capture.decoder)
-        guard statusEnvelope.response.status == "ok" else {
-            throw OpenSubsonicError.server(
-                code: statusEnvelope.response.error?.code,
-                message: statusEnvelope.response.error?.message
-                    ?? String(localized: "서버 요청이 실패했습니다.")
-            )
-        }
-
-        let payload = try APIEnvelope<Payload>(from: capture.decoder).response
-        if ttl > 0 {
-            // Cache only responses that successfully decode into the expected
-            // endpoint payload, never malformed or schema-incompatible data.
-            storeResponse(data, for: cacheKey)
-        } else if endpoint != "ping" {
-            // A successful mutation can invalidate any cached library, queue,
-            // recommendation, or favorite response from the same account.
-            clearResponseCache()
-        }
-        return payload
     }
 
     private func bestEffortRequest<Payload: Decodable>(
@@ -231,7 +298,7 @@ actor OpenSubsonicClient {
         parameters: [String: String] = [:]
     ) async throws -> Payload? {
         do {
-            return try await request(endpoint, parameters: parameters)
+            return try await readRequest(endpoint, parameters: parameters)
         } catch {
             if Task.isCancelled { throw CancellationError() }
             return nil
@@ -245,61 +312,251 @@ actor OpenSubsonicClient {
         }
     }
 
-    func ping() async throws -> StatusBody {
-        let url = try endpointURL("ping")
-        let data = try await responseData(
-            from: url,
-            cacheKey: Self.responseCacheKey(endpoint: "ping", queryItems: [])
-        )
-        let envelope = try decoder.decode(StatusEnvelope.self, from: data)
-        guard envelope.response.status == "ok" else {
-            throw OpenSubsonicError.server(
-                code: envelope.response.error?.code,
-                message: envelope.response.error?.message
-                    ?? String(localized: "서버 연결에 실패했습니다.")
-            )
+    private func decodeResponse<Payload: Decodable>(
+        _ response: HTTPResponseData
+    ) throws -> Payload {
+        guard (200..<300).contains(response.response.statusCode) else {
+            throw OpenSubsonicError.http(response.response.statusCode)
         }
-        return envelope.response
+        return try decodeResponseData(response.data)
     }
 
-    private func responseData(from url: URL, cacheKey: String) async throws -> Data {
-        if let inFlight = inFlightResponses[cacheKey] {
-            let value = try await inFlight.task.value
-            try Task.checkCancellation()
-            return value.data
-        }
-
-        let session = self.session
-        let task = Task<TransportResponse, Error> {
-            try await Self.performRequest(
-                session: session,
-                url: url,
-                acceptsZstandard: true
+    private func decodeResponseData<Payload: Decodable>(
+        _ data: Data
+    ) throws -> Payload {
+        let capture = try decoder.decode(DecoderCapture.self, from: data)
+        let statusEnvelope = try StatusEnvelope(from: capture.decoder)
+        guard statusEnvelope.response.status == "ok" else {
+            throw OpenSubsonicError.server(
+                code: statusEnvelope.response.error?.code,
+                message: statusEnvelope.response.error?.message
+                    ?? String(localized: "서버 요청이 실패했습니다.")
             )
         }
-        let token = UUID()
-        inFlightResponses[cacheKey] = InFlightAPIRequest(token: token, task: task)
+        return try APIEnvelope<Payload>(from: capture.decoder).response
+    }
 
+    func ping() async throws -> StatusBody {
+        let endpoint = "ping"
+        let url = try endpointURL(endpoint)
         do {
-            let value = try await task.value
-            if inFlightResponses[cacheKey]?.token == token {
-                inFlightResponses[cacheKey] = nil
+            let response = try await coalescedReadResponse(
+                from: url,
+                key: ReadRequestKey(endpoint: endpoint, queryItems: [])
+            )
+            guard (200..<300).contains(response.response.statusCode) else {
+                throw OpenSubsonicError.http(response.response.statusCode)
             }
-            try Task.checkCancellation()
-            return value.data
+            let envelope = try decoder.decode(
+                StatusEnvelope.self,
+                from: response.data
+            )
+            guard envelope.response.status == "ok" else {
+                throw OpenSubsonicError.server(
+                    code: envelope.response.error?.code,
+                    message: envelope.response.error?.message
+                        ?? String(localized: "서버 연결에 실패했습니다.")
+                )
+            }
+            return envelope.response
         } catch {
-            if inFlightResponses[cacheKey]?.token == token {
-                inFlightResponses[cacheKey] = nil
-            }
+            logFailure(error, endpoint: endpoint)
             throw error
         }
     }
 
-    private static func performRequest(
-        session: URLSession,
-        url: URL,
+    private func coalescedReadResponse(
+        from url: URL,
+        key: ReadRequestKey
+    ) async throws -> HTTPResponseData {
+        try Task.checkCancellation()
+        let waiter = UUID()
+        let response = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                registerReadWaiter(
+                    continuation,
+                    key: key,
+                    waiter: waiter,
+                    url: url
+                )
+            }
+        } onCancel: {
+            Task {
+                await self.cancelReadWaiter(key: key, waiter: waiter)
+            }
+        }
+        try Task.checkCancellation()
+        return response
+    }
+
+    private func registerReadWaiter(
+        _ continuation: CheckedContinuation<HTTPResponseData, Error>,
+        key: ReadRequestKey,
+        waiter: UUID,
+        url: URL
+    ) {
+        guard !Task.isCancelled else {
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        if var existing = inFlightReadRequests[key] {
+            existing.waiters[waiter] = continuation
+            inFlightReadRequests[key] = existing
+            return
+        }
+
+        let token = UUID()
+        let task = Task { [self] in
+            do {
+                let response = try await responseData(
+                    from: url,
+                    allowsRetry: true
+                )
+                finishReadRequest(
+                    key: key,
+                    token: token,
+                    result: .success(response)
+                )
+            } catch {
+                finishReadRequest(
+                    key: key,
+                    token: token,
+                    result: .failure(error)
+                )
+            }
+        }
+        inFlightReadRequests[key] = InFlightReadRequest(
+            token: token,
+            task: task,
+            waiters: [waiter: continuation]
+        )
+    }
+
+    private func cancelReadWaiter(
+        key: ReadRequestKey,
+        waiter: UUID
+    ) {
+        guard var request = inFlightReadRequests[key],
+              let continuation = request.waiters.removeValue(
+                forKey: waiter
+              ) else {
+            return
+        }
+        continuation.resume(throwing: CancellationError())
+        if request.waiters.isEmpty {
+            request.task.cancel()
+            inFlightReadRequests[key] = nil
+        } else {
+            inFlightReadRequests[key] = request
+        }
+    }
+
+    private func finishReadRequest(
+        key: ReadRequestKey,
+        token: UUID,
+        result: Result<HTTPResponseData, Error>
+    ) {
+        guard let request = inFlightReadRequests[key],
+              request.token == token else {
+            return
+        }
+        inFlightReadRequests[key] = nil
+        for continuation in request.waiters.values {
+            switch result {
+            case .success(let response):
+                continuation.resume(returning: response)
+            case .failure(let error):
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    private func responseData(
+        from url: URL,
+        allowsRetry: Bool
+    ) async throws -> HTTPResponseData {
+        // Mutations avoid the zstd negotiation fallback because reissuing a
+        // state-changing endpoint would itself be an unsafe retry.
+        var acceptsZstandard = allowsRetry
+        var retryCount = 0
+
+        while true {
+            try Task.checkCancellation()
+            do {
+                let result = try await responseDataAttempt(
+                    from: url,
+                    acceptsZstandard: acceptsZstandard
+                )
+                guard allowsRetry,
+                      retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+                      retryPolicy.shouldRetry(
+                        statusCode: result.response.statusCode
+                      ) else {
+                    return result
+                }
+
+                retryCount += 1
+                guard let delay = retryPolicy.delay(
+                    retryNumber: retryCount,
+                    retryAfterHeader: result.response.value(
+                        forHTTPHeaderField: "Retry-After"
+                    ),
+                    jitter: Double.random(in: 0.75...1.25)
+                ) else {
+                    return result
+                }
+                Self.logger.notice(
+                    "Retrying read request after HTTP \(result.response.statusCode, privacy: .public); retry \(retryCount, privacy: .public)"
+                )
+                try await sleepBeforeRetry(delay)
+            } catch {
+                if acceptsZstandard,
+                   error is ZstandardNegotiationError {
+                    // Content negotiation fallback is not a retry. It existed
+                    // before the bounded transient-failure policy and does not
+                    // consume its budget.
+                    acceptsZstandard = false
+                    continue
+                }
+                guard allowsRetry,
+                      retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+                      retryPolicy.shouldRetry(error: error) else {
+                    throw error
+                }
+
+                retryCount += 1
+                guard let delay = retryPolicy.delay(
+                    retryNumber: retryCount,
+                    retryAfterHeader: nil,
+                    jitter: Double.random(in: 0.75...1.25)
+                ) else {
+                    throw error
+                }
+                let code = (error as NSError).code
+                Self.logger.notice(
+                    "Retrying read request after network error \(code, privacy: .public); retry \(retryCount, privacy: .public)"
+                )
+                try await sleepBeforeRetry(delay)
+            }
+        }
+    }
+
+    private func sleepBeforeRetry(_ delay: TimeInterval) async throws {
+        try Task.checkCancellation()
+        let nanoseconds = UInt64(
+            max(0, min(ReadRequestRetryPolicy.maximumServerDelay, delay))
+                * 1_000_000_000
+        )
+        if nanoseconds > 0 {
+            try await Task.sleep(nanoseconds: nanoseconds)
+        }
+        try Task.checkCancellation()
+    }
+
+    private func responseDataAttempt(
+        from url: URL,
         acceptsZstandard: Bool
-    ) async throws -> TransportResponse {
+    ) async throws -> HTTPResponseData {
         guard url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
@@ -309,9 +566,16 @@ actor OpenSubsonicClient {
             acceptsZstandard: acceptsZstandard
         )
 
-        let (encodedData, response) = try await session.data(for: request)
+        let encodedData: Data
+        let response: URLResponse
+        do {
+            (encodedData, response) = try await session.data(for: request)
+        } catch let error as URLError
+            where acceptsZstandard && error.code == .cannotDecodeContentData {
+            throw ZstandardNegotiationError()
+        }
         try Task.checkCancellation()
-        guard encodedData.count <= maximumResponseBytes else {
+        guard encodedData.count <= Self.maximumResponseBytes else {
             throw URLError(.dataLengthExceedsMaximum)
         }
         guard let http = response as? HTTPURLResponse else {
@@ -320,22 +584,51 @@ actor OpenSubsonicClient {
         guard http.url?.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
+        // Error response bodies are not decoded by callers. Returning the
+        // status first ensures 408/429/5xx retry decisions do not depend on a
+        // server's optional error-body content encoding.
         guard (200..<300).contains(http.statusCode) else {
-            throw OpenSubsonicError.http(http.statusCode)
+            return HTTPResponseData(data: encodedData, response: http)
         }
+        let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
         do {
             let data = try HTTPContentDecoder.decode(
                 encodedData,
-                contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+                contentEncoding: contentEncoding
             )
-            return TransportResponse(data: data)
+            return HTTPResponseData(data: data, response: http)
         } catch let error as URLError
-            where acceptsZstandard && error.code == .cannotDecodeContentData {
-            try Task.checkCancellation()
-            return try await performRequest(
-                session: session,
-                url: url,
-                acceptsZstandard: false
+            where acceptsZstandard
+                && error.code == .cannotDecodeContentData {
+            throw ZstandardNegotiationError()
+        }
+    }
+
+    private func logFailure(_ error: Error, endpoint: String) {
+        if error is CancellationError { return }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return
+        }
+        switch error {
+        case OpenSubsonicError.http(let status):
+            Self.logger.error(
+                "Request failed at \(endpoint, privacy: .public) with HTTP \(status, privacy: .public)"
+            )
+        case OpenSubsonicError.server(let code, _):
+            Self.logger.error(
+                "Request failed at \(endpoint, privacy: .public) with server code \(code ?? -1, privacy: .public)"
+            )
+        case is DecodingError:
+            Self.logger.error(
+                "Request failed at \(endpoint, privacy: .public) while decoding"
+            )
+        case let error as URLError:
+            Self.logger.error(
+                "Request failed at \(endpoint, privacy: .public) with network code \(error.code.rawValue, privacy: .public)"
+            )
+        default:
+            Self.logger.error(
+                "Request failed at \(endpoint, privacy: .public)"
             )
         }
     }
@@ -701,7 +994,7 @@ actor OpenSubsonicClient {
             } else {
                 parameters = ["size": "\(max(count * 2, 24))"]
             }
-            let random: RandomSongsPayload? = try? await request(
+            let random: RandomSongsPayload? = try? await readRequest(
                 "getRandomSongs",
                 parameters: parameters
             )
@@ -813,7 +1106,7 @@ actor OpenSubsonicClient {
 
         for seed in distinctSeeds.prefix(3) {
             if supportsSonic,
-               let sonic: SonicSimilarPayload = try? await request(
+               let sonic: SonicSimilarPayload = try? await readRequest(
                    "getSonicSimilarTracks",
                    parameters: ["id": seed.id, "count": "\(max(8, count))"]
                ) {
@@ -826,7 +1119,7 @@ actor OpenSubsonicClient {
                 )
             }
             if similarArtistSongs.count < count, let artistID = seed.artistId {
-                let similar: SimilarSongsPayload? = try? await request(
+                let similar: SimilarSongsPayload? = try? await readRequest(
                     "getSimilarSongs2",
                     parameters: ["id": artistID, "count": "\(max(8, count))"]
                 )
@@ -862,7 +1155,7 @@ actor OpenSubsonicClient {
             return supportedExtensions.contains(name)
         }
         guard let payload: OpenSubsonicExtensionsPayload =
-                try? await request("getOpenSubsonicExtensions") else {
+                try? await readRequest("getOpenSubsonicExtensions") else {
             // Older Navidrome-compatible servers may implement the endpoint
             // without advertising extensions. Keep the existing best-effort
             // Sonic request in that compatibility case.
@@ -889,7 +1182,7 @@ actor OpenSubsonicClient {
         ) { group in
             for (index, genre) in genres.prefix(2).enumerated() {
                 group.addTask { [self] in
-                    let payload: SongsByGenrePayload? = try? await request(
+                    let payload: SongsByGenrePayload? = try? await readRequest(
                         "getSongsByGenre",
                         parameters: [
                             "genre": genre,
@@ -930,7 +1223,7 @@ actor OpenSubsonicClient {
                     if usesArtistID {
                         parameters["id"] = artist.id
                     }
-                    let payload: TopSongsPayload? = try? await request(
+                    let payload: TopSongsPayload? = try? await readRequest(
                         "getTopSongs",
                         parameters: parameters
                     )
@@ -1062,7 +1355,7 @@ actor OpenSubsonicClient {
         ) { group in
             for artist in candidates {
                 group.addTask { [self] in
-                    let payload: ArtistInfoPayload? = try? await self.request(
+                    let payload: ArtistInfoPayload? = try? await self.readRequest(
                         "getArtistInfo2",
                         parameters: [
                             "id": artist.id,
@@ -1162,13 +1455,13 @@ actor OpenSubsonicClient {
             "songCount": "30"
         ]
         do {
-            let payload: SearchPayload = try await request("search3", parameters: parameters)
+            let payload: SearchPayload = try await readRequest("search3", parameters: parameters)
             let result = payload.searchResult3 ?? payload.searchResult2
             return Self.deduplicatedSearch(result)
         } catch {
             guard !Task.isCancelled else { throw CancellationError() }
             guard Self.shouldFallbackToSearch2(error) else { throw error }
-            let payload: SearchPayload = try await request("search2", parameters: parameters)
+            let payload: SearchPayload = try await readRequest("search2", parameters: parameters)
             return Self.deduplicatedSearch(payload.searchResult2 ?? payload.searchResult3)
         }
     }
@@ -1201,21 +1494,21 @@ actor OpenSubsonicClient {
     }
 
     func album(id: String) async throws -> AlbumDetail {
-        let payload: AlbumPayload = try await request("getAlbum", parameters: ["id": id])
+        let payload: AlbumPayload = try await readRequest("getAlbum", parameters: ["id": id])
         guard let value = payload.album else { throw OpenSubsonicError.invalidResponse }
         return AlbumDetail(songs: value.song ?? [])
     }
 
     func playlist(id: String) async throws -> PlaylistDetail {
-        let payload: PlaylistPayload = try await request("getPlaylist", parameters: ["id": id])
+        let payload: PlaylistPayload = try await readRequest("getPlaylist", parameters: ["id": id])
         guard let value = payload.playlist else { throw OpenSubsonicError.invalidResponse }
         return PlaylistDetail(songs: value.entry ?? [])
     }
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
         let usesArtistID = await supportsExtension("topSongsByArtistId")
-        async let albumsPayload: ArtistAlbumsPayload = request("getArtist", parameters: ["id": id])
-        async let topPayload: TopSongsPayload = request(
+        async let albumsPayload: ArtistAlbumsPayload = readRequest("getArtist", parameters: ["id": id])
+        async let topPayload: TopSongsPayload = readRequest(
             "getTopSongs",
             parameters: usesArtistID
                 ? ["id": id, "artist": name, "count": "20"]
@@ -1236,7 +1529,7 @@ actor OpenSubsonicClient {
     }
 
     func lyrics(songID: String) async throws -> LyricsDocument {
-        let payload: LyricsPayload = try await request(
+        let payload: LyricsPayload = try await readRequest(
             "getLyricsBySongId",
             parameters: ["id": songID]
         )
@@ -1267,8 +1560,13 @@ actor OpenSubsonicClient {
     }
 
     func trimTransientNetworkCaches() {
-        inFlightResponses.values.forEach { $0.task.cancel() }
-        inFlightResponses.removeAll(keepingCapacity: false)
+        for request in inFlightReadRequests.values {
+            request.task.cancel()
+            request.waiters.values.forEach {
+                $0.resume(throwing: CancellationError())
+            }
+        }
+        inFlightReadRequests.removeAll(keepingCapacity: false)
         clearResponseCache()
     }
 
@@ -1339,14 +1637,14 @@ actor OpenSubsonicClient {
     }
 
     func star(id: String, target: StarTarget = .song, enabled: Bool) async throws {
-        let _: EmptyPayload = try await request(
+        let _: EmptyPayload = try await mutationRequest(
             enabled ? "star" : "unstar",
             parameters: [target.parameterName: id]
         )
     }
 
     func scrobble(id: String, submission: Bool) async throws {
-        let _: EmptyPayload = try await request(
+        let _: EmptyPayload = try await mutationRequest(
             "scrobble",
             parameters: [
                 "id": id,
@@ -1365,7 +1663,7 @@ actor OpenSubsonicClient {
         let allowedStates = ["starting", "playing", "paused", "stopped"]
         guard allowedStates.contains(state) else { return }
         let positionMs = Int(max(0, position) * 1_000)
-        let _: EmptyPayload? = try? await request(
+        let _: EmptyPayload? = try? await mutationRequest(
             "reportPlayback",
             parameters: [
                 "mediaId": id,
@@ -1379,7 +1677,7 @@ actor OpenSubsonicClient {
     }
 
     func playQueue() async throws -> ServerPlayQueue {
-        let payload: PlayQueuePayload = try await request("getPlayQueue")
+        let payload: PlayQueuePayload = try await readRequest("getPlayQueue")
         let queue = payload.playQueue
         return ServerPlayQueue(
             songs: queue?.entry ?? [],
@@ -1394,6 +1692,9 @@ actor OpenSubsonicClient {
             URLQueryItem(name: "current", value: current),
             URLQueryItem(name: "position", value: String(Int(position * 1_000)))
         ]
-        let _: EmptyPayload = try await request("savePlayQueue", queryItems: queryItems)
+        let _: EmptyPayload = try await mutationRequest(
+            "savePlayQueue",
+            queryItems: queryItems
+        )
     }
 }
