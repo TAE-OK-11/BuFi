@@ -575,7 +575,7 @@ actor OpenSubsonicClient {
             throw ZstandardNegotiationError()
         }
         try Task.checkCancellation()
-        guard encodedData.count <= maximumResponseBytes else {
+        guard encodedData.count <= Self.maximumResponseBytes else {
             throw URLError(.dataLengthExceedsMaximum)
         }
         guard let http = response as? HTTPURLResponse else {
