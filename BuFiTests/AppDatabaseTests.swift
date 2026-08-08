@@ -115,6 +115,278 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(loadedSnapshot, snapshot)
     }
 
+    func testArtworkPaletteCacheIsAccountAndVersionIsolated() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        let palette = artworkPalette(seed: 0.1)
+
+        let saved = await context.database.saveArtworkPalette(
+            palette,
+            scope: "account-a",
+            artworkKey: "cover-one",
+            engineVersion: 3
+        )
+        XCTAssertTrue(saved)
+        let loaded = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-one",
+            engineVersion: 3
+        )
+        XCTAssertEqual(loaded, palette)
+        let otherAccount = await context.database.loadArtworkPalette(
+            scope: "account-b",
+            artworkKey: "cover-one",
+            engineVersion: 3
+        )
+        XCTAssertNil(otherAccount)
+        let otherVersion = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-one",
+            engineVersion: 2
+        )
+        XCTAssertNil(otherVersion)
+
+        let nextVersion = artworkPalette(seed: 0.2)
+        let nextSaved = await context.database.saveArtworkPalette(
+            nextVersion,
+            scope: "account-a",
+            artworkKey: "cover-one",
+            engineVersion: 4
+        )
+        XCTAssertTrue(nextSaved)
+        let stale = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-one",
+            engineVersion: 3
+        )
+        XCTAssertNil(stale)
+        let current = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-one",
+            engineVersion: 4
+        )
+        XCTAssertEqual(current, nextVersion)
+    }
+
+    func testArtworkPaletteCachePrunesLeastRecentlyUsedWithinScope() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+
+        for index in 1...2 {
+            let saved = await context.database.saveArtworkPalette(
+                artworkPalette(seed: Double(index) / 10),
+                scope: "account-a",
+                artworkKey: "cover-\(index)",
+                engineVersion: 3,
+                maximumEntriesPerScope: 2,
+                maximumTotalEntries: 4
+            )
+            XCTAssertTrue(saved)
+        }
+        // Touch cover-1, making cover-2 the least recently used entry.
+        let touched = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-1",
+            engineVersion: 3
+        )
+        XCTAssertNotNil(touched)
+        let thirdSaved = await context.database.saveArtworkPalette(
+            artworkPalette(seed: 0.3),
+            scope: "account-a",
+            artworkKey: "cover-3",
+            engineVersion: 3,
+            maximumEntriesPerScope: 2,
+            maximumTotalEntries: 4
+        )
+        XCTAssertTrue(thirdSaved)
+
+        let first = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-1",
+            engineVersion: 3
+        )
+        let second = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-2",
+            engineVersion: 3
+        )
+        let third = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-3",
+            engineVersion: 3
+        )
+        XCTAssertNotNil(first)
+        XCTAssertNil(second)
+        XCTAssertNotNil(third)
+
+        let otherAccountPalette = artworkPalette(seed: 0.8)
+        let otherSaved = await context.database.saveArtworkPalette(
+            otherAccountPalette,
+            scope: "account-b",
+            artworkKey: "cover-1",
+            engineVersion: 3
+        )
+        XCTAssertTrue(otherSaved)
+        await context.database.clearArtworkPalettes(scope: "account-a")
+        let cleared = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "cover-1",
+            engineVersion: 3
+        )
+        let preserved = await context.database.loadArtworkPalette(
+            scope: "account-b",
+            artworkKey: "cover-1",
+            engineVersion: 3
+        )
+        XCTAssertNil(cleared)
+        XCTAssertEqual(preserved, otherAccountPalette)
+    }
+
+    func testArtworkPaletteCacheEnforcesIndependentTotalLimit() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+
+        for index in 1...3 {
+            let saved = await context.database.saveArtworkPalette(
+                artworkPalette(seed: Double(index) / 10),
+                scope: "account-a",
+                artworkKey: "total-\(index)",
+                engineVersion: 3,
+                maximumEntriesPerScope: 10,
+                maximumTotalEntries: 2
+            )
+            XCTAssertTrue(saved)
+        }
+
+        let oldest = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "total-1",
+            engineVersion: 3
+        )
+        let second = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "total-2",
+            engineVersion: 3
+        )
+        let newest = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "total-3",
+            engineVersion: 3
+        )
+        XCTAssertNil(oldest)
+        XCTAssertNotNil(second)
+        XCTAssertNotNil(newest)
+    }
+
+    func testArtworkPaletteCachePrunesGloballyLeastRecentlyUsedRow() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+
+        for (scope, key, seed) in [
+            ("account-a", "a-1", 0.1),
+            ("account-b", "b-1", 0.2)
+        ] {
+            let saved = await context.database.saveArtworkPalette(
+                artworkPalette(seed: seed),
+                scope: scope,
+                artworkKey: key,
+                engineVersion: 3,
+                maximumEntriesPerScope: 2,
+                maximumTotalEntries: 2
+            )
+            XCTAssertTrue(saved)
+        }
+
+        let touched = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "a-1",
+            engineVersion: 3
+        )
+        XCTAssertNotNil(touched)
+        let overflowSaved = await context.database.saveArtworkPalette(
+            artworkPalette(seed: 0.3),
+            scope: "account-a",
+            artworkKey: "a-2",
+            engineVersion: 3,
+            maximumEntriesPerScope: 2,
+            maximumTotalEntries: 2
+        )
+        XCTAssertTrue(overflowSaved)
+
+        let first = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "a-1",
+            engineVersion: 3
+        )
+        let second = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "a-2",
+            engineVersion: 3
+        )
+        let evicted = await context.database.loadArtworkPalette(
+            scope: "account-b",
+            artworkKey: "b-1",
+            engineVersion: 3
+        )
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+        XCTAssertNil(evicted)
+    }
+
+    func testArtworkPaletteLRURemainsMonotonicAcrossClockRollback() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appendingPathComponent("clock.sqlite")
+        let future = Date(timeIntervalSince1970: 2_000_000_000)
+        let past = Date(timeIntervalSince1970: 1_000_000_000)
+
+        let beforeRestart = try AppDatabase(
+            databaseURL: databaseURL,
+            currentDate: { future }
+        )
+        let oldSaved = await beforeRestart.saveArtworkPalette(
+            artworkPalette(seed: 0.1),
+            scope: "account-a",
+            artworkKey: "old",
+            engineVersion: 3,
+            maximumEntriesPerScope: 1,
+            maximumTotalEntries: 1
+        )
+        XCTAssertTrue(oldSaved)
+
+        let afterRestart = try AppDatabase(
+            databaseURL: databaseURL,
+            currentDate: { past }
+        )
+        let newSaved = await afterRestart.saveArtworkPalette(
+            artworkPalette(seed: 0.2),
+            scope: "account-a",
+            artworkKey: "new",
+            engineVersion: 3,
+            maximumEntriesPerScope: 1,
+            maximumTotalEntries: 1
+        )
+        XCTAssertTrue(newSaved)
+
+        let old = await afterRestart.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "old",
+            engineVersion: 3
+        )
+        let new = await afterRestart.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "new",
+            engineVersion: 3
+        )
+        XCTAssertNil(old)
+        XCTAssertNotNil(new)
+    }
+
     private func makeDatabase() throws -> (database: AppDatabase, directory: URL) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -134,6 +406,17 @@ final class AppDatabaseTests: XCTestCase {
             title: "Song \(id)",
             artist: "Artist",
             album: "Album"
+        )
+    }
+
+    private func artworkPalette(seed: Double) -> ArtworkPalette {
+        ArtworkPalette(
+            top: RGBAColor(red: seed, green: 0.3, blue: 0.4, alpha: 1),
+            bottom: RGBAColor(red: 0.05, green: seed, blue: 0.1, alpha: 1),
+            accent: RGBAColor(red: 0.7, green: seed, blue: 0.2, alpha: 1),
+            secondary: RGBAColor(red: 0.2, green: 0.4, blue: seed, alpha: 1),
+            accentPosition: PalettePosition(x: 0.2, y: 0.8),
+            secondaryPosition: PalettePosition(x: 0.8, y: 0.2)
         )
     }
 }

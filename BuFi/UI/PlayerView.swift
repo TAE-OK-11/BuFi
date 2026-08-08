@@ -605,6 +605,10 @@ struct PlayerView: View {
         at index: Int
     ) {
         artworkPalettes[song.id] = nextPalette
+        guard playbackQueue.songs.indices.contains(index),
+              playbackQueue.songs[index].id == song.id else {
+            return
+        }
         guard index == artworkPage || song.id == playbackItem.currentSong?.id else { return }
         if palette != nextPalette {
             palette = nextPalette
@@ -612,10 +616,13 @@ struct PlayerView: View {
     }
 
     private func applyCachedPalette(at index: Int) {
-        guard playbackQueue.songs.indices.contains(index) else { return }
+        guard playbackQueue.songs.indices.contains(index) else {
+            palette = .fallback
+            return
+        }
         let song = playbackQueue.songs[index]
-        guard let cached = artworkPalettes[song.id], palette != cached else { return }
-        palette = cached
+        let resolved = artworkPalettes[song.id] ?? .fallback
+        if palette != resolved { palette = resolved }
     }
 
     private func pruneArtworkPalettes() {
@@ -698,8 +705,14 @@ struct PlayerView: View {
     private var allowsMotion: Bool { motionEnabled }
 
     private var usesDarkForeground: Bool {
-        colorScheme == .light
-            || resolvedBackgroundAppearance == .bright
+        switch resolvedBackgroundAppearance {
+        case .classic:
+            colorScheme == .light
+        case .multicolor:
+            palettePrefersDarkForeground(palette)
+        case .bright:
+            true
+        }
     }
 
     private var playerPrimary: Color {
@@ -844,9 +857,9 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        ZStack(alignment: .topLeading) {
+        VStack(alignment: .leading, spacing: 10) {
             if let activeLyric {
-                VStack(alignment: .leading, spacing: 10) {
+                ZStack(alignment: .topLeading) {
                     Text(activeLyric.line.text)
                         .font(.system(size: 20, weight: .bold))
                         .tracking(-0.40)
@@ -856,30 +869,30 @@ private struct PlayerLyricsCard: View {
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .layoutPriority(1)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(upcomingLyrics, id: \.line.id) { item in
-                            Text(item.line.text)
-                                .font(.system(size: 20, weight: .bold))
-                                .tracking(-0.40)
-                                .foregroundStyle(lyricColor(for: item.index))
-                                .scaleEffect(
-                                    motionEnabled ? 0.985 : 1,
-                                    anchor: .leading
-                                )
-                                .lineLimit(nil)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
+                        .id("\(song.id)-\(activeLyric.line.id)")
+                        .transition(miniLyricsTransition)
+                        .zIndex(1)
                 }
-                .padding(.top, 6)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .id("\(song.id)-\(activeLyric.line.id)")
-                .transition(miniLyricsTransition)
+            }
+
+            ForEach(upcomingLyrics, id: \.line.id) { item in
+                Text(item.line.text)
+                    .font(.system(size: 20, weight: .bold))
+                    .tracking(-0.40)
+                    .foregroundStyle(lyricColor(for: item.index))
+                    .scaleEffect(
+                        motionEnabled ? 0.99 : 1,
+                        anchor: .leading
+                    )
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
             }
         }
+        .padding(.top, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .clipped()
@@ -891,17 +904,14 @@ private struct PlayerLyricsCard: View {
 
     private var activeLyric: (index: Int, line: LyricLine)? {
         let lines = lyricsState.document.lines
-        guard !lines.isEmpty else { return nil }
-        let index = lines.indices.contains(lyricsState.activeIndex)
-            ? lyricsState.activeIndex
-            : lines.startIndex
+        guard lines.indices.contains(lyricsState.activeIndex) else { return nil }
+        let index = lyricsState.activeIndex
         return (index: index, line: lines[index])
     }
 
     private var upcomingLyrics: [(index: Int, line: LyricLine)] {
-        guard let activeLyric else { return [] }
         let lines = lyricsState.document.lines
-        let start = activeLyric.index + 1
+        let start = activeLyric.map { $0.index + 1 } ?? lines.startIndex
         let end = min(lines.endIndex, start + 6)
         guard start < end else { return [] }
         return (start..<end).map { (index: $0, line: lines[$0]) }
@@ -917,8 +927,8 @@ private struct PlayerLyricsCard: View {
     private var miniLyricsTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 5).combined(with: .opacity),
-            removal: .opacity
+            insertion: .offset(y: 3).combined(with: .opacity),
+            removal: .offset(y: -2).combined(with: .opacity)
         )
     }
 }
@@ -1024,7 +1034,14 @@ private struct FullLyricsView: View {
     private var dragOpacity: Double { allowsMotion ? 1 - Double(dragProgress * 0.08) : 1 }
     private var allowsMotion: Bool { motionEnabled }
     private var usesDarkForeground: Bool {
-        colorScheme == .light || backgroundAppearance == .bright
+        switch backgroundAppearance {
+        case .classic:
+            colorScheme == .light
+        case .multicolor:
+            palettePrefersDarkForeground(palette)
+        case .bright:
+            true
+        }
     }
     private var lyricsPrimary: Color { usesDarkForeground ? .black.opacity(0.86) : .white }
     private var lyricsSecondary: Color { lyricsPrimary.opacity(0.66) }
@@ -1094,7 +1111,9 @@ private struct FullLyricsList: View {
                 }
             }
             .onAppear {
-                scrollToCurrentLine(using: proxy)
+                if autoScroll {
+                    scrollToCurrentLine(using: proxy)
+                }
             }
         }
     }
@@ -1230,71 +1249,86 @@ private struct PlayerPaletteBackground: View, Equatable {
             }
         case .multicolor:
             ZStack {
-                Color(palette.bottom)
-                RadialGradient(
-                    colors: [Color(palette.top).opacity(0.86), .clear],
-                    center: UnitPoint(x: 0.50, y: 0.32),
-                    startRadius: 8,
-                    endRadius: 680
+                LinearGradient(
+                    colors: [Color(palette.top), Color(palette.bottom)],
+                    startPoint: .top,
+                    endPoint: .bottom
                 )
                 RadialGradient(
-                    colors: [Color(palette.secondary).opacity(0.96), .clear],
+                    colors: [Color(palette.top).opacity(0.46), .clear],
+                    center: UnitPoint(x: 0.50, y: 0.12),
+                    startRadius: 0,
+                    endRadius: 760
+                )
+                RadialGradient(
+                    colors: [Color(palette.secondary).opacity(0.78), .clear],
                     center: secondaryPoint,
-                    startRadius: 6,
-                    endRadius: 460
+                    startRadius: 0,
+                    endRadius: 620
                 )
                 RadialGradient(
-                    colors: [Color(palette.accent).opacity(0.92), .clear],
+                    colors: [Color(palette.accent).opacity(0.72), .clear],
                     center: accentPoint,
-                    startRadius: 8,
-                    endRadius: 540
+                    startRadius: 0,
+                    endRadius: 560
                 )
                 readabilityOverlay
             }
         case .bright:
             ZStack {
-                brightenedColor(palette.bottom, brightnessFloor: 0.58)
-                RadialGradient(
+                LinearGradient(
                     colors: [
-                        brightenedColor(palette.top, brightnessFloor: 0.68)
-                            .opacity(0.92),
-                        .clear
+                        brightenedColor(palette.top, brightnessFloor: 0.72),
+                        brightenedColor(palette.bottom, brightnessFloor: 0.58)
                     ],
-                    center: UnitPoint(x: 0.50, y: 0.30),
-                    startRadius: 6,
-                    endRadius: 680
+                    startPoint: .top,
+                    endPoint: .bottom
                 )
                 RadialGradient(
                     colors: [
-                        brightenedColor(palette.secondary, brightnessFloor: 0.66)
-                            .opacity(0.94),
+                        brightenedColor(palette.top, brightnessFloor: 0.76)
+                            .opacity(0.46),
+                        .clear
+                    ],
+                    center: UnitPoint(x: 0.50, y: 0.12),
+                    startRadius: 0,
+                    endRadius: 760
+                )
+                RadialGradient(
+                    colors: [
+                        brightenedColor(palette.secondary, brightnessFloor: 0.70)
+                            .opacity(0.76),
                         .clear
                     ],
                     center: secondaryPoint,
-                    startRadius: 6,
-                    endRadius: 460
+                    startRadius: 0,
+                    endRadius: 620
                 )
                 RadialGradient(
                     colors: [
-                        brightenedColor(palette.accent, brightnessFloor: 0.68)
-                            .opacity(0.90),
+                        brightenedColor(palette.accent, brightnessFloor: 0.72)
+                            .opacity(0.70),
                         .clear
                     ],
                     center: accentPoint,
-                    startRadius: 8,
-                    endRadius: 540
+                    startRadius: 0,
+                    endRadius: 560
                 )
-                Color.white.opacity(0.05)
+                Color.white.opacity(0.04)
             }
         }
     }
 
     @ViewBuilder
     private var readabilityOverlay: some View {
-        if colorScheme == .light {
-            Color.white.opacity(0.16)
+        if palettePrefersDarkForeground(palette) {
+            Color.white.opacity(0.42)
         } else {
-            Color.black.opacity(0.12)
+            LinearGradient(
+                colors: [.black.opacity(0.06), .clear, .black.opacity(0.24)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
     }
 
@@ -1319,9 +1353,18 @@ private struct PlayerPaletteBackground: View, Equatable {
             brightness: &brightness,
             alpha: &alpha
         ) {
+            let liftedSaturation: CGFloat
+            if saturation < 0.05 {
+                // Preserve intentional white, black, and gray artwork. A minimum
+                // saturation here would manufacture a red hue that is not in the
+                // cover because UIKit reports hue zero for neutral colors.
+                liftedSaturation = saturation
+            } else {
+                liftedSaturation = min(saturation * 1.06, 0.82)
+            }
             return Color(
                 hue: Double(hue),
-                saturation: Double(min(max(saturation * 1.08, 0.26), 0.82)),
+                saturation: Double(liftedSaturation),
                 brightness: Double(min(max(brightness * 1.16, brightnessFloor), 0.92)),
                 opacity: Double(alpha)
             )
@@ -1351,6 +1394,24 @@ private struct PlayerPaletteBackground: View, Equatable {
             y: CGFloat(palette.secondaryPosition.y)
         )
     }
+}
+
+private func palettePrefersDarkForeground(_ palette: ArtworkPalette) -> Bool {
+    func linear(_ component: Double) -> Double {
+        component <= 0.04045
+            ? component / 12.92
+            : pow((component + 0.055) / 1.055, 2.4)
+    }
+    func luminance(_ color: RGBAColor) -> Double {
+        0.2126 * linear(color.red)
+            + 0.7152 * linear(color.green)
+            + 0.0722 * linear(color.blue)
+    }
+    let fieldLuminance = 0.30 * luminance(palette.top)
+        + 0.25 * luminance(palette.accent)
+        + 0.25 * luminance(palette.secondary)
+        + 0.20 * luminance(palette.bottom)
+    return fieldLuminance >= 0.46
 }
 
 private struct QueueView: View {

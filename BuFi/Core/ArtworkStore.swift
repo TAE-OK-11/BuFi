@@ -2,7 +2,7 @@ import Foundation
 import Nuke
 import UIKit
 
-struct RGBAColor: Equatable, Sendable {
+struct RGBAColor: Codable, Equatable, Sendable {
     let red: Double
     let green: Double
     let blue: Double
@@ -12,7 +12,7 @@ struct RGBAColor: Equatable, Sendable {
     static let fallbackBottom = RGBAColor(red: 0.08, green: 0.09, blue: 0.09, alpha: 1)
 }
 
-struct PalettePosition: Equatable, Sendable {
+struct PalettePosition: Codable, Equatable, Sendable {
     let x: Double
     let y: Double
 
@@ -20,7 +20,7 @@ struct PalettePosition: Equatable, Sendable {
     static let bottomLeading = PalettePosition(x: 0.22, y: 0.82)
 }
 
-struct ArtworkPalette: Equatable, Sendable {
+struct ArtworkPalette: Codable, Equatable, Sendable {
     let top: RGBAColor
     let bottom: RGBAColor
     let accent: RGBAColor
@@ -56,21 +56,30 @@ actor ArtworkStore {
     static let shared = ArtworkStore()
 
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
+    private static let paletteEngineVersion = 3
+    private static let sampleSide = 48
+    private static let neutralChromaLimit = 0.035
 
     private var pipeline: ImagePipeline
     private var pipelineScope: String?
     private var activeScope: String?
     private var didDiscardLegacyCache = false
     private let paletteMemory = NSCache<NSString, PaletteBox>()
+    private let database: AppDatabase
+    private var inFlightPalettes: [String: InFlightPalette] = [:]
+    private var paletteGeneration: UInt64 = 0
+    private var isClearingAll = false
 
-    init() {
+    init(database: AppDatabase = .shared) {
         pipeline = Self.makePipeline(name: Self.legacyCacheName)
+        self.database = database
         paletteMemory.countLimit = 160
     }
 
     func activate(accountScope: String) async {
         guard activeScope != accountScope else { return }
 
+        invalidateInFlightPalettes()
         if !didDiscardLegacyCache {
             pipeline.cache.removeAll(caches: [.all])
             didDiscardLegacyCache = true
@@ -79,9 +88,7 @@ actor ArtworkStore {
         }
 
         if pipelineScope != accountScope {
-            pipeline = Self.makePipeline(
-                name: Self.legacyCacheName + "." + accountScope
-            )
+            pipeline = Self.makePipeline(name: Self.legacyCacheName + "." + accountScope)
             pipelineScope = accountScope
         }
         activeScope = accountScope
@@ -90,6 +97,7 @@ actor ArtworkStore {
 
     func deactivate(accountScope: String) {
         guard activeScope == accountScope else { return }
+        invalidateInFlightPalettes()
         pipeline.cache.removeAll(caches: [.memory])
         paletteMemory.removeAllObjects()
         activeScope = nil
@@ -126,89 +134,243 @@ actor ArtworkStore {
     }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
-        guard let scope = activeScope, !Task.isCancelled else { return .fallback }
-        let key = ArtworkPipelineDelegate.normalizedCacheKey(for: url) as NSString
-        if let cached = paletteMemory.object(forKey: key) { return cached.value }
-
-        let source: UIImage
-        if let providedImage = image {
-            source = providedImage
-        } else {
-            let loadedImage = try? await self.image(for: url, pixelSize: 96)
-            guard let loadedImage else { return .fallback }
-            source = loadedImage
+        guard let scope = activeScope,
+              !isClearingAll,
+              !Task.isCancelled else {
+            return .fallback
         }
+        let generation = paletteGeneration
+        let cacheKey = ArtworkPipelineDelegate.normalizedCacheKey(for: url)
+        let memoryKey = cacheKey as NSString
+        if let cached = paletteMemory.object(forKey: memoryKey) { return cached.value }
 
-        let prominentColors = Self.prominentColors(in: source)
-        guard let base = prominentColors.first else { return .fallback }
-        var hue: CGFloat = 0
-        var saturation: CGFloat = 0
-        var brightness: CGFloat = 0
-        var alpha: CGFloat = 1
-        base.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-        let top = UIColor(
-            hue: hue,
-            saturation: min(max(saturation * 1.05, 0.24), 0.76),
-            brightness: min(max(brightness * 0.78, 0.28), 0.58),
-            alpha: 1
-        )
-        let bottom = UIColor(
-            hue: hue,
-            saturation: min(max(saturation * 0.74, 0.16), 0.56),
-            brightness: min(max(brightness * 0.30, 0.065), 0.20),
-            alpha: 1
-        )
-        let perceptualSwatches = Self.perceptualSwatches(in: source)
-        let baseLab = Self.labComponents(of: base)
-        let accentSwatch = perceptualSwatches.first {
-            Self.colorDistance($0.lab, baseLab) >= 0.045
-        } ?? perceptualSwatches.first
-        let secondarySwatch = perceptualSwatches.first { candidate in
-            guard let accentSwatch else { return true }
-            return Self.colorDistance(candidate.lab, accentSwatch.lab) >= 0.065
-                && Self.colorDistance(candidate.lab, baseLab) >= 0.032
-        } ?? perceptualSwatches.dropFirst().first
-
-        let accent = Self.gradientColor(
-            from: accentSwatch?.color ?? prominentColors.dropFirst().first ?? base,
-            fallbackHueOffset: 0.08,
-            saturationRange: 0.28...0.86,
-            brightnessRange: 0.46...0.80
-        )
-        let secondary = Self.gradientColor(
-            from: secondarySwatch?.color
-                ?? prominentColors.dropFirst(2).first
-                ?? prominentColors.dropFirst().first
-                ?? base,
-            fallbackHueOffset: -0.10,
-            saturationRange: 0.24...0.78,
-            brightnessRange: 0.38...0.72
+        let value = await coalescedPalette(
+            for: url,
+            providedImage: image,
+            scope: scope,
+            cacheKey: cacheKey,
+            generation: generation
         )
 
-        let value = ArtworkPalette(
-            top: Self.components(top),
-            bottom: Self.components(bottom),
-            accent: Self.components(accent),
-            secondary: Self.components(secondary),
-            accentPosition: accentSwatch?.position ?? .bottomLeading,
-            secondaryPosition: secondarySwatch?.position ?? .topTrailing
-        )
-        guard activeScope == scope, !Task.isCancelled else { return .fallback }
-        paletteMemory.setObject(PaletteBox(value), forKey: key)
+        guard activeScope == scope,
+              paletteGeneration == generation,
+              !isClearingAll,
+              !Task.isCancelled else {
+            return .fallback
+        }
+        if value != .fallback {
+            paletteMemory.setObject(PaletteBox(value), forKey: memoryKey)
+        }
         return value
     }
 
     func clearMemory() async {
+        invalidateInFlightPalettes()
         pipeline.cache.removeAll(caches: [.memory])
         paletteMemory.removeAllObjects()
     }
 
     func clearAll() async {
+        guard !isClearingAll else { return }
+        isClearingAll = true
+        let scope = activeScope
+        let staleTasks = invalidateInFlightPalettes()
+        for task in staleTasks {
+            _ = await task.value
+        }
         pipeline.cache.removeAll(caches: [.all])
         paletteMemory.removeAllObjects()
+        if let scope {
+            await database.clearArtworkPalettes(scope: scope)
+        }
+        isClearingAll = false
     }
 
+    /// Synchronous testable entry point. Production calls execute this on the
+    /// store actor's executor, never on a UI `MainActor` caller.
+    static func extractPalette(from image: UIImage) -> ArtworkPalette {
+        analyzedPalette(from: image) ?? .fallback
+    }
+
+    private func resolvePalette(
+        for url: URL,
+        providedImage: UIImage?,
+        scope: String,
+        cacheKey: String,
+        generation: UInt64
+    ) async -> ArtworkPalette {
+        if let cached = await database.loadArtworkPalette(
+            scope: scope,
+            artworkKey: cacheKey,
+            engineVersion: Self.paletteEngineVersion
+        ) {
+            guard activeScope == scope,
+                  paletteGeneration == generation,
+                  !Task.isCancelled else {
+                return .fallback
+            }
+            return cached
+        }
+        guard activeScope == scope,
+              paletteGeneration == generation,
+              !Task.isCancelled else {
+            return .fallback
+        }
+
+        let source: UIImage
+        if let providedImage {
+            source = providedImage
+        } else {
+            guard let loaded = try? await image(for: url, pixelSize: 96) else {
+                return .fallback
+            }
+            source = loaded
+        }
+        guard activeScope == scope,
+              paletteGeneration == generation,
+              !Task.isCancelled,
+              let value = Self.analyzedPalette(from: source) else { return .fallback }
+
+        guard paletteGeneration == generation else { return .fallback }
+        _ = await database.saveArtworkPalette(
+            value,
+            scope: scope,
+            artworkKey: cacheKey,
+            engineVersion: Self.paletteEngineVersion
+        )
+        guard activeScope == scope,
+              paletteGeneration == generation,
+              !Task.isCancelled else {
+            return .fallback
+        }
+        return value
+    }
+
+    private func coalescedPalette(
+        for url: URL,
+        providedImage: UIImage?,
+        scope: String,
+        cacheKey: String,
+        generation: UInt64
+    ) async -> ArtworkPalette {
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                registerPaletteWaiter(
+                    continuation,
+                    waiterID: waiterID,
+                    url: url,
+                    providedImage: providedImage,
+                    scope: scope,
+                    cacheKey: cacheKey,
+                    generation: generation
+                )
+            }
+        } onCancel: {
+            Task {
+                await self.cancelPaletteWaiter(
+                    cacheKey: cacheKey,
+                    generation: generation,
+                    waiterID: waiterID
+                )
+            }
+        }
+    }
+
+    private func registerPaletteWaiter(
+        _ continuation: CheckedContinuation<ArtworkPalette, Never>,
+        waiterID: UUID,
+        url: URL,
+        providedImage: UIImage?,
+        scope: String,
+        cacheKey: String,
+        generation: UInt64
+    ) {
+        guard activeScope == scope,
+              paletteGeneration == generation,
+              !isClearingAll,
+              !Task.isCancelled else {
+            continuation.resume(returning: .fallback)
+            return
+        }
+
+        if var pending = inFlightPalettes[cacheKey],
+           pending.generation == generation {
+            pending.waiters[waiterID] = continuation
+            inFlightPalettes[cacheKey] = pending
+            return
+        }
+
+        let requestID = UUID()
+        let task = Task { [self] in
+            let value = await resolvePalette(
+                for: url,
+                providedImage: providedImage,
+                scope: scope,
+                cacheKey: cacheKey,
+                generation: generation
+            )
+            finishPaletteRequest(
+                cacheKey: cacheKey,
+                requestID: requestID,
+                value: value
+            )
+        }
+        inFlightPalettes[cacheKey] = InFlightPalette(
+            id: requestID,
+            generation: generation,
+            task: task,
+            waiters: [waiterID: continuation]
+        )
+    }
+
+    @discardableResult
+    private func invalidateInFlightPalettes() -> [Task<Void, Never>] {
+        paletteGeneration &+= 1
+        let tasks = inFlightPalettes.values.map(\.task)
+        for pending in inFlightPalettes.values {
+            pending.task.cancel()
+            pending.waiters.values.forEach {
+                $0.resume(returning: .fallback)
+            }
+        }
+        inFlightPalettes.removeAll(keepingCapacity: true)
+        return tasks
+    }
+
+    private func cancelPaletteWaiter(
+        cacheKey: String,
+        generation: UInt64,
+        waiterID: UUID
+    ) {
+        guard var request = inFlightPalettes[cacheKey],
+              request.generation == generation,
+              let continuation = request.waiters.removeValue(
+                forKey: waiterID
+              ) else {
+            return
+        }
+        continuation.resume(returning: .fallback)
+        if request.waiters.isEmpty {
+            request.task.cancel()
+            inFlightPalettes[cacheKey] = nil
+        } else {
+            inFlightPalettes[cacheKey] = request
+        }
+    }
+
+    private func finishPaletteRequest(
+        cacheKey: String,
+        requestID: UUID,
+        value: ArtworkPalette
+    ) {
+        guard let request = inFlightPalettes[cacheKey],
+              request.id == requestID else {
+            return
+        }
+        inFlightPalettes[cacheKey] = nil
+        request.waiters.values.forEach { $0.resume(returning: value) }
+    }
 
     private static func makePipeline(name: String) -> ImagePipeline {
         var configuration = ImagePipeline.Configuration.withDataCache(
@@ -234,246 +396,451 @@ actor ArtworkStore {
         )
     }
 
-    private static func components(_ color: UIColor) -> RGBAColor {
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        var alpha: CGFloat = 0
-        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-        return RGBAColor(
-            red: Double(red),
-            green: Double(green),
-            blue: Double(blue),
-            alpha: Double(alpha)
-        )
+    // MARK: - Palette Engine V3
+
+    private struct OKLab {
+        var lightness: Double
+        var a: Double
+        var b: Double
+
+        var chroma: Double { hypot(a, b) }
     }
 
-    private static func gradientColor(
-        from color: UIColor,
-        fallbackHueOffset: CGFloat,
-        saturationRange: ClosedRange<CGFloat>,
-        brightnessRange: ClosedRange<CGFloat>
-    ) -> UIColor {
-        var hue: CGFloat = 0
-        var saturation: CGFloat = 0
-        var brightness: CGFloat = 0
-        var alpha: CGFloat = 1
-        color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-        if saturation < 0.14 {
-            hue = (hue + fallbackHueOffset + 1).truncatingRemainder(dividingBy: 1)
-        }
-        return UIColor(
-            hue: hue,
-            saturation: min(max(saturation * 1.16, saturationRange.lowerBound), saturationRange.upperBound),
-            brightness: min(max(brightness * 0.96, brightnessRange.lowerBound), brightnessRange.upperBound),
-            alpha: 1
-        )
-    }
-
-    private struct LabColor {
-        let lightness: Double
-        let a: Double
-        let b: Double
-    }
-
-    private struct PaletteSample {
-        let red: Double
-        let green: Double
-        let blue: Double
-        let lab: LabColor
+    private struct Sample {
+        let lab: OKLab
         let x: Double
         let y: Double
-        let weight: Double
-    }
-
-    private struct PerceptualSwatch {
-        let color: UIColor
-        let lab: LabColor
-        let position: PalettePosition
-        let score: Double
+        let alpha: Double
+        let visibility: Double
     }
 
     private struct ClusterAccumulator {
-        var red = 0.0
-        var green = 0.0
-        var blue = 0.0
         var lightness = 0.0
         var a = 0.0
         var b = 0.0
         var x = 0.0
         var y = 0.0
+        var alpha = 0.0
         var weight = 0.0
-        var samples = 0
+        var sampleCount = 0
     }
 
-    private static func perceptualSwatches(in image: UIImage) -> [PerceptualSwatch] {
-        let width = 32
-        let height = 32
-        guard let bytes = pixelBytes(in: image, width: width, height: height) else { return [] }
-        var samples: [PaletteSample] = []
-        samples.reserveCapacity(width * height)
-
-        for offset in stride(from: 0, to: bytes.count, by: 4) {
-            let alpha = Double(bytes[offset + 3]) / 255
-            guard alpha > 0.55 else { continue }
-            let red = Double(bytes[offset]) / 255
-            let green = Double(bytes[offset + 1]) / 255
-            let blue = Double(bytes[offset + 2]) / 255
-            let lab = labComponents(red: red, green: green, blue: blue)
-            let chroma = hypot(lab.a, lab.b)
-            guard lab.lightness > 0.035, lab.lightness < 0.985 else { continue }
-
-            let pixel = offset / 4
-            let x = Double(pixel % width) / Double(width - 1)
-            let y = Double(pixel / width) / Double(height - 1)
-            let midtonePreference = 0.72 + max(0, 1 - abs(lab.lightness - 0.58) * 1.7) * 0.28
-            let colorWeight = 0.52 + min(chroma * 4.2, 1.10)
-            let pastelBonus = lab.lightness > 0.68 && chroma > 0.025 ? 1.12 : 1
-            samples.append(PaletteSample(
-                red: red,
-                green: green,
-                blue: blue,
-                lab: lab,
-                x: x,
-                y: y,
-                weight: alpha * midtonePreference * colorWeight * pastelBonus
-            ))
-        }
-        guard !samples.isEmpty else { return [] }
-
-        let clusterCount = min(6, samples.count)
-        var centers: [LabColor] = []
-        if let first = samples.max(by: { $0.weight < $1.weight }) {
-            centers.append(first.lab)
-        }
-        while centers.count < clusterCount {
-            guard let next = samples.max(by: { lhs, rhs in
-                weightedDistance(lhs, centers: centers) < weightedDistance(rhs, centers: centers)
-            }) else {
-                break
-            }
-            centers.append(next.lab)
-        }
-
-        var assignments = [Int](repeating: 0, count: samples.count)
-        for _ in 0..<7 {
-            var accumulators = [ClusterAccumulator](repeating: ClusterAccumulator(), count: centers.count)
-            for index in samples.indices {
-                let sample = samples[index]
-                let cluster = centers.indices.min {
-                    colorDistance(sample.lab, centers[$0]) < colorDistance(sample.lab, centers[$1])
-                } ?? 0
-                assignments[index] = cluster
-                let weight = sample.weight
-                accumulators[cluster].lightness += sample.lab.lightness * weight
-                accumulators[cluster].a += sample.lab.a * weight
-                accumulators[cluster].b += sample.lab.b * weight
-                accumulators[cluster].weight += weight
-            }
-            for index in centers.indices where accumulators[index].weight > 0 {
-                let accumulator = accumulators[index]
-                centers[index] = LabColor(
-                    lightness: accumulator.lightness / accumulator.weight,
-                    a: accumulator.a / accumulator.weight,
-                    b: accumulator.b / accumulator.weight
-                )
-            }
-        }
-
-        var accumulators = [ClusterAccumulator](repeating: ClusterAccumulator(), count: centers.count)
-        for index in samples.indices {
-            let sample = samples[index]
-            let cluster = assignments[index]
-            let weight = sample.weight
-            accumulators[cluster].red += sample.red * weight
-            accumulators[cluster].green += sample.green * weight
-            accumulators[cluster].blue += sample.blue * weight
-            accumulators[cluster].lightness += sample.lab.lightness * weight
-            accumulators[cluster].a += sample.lab.a * weight
-            accumulators[cluster].b += sample.lab.b * weight
-            accumulators[cluster].x += sample.x * weight
-            accumulators[cluster].y += sample.y * weight
-            accumulators[cluster].weight += weight
-            accumulators[cluster].samples += 1
-        }
-
-        let minimumPopulation = max(4, samples.count / 160)
-        let candidates = accumulators.compactMap { accumulator -> PerceptualSwatch? in
-            guard accumulator.samples >= minimumPopulation, accumulator.weight > 0 else { return nil }
-            let inverseWeight = 1 / accumulator.weight
-            let lab = LabColor(
-                lightness: accumulator.lightness * inverseWeight,
-                a: accumulator.a * inverseWeight,
-                b: accumulator.b * inverseWeight
-            )
-            let chroma = hypot(lab.a, lab.b)
-            let population = Double(accumulator.samples) / Double(samples.count)
-            let score = accumulator.weight
-                * (0.82 + min(chroma * 3.6, 0.90))
-                * (0.84 + min(population * 2.5, 0.36))
-            return PerceptualSwatch(
-                color: UIColor(
-                    red: accumulator.red * inverseWeight,
-                    green: accumulator.green * inverseWeight,
-                    blue: accumulator.blue * inverseWeight,
-                    alpha: 1
-                ),
-                lab: lab,
-                position: aestheticPosition(
-                    x: accumulator.x * inverseWeight,
-                    y: accumulator.y * inverseWeight
-                ),
-                score: score
-            )
-        }
-        .sorted { $0.score > $1.score }
-
-        var selected: [PerceptualSwatch] = []
-        for candidate in candidates {
-            guard selected.allSatisfy({
-                colorDistance(candidate.lab, $0.lab) >= 0.052
-            }) else {
-                continue
-            }
-            selected.append(candidate)
-            if selected.count == 4 { break }
-        }
-        return selected
+    private struct Swatch {
+        let lab: OKLab
+        let position: PalettePosition
+        let population: Double
+        let averageAlpha: Double
+        let score: Double
     }
 
-    private static func pixelBytes(in image: UIImage, width: Int, height: Int) -> [UInt8]? {
+    private static func analyzedPalette(from image: UIImage) -> ArtworkPalette? {
+        // There is deliberately one and only one rasterization per analysis.
+        guard let bytes = sampleBytes(from: image), !bytes.isEmpty else { return nil }
+        let samples = makeSamples(from: bytes)
+        guard !samples.isEmpty else { return nil }
+
+        let visibleWeight = samples.reduce(0) { $0 + $1.visibility }
+        guard visibleWeight > 0 else { return nil }
+        let neutralWeight = samples.reduce(0) { partial, sample in
+            partial + (sample.lab.chroma <= neutralChromaLimit ? sample.visibility : 0)
+        }
+        // Inclusive by design: exactly 85% belongs to the neutral family.
+        let isNeutralFamily = qualifiesAsNeutralFamily(
+            neutralWeight: neutralWeight,
+            visibleWeight: visibleWeight
+        )
+        let clusteringSamples: [Sample]
+        if isNeutralFamily {
+            clusteringSamples = samples.filter { $0.lab.chroma <= neutralChromaLimit }
+        } else {
+            clusteringSamples = samples
+        }
+        guard !clusteringSamples.isEmpty else { return nil }
+
+        var swatches = cluster(clusteringSamples, neutralFamily: isNeutralFamily)
+        if !isNeutralFamily {
+            // Below the boundary, black/white/gray may describe the canvas but
+            // must not displace the actual artwork colors.
+            let colorful = swatches.filter { $0.lab.chroma > neutralChromaLimit }
+            if !colorful.isEmpty {
+                swatches = colorful
+            }
+        }
+        guard let primary = swatches.first else { return nil }
+        let distinctDistance = isNeutralFamily ? 0.075 : 0.055
+        let secondary = swatches.dropFirst().first {
+            colorDistance($0.lab, primary.lab) >= distinctDistance
+        } ?? swatches.dropFirst().first
+
+        return isNeutralFamily
+            ? neutralPalette(primary: primary, secondary: secondary)
+            : colorfulPalette(primary: primary, secondary: secondary)
+    }
+
+    private static func sampleBytes(from image: UIImage) -> [UInt8]? {
         guard let source = image.cgImage else { return nil }
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        let didDraw = bytes.withUnsafeMutableBytes { storage -> Bool in
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+            return nil
+        }
+        let side = sampleSide
+        var bytes = [UInt8](repeating: 0, count: side * side * 4)
+        let rendered = bytes.withUnsafeMutableBytes { storage -> Bool in
             guard let context = CGContext(
                 data: storage.baseAddress,
-                width: width,
-                height: height,
+                width: side,
+                height: side,
                 bitsPerComponent: 8,
-                bytesPerRow: width * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
+                bytesPerRow: side * 4,
+                space: colorSpace,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue |
                     CGBitmapInfo.byteOrder32Big.rawValue
             ) else {
                 return false
             }
             context.interpolationQuality = .medium
-            context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+            context.setBlendMode(.copy)
+            // UIKit's visual coordinate space has its origin at the top left.
+            context.translateBy(x: 0, y: CGFloat(side))
+            context.scaleBy(x: 1, y: -1)
+            context.draw(source, in: CGRect(x: 0, y: 0, width: side, height: side))
             return true
         }
-        return didDraw ? bytes : nil
+        return rendered ? bytes : nil
     }
 
-    private static func labComponents(of color: UIColor) -> LabColor {
-        var red: CGFloat = 0
-        var green: CGFloat = 0
-        var blue: CGFloat = 0
-        var alpha: CGFloat = 1
-        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-        return labComponents(red: Double(red), green: Double(green), blue: Double(blue))
+    private static func makeSamples(from bytes: [UInt8]) -> [Sample] {
+        let side = sampleSide
+        var samples: [Sample] = []
+        samples.reserveCapacity(side * side)
+        for offset in stride(from: 0, to: bytes.count, by: 4) {
+            let alpha = Double(bytes[offset + 3]) / 255
+            guard alpha >= 0.01 else { continue }
+
+            // The bitmap is premultiplied. Recover the source color before the
+            // perceptual conversion and use alpha only as visibility evidence.
+            let inverseAlpha = 1 / alpha
+            let red = clamp(Double(bytes[offset]) / 255 * inverseAlpha, 0, 1)
+            let green = clamp(Double(bytes[offset + 1]) / 255 * inverseAlpha, 0, 1)
+            let blue = clamp(Double(bytes[offset + 2]) / 255 * inverseAlpha, 0, 1)
+            let pixel = offset / 4
+            samples.append(Sample(
+                lab: oklab(red: red, green: green, blue: blue),
+                x: Double(pixel % side) / Double(side - 1),
+                y: Double(pixel / side) / Double(side - 1),
+                alpha: alpha,
+                visibility: pow(alpha, 1.5)
+            ))
+        }
+        return samples
     }
 
-    private static func labComponents(red: Double, green: Double, blue: Double) -> LabColor {
+    private static func cluster(
+        _ samples: [Sample],
+        neutralFamily: Bool
+    ) -> [Swatch] {
+        let clusterLimit = min(8, samples.count)
+        let totalWeight = samples.reduce(0) { $0 + $1.visibility }
+        guard clusterLimit > 0, totalWeight > 0 else { return [] }
+
+        var centers = [weightedMean(of: samples)]
+        while centers.count < clusterLimit {
+            var bestIndex: Int?
+            var bestMerit = -Double.infinity
+            for index in samples.indices {
+                let sample = samples[index]
+                let nearest = centers.reduce(Double.infinity) {
+                    min($0, squaredDistance(sample.lab, $1))
+                }
+                let colorPriority: Double
+                if neutralFamily {
+                    colorPriority = 1
+                } else if sample.lab.chroma > neutralChromaLimit {
+                    colorPriority = 0.55 + min(sample.lab.chroma / 0.16, 1.25)
+                } else if sample.lab.lightness < 0.10 || sample.lab.lightness > 0.93 {
+                    colorPriority = 0.025
+                } else {
+                    colorPriority = 0.16
+                }
+                let merit = nearest * sample.visibility * colorPriority
+                if merit > bestMerit + 1e-15 {
+                    bestMerit = merit
+                    bestIndex = index
+                }
+            }
+            guard let bestIndex, bestMerit > 1e-12 else { break }
+            centers.append(samples[bestIndex].lab)
+        }
+
+        for _ in 0..<9 {
+            var accumulators = [ClusterAccumulator](
+                repeating: ClusterAccumulator(),
+                count: centers.count
+            )
+            for sample in samples {
+                let index = nearestCenter(to: sample.lab, centers: centers)
+                let weight = sample.visibility
+                accumulators[index].lightness += sample.lab.lightness * weight
+                accumulators[index].a += sample.lab.a * weight
+                accumulators[index].b += sample.lab.b * weight
+                accumulators[index].weight += weight
+            }
+            var didMove = false
+            for index in centers.indices where accumulators[index].weight > 0 {
+                let accumulator = accumulators[index]
+                let inverseWeight = 1 / accumulator.weight
+                let next = OKLab(
+                    lightness: accumulator.lightness * inverseWeight,
+                    a: accumulator.a * inverseWeight,
+                    b: accumulator.b * inverseWeight
+                )
+                didMove = didMove || squaredDistance(next, centers[index]) > 1e-12
+                centers[index] = next
+            }
+            if !didMove { break }
+        }
+
+        // Reassign once after the final center update so population and spatial
+        // centroids describe the final clusters, not the preceding iteration.
+        var accumulators = [ClusterAccumulator](
+            repeating: ClusterAccumulator(),
+            count: centers.count
+        )
+        for sample in samples {
+            let index = nearestCenter(to: sample.lab, centers: centers)
+            let weight = sample.visibility
+            accumulators[index].lightness += sample.lab.lightness * weight
+            accumulators[index].a += sample.lab.a * weight
+            accumulators[index].b += sample.lab.b * weight
+            accumulators[index].x += sample.x * weight
+            accumulators[index].y += sample.y * weight
+            accumulators[index].alpha += sample.alpha * weight
+            accumulators[index].weight += weight
+            accumulators[index].sampleCount += 1
+        }
+
+        var swatches: [Swatch] = []
+        for accumulator in accumulators {
+            let population = accumulator.weight / totalWeight
+            guard accumulator.sampleCount >= 2, population >= 0.004 else { continue }
+            let inverseWeight = 1 / accumulator.weight
+            let lab = OKLab(
+                lightness: accumulator.lightness * inverseWeight,
+                a: accumulator.a * inverseWeight,
+                b: accumulator.b * inverseWeight
+            )
+            let averageAlpha = accumulator.alpha * inverseWeight
+            let x = accumulator.x * inverseWeight
+            let y = accumulator.y * inverseWeight
+            let lightnessUtility: Double
+            let chromaUtility: Double
+            if neutralFamily {
+                lightnessUtility = 0.82 + 0.18 * (1 - min(abs(lab.lightness - 0.5) * 2, 1))
+                chromaUtility = 1
+            } else {
+                lightnessUtility = 0.58 + 0.42 * (
+                    1 - min(abs(lab.lightness - 0.56) / 0.56, 1)
+                )
+                if lab.chroma > neutralChromaLimit {
+                    chromaUtility = 0.72 + min(lab.chroma / 0.16, 1.20)
+                } else if lab.lightness < 0.10 || lab.lightness > 0.93 {
+                    chromaUtility = 0.025
+                } else {
+                    chromaUtility = 0.16
+                }
+            }
+            let opacityUtility = 0.58 + 0.42 * averageAlpha
+            let spatialDistance = min(hypot(x - 0.5, y - 0.5), 0.5)
+            let spatialUtility = 0.95 + spatialDistance * 0.10
+            let score = pow(population, 0.64)
+                * chromaUtility
+                * lightnessUtility
+                * opacityUtility
+                * spatialUtility
+            swatches.append(Swatch(
+                lab: lab,
+                position: aestheticPosition(x: x, y: y),
+                population: population,
+                averageAlpha: averageAlpha,
+                score: score
+            ))
+        }
+
+        return swatches.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.population != rhs.population {
+                return lhs.population > rhs.population
+            }
+            if lhs.lab.chroma != rhs.lab.chroma {
+                return lhs.lab.chroma > rhs.lab.chroma
+            }
+            if lhs.lab.lightness != rhs.lab.lightness {
+                return lhs.lab.lightness > rhs.lab.lightness
+            }
+            if lhs.position.y != rhs.position.y {
+                return lhs.position.y < rhs.position.y
+            }
+            return lhs.position.x < rhs.position.x
+        }
+    }
+
+    static func qualifiesAsNeutralFamily(
+        neutralWeight: Double,
+        visibleWeight: Double
+    ) -> Bool {
+        guard neutralWeight.isFinite,
+              visibleWeight.isFinite,
+              visibleWeight > 0 else {
+            return false
+        }
+        return max(0, neutralWeight) / visibleWeight >= 0.85
+    }
+
+    private static func colorfulPalette(
+        primary: Swatch,
+        secondary: Swatch?
+    ) -> ArtworkPalette {
+        let secondaryLab = secondary?.lab ?? primary.lab
+        let top = adjusted(
+            primary.lab,
+            lightness: clamp(primary.lab.lightness * 0.78, 0.28, 0.62),
+            chromaScale: 0.82
+        )
+        let bottom = adjusted(
+            primary.lab,
+            lightness: clamp(primary.lab.lightness * 0.29, 0.055, 0.19),
+            chromaScale: 0.42
+        )
+        let accent = adjusted(
+            primary.lab,
+            lightness: clamp(primary.lab.lightness, 0.42, 0.78),
+            chromaScale: 0.98
+        )
+        let secondaryColor = adjusted(
+            secondaryLab,
+            lightness: clamp(secondaryLab.lightness, 0.38, 0.74),
+            chromaScale: 0.94
+        )
+        return ArtworkPalette(
+            top: rgba(from: top),
+            bottom: rgba(from: bottom),
+            accent: rgba(from: accent),
+            secondary: rgba(from: secondaryColor),
+            accentPosition: primary.position,
+            secondaryPosition: secondary?.position ?? opposite(of: primary.position)
+        )
+    }
+
+    private static func neutralPalette(
+        primary: Swatch,
+        secondary: Swatch?
+    ) -> ArtworkPalette {
+        let top = adjusted(
+            primary.lab,
+            lightness: 0.08 + 0.60 * primary.lab.lightness,
+            chromaScale: 0.72
+        )
+        let bottom = adjusted(
+            primary.lab,
+            lightness: 0.025 + 0.20 * primary.lab.lightness,
+            chromaScale: 0.34
+        )
+        let accent = adjusted(
+            primary.lab,
+            lightness: clamp(0.14 + 0.76 * primary.lab.lightness, 0.14, 0.90),
+            chromaScale: 0.90
+        )
+
+        let secondaryLab: OKLab
+        if let secondary {
+            secondaryLab = adjusted(
+                secondary.lab,
+                lightness: clamp(0.10 + 0.68 * secondary.lab.lightness, 0.10, 0.82),
+                chromaScale: 0.82
+            )
+        } else {
+            secondaryLab = adjusted(
+                primary.lab,
+                lightness: clamp(0.05 + 0.54 * primary.lab.lightness, 0.05, 0.68),
+                chromaScale: 0.62
+            )
+        }
+        return ArtworkPalette(
+            top: rgba(from: top),
+            bottom: rgba(from: bottom),
+            accent: rgba(from: accent),
+            secondary: rgba(from: secondaryLab),
+            accentPosition: primary.position,
+            secondaryPosition: secondary?.position ?? opposite(of: primary.position)
+        )
+    }
+
+    private static func weightedMean(of samples: [Sample]) -> OKLab {
+        var lightness = 0.0
+        var a = 0.0
+        var b = 0.0
+        var weight = 0.0
+        for sample in samples {
+            lightness += sample.lab.lightness * sample.visibility
+            a += sample.lab.a * sample.visibility
+            b += sample.lab.b * sample.visibility
+            weight += sample.visibility
+        }
+        guard weight > 0 else { return OKLab(lightness: 0, a: 0, b: 0) }
+        return OKLab(lightness: lightness / weight, a: a / weight, b: b / weight)
+    }
+
+    private static func nearestCenter(to lab: OKLab, centers: [OKLab]) -> Int {
+        var bestIndex = 0
+        var bestDistance = squaredDistance(lab, centers[0])
+        for index in centers.indices.dropFirst() {
+            let distance = squaredDistance(lab, centers[index])
+            if distance < bestDistance - 1e-15 {
+                bestDistance = distance
+                bestIndex = index
+            }
+        }
+        return bestIndex
+    }
+
+    private static func squaredDistance(_ lhs: OKLab, _ rhs: OKLab) -> Double {
+        let lightness = lhs.lightness - rhs.lightness
+        let a = lhs.a - rhs.a
+        let b = lhs.b - rhs.b
+        return lightness * lightness + a * a + b * b
+    }
+
+    private static func colorDistance(_ lhs: OKLab, _ rhs: OKLab) -> Double {
+        sqrt(squaredDistance(lhs, rhs))
+    }
+
+    private static func adjusted(
+        _ lab: OKLab,
+        lightness: Double,
+        chromaScale: Double
+    ) -> OKLab {
+        OKLab(
+            lightness: clamp(lightness, 0, 1),
+            a: lab.a * min(max(chromaScale, 0), 1),
+            b: lab.b * min(max(chromaScale, 0), 1)
+        )
+    }
+
+    private static func aestheticPosition(x: Double, y: Double) -> PalettePosition {
+        func spread(_ value: Double) -> Double {
+            clamp(0.5 + (value - 0.5) * 1.34, 0.08, 0.92)
+        }
+        return PalettePosition(x: spread(x), y: spread(y))
+    }
+
+    private static func opposite(of position: PalettePosition) -> PalettePosition {
+        let mirrored = PalettePosition(x: 1 - position.x, y: 1 - position.y)
+        if hypot(mirrored.x - position.x, mirrored.y - position.y) >= 0.20 {
+            return mirrored
+        }
+        return position.y < 0.5 ? .bottomLeading : .topTrailing
+    }
+
+    private static func oklab(red: Double, green: Double, blue: Double) -> OKLab {
         func linear(_ component: Double) -> Double {
             component <= 0.04045
                 ? component / 12.92
@@ -488,185 +855,83 @@ actor ArtworkStore {
         let lRoot = cbrt(l)
         let mRoot = cbrt(m)
         let sRoot = cbrt(s)
-        return LabColor(
+        return OKLab(
             lightness: 0.2104542553 * lRoot + 0.7936177850 * mRoot - 0.0040720468 * sRoot,
             a: 1.9779984951 * lRoot - 2.4285922050 * mRoot + 0.4505937099 * sRoot,
             b: 0.0259040371 * lRoot + 0.7827717662 * mRoot - 0.8086757660 * sRoot
         )
     }
 
-    private static func colorDistance(_ lhs: LabColor, _ rhs: LabColor) -> Double {
-        let lightness = lhs.lightness - rhs.lightness
-        let a = lhs.a - rhs.a
-        let b = lhs.b - rhs.b
-        return sqrt(lightness * lightness + a * a + b * b)
+    private static func rgba(from requestedLab: OKLab) -> RGBAColor {
+        var lab = requestedLab
+        var linear = linearRGB(from: lab)
+        if !isInGamut(linear) {
+            var lower = 0.0
+            var upper = 1.0
+            for _ in 0..<18 {
+                let scale = (lower + upper) / 2
+                let candidate = OKLab(
+                    lightness: requestedLab.lightness,
+                    a: requestedLab.a * scale,
+                    b: requestedLab.b * scale
+                )
+                if isInGamut(linearRGB(from: candidate)) {
+                    lower = scale
+                } else {
+                    upper = scale
+                }
+            }
+            lab.a = requestedLab.a * lower
+            lab.b = requestedLab.b * lower
+            linear = linearRGB(from: lab)
+        }
+
+        func gamma(_ component: Double) -> Double {
+            let component = clamp(component, 0, 1)
+            return component <= 0.0031308
+                ? 12.92 * component
+                : 1.055 * pow(component, 1 / 2.4) - 0.055
+        }
+        return RGBAColor(
+            red: gamma(linear.red),
+            green: gamma(linear.green),
+            blue: gamma(linear.blue),
+            alpha: 1
+        )
     }
 
-    private static func weightedDistance(_ sample: PaletteSample, centers: [LabColor]) -> Double {
-        let distance = centers.map { colorDistance(sample.lab, $0) }.min() ?? 0
-        return distance * distance * sample.weight
+    private static func linearRGB(from lab: OKLab) -> (red: Double, green: Double, blue: Double) {
+        let lRoot = lab.lightness + 0.3963377774 * lab.a + 0.2158037573 * lab.b
+        let mRoot = lab.lightness - 0.1055613458 * lab.a - 0.0638541728 * lab.b
+        let sRoot = lab.lightness - 0.0894841775 * lab.a - 1.2914855480 * lab.b
+        let l = lRoot * lRoot * lRoot
+        let m = mRoot * mRoot * mRoot
+        let s = sRoot * sRoot * sRoot
+        return (
+            red: 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+            green: -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+            blue: -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+        )
     }
 
-    private static func aestheticPosition(x: Double, y: Double) -> PalettePosition {
-        func spread(_ value: Double) -> Double {
-            let shifted = 0.5 + (value - 0.5) * 1.28
-            return min(max(shifted, 0.10), 0.90)
-        }
-        return PalettePosition(x: spread(x), y: spread(y))
+    private static func isInGamut(
+        _ color: (red: Double, green: Double, blue: Double)
+    ) -> Bool {
+        let tolerance = 1e-9
+        return color.red >= -tolerance && color.red <= 1 + tolerance
+            && color.green >= -tolerance && color.green <= 1 + tolerance
+            && color.blue >= -tolerance && color.blue <= 1 + tolerance
     }
 
-    private static func prominentColors(in image: UIImage) -> [UIColor] {
-        guard let source = image.cgImage else { return [] }
-        let width = 36
-        let height = 36
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        let didDraw = bytes.withUnsafeMutableBytes { storage -> Bool in
-            guard let context = CGContext(
-                data: storage.baseAddress,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: width * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue |
-                    CGBitmapInfo.byteOrder32Big.rawValue
-            ) else {
-                return false
-            }
-            context.interpolationQuality = .medium
-            context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        guard didDraw else { return [] }
+    private static func clamp(_ value: Double, _ lower: Double, _ upper: Double) -> Double {
+        min(max(value, lower), upper)
+    }
 
-        struct Bucket {
-            var red = 0.0
-            var green = 0.0
-            var blue = 0.0
-            var weight = 0.0
-            var samples = 0
-        }
-        var buckets = [Bucket](repeating: Bucket(), count: 48)
-        var neutral = Bucket()
-        var acceptedSamples = 0
-
-        for offset in stride(from: 0, to: bytes.count, by: 4) {
-            let alpha = Double(bytes[offset + 3]) / 255
-            guard alpha > 0.5 else { continue }
-            let red = Double(bytes[offset]) / 255
-            let green = Double(bytes[offset + 1]) / 255
-            let blue = Double(bytes[offset + 2]) / 255
-            let maximum = max(red, green, blue)
-            let minimum = min(red, green, blue)
-            let delta = maximum - minimum
-            guard maximum > 0.08, maximum < 0.96 else { continue }
-            acceptedSamples += 1
-
-            let pixel = offset / 4
-            let x = Double(pixel % width) / Double(width - 1)
-            let y = Double(pixel / width) / Double(height - 1)
-            let edgeDistance = max(abs(x - 0.5), abs(y - 0.5)) * 2
-            let spatialWeight = 0.94 + min(0.20, edgeDistance * 0.20)
-
-            let saturation = maximum == 0 ? 0 : delta / maximum
-            if saturation < 0.12 {
-                let weight = (0.24 + maximum * 0.18) * spatialWeight
-                neutral.red += red * weight
-                neutral.green += green * weight
-                neutral.blue += blue * weight
-                neutral.weight += weight
-                neutral.samples += 1
-                continue
-            }
-
-            let hue: Double
-            if maximum == red {
-                hue = ((green - blue) / delta).truncatingRemainder(dividingBy: 6)
-            } else if maximum == green {
-                hue = (blue - red) / delta + 2
-            } else {
-                hue = (red - green) / delta + 4
-            }
-            let normalizedHue = ((hue / 6).truncatingRemainder(dividingBy: 1) + 1)
-                .truncatingRemainder(dividingBy: 1)
-            let index = min(47, max(0, Int(normalizedHue * 48)))
-            let brightnessPreference = max(0.25, 1 - abs(maximum - 0.56) * 1.25)
-            let weight = (
-                0.22 + pow(saturation, 1.18) * brightnessPreference
-            ) * spatialWeight
-            buckets[index].red += red * weight
-            buckets[index].green += green * weight
-            buckets[index].blue += blue * weight
-            buckets[index].weight += weight
-            buckets[index].samples += 1
-        }
-
-        let minimumPopulation = max(3, acceptedSamples / 100)
-        func clusterScore(_ index: Int) -> Double {
-            let bucket = buckets[index]
-            guard bucket.samples >= minimumPopulation else { return 0 }
-            let previous = buckets[(index + buckets.count - 1) % buckets.count]
-            let next = buckets[(index + 1) % buckets.count]
-            return bucket.weight + (previous.weight + next.weight) * 0.34
-        }
-        let rankedIndices = buckets.indices.sorted {
-            clusterScore($0) > clusterScore($1)
-        }
-        let bestScore = rankedIndices.first.map(clusterScore) ?? 0
-        var selectedColors: [UIColor] = []
-        var selectedHues: [Double] = []
-
-        func mergedColor(at selectedIndex: Int) -> UIColor? {
-            var selected = buckets[selectedIndex]
-            for neighbor in [
-                (selectedIndex + buckets.count - 1) % buckets.count,
-                (selectedIndex + 1) % buckets.count
-            ] where buckets[neighbor].samples >= minimumPopulation {
-                selected.red += buckets[neighbor].red * 0.38
-                selected.green += buckets[neighbor].green * 0.38
-                selected.blue += buckets[neighbor].blue * 0.38
-                selected.weight += buckets[neighbor].weight * 0.38
-            }
-            guard selected.weight > 0 else { return nil }
-            return UIColor(
-                red: selected.red / selected.weight,
-                green: selected.green / selected.weight,
-                blue: selected.blue / selected.weight,
-                alpha: 1
-            )
-        }
-
-        // Preserve the exact primary-color choice used by the original
-        // two-color player background.
-        if let dominantIndex = rankedIndices.first,
-           clusterScore(dominantIndex) > max(0.9, neutral.weight * 0.18),
-           let dominantColor = mergedColor(at: dominantIndex) {
-            selectedColors.append(dominantColor)
-            selectedHues.append((Double(dominantIndex) + 0.5) / Double(buckets.count))
-        } else if neutral.weight > 0 {
-            selectedColors.append(UIColor(
-                red: neutral.red / neutral.weight,
-                green: neutral.green / neutral.weight,
-                blue: neutral.blue / neutral.weight,
-                alpha: 1
-            ))
-        }
-
-        for selectedIndex in rankedIndices {
-            guard selectedColors.count < 3 else { break }
-            let score = clusterScore(selectedIndex)
-            guard score > max(0.62, max(bestScore * 0.14, neutral.weight * 0.08)) else { continue }
-            let selectedHue = (Double(selectedIndex) + 0.5) / Double(buckets.count)
-            let isDistinct = selectedHues.allSatisfy { existingHue in
-                let distance = abs(selectedHue - existingHue)
-                return min(distance, 1 - distance) >= 0.075
-            }
-            guard isDistinct else { continue }
-            guard let color = mergedColor(at: selectedIndex) else { continue }
-            selectedColors.append(color)
-            selectedHues.append(selectedHue)
-        }
-        return selectedColors
+    private struct InFlightPalette {
+        let id: UUID
+        let generation: UInt64
+        let task: Task<Void, Never>
+        var waiters: [UUID: CheckedContinuation<ArtworkPalette, Never>]
     }
 }
 

@@ -53,6 +53,14 @@ struct RootView: View {
                         .tint(BuFiTheme.accent)
                 }
                 .transition(.opacity)
+            case .signingOut:
+                ZStack {
+                    BuFiScreenBackground()
+                    ProgressView("로그아웃 중…")
+                        .font(.system(size: 15, weight: .semibold))
+                        .tint(BuFiTheme.accent)
+                }
+                .transition(.opacity)
             case .ready:
                 tabs
                     .transition(.opacity)

@@ -1804,7 +1804,7 @@ actor ExternalRecommendationClient {
     ) async -> Value? {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("BuFi/1.4.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("BuFi/1.0.0", forHTTPHeaderField: "User-Agent")
         if let token, !token.isEmpty {
             request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         }
