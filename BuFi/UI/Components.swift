@@ -163,6 +163,19 @@ private struct BuFiSurfaceModifier: ViewModifier {
     }
 }
 
+private struct BuFiMiniPlayerContentClearanceModifier: ViewModifier {
+    @EnvironmentObject private var playbackItem: PlaybackItemState
+    let idle: CGFloat
+    let playing: CGFloat
+
+    func body(content: Content) -> some View {
+        content.padding(
+            .bottom,
+            playbackItem.currentSong == nil ? idle : playing
+        )
+    }
+}
+
 extension View {
     func buFiGlass(cornerRadius: CGFloat, interactive: Bool = false) -> some View {
         modifier(BuFiGlassModifier(cornerRadius: cornerRadius, interactive: interactive))
@@ -184,6 +197,17 @@ extension View {
                 clipsContent: clipsContent
             )
         )
+    }
+
+    /// Keeps the final scrollable content clear of the persistent mini player.
+    func buFiMiniPlayerContentClearance(
+        idle: CGFloat = 34,
+        playing: CGFloat = 110
+    ) -> some View {
+        modifier(BuFiMiniPlayerContentClearanceModifier(
+            idle: idle,
+            playing: playing
+        ))
     }
 }
 

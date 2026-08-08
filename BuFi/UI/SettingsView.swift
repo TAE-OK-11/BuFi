@@ -4,10 +4,11 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
     @EnvironmentObject private var audio: AudioEngine
-    @EnvironmentObject private var playbackItem: PlaybackItemState
     @State private var offlineBytes: Int64 = 0
     @State private var confirmOfflineRemoval = false
     @State private var confirmArtworkRemoval = false
+    @State private var confirmLogout = false
+    @State private var isLoggingOut = false
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("motion-enabled") private var motionEnabled = true
     @AppStorage("player-seekbar-appearance")
@@ -38,10 +39,10 @@ struct SettingsView: View {
                     playbackSection
                     offlineSection
                     appSection
-                    logoutButton
+                    logoutRow
                 }
                 .padding(.top, 18)
-                .padding(.bottom, playbackItem.currentSong == nil ? 34 : 110)
+                .buFiMiniPlayerContentClearance()
             }
             .background(BuFiScreenBackground())
             .toolbar(.hidden, for: .navigationBar)
@@ -82,6 +83,22 @@ struct SettingsView: View {
             } message: {
                 Text("이미지는 필요할 때 서버에서 다시 불러옵니다.")
             }
+            .confirmationDialog(
+                "로그아웃할까요?",
+                isPresented: $confirmLogout,
+                titleVisibility: .visible
+            ) {
+                Button("로그아웃", role: .destructive) {
+                    isLoggingOut = true
+                    Task { @MainActor in
+                        await model.logout()
+                        isLoggingOut = false
+                    }
+                }
+                Button("취소", role: .cancel) {}
+            } message: {
+                Text("서버 로그인 정보가 이 기기에서 삭제되고 현재 재생이 중지됩니다. 다운로드한 음악은 유지됩니다.")
+            }
         }
     }
 
@@ -97,8 +114,9 @@ struct SettingsView: View {
                             .foregroundStyle(BuFiTheme.accent)
                     }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("TAE Music")
+                    Text(verbatim: serverTitle)
                         .font(.system(size: 18, weight: .bold))
+                        .lineLimit(2)
                     Text(serverDescription)
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
@@ -344,21 +362,29 @@ struct SettingsView: View {
         .padding(.horizontal, 16)
     }
 
-    private var logoutButton: some View {
-        Button(role: .destructive) {
-            model.logout()
-        } label: {
-            Text("로그아웃")
-                .font(.system(size: 16, weight: .bold))
-                .frame(maxWidth: .infinity)
-                .frame(height: 52)
-                .buFiSurface(
-                    cornerRadius: 18,
-                    fill: BuFiTheme.accent.opacity(0.10),
-                    stroke: BuFiTheme.accent.opacity(0.22)
-                )
+    private var logoutRow: some View {
+        BuFiGroupedSurface {
+            Button(role: .destructive) {
+                confirmLogout = true
+            } label: {
+                HStack {
+                    Text("로그아웃")
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(.red)
+                    Spacer()
+                    if isLoggingOut {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.secondary)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(minHeight: 50)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isLoggingOut)
         }
-        .buttonStyle(BuFiPressStyle())
         .padding(.horizontal, 16)
     }
 
@@ -406,13 +432,36 @@ struct SettingsView: View {
             .overlay(BuFiTheme.separator.opacity(0.34))
     }
 
+    private var serverTitle: String {
+        session.connectedServerAddress.isEmpty
+            ? String(localized: "연결된 서버")
+            : session.connectedServerAddress
+    }
+
     private var serverDescription: String {
-        session.serverVersion.isEmpty
-            ? "OpenSubsonic"
-            : String(
-                format: String(localized: "서버 %@"),
-                session.serverVersion
+        let serverVersion = session.serverVersion
+        let subsonicAPIVersion = session.subsonicAPIVersion
+
+        if !serverVersion.isEmpty, !subsonicAPIVersion.isEmpty {
+            return String(
+                format: String(localized: "서버 %@ · Subsonic API %@"),
+                serverVersion,
+                subsonicAPIVersion
             )
+        }
+        if !serverVersion.isEmpty {
+            return String(
+                format: String(localized: "서버 %@"),
+                serverVersion
+            )
+        }
+        if !subsonicAPIVersion.isEmpty {
+            return String(
+                format: String(localized: "Subsonic API %@"),
+                subsonicAPIVersion
+            )
+        }
+        return "OpenSubsonic"
     }
 
     private var offlineStorageText: String {
@@ -425,10 +474,10 @@ struct SettingsView: View {
     private var versionText: String {
         let version =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-            ?? "1.4.0"
+            ?? "1.0.0"
         let build =
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-            ?? "15"
+            ?? "1"
         return "\(version) (\(build))"
     }
 }
@@ -501,7 +550,6 @@ private extension View {
 private struct RecommendationSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
-    @EnvironmentObject private var playbackItem: PlaybackItemState
     @State private var lastFMAPIKey = ""
     @State private var listenBrainzUsername = ""
     @State private var listenBrainzToken = ""
@@ -646,7 +694,7 @@ private struct RecommendationSettingsView: View {
                 .padding(.horizontal, 16)
             }
             .padding(.top, 18)
-            .padding(.bottom, playbackItem.currentSong == nil ? 34 : 110)
+            .buFiMiniPlayerContentClearance()
         }
         .background(BuFiScreenBackground())
         .toolbar(.visible, for: .navigationBar)
@@ -710,8 +758,6 @@ private struct RecommendationSettingsView: View {
 }
 
 private struct OpenSourceNoticesView: View {
-    @EnvironmentObject private var playbackItem: PlaybackItemState
-
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
@@ -724,7 +770,7 @@ private struct OpenSourceNoticesView: View {
                         Text("GNU GPL v3 or later")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
-                        Text("SwiftUI, AVFoundation, MediaPlayer, Core Graphics, CryptoKit, Keychain과 URLSession을 중심으로 구현됩니다.")
+                        Text("BuFi는 SwiftUI, AVFoundation, MediaPlayer, Core Graphics, CryptoKit, Keychain, URLSession 등 Apple 시스템 프레임워크를 중심으로 구현됩니다.")
                             .font(.system(size: 12.5))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -732,24 +778,18 @@ private struct OpenSourceNoticesView: View {
                 }
                 .padding(.horizontal, 16)
 
-                SettingsGroup(title: "사용한 오픈소스") {
+                SettingsGroup(title: "연결된 런타임 구성요소") {
                     VStack(alignment: .leading, spacing: 16) {
-                        notice(
-                            "XcodeGen",
-                            license: "MIT License · Copyright © Yonas Kolb",
-                            detail: "재현 가능한 Xcode 프로젝트 생성에 사용합니다."
-                        )
-                        Divider()
-                        notice(
-                            "Amperfy",
-                            license: "GNU GPL v3",
-                            detail: "Subsonic 스트림 MIME 처리와 오디오 세션 패턴을 적용했습니다."
-                        )
-                        Divider()
                         notice(
                             "SwiftSonic",
                             license: "MIT License · Copyright © 2026 Mathieu Dubart",
                             detail: "인증된 스트림·아트워크·다운로드 URL 생성에 사용합니다."
+                        )
+                        Divider()
+                        notice(
+                            "GRDB",
+                            license: "MIT License · Copyright © 2015–2025 Gwendal Roué",
+                            detail: "재생 기록, 오프라인 메타데이터, 홈 캐시와 재생 대기목록을 트랜잭션으로 저장합니다."
                         )
                         Divider()
                         notice(
@@ -759,17 +799,26 @@ private struct OpenSourceNoticesView: View {
                         )
                         Divider()
                         notice(
-                            "Cassette",
-                            license: "MPL-2.0 · 구조 참고, 소스 직접 복사 없음",
-                            detail: "독립 재생 매니저와 오프라인 우선 설계를 참고했습니다."
+                            "Zstandard",
+                            license: "BSD 3-Clause · Meta Platforms, Inc. and contributors",
+                            detail: "Foundation이 직접 해제하지 않은 HTTP zstd 응답을 안전하게 처리합니다."
                         )
                         Divider()
                         notice(
-                            "Zstandard",
-                            license: "BSD 3-Clause · Meta Platforms, Inc. and contributors",
-                            detail: "Foundation이 직접 해제하지 않은 HTTP zstd 응답을 처리합니다."
+                            "Unbounded",
+                            license: "SIL Open Font License 1.1 · Copyright 2022 The Unbounded Project Authors",
+                            detail: "맞춤 믹스 아트워크의 제목 글꼴로 앱에 포함됩니다."
                         )
                     }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "적용한 GPL 소스") {
+                    notice(
+                        "Amperfy",
+                        license: "GNU GPL v3 · Copyright © Maximilian Bauer and contributors",
+                        detail: "Subsonic 스트림 MIME 처리와 오디오 세션 패턴을 Amperfy의 GPLv3 구현에서 적용했습니다. 전체 대응 소스는 BuFi 공개 저장소에서 제공합니다."
+                    )
                 }
                 .padding(.horizontal, 16)
 
@@ -784,7 +833,7 @@ private struct OpenSourceNoticesView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("제3자 라이선스 전문")
                                     .font(.system(size: 16, weight: .semibold))
-                                Text("SwiftSonic, Nuke 및 Zstandard")
+                                Text("SwiftSonic, GRDB, Nuke, Zstandard 및 Unbounded")
                                     .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
                             }
@@ -800,7 +849,7 @@ private struct OpenSourceNoticesView: View {
                 .padding(.horizontal, 16)
             }
             .padding(.top, 18)
-            .padding(.bottom, playbackItem.currentSong == nil ? 34 : 110)
+            .buFiMiniPlayerContentClearance()
         }
         .background(BuFiScreenBackground())
         .toolbar(.visible, for: .navigationBar)
@@ -829,7 +878,6 @@ private struct OpenSourceNoticesView: View {
 }
 
 private struct ThirdPartyLicensesView: View {
-    @EnvironmentObject private var playbackItem: PlaybackItemState
     private let contents: String
 
     init(bundle: Bundle = .main) {
@@ -851,8 +899,9 @@ private struct ThirdPartyLicensesView: View {
                 .font(.system(.footnote, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
-                .padding()
-                .padding(.bottom, playbackItem.currentSong == nil ? 0 : 76)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .buFiMiniPlayerContentClearance()
         }
         .background(BuFiScreenBackground())
         .navigationTitle("제3자 라이선스 전문")

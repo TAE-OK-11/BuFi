@@ -5,15 +5,6 @@
 Copyright © 2026 TAE-OK-11  
 Licensed under the GNU General Public License v3.0 or later. See `LICENSE`.
 
-## XcodeGen
-
-XcodeGen is used as a build-time project generator and is not linked into the
-application.
-
-- Project: <https://github.com/yonaskolb/XcodeGen>
-- License: MIT
-- Copyright: Yonas Kolb and contributors
-
 ## Amperfy
 
 BuFi adapts selected playback compatibility and audio-session patterns from
@@ -63,19 +54,6 @@ the optional NukeUI product.
 - License text: <https://github.com/kean/Nuke/blob/13.0.6/LICENSE>
 - Bundled notice: `BuFi/Resources/ThirdPartyLicenses.txt`
 
-## Cassette
-
-Cassette is an architectural reference for service isolation, minimal observed
-player state, and offline-first behavior. No Cassette source file is linked or
-copied into BuFi. It is therefore not included in the linked-dependency license
-text bundled with the binary; its attribution and source-license link remain
-here.
-
-- Project: <https://github.com/CassetteLab/cassette>
-- License of the currently referenced source: Mozilla Public License 2.0
-- Copyright: Mathieu Dubart and contributors
-- License text: <https://github.com/CassetteLab/cassette/blob/main/LICENSE>
-
 ## Zstandard
 
 BuFi links the reference decoder to safely handle HTTP
@@ -86,4 +64,14 @@ BuFi links the reference decoder to safely handle HTTP
 - License option used by BuFi: BSD 3-Clause
 - Copyright: Meta Platforms, Inc. and contributors
 - License text: <https://github.com/facebook/zstd/blob/v1.5.7/LICENSE>
+- Bundled notice: `BuFi/Resources/ThirdPartyLicenses.txt`
+
+## Unbounded
+
+BuFi bundles the Unbounded variable font for playlist-cover typography.
+
+- Project: <https://github.com/google/fonts/tree/main/ofl/unbounded>
+- Pinned source revision: `8b80d4f3f73cfe02b69a6f0dc71da5a1cc574bd3`
+- License: SIL Open Font License 1.1
+- Copyright: The Unbounded Project Authors
 - Bundled notice: `BuFi/Resources/ThirdPartyLicenses.txt`
