@@ -66,27 +66,41 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
             build 2>&1 | tee build/xcode26.log
-      - name: Compile recommendation tests
+      - name: Run unit tests
         run: |
           set -o pipefail
+          RUNTIME_ID=$(xcrun simctl list runtimes --json | jq -r '[.runtimes[] | select(.isAvailable and (.identifier | contains("iOS")))] | last | .identifier')
+          DEVICE_TYPE_ID=$(xcrun simctl list devicetypes --json | jq -r '([.devicetypes[] | select(.name == "iPhone 17 Pro")] + [.devicetypes[] | select(.name | startswith("iPhone"))]) | first | .identifier')
+          test -n "$RUNTIME_ID"
+          test -n "$DEVICE_TYPE_ID"
+          SIMULATOR_ID=$(xcrun simctl create BuFi-CI "$DEVICE_TYPE_ID" "$RUNTIME_ID")
+          cleanup() {
+            xcrun simctl shutdown "$SIMULATOR_ID" 2>/dev/null || true
+            xcrun simctl delete "$SIMULATOR_ID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          xcrun simctl boot "$SIMULATOR_ID"
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
           xcodebuild \
             -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
             -derivedDataPath build/DerivedData-Tests \
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
-            build-for-testing 2>&1 | tee build/xcode26-tests.log
+            test 2>&1 | tee build/xcode26-tests.log
       - name: Upload Xcode 26 failure log
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: BuFi-1.4.0-xcode26-failure-log
-          path: build/xcode26.log
+          path: |
+            build/xcode26.log
+            build/xcode26-tests.log
           if-no-files-found: warn
       - name: Package unsigned IPA
         run: |

@@ -73,8 +73,21 @@ final class PlaybackQueueState: ObservableObject {
 @MainActor
 final class PlayerPresentationState: ObservableObject {
     @Published var playbackError: String?
-    @Published var showPlayer = false
+    @Published fileprivate(set) var showPlayer = false
+    @Published fileprivate(set) var presentationID = UUID()
     @Published var showFullLyrics = false
+
+    func setShowPlayer(_ value: Bool) {
+        guard showPlayer != value else { return }
+        if value {
+            // A new identity prevents SwiftUI from resurrecting the previous
+            // full-screen cover's pager state on a later presentation.
+            presentationID = UUID()
+        } else {
+            showFullLyrics = false
+        }
+        showPlayer = value
+    }
 }
 
 @MainActor
@@ -158,7 +171,7 @@ final class AudioEngine: NSObject, ObservableObject {
         get { presentation.showPlayer }
         set {
             guard presentation.showPlayer != newValue else { return }
-            presentation.showPlayer = newValue
+            presentation.setShowPlayer(newValue)
             installPlaybackTimeObserver()
         }
     }

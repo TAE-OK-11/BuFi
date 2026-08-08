@@ -50,6 +50,16 @@ struct ArtworkPalette: Equatable, Sendable {
         accent: RGBAColor(red: 0.36, green: 0.48, blue: 0.42, alpha: 1),
         secondary: RGBAColor(red: 0.18, green: 0.27, blue: 0.34, alpha: 1)
     )
+
+    /// Neutral separation for artwork that is mostly black and contains no
+    /// meaningful non-dark color. Keeping the background visibly lighter than
+    /// black preserves the cover's silhouette without inventing a hue.
+    static let darkArtwork = ArtworkPalette(
+        top: RGBAColor(red: 0.42, green: 0.42, blue: 0.42, alpha: 1),
+        bottom: RGBAColor(red: 0.18, green: 0.18, blue: 0.18, alpha: 1),
+        accent: RGBAColor(red: 0.56, green: 0.56, blue: 0.56, alpha: 1),
+        secondary: RGBAColor(red: 0.30, green: 0.30, blue: 0.30, alpha: 1)
+    )
 }
 
 actor ArtworkStore {
@@ -62,6 +72,12 @@ actor ArtworkStore {
     private var activeScope: String?
     private var didDiscardLegacyCache = false
     private let paletteMemory = NSCache<NSString, PaletteBox>()
+    private var paletteTasks: [String: PaletteTask] = [:]
+
+    private struct PaletteTask {
+        let token: UUID
+        let task: Task<ArtworkPalette, Never>
+    }
 
     init() {
         pipeline = Self.makePipeline(name: Self.legacyCacheName)
@@ -86,12 +102,14 @@ actor ArtworkStore {
         }
         activeScope = accountScope
         paletteMemory.removeAllObjects()
+        cancelPaletteTasks()
     }
 
     func deactivate(accountScope: String) {
         guard activeScope == accountScope else { return }
         pipeline.cache.removeAll(caches: [.memory])
         paletteMemory.removeAllObjects()
+        cancelPaletteTasks()
         activeScope = nil
     }
 
@@ -127,8 +145,14 @@ actor ArtworkStore {
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
         guard let scope = activeScope, !Task.isCancelled else { return .fallback }
-        let key = ArtworkPipelineDelegate.normalizedCacheKey(for: url) as NSString
-        if let cached = paletteMemory.object(forKey: key) { return cached.value }
+        let key = ArtworkPipelineDelegate.normalizedCacheKey(for: url)
+        let cacheKey = key as NSString
+        if let cached = paletteMemory.object(forKey: cacheKey) { return cached.value }
+        if let inFlight = paletteTasks[key] {
+            let value = await inFlight.task.value
+            guard activeScope == scope, !Task.isCancelled else { return .fallback }
+            return value
+        }
 
         let source: UIImage
         if let providedImage = image {
@@ -139,13 +163,47 @@ actor ArtworkStore {
             source = loadedImage
         }
 
-        let prominentColors = Self.prominentColors(in: source)
-        guard let base = prominentColors.first else { return .fallback }
+        if let cached = paletteMemory.object(forKey: cacheKey) { return cached.value }
+        if let inFlight = paletteTasks[key] {
+            let value = await inFlight.task.value
+            guard activeScope == scope, !Task.isCancelled else { return .fallback }
+            return value
+        }
+
+        let token = UUID()
+        let task = Task(priority: .utility) {
+            Self.paletteValue(in: source)
+        }
+        paletteTasks[key] = PaletteTask(token: token, task: task)
+        let value = await task.value
+        if paletteTasks[key]?.token == token {
+            paletteTasks[key] = nil
+        }
+        guard activeScope == scope, !Task.isCancelled else { return .fallback }
+        paletteMemory.setObject(PaletteBox(value), forKey: cacheKey)
+        return value
+    }
+
+    /// Synchronous, deterministic palette analysis kept internal so synthetic
+    /// images can exercise the exact production algorithm in unit tests.
+    static func paletteValue(in source: UIImage) -> ArtworkPalette {
+        guard let pixels = pixelBuffer(in: source, width: 36, height: 36) else {
+            return .fallback
+        }
+        let prominentColors = prominentColors(in: pixels)
+        guard let base = prominentColors.first else {
+            return pixels.darkCoverage >= 0.55 ? .darkArtwork : .fallback
+        }
         var hue: CGFloat = 0
         var saturation: CGFloat = 0
         var brightness: CGFloat = 0
         var alpha: CGFloat = 1
         base.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+        if saturation < 0.12 {
+            if pixels.darkCoverage >= 0.55 { return .darkArtwork }
+            return neutralPalette(brightness: brightness)
+        }
 
         let top = UIColor(
             hue: hue,
@@ -159,24 +217,24 @@ actor ArtworkStore {
             brightness: min(max(brightness * 0.30, 0.065), 0.20),
             alpha: 1
         )
-        let perceptualSwatches = Self.perceptualSwatches(in: source)
-        let baseLab = Self.labComponents(of: base)
+        let perceptualSwatches = perceptualSwatches(in: pixels)
+        let baseLab = labComponents(of: base)
         let accentSwatch = perceptualSwatches.first {
-            Self.colorDistance($0.lab, baseLab) >= 0.045
+            colorDistance($0.lab, baseLab) >= 0.045
         } ?? perceptualSwatches.first
         let secondarySwatch = perceptualSwatches.first { candidate in
             guard let accentSwatch else { return true }
-            return Self.colorDistance(candidate.lab, accentSwatch.lab) >= 0.065
-                && Self.colorDistance(candidate.lab, baseLab) >= 0.032
+            return colorDistance(candidate.lab, accentSwatch.lab) >= 0.065
+                && colorDistance(candidate.lab, baseLab) >= 0.032
         } ?? perceptualSwatches.dropFirst().first
 
-        let accent = Self.gradientColor(
+        let accent = gradientColor(
             from: accentSwatch?.color ?? prominentColors.dropFirst().first ?? base,
             fallbackHueOffset: 0.08,
             saturationRange: 0.28...0.86,
             brightnessRange: 0.46...0.80
         )
-        let secondary = Self.gradientColor(
+        let secondary = gradientColor(
             from: secondarySwatch?.color
                 ?? prominentColors.dropFirst(2).first
                 ?? prominentColors.dropFirst().first
@@ -186,27 +244,31 @@ actor ArtworkStore {
             brightnessRange: 0.38...0.72
         )
 
-        let value = ArtworkPalette(
-            top: Self.components(top),
-            bottom: Self.components(bottom),
-            accent: Self.components(accent),
-            secondary: Self.components(secondary),
+        return ArtworkPalette(
+            top: components(top),
+            bottom: components(bottom),
+            accent: components(accent),
+            secondary: components(secondary),
             accentPosition: accentSwatch?.position ?? .bottomLeading,
             secondaryPosition: secondarySwatch?.position ?? .topTrailing
         )
-        guard activeScope == scope, !Task.isCancelled else { return .fallback }
-        paletteMemory.setObject(PaletteBox(value), forKey: key)
-        return value
     }
 
     func clearMemory() async {
         pipeline.cache.removeAll(caches: [.memory])
         paletteMemory.removeAllObjects()
+        cancelPaletteTasks()
     }
 
     func clearAll() async {
         pipeline.cache.removeAll(caches: [.all])
         paletteMemory.removeAllObjects()
+        cancelPaletteTasks()
+    }
+
+    private func cancelPaletteTasks() {
+        paletteTasks.values.forEach { $0.task.cancel() }
+        paletteTasks.removeAll(keepingCapacity: false)
     }
 
 
@@ -248,6 +310,24 @@ actor ArtworkStore {
         )
     }
 
+    private static func neutralPalette(brightness: CGFloat) -> ArtworkPalette {
+        let top = min(max(brightness * 0.82, 0.34), 0.58)
+        let bottom = min(max(brightness * 0.34, 0.14), 0.22)
+        let accent = min(max(brightness, 0.50), 0.68)
+        let secondary = min(max(brightness * 0.68, 0.30), 0.48)
+        return ArtworkPalette(
+            top: RGBAColor(red: top, green: top, blue: top, alpha: 1),
+            bottom: RGBAColor(red: bottom, green: bottom, blue: bottom, alpha: 1),
+            accent: RGBAColor(red: accent, green: accent, blue: accent, alpha: 1),
+            secondary: RGBAColor(
+                red: secondary,
+                green: secondary,
+                blue: secondary,
+                alpha: 1
+            )
+        )
+    }
+
     private static func gradientColor(
         from color: UIColor,
         fallbackHueOffset: CGFloat,
@@ -274,6 +354,19 @@ actor ArtworkStore {
         let lightness: Double
         let a: Double
         let b: Double
+    }
+
+    private struct PixelBuffer {
+        let width: Int
+        let height: Int
+        let bytes: [UInt8]
+        let visibleSamples: Int
+        let darkSamples: Int
+
+        var darkCoverage: Double {
+            guard visibleSamples > 0 else { return 0 }
+            return Double(darkSamples) / Double(visibleSamples)
+        }
     }
 
     private struct PaletteSample {
@@ -306,10 +399,10 @@ actor ArtworkStore {
         var samples = 0
     }
 
-    private static func perceptualSwatches(in image: UIImage) -> [PerceptualSwatch] {
-        let width = 32
-        let height = 32
-        guard let bytes = pixelBytes(in: image, width: width, height: height) else { return [] }
+    private static func perceptualSwatches(in pixels: PixelBuffer) -> [PerceptualSwatch] {
+        let width = pixels.width
+        let height = pixels.height
+        let bytes = pixels.bytes
         var samples: [PaletteSample] = []
         samples.reserveCapacity(width * height)
 
@@ -321,7 +414,7 @@ actor ArtworkStore {
             let blue = Double(bytes[offset + 2]) / 255
             let lab = labComponents(red: red, green: green, blue: blue)
             let chroma = hypot(lab.a, lab.b)
-            guard lab.lightness > 0.035, lab.lightness < 0.985 else { continue }
+            guard lab.lightness >= 0.16, lab.lightness < 0.985 else { continue }
 
             let pixel = offset / 4
             let x = Double(pixel % width) / Double(width - 1)
@@ -441,7 +534,11 @@ actor ArtworkStore {
         return selected
     }
 
-    private static func pixelBytes(in image: UIImage, width: Int, height: Int) -> [UInt8]? {
+    private static func pixelBuffer(
+        in image: UIImage,
+        width: Int,
+        height: Int
+    ) -> PixelBuffer? {
         guard let source = image.cgImage else { return nil }
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         let didDraw = bytes.withUnsafeMutableBytes { storage -> Bool in
@@ -461,7 +558,30 @@ actor ArtworkStore {
             context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
         }
-        return didDraw ? bytes : nil
+        guard didDraw else { return nil }
+
+        var visibleSamples = 0
+        var darkSamples = 0
+        for offset in stride(from: 0, to: bytes.count, by: 4) {
+            let alpha = Double(bytes[offset + 3]) / 255
+            guard alpha > 0.5 else { continue }
+            visibleSamples += 1
+            let lab = labComponents(
+                red: Double(bytes[offset]) / 255,
+                green: Double(bytes[offset + 1]) / 255,
+                blue: Double(bytes[offset + 2]) / 255
+            )
+            if lab.lightness < 0.16 {
+                darkSamples += 1
+            }
+        }
+        return PixelBuffer(
+            width: width,
+            height: height,
+            bytes: bytes,
+            visibleSamples: visibleSamples,
+            darkSamples: darkSamples
+        )
     }
 
     private static func labComponents(of color: UIColor) -> LabColor {
@@ -515,29 +635,10 @@ actor ArtworkStore {
         return PalettePosition(x: spread(x), y: spread(y))
     }
 
-    private static func prominentColors(in image: UIImage) -> [UIColor] {
-        guard let source = image.cgImage else { return [] }
-        let width = 36
-        let height = 36
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        let didDraw = bytes.withUnsafeMutableBytes { storage -> Bool in
-            guard let context = CGContext(
-                data: storage.baseAddress,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
-                bytesPerRow: width * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue |
-                    CGBitmapInfo.byteOrder32Big.rawValue
-            ) else {
-                return false
-            }
-            context.interpolationQuality = .medium
-            context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        guard didDraw else { return [] }
+    private static func prominentColors(in pixels: PixelBuffer) -> [UIColor] {
+        let width = pixels.width
+        let height = pixels.height
+        let bytes = pixels.bytes
 
         struct Bucket {
             var red = 0.0
@@ -548,7 +649,6 @@ actor ArtworkStore {
         }
         var buckets = [Bucket](repeating: Bucket(), count: 48)
         var neutral = Bucket()
-        var acceptedSamples = 0
 
         for offset in stride(from: 0, to: bytes.count, by: 4) {
             let alpha = Double(bytes[offset + 3]) / 255
@@ -559,8 +659,8 @@ actor ArtworkStore {
             let maximum = max(red, green, blue)
             let minimum = min(red, green, blue)
             let delta = maximum - minimum
-            guard maximum > 0.08, maximum < 0.96 else { continue }
-            acceptedSamples += 1
+            let lab = labComponents(red: red, green: green, blue: blue)
+            guard lab.lightness >= 0.16, maximum < 0.96 else { continue }
 
             let pixel = offset / 4
             let x = Double(pixel % width) / Double(width - 1)
@@ -601,7 +701,10 @@ actor ArtworkStore {
             buckets[index].samples += 1
         }
 
-        let minimumPopulation = max(3, acceptedSamples / 100)
+        let minimumPopulation = max(
+            3,
+            Int(ceil(Double(pixels.visibleSamples) * 0.03))
+        )
         func clusterScore(_ index: Int) -> Double {
             let bucket = buckets[index]
             guard bucket.samples >= minimumPopulation else { return 0 }

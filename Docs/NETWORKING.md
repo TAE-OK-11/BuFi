@@ -9,6 +9,8 @@ radio scheduling, and background behavior integrated with iOS.
 - API, artwork, and offline-download URL requests set `assumesHTTP3Capable` so
   CFNetwork races QUIC immediately without waiting for a previous Alt-Svc
   discovery. HTTP/2 remains the automatic fallback.
+- Last.fm and ListenBrainz recommendation requests use the same HTTP/3-first,
+  HTTPS-only redirect, connection-reuse, and cache policy as first-party JSON.
 - TLS 1.3 is negotiated automatically when the origin supports it. App Transport
   Security and the HTTPS-only redirect delegate keep cleartext and downgrade
   redirects out of authenticated traffic.
@@ -41,6 +43,9 @@ radio scheduling, and background behavior integrated with iOS.
 HTTP/3 is opportunistic: the origin, proxy, network path, and current iOS
 transport policy must all permit QUIC. A failed or unavailable QUIC attempt falls
 back to the system HTTP/2 or HTTP/1.1 path without changing OpenSubsonic behavior.
+Debug builds log the final `URLSessionTaskMetrics.networkProtocolName` and
+connection-reuse flag by host so supported origins can be verified as `h3`
+without retaining metrics or emitting transport logs in release builds.
 
 ## System-managed features
 

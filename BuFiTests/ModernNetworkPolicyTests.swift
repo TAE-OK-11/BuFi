@@ -50,6 +50,20 @@ final class ModernNetworkPolicyTests: XCTestCase {
         )
     }
 
+    func testImageRequestUsesHTTP3WithoutZstandard() throws {
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://example.com/cover.jpg"))
+        )
+
+        ModernNetworkPolicy.prepareImageRequest(&request)
+
+        XCTAssertTrue(request.assumesHTTP3Capable)
+        XCTAssertFalse(request.httpShouldHandleCookies)
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertEqual(request.networkServiceType, .responsiveData)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Encoding"), "br, gzip")
+    }
+
     func testHealthCheckIsShortLivedAndUncached() throws {
         var request = URLRequest(
             url: try XCTUnwrap(URL(string: "https://example.com/rest/ping.view"))
@@ -110,6 +124,9 @@ final class ModernNetworkPolicyTests: XCTestCase {
         XCTAssertEqual(configuration.requestCachePolicy, .returnCacheDataElseLoad)
         XCTAssertNotNil(configuration.urlCache)
         XCTAssertFalse(configuration.allowsConstrainedNetworkAccess)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertNil(configuration.urlCredentialStorage)
     }
 
     func testMediaRequestPreservesByteRangeSemantics() throws {

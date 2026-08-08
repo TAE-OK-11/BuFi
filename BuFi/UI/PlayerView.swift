@@ -1,6 +1,12 @@
 import SwiftUI
 import UIKit
 
+struct PlayerArtworkPageID: Hashable, Sendable {
+    let queueIndex: Int
+    let songID: String
+    let coverArtID: String?
+}
+
 struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var library: HomeLibraryState
@@ -16,8 +22,8 @@ struct PlayerView: View {
 
     @State private var palette = ArtworkPalette.fallback
     @State private var showQueue = false
-    @State private var artworkPage: Int?
-    @State private var artworkPalettes: [String: ArtworkPalette] = [:]
+    @State private var artworkPage: PlayerArtworkPageID?
+    @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
     @AppStorage("player-seekbar-appearance")
@@ -25,7 +31,7 @@ struct PlayerView: View {
     @AppStorage("player-background-appearance")
     private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
 
-    init(initialArtworkPage: Int? = nil) {
+    init(initialArtworkPage: PlayerArtworkPageID? = nil) {
         _artworkPage = State(initialValue: initialArtworkPage)
     }
 
@@ -104,7 +110,7 @@ struct PlayerView: View {
         .onChange(of: playbackItem.currentSong?.id) { _, _ in
             applyCachedPalette(at: playbackQueue.index)
         }
-        .onChange(of: playbackQueue.songs.map(\.id)) { _, _ in
+        .onChange(of: playbackQueue.songs.map { [$0.id, $0.coverArt ?? ""] }) { _, _ in
             pruneArtworkPalettes()
             syncArtworkPage(to: playbackQueue.index, animated: false)
             prefetchUpcomingArtwork(after: playbackQueue.index)
@@ -334,12 +340,19 @@ struct PlayerView: View {
         let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
         let sideInset = max(0, (viewportWidth - edge) / 2)
         let songs = playbackQueue.songs.isEmpty ? [song] : playbackQueue.songs
+        let pages = songs.indices.map {
+            PlayerArtworkPageID(
+                queueIndex: $0,
+                songID: songs[$0].id,
+                coverArtID: songs[$0].coverArt
+            )
+        }
         let animatesTransition = allowsMotion
 
         return ScrollView(.horizontal) {
             LazyHStack(spacing: 18) {
-                ForEach(songs.indices, id: \.self) { index in
-                    let item = songs[index]
+                ForEach(pages, id: \.self) { page in
+                    let item = songs[page.queueIndex]
                     ArtworkView(
                         coverArt: item.coverArt,
                         size: edge,
@@ -347,13 +360,12 @@ struct PlayerView: View {
                         onPalette: { nextPalette in
                             receivePalette(
                                 nextPalette,
-                                for: item,
-                                at: index
+                                for: page
                             )
                         }
                     )
                     .frame(width: edge, height: edge)
-                    .id(index)
+                    .id(page)
                     .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                         content
                             .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.97)
@@ -370,8 +382,14 @@ struct PlayerView: View {
         .frame(height: edge + heightPadding)
         .contentShape(Rectangle())
         .onChange(of: artworkPage) { oldPage, page in
-            guard let index = page else { return }
-            let oldIndex = oldPage ?? playbackQueue.index
+            guard let page,
+                  playbackQueue.songs.indices.contains(page.queueIndex),
+                  playbackQueue.songs[page.queueIndex].id == page.songID,
+                  playbackQueue.songs[page.queueIndex].coverArt == page.coverArtID else {
+                return
+            }
+            let index = page.queueIndex
+            let oldIndex = oldPage?.queueIndex ?? playbackQueue.index
             transitionDirection = index >= oldIndex ? 1 : -1
             guard index != playbackQueue.index,
                   playbackQueue.songs.indices.contains(index) else { return }
@@ -589,23 +607,35 @@ struct PlayerView: View {
     }
 
     private func syncArtworkPage(to index: Int, animated: Bool) {
-        let resolved = playbackQueue.songs.indices.contains(index) ? index : 0
+        let songs = playbackQueue.songs.isEmpty
+            ? (playbackItem.currentSong.map { [$0] } ?? [])
+            : playbackQueue.songs
+        guard !songs.isEmpty else {
+            artworkPage = nil
+            palette = .fallback
+            return
+        }
+        let resolved = songs.indices.contains(index) ? index : 0
+        let page = PlayerArtworkPageID(
+            queueIndex: resolved,
+            songID: songs[resolved].id,
+            coverArtID: songs[resolved].coverArt
+        )
         if animated && allowsMotion {
             withAnimation(BuFiMotion.trackPage) {
-                artworkPage = resolved
+                artworkPage = page
             }
         } else {
-            artworkPage = resolved
+            artworkPage = page
         }
     }
 
     private func receivePalette(
         _ nextPalette: ArtworkPalette,
-        for song: Song,
-        at index: Int
+        for page: PlayerArtworkPageID
     ) {
-        artworkPalettes[song.id] = nextPalette
-        guard index == artworkPage || song.id == playbackItem.currentSong?.id else { return }
+        artworkPalettes[page] = nextPalette
+        guard page == artworkPage else { return }
         if palette != nextPalette {
             palette = nextPalette
         }
@@ -614,13 +644,27 @@ struct PlayerView: View {
     private func applyCachedPalette(at index: Int) {
         guard playbackQueue.songs.indices.contains(index) else { return }
         let song = playbackQueue.songs[index]
-        guard let cached = artworkPalettes[song.id], palette != cached else { return }
-        palette = cached
+        let page = PlayerArtworkPageID(
+            queueIndex: index,
+            songID: song.id,
+            coverArtID: song.coverArt
+        )
+        if let cached = artworkPalettes[page] {
+            if palette != cached { palette = cached }
+        } else if palette != .fallback {
+            palette = .fallback
+        }
     }
 
     private func pruneArtworkPalettes() {
-        let activeIDs = Set(playbackQueue.songs.map(\.id))
-        artworkPalettes = artworkPalettes.filter { activeIDs.contains($0.key) }
+        let activePages = Set(playbackQueue.songs.indices.map {
+            PlayerArtworkPageID(
+                queueIndex: $0,
+                songID: playbackQueue.songs[$0].id,
+                coverArtID: playbackQueue.songs[$0].coverArt
+            )
+        })
+        artworkPalettes = artworkPalettes.filter { activePages.contains($0.key) }
     }
 
     private func prefetchUpcomingArtwork(after index: Int) {
@@ -643,12 +687,21 @@ struct PlayerView: View {
             artworkPrefetchTask = nil
             return
         }
-        let upcoming = Array(playbackQueue.songs[start..<end])
+        let upcoming = (start..<end).map { index in
+            (
+                page: PlayerArtworkPageID(
+                    queueIndex: index,
+                    songID: playbackQueue.songs[index].id,
+                    coverArtID: playbackQueue.songs[index].coverArt
+                ),
+                song: playbackQueue.songs[index]
+            )
+        }
 
         artworkPrefetchTask = Task(priority: .utility) {
-            for song in upcoming {
+            for item in upcoming {
                 guard !Task.isCancelled,
-                      let url = await model.artworkURL(id: song.coverArt, size: 600) else {
+                      let url = await model.artworkURL(id: item.song.coverArt, size: 600) else {
                     continue
                 }
                 guard let image = try? await ArtworkStore.shared.image(
@@ -662,10 +715,12 @@ struct PlayerView: View {
                     image: image
                 )
                 guard !Task.isCancelled,
-                      playbackQueue.songs.contains(where: { $0.id == song.id }) else {
+                      playbackQueue.songs.indices.contains(item.page.queueIndex),
+                      playbackQueue.songs[item.page.queueIndex].id == item.page.songID,
+                      playbackQueue.songs[item.page.queueIndex].coverArt == item.page.coverArtID else {
                     return
                 }
-                artworkPalettes[song.id] = nextPalette
+                artworkPalettes[item.page] = nextPalette
             }
         }
     }
@@ -1188,25 +1243,50 @@ private struct PlayerPaletteBackground: View, Equatable {
             if playerAppearance == .dynamic {
                 ZStack {
                     LinearGradient(
-                        colors: [Color(palette.top), Color(palette.bottom)],
+                        colors: [
+                            adaptivePaletteColor(
+                                palette.top,
+                                lightBrightnessFloor: 0.82,
+                                lightSaturationCeiling: 0.28
+                            ),
+                            adaptivePaletteColor(
+                                palette.bottom,
+                                lightBrightnessFloor: 0.74,
+                                lightSaturationCeiling: 0.22
+                            )
+                        ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                     RadialGradient(
-                        colors: [Color(palette.secondary).opacity(0.18), .clear],
+                        colors: [
+                            adaptivePaletteColor(
+                                palette.secondary,
+                                lightBrightnessFloor: 0.80,
+                                lightSaturationCeiling: 0.26
+                            ).opacity(colorScheme == .light ? 0.14 : 0.18),
+                            .clear
+                        ],
                         center: secondaryPoint,
                         startRadius: 8,
                         endRadius: 540
                     )
                     RadialGradient(
-                        colors: [Color(palette.accent).opacity(0.16), .clear],
+                        colors: [
+                            adaptivePaletteColor(
+                                palette.accent,
+                                lightBrightnessFloor: 0.80,
+                                lightSaturationCeiling: 0.28
+                            ).opacity(colorScheme == .light ? 0.13 : 0.16),
+                            .clear
+                        ],
                         center: accentPoint,
                         startRadius: 12,
                         endRadius: 620
                     )
                     if colorScheme == .light {
                         LinearGradient(
-                            colors: [.white.opacity(0.46), .white.opacity(0.72)],
+                            colors: [.white.opacity(0.18), .white.opacity(0.38)],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -1220,9 +1300,13 @@ private struct PlayerPaletteBackground: View, Equatable {
                 }
             } else {
                 ZStack {
-                    Color(palette.top)
+                    adaptivePaletteColor(
+                        palette.top,
+                        lightBrightnessFloor: 0.86,
+                        lightSaturationCeiling: 0.20
+                    )
                     if colorScheme == .light {
-                        Color.white.opacity(0.56)
+                        Color.white.opacity(0.26)
                     } else {
                         Color.black.opacity(0.18)
                     }
@@ -1230,21 +1314,46 @@ private struct PlayerPaletteBackground: View, Equatable {
             }
         case .multicolor:
             ZStack {
-                Color(palette.bottom)
+                adaptivePaletteColor(
+                    palette.bottom,
+                    lightBrightnessFloor: 0.82,
+                    lightSaturationCeiling: 0.22
+                )
                 RadialGradient(
-                    colors: [Color(palette.top).opacity(0.86), .clear],
+                    colors: [
+                        adaptivePaletteColor(
+                            palette.top,
+                            lightBrightnessFloor: 0.84,
+                            lightSaturationCeiling: 0.30
+                        ).opacity(colorScheme == .light ? 0.36 : 0.86),
+                        .clear
+                    ],
                     center: UnitPoint(x: 0.50, y: 0.32),
                     startRadius: 8,
                     endRadius: 680
                 )
                 RadialGradient(
-                    colors: [Color(palette.secondary).opacity(0.96), .clear],
+                    colors: [
+                        adaptivePaletteColor(
+                            palette.secondary,
+                            lightBrightnessFloor: 0.82,
+                            lightSaturationCeiling: 0.30
+                        ).opacity(colorScheme == .light ? 0.30 : 0.96),
+                        .clear
+                    ],
                     center: secondaryPoint,
                     startRadius: 6,
                     endRadius: 460
                 )
                 RadialGradient(
-                    colors: [Color(palette.accent).opacity(0.92), .clear],
+                    colors: [
+                        adaptivePaletteColor(
+                            palette.accent,
+                            lightBrightnessFloor: 0.82,
+                            lightSaturationCeiling: 0.32
+                        ).opacity(colorScheme == .light ? 0.28 : 0.92),
+                        .clear
+                    ],
                     center: accentPoint,
                     startRadius: 8,
                     endRadius: 540
@@ -1292,7 +1401,7 @@ private struct PlayerPaletteBackground: View, Equatable {
     @ViewBuilder
     private var readabilityOverlay: some View {
         if colorScheme == .light {
-            Color.white.opacity(0.16)
+            Color.white.opacity(0.18)
         } else {
             Color.black.opacity(0.12)
         }
@@ -1319,10 +1428,16 @@ private struct PlayerPaletteBackground: View, Equatable {
             brightness: &brightness,
             alpha: &alpha
         ) {
+            let resolvedSaturation = colorScheme == .light
+                ? min(saturation * 0.72, 0.34)
+                : min(max(saturation * 1.08, 0.26), 0.82)
+            let resolvedBrightnessFloor = colorScheme == .light
+                ? max(brightnessFloor, 0.78)
+                : brightnessFloor
             return Color(
                 hue: Double(hue),
-                saturation: Double(min(max(saturation * 1.08, 0.26), 0.82)),
-                brightness: Double(min(max(brightness * 1.16, brightnessFloor), 0.92)),
+                saturation: Double(resolvedSaturation),
+                brightness: Double(min(max(brightness * 1.16, resolvedBrightnessFloor), 0.94)),
                 opacity: Double(alpha)
             )
         }
@@ -1335,6 +1450,38 @@ private struct PlayerPaletteBackground: View, Equatable {
             green: Double(green),
             blue: Double(blue),
             opacity: color.alpha
+        )
+    }
+
+    private func adaptivePaletteColor(
+        _ color: RGBAColor,
+        lightBrightnessFloor: CGFloat,
+        lightSaturationCeiling: CGFloat
+    ) -> Color {
+        guard colorScheme == .light else { return Color(color) }
+        let source = UIColor(
+            red: CGFloat(color.red),
+            green: CGFloat(color.green),
+            blue: CGFloat(color.blue),
+            alpha: CGFloat(color.alpha)
+        )
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 1
+        guard source.getHue(
+            &hue,
+            saturation: &saturation,
+            brightness: &brightness,
+            alpha: &alpha
+        ) else {
+            return BuFiTheme.background
+        }
+        return Color(
+            hue: Double(hue),
+            saturation: Double(min(saturation * 0.70, lightSaturationCeiling)),
+            brightness: Double(min(max(brightness, lightBrightnessFloor), 0.96)),
+            opacity: Double(alpha)
         )
     }
 

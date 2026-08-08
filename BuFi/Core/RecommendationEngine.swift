@@ -1677,17 +1677,20 @@ actor ExternalRecommendationClient {
     private let decoder = JSONDecoder()
 
     private init() {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 12
-        configuration.timeoutIntervalForResource = 24
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.urlCache = URLCache(
+        let configuration = ModernNetworkPolicy.makeCachedConfiguration(
+            requestTimeout: 12,
+            resourceTimeout: 24,
+            maximumConnectionsPerHost: 2,
             memoryCapacity: 2 * 1_024 * 1_024,
-            diskCapacity: 12 * 1_024 * 1_024
+            diskCapacity: 12 * 1_024 * 1_024,
+            allowsExpensiveNetworkAccess: true,
+            allowsConstrainedNetworkAccess: false
         )
-        configuration.httpMaximumConnectionsPerHost = 2
-        configuration.allowsConstrainedNetworkAccess = false
-        session = URLSession(configuration: configuration)
+        session = URLSession(
+            configuration: configuration,
+            delegate: HTTPSOnlyURLSessionDelegate(),
+            delegateQueue: nil
+        )
     }
 
     func lastFM(
@@ -1803,7 +1806,10 @@ actor ExternalRecommendationClient {
         token: String? = nil
     ) async -> Value? {
         var request = URLRequest(url: url)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        ModernNetworkPolicy.prepareExternalAPIRequest(
+            &request,
+            acceptsZstandard: false
+        )
         request.setValue("BuFi/1.4.0", forHTTPHeaderField: "User-Agent")
         if let token, !token.isEmpty {
             request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
