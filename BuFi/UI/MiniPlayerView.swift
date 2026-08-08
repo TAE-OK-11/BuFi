@@ -5,6 +5,8 @@ struct MiniPlayerView: View {
     @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.colorScheme) private var colorScheme
+    @State private var palette: ArtworkPalette?
+    @State private var paletteArtworkIdentity: MiniPlayerArtworkIdentity?
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
@@ -12,6 +14,10 @@ struct MiniPlayerView: View {
 
     var body: some View {
         if let song = playbackItem.currentSong {
+            let artworkIdentity = MiniPlayerArtworkIdentity(
+                songID: song.id,
+                coverArtID: song.coverArt
+            )
             ZStack {
                 Button {
                     audio.showPlayer = true
@@ -32,9 +38,23 @@ struct MiniPlayerView: View {
                         ArtworkView(
                             coverArt: song.coverArt,
                             size: 50,
-                            cornerRadius: 5
+                            cornerRadius: 5,
+                            onPalette: { nextPalette in
+                                guard playbackItem.currentSong?.id == artworkIdentity.songID,
+                                      playbackItem.currentSong?.coverArt == artworkIdentity.coverArtID else {
+                                    return
+                                }
+                                if nextPalette == .fallback {
+                                    palette = nil
+                                    paletteArtworkIdentity = nil
+                                } else {
+                                    palette = nextPalette
+                                    paletteArtworkIdentity = artworkIdentity
+                                }
+                            }
                         )
                         .frame(width: 50, height: 50)
+                        .id(artworkIdentity)
 
                         ZStack(alignment: .leading) {
                             VStack(alignment: .leading, spacing: 3) {
@@ -44,7 +64,7 @@ struct MiniPlayerView: View {
                                     .minimumScaleFactor(0.82)
                                 Text(song.artist)
                                     .font(.system(size: 13))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(miniPlayerForeground.opacity(0.72))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.76)
                             }
@@ -58,7 +78,7 @@ struct MiniPlayerView: View {
                             value: song.id
                         )
 
-                        AirPlayButton(lightContent: colorScheme == .dark)
+                        AirPlayButton(lightContent: !usesDarkForeground)
                             .frame(width: 36, height: 36)
 
                         Button {
@@ -74,7 +94,10 @@ struct MiniPlayerView: View {
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)
 
-                    MiniPlayerProgressView(timeline: audio.timeline)
+                    MiniPlayerProgressView(
+                        timeline: audio.timeline,
+                        tint: miniPlayerForeground
+                    )
                     .frame(height: 2)
                     .allowsHitTesting(false)
                 }
@@ -85,14 +108,14 @@ struct MiniPlayerView: View {
             .frame(height: playerHeight)
             .fixedSize(horizontal: false, vertical: true)
             .clipped()
-            .foregroundStyle(.primary)
+            .foregroundStyle(miniPlayerForeground)
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(BuFiTheme.elevated)
+                    .fill(miniPlayerBackground)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(BuFiTheme.separator.opacity(0.32), lineWidth: 0.7)
+                    .stroke(miniPlayerForeground.opacity(0.16), lineWidth: 0.7)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .shadow(
@@ -100,7 +123,45 @@ struct MiniPlayerView: View {
                 radius: colorScheme == .dark ? 12 : 9,
                 y: colorScheme == .dark ? 6 : 4
             )
+            .animation(motionEnabled ? BuFiMotion.color : .none, value: resolvedPalette)
         }
+    }
+
+    private var miniPlayerBackground: Color {
+        resolvedPalette.map { Color($0.top) } ?? BuFiTheme.elevated
+    }
+
+    private var miniPlayerForeground: Color {
+        usesDarkForeground ? .black.opacity(0.86) : .white
+    }
+
+    private var usesDarkForeground: Bool {
+        guard let palette = resolvedPalette else { return colorScheme == .light }
+        return relativeLuminance(palette.top) >= 0.18
+    }
+
+    private var resolvedPalette: ArtworkPalette? {
+        guard paletteArtworkIdentity == currentArtworkIdentity else { return nil }
+        return palette
+    }
+
+    private var currentArtworkIdentity: MiniPlayerArtworkIdentity? {
+        guard let song = playbackItem.currentSong else { return nil }
+        return MiniPlayerArtworkIdentity(
+            songID: song.id,
+            coverArtID: song.coverArt
+        )
+    }
+
+    private func relativeLuminance(_ color: RGBAColor) -> Double {
+        func linear(_ component: Double) -> Double {
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(color.red)
+            + 0.7152 * linear(color.green)
+            + 0.0722 * linear(color.blue)
     }
 
     private var trackTextTransition: AnyTransition {
@@ -112,14 +173,20 @@ struct MiniPlayerView: View {
     }
 }
 
+private struct MiniPlayerArtworkIdentity: Hashable {
+    let songID: String
+    let coverArtID: String?
+}
+
 private struct MiniPlayerProgressView: View {
     @ObservedObject var timeline: PlaybackTimeline
+    let tint: Color
 
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Color.secondary.opacity(0.18)
-                BuFiTheme.accent
+                tint.opacity(0.18)
+                tint.opacity(0.94)
                     .frame(width: proxy.size.width * progress)
             }
         }
