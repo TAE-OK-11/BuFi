@@ -78,7 +78,7 @@ jobs:
           APP_PID="${LAUNCH_OUTPUT##*: }"
           test -n "$APP_PID"
           sleep 5
-          xcrun simctl spawn "$SIMULATOR_UDID" /bin/kill -0 "$APP_PID"
+          xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID"
 
       - name: Build unsigned app
         run: |
