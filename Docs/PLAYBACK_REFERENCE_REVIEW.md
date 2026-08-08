@@ -63,9 +63,10 @@ references; no source was copied into BuFi.
   micro-optimization.
 - Xcode 26 compilation caching and explicit modules reduce repeated compilation
   work.
-- Release deployment postprocessing, full symbol stripping, dead-code
+- Release deployment postprocessing, safe non-global stripping, dead-code
   stripping, and product validation keep the shipped executable lean while
-  retaining a dSYM for crash symbolication.
+  retaining a dSYM for crash symbolication. Swift symbol stripping remains
+  disabled for the documented Xcode 26.3–27 beta device-launch workaround.
 
 Official references:
 
