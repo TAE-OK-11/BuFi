@@ -751,19 +751,29 @@ actor ArtworkStore {
         primary: Swatch,
         secondary: Swatch?
     ) -> ArtworkPalette {
+        // Near-black covers need a small neutral lift so the surrounding player
+        // surface remains distinguishable from the artwork edge. Keep the lift
+        // achromatic and bounded instead of manufacturing an unrelated hue.
+        let isDarkNeutral = primary.lab.lightness <= darkLightnessLimit
         let top = adjusted(
             primary.lab,
-            lightness: 0.08 + 0.60 * primary.lab.lightness,
+            lightness: isDarkNeutral
+                ? 0.24
+                : 0.08 + 0.60 * primary.lab.lightness,
             chromaScale: 0.72
         )
         let bottom = adjusted(
             primary.lab,
-            lightness: 0.025 + 0.20 * primary.lab.lightness,
+            lightness: isDarkNeutral
+                ? 0.16
+                : 0.025 + 0.20 * primary.lab.lightness,
             chromaScale: 0.34
         )
         let accent = adjusted(
             primary.lab,
-            lightness: clamp(0.14 + 0.76 * primary.lab.lightness, 0.14, 0.90),
+            lightness: isDarkNeutral
+                ? 0.32
+                : clamp(0.14 + 0.76 * primary.lab.lightness, 0.14, 0.90),
             chromaScale: 0.90
         )
 
@@ -771,13 +781,21 @@ actor ArtworkStore {
         if let secondary {
             secondaryLab = adjusted(
                 secondary.lab,
-                lightness: clamp(0.10 + 0.68 * secondary.lab.lightness, 0.10, 0.82),
+                lightness: clamp(
+                    0.10 + 0.68 * secondary.lab.lightness,
+                    isDarkNeutral ? 0.20 : 0.10,
+                    0.82
+                ),
                 chromaScale: 0.82
             )
         } else {
             secondaryLab = adjusted(
                 primary.lab,
-                lightness: clamp(0.05 + 0.54 * primary.lab.lightness, 0.05, 0.68),
+                lightness: clamp(
+                    0.05 + 0.54 * primary.lab.lightness,
+                    isDarkNeutral ? 0.20 : 0.05,
+                    0.68
+                ),
                 chromaScale: 0.62
             )
         }
