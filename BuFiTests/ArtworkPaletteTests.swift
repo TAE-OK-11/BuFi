@@ -43,6 +43,20 @@ final class ArtworkPaletteTests: XCTestCase {
         )
     }
 
+    func testLargestColorRegionBecomesPrimaryPaletteColor() {
+        let majority = Pixel(red: 196, green: 112, blue: 104, alpha: 255)
+        let vividMinority = Pixel(red: 35, green: 70, blue: 245, alpha: 255)
+        let image = pixelImage { x, _ in
+            x < 31 ? majority : vividMinority
+        }
+
+        let palette = ArtworkStore.extractPalette(from: image)
+
+        XCTAssertGreaterThan(palette.top.red, palette.top.blue + 0.05)
+        XCTAssertGreaterThan(palette.accent.red, palette.accent.blue + 0.05)
+        XCTAssertGreaterThan(palette.secondary.blue, palette.secondary.red)
+    }
+
     func testPureBlackPaletteUsesVisibleNeutralGray() {
         let palette = ArtworkStore.extractPalette(from: pixelImage { _, _ in .black })
 

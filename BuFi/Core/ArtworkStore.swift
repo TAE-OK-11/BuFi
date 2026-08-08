@@ -56,7 +56,7 @@ actor ArtworkStore {
     static let shared = ArtworkStore()
 
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
-    private static let paletteEngineVersion = 4
+    private static let paletteEngineVersion = 5
     private static let sampleSide = 48
     private static let neutralChromaLimit = 0.035
     private static let darkLightnessLimit = 0.12
@@ -483,11 +483,32 @@ actor ArtworkStore {
                 swatches = colorful
             }
         }
-        guard let primary = swatches.first else { return nil }
+        // The primary palette color represents the largest valid area of the
+        // cover. Score still breaks population ties, but a small vivid detail
+        // can no longer replace the color that visually fills most of the art.
+        let populationOrdered = swatches.sorted { lhs, rhs in
+            if lhs.population != rhs.population {
+                return lhs.population > rhs.population
+            }
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.lab.chroma != rhs.lab.chroma {
+                return lhs.lab.chroma > rhs.lab.chroma
+            }
+            if lhs.lab.lightness != rhs.lab.lightness {
+                return lhs.lab.lightness > rhs.lab.lightness
+            }
+            if lhs.position.y != rhs.position.y {
+                return lhs.position.y < rhs.position.y
+            }
+            return lhs.position.x < rhs.position.x
+        }
+        guard let primary = populationOrdered.first else { return nil }
         let distinctDistance = isNeutralFamily ? 0.075 : 0.055
-        let secondary = swatches.dropFirst().first {
+        let secondary = swatches.first {
             colorDistance($0.lab, primary.lab) >= distinctDistance
-        } ?? swatches.dropFirst().first
+        } ?? swatches.first {
+            colorDistance($0.lab, primary.lab) > 0.000_001
+        }
 
         return isNeutralFamily
             ? neutralPalette(primary: primary, secondary: secondary)
