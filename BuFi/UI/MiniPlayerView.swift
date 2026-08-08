@@ -94,10 +94,7 @@ struct MiniPlayerView: View {
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)
 
-                    MiniPlayerProgressView(
-                        timeline: audio.timeline,
-                        tint: miniPlayerForeground
-                    )
+                    MiniPlayerProgressView(timeline: audio.timeline)
                     .frame(height: 2)
                     .allowsHitTesting(false)
                 }
@@ -180,13 +177,12 @@ private struct MiniPlayerArtworkIdentity: Hashable {
 
 private struct MiniPlayerProgressView: View {
     @ObservedObject var timeline: PlaybackTimeline
-    let tint: Color
 
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                tint.opacity(0.18)
-                tint.opacity(0.94)
+                Color(uiColor: .systemGray4)
+                Color(uiColor: .systemGray)
                     .frame(width: proxy.size.width * progress)
             }
         }

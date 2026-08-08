@@ -133,6 +133,30 @@ final class PlaybackControlState: ObservableObject {
     }
 }
 
+/// Keeps persistent-stall recovery bounded without treating a later,
+/// unrelated network hiccup as part of the same failure burst.
+enum PlaybackRecoveryPolicy {
+    static let initialBufferGrace: Duration = .milliseconds(1_500)
+    static let persistentStallGrace: Duration = .seconds(5)
+    static let stablePlaybackWindow: TimeInterval = 20
+    static let maximumReloadAttempts = 2
+
+    static func nextReloadAttempt(
+        currentAttempt: Int,
+        lastReloadAt: Date?,
+        now: Date
+    ) -> Int {
+        guard let lastReloadAt else { return 1 }
+        let interval = now.timeIntervalSince(lastReloadAt)
+        guard interval >= 0, interval < stablePlaybackWindow else { return 1 }
+        return currentAttempt + 1
+    }
+
+    static func shouldReload(attempt: Int) -> Bool {
+        attempt <= maximumReloadAttempts
+    }
+}
+
 @MainActor
 final class PlaybackQueueState: ObservableObject {
     @Published fileprivate(set) var songs: [Song] = []
@@ -345,6 +369,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var recoveryToken: UUID?
     private weak var handledFailedItem: AVPlayerItem?
     private var recoveryAttempt = 0
+    private var lastRecoveryReloadAt: Date?
     private var itemLoadGeneration: UInt64 = 0
     private var lyricsLoadGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
@@ -553,6 +578,7 @@ final class AudioEngine: NSObject, ObservableObject {
         fallbackIndex = 0
         fallbackFormats = Self.fallbackFormats(for: quality, song: selectedSong)
         recoveryAttempt = 0
+        lastRecoveryReloadAt = nil
         activeCompatibilityFormat = Self.initialCompatibilityFormat(
             for: quality,
             song: selectedSong
@@ -591,7 +617,6 @@ final class AudioEngine: NSObject, ObservableObject {
     func resumePlayback() {
         guard currentSong != nil else { return }
         serverQueueTask?.cancel()
-        configureAudioSession()
         wantsPlayback = true
         if let currentSong,
            behaviorStartRecordedForSongID != currentSong.id {
@@ -607,11 +632,8 @@ final class AudioEngine: NSObject, ObservableObject {
         } else if duration > 0, elapsed >= max(0, duration - 0.5) {
             seekPlayer(to: 0, persistsQueue: false)
         }
-        player.isMuted = false
-        player.volume = 1
-        activateNowPlayingSession()
         if !needsReload {
-            player.playImmediately(atRate: 1)
+            requestPlaybackStart()
         }
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
@@ -1492,6 +1514,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private func restartPlaybackPlan(resumeFrom: TimeInterval) {
         guard let song = currentSong else { return }
         cancelPlaybackRecovery()
+        recoveryAttempt = 0
+        lastRecoveryReloadAt = nil
         fallbackIndex = 0
         fallbackFormats = Self.fallbackFormats(for: quality, song: song)
         activeCompatibilityFormat = Self.initialCompatibilityFormat(
@@ -1596,7 +1620,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     self.isBuffering = false
-                    self.recoveryAttempt = 0
                     self.updateDuration(using: item.duration.seconds)
                     let targetPosition = self.pendingSeekPosition ?? resumePosition
                     if targetPosition > 0 {
@@ -1610,11 +1633,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         self.installNextLyricBoundary(after: self.elapsed)
                     }
                     if self.wantsPlayback {
-                        self.configureAudioSession()
-                        self.player.isMuted = false
-                        self.player.volume = 1
-                        self.activateNowPlayingSession()
-                        self.player.playImmediately(atRate: 1)
+                        self.requestPlaybackStart()
                     }
                 case .failed:
                     self.isBuffering = false
@@ -1744,10 +1763,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
                 guard item.isPlaybackLikelyToKeepUp else { return }
                 self.cancelPlaybackRecovery()
-                self.recoveryAttempt = 0
                 if self.wantsPlayback, self.player.timeControlStatus != .playing {
-                    self.configureAudioSession()
-                    self.player.play()
+                    self.requestPlaybackStart()
                     self.recomputeTimelineFromPlayer()
                     self.installNextLyricBoundary(after: self.elapsed)
                 }
@@ -1788,6 +1805,8 @@ final class AudioEngine: NSObject, ObservableObject {
         Self.logger.warning(
             "Playback failed; trying compatibility fallback \(format, privacy: .public)"
         )
+        recoveryAttempt = 0
+        lastRecoveryReloadAt = nil
         activeCompatibilityFormat = format
         loadCurrentItem(compatibilityFormat: format, resumeFrom: elapsed)
     }
@@ -1804,7 +1823,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let token = UUID()
         recoveryToken = token
         recoveryTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(1_250))
+            try? await Task.sleep(for: PlaybackRecoveryPolicy.initialBufferGrace)
             guard let self else { return }
             defer {
                 if self.recoveryToken == token {
@@ -1816,28 +1835,64 @@ final class AudioEngine: NSObject, ObservableObject {
                   let item = self.player.currentItem else { return }
 
             if item.isPlaybackLikelyToKeepUp || !item.isPlaybackBufferEmpty {
-                self.configureAudioSession()
-                self.player.play()
+                self.requestPlaybackStart()
                 self.recomputeTimelineFromPlayer()
                 self.installNextLyricBoundary(after: self.elapsed)
                 return
             }
 
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: PlaybackRecoveryPolicy.persistentStallGrace)
             guard !Task.isCancelled, self.wantsPlayback,
                   self.player.currentItem === item else { return }
             guard self.player.timeControlStatus != .playing else { return }
 
-            self.recoveryAttempt += 1
-            if self.recoveryAttempt <= 2 {
+            if item.status == .failed {
+                self.handlePlaybackFailure(failedItem: item)
+                return
+            }
+
+            // The buffer can recover between KVO notifications and the
+            // recovery deadline. Re-check it before throwing useful bytes
+            // away by rebuilding the player item.
+            if item.isPlaybackLikelyToKeepUp || !item.isPlaybackBufferEmpty {
+                self.requestPlaybackStart()
+                self.recomputeTimelineFromPlayer()
+                self.installNextLyricBoundary(after: self.elapsed)
+                return
+            }
+
+            let now = Date()
+            self.recoveryAttempt = PlaybackRecoveryPolicy.nextReloadAttempt(
+                currentAttempt: self.recoveryAttempt,
+                lastReloadAt: self.lastRecoveryReloadAt,
+                now: now
+            )
+            self.lastRecoveryReloadAt = now
+            if PlaybackRecoveryPolicy.shouldReload(attempt: self.recoveryAttempt) {
                 self.loadCurrentItem(
                     compatibilityFormat: self.activeCompatibilityFormat,
-                    resumeFrom: self.elapsed
+                    resumeFrom: self.currentLyricPosition(fallback: self.elapsed)
                 )
             } else {
                 self.handlePlaybackFailure(failedItem: item)
             }
         }
+    }
+
+    private func requestPlaybackStart() {
+        guard wantsPlayback,
+              currentSong != nil,
+              let item = player.currentItem,
+              item.status != .failed else {
+            return
+        }
+        configureAudioSession()
+        player.isMuted = false
+        player.volume = 1
+        activateNowPlayingSession()
+        // `play()` honors automaticallyWaitsToMinimizeStalling. Calling
+        // playImmediately here would discard that protection on slow links.
+        player.play()
     }
 
     private func loadLyrics(for song: Song) {
@@ -2268,10 +2323,7 @@ final class AudioEngine: NSObject, ObservableObject {
             updateNowPlaying()
             return
         }
-        configureAudioSession()
-        player.isMuted = false
-        player.volume = 1
-        player.playImmediately(atRate: 1)
+        requestPlaybackStart()
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
         updateNowPlaying()
