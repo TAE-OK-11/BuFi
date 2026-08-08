@@ -165,8 +165,6 @@ struct PersonalizedMixCard: View {
 }
 
 struct PersonalizedMixDetailView: View {
-    @EnvironmentObject private var playbackItem: PlaybackItemState
-
     let mix: PersonalizedMix
     private let audio = AudioEngine.shared
 
@@ -178,7 +176,7 @@ struct PersonalizedMixDetailView: View {
                 songs
             }
             .padding(.top, 12)
-            .padding(.bottom, playbackItem.currentSong == nil ? 56 : 148)
+            .buFiMiniPlayerContentClearance(idle: 56, playing: 148)
         }
         .background(BuFiScreenBackground())
         .navigationBarTitleDisplayMode(.inline)

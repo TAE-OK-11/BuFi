@@ -4,7 +4,9 @@ import Foundation
 @MainActor
 final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var phase: AppModel.SessionState = .signedOut
+    @Published fileprivate(set) var connectedServerAddress = ""
     @Published fileprivate(set) var serverVersion = ""
+    @Published fileprivate(set) var subsonicAPIVersion = ""
     @Published fileprivate(set) var hasLastFMAPIKey = false
     @Published fileprivate(set) var hasListenBrainzToken = false
     @Published fileprivate(set) var listenBrainzUsername = ""
@@ -18,6 +20,16 @@ final class AppSessionState: ObservableObject {
     fileprivate func setServerVersion(_ value: String) {
         guard serverVersion != value else { return }
         serverVersion = value
+    }
+
+    fileprivate func setConnectedServerAddress(_ value: String) {
+        guard connectedServerAddress != value else { return }
+        connectedServerAddress = value
+    }
+
+    fileprivate func setSubsonicAPIVersion(_ value: String) {
+        guard subsonicAPIVersion != value else { return }
+        subsonicAPIVersion = value
     }
 
     fileprivate func setHasLastFMAPIKey(_ value: Bool) {
@@ -82,6 +94,7 @@ final class AppModel: ObservableObject {
     enum SessionState: Equatable {
         case signedOut
         case connecting
+        case signingOut
         case ready
     }
 
@@ -134,6 +147,16 @@ final class AppModel: ObservableObject {
     private(set) var serverVersion: String {
         get { session.serverVersion }
         set { session.setServerVersion(newValue) }
+    }
+
+    private(set) var connectedServerAddress: String {
+        get { session.connectedServerAddress }
+        set { session.setConnectedServerAddress(newValue) }
+    }
+
+    private(set) var subsonicAPIVersion: String {
+        get { session.subsonicAPIVersion }
+        set { session.setSubsonicAPIVersion(newValue) }
     }
 
     private(set) var hasLastFMAPIKey: Bool {
@@ -229,7 +252,7 @@ final class AppModel: ObservableObject {
         await connect(credentials, persist: true)
     }
 
-    func logout() {
+    func logout() async {
         sessionGeneration += 1
         let logoutGeneration = sessionGeneration
         let accountScope = client.map {
@@ -237,28 +260,12 @@ final class AppModel: ObservableObject {
         }
         searchGeneration += 1
         searchTask?.cancel()
+        searchTask = nil
         recommendationTask?.cancel()
+        recommendationTask = nil
         clearFavoriteState()
+        clearDetailCaches()
         secureStore.delete()
-        if let accountScope {
-            Task { [weak self] in
-                guard let self,
-                      self.sessionGeneration == logoutGeneration else {
-                    return
-                }
-                await OfflineStore.shared.deactivate(accountScope: accountScope)
-                guard self.sessionGeneration == logoutGeneration else { return }
-                await ArtworkStore.shared.deactivate(accountScope: accountScope)
-                guard self.sessionGeneration == logoutGeneration else { return }
-                await ListeningHistoryStore.shared.deactivate(
-                    accountScope: accountScope
-                )
-                guard self.sessionGeneration == logoutGeneration else { return }
-                await HomeSnapshotStore.shared.remove(
-                    accountScope: accountScope
-                )
-            }
-        }
         client = nil
         home = .empty
         searchResults = .empty
@@ -266,10 +273,31 @@ final class AppModel: ObservableObject {
         refreshInFlight = false
         lastFullRefresh = .distantPast
         lastHomeSnapshotSave = .distantPast
-        clearDetailCaches()
-        sessionState = .signedOut
+        connectedServerAddress = ""
         serverVersion = ""
-        AudioEngine.shared.configure(client: nil)
+        subsonicAPIVersion = ""
+        errorMessage = nil
+        sessionState = .signingOut
+
+        // Stop playback before detaching the history scope so the final
+        // completion/skip sample and queue deletion are durable.
+        await AudioEngine.shared.shutdownForSessionEnd()
+        guard sessionGeneration == logoutGeneration else { return }
+        await OfflineStore.shared.flushPendingWrites()
+        guard sessionGeneration == logoutGeneration else { return }
+        await ListeningHistoryStore.shared.flushPendingWrites()
+        guard sessionGeneration == logoutGeneration else { return }
+
+        if let accountScope {
+            await ArtworkStore.shared.clearAll()
+            guard sessionGeneration == logoutGeneration else { return }
+            await deactivateStores(accountScope: accountScope)
+            guard sessionGeneration == logoutGeneration else { return }
+            await HomeSnapshotStore.shared.remove(accountScope: accountScope)
+            guard sessionGeneration == logoutGeneration else { return }
+        }
+
+        sessionState = .signedOut
     }
 
     func refresh(forceFull: Bool = false, silent: Bool = false) async {
@@ -1827,6 +1855,38 @@ final class AppModel: ObservableObject {
         }
     }
 
+    nonisolated static func serverDisplayAddress(from value: String) -> String {
+        guard let components = URLComponents(string: value),
+              let rawHost = components.host?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              !rawHost.isEmpty else {
+            return ""
+        }
+
+        let lowercasedHost = rawHost.lowercased()
+        let host = lowercasedHost.contains(":")
+            && !lowercasedHost.hasPrefix("[")
+            ? "[\(lowercasedHost)]"
+            : lowercasedHost
+        let port = components.port.map { ":\($0)" } ?? ""
+        let path = components.percentEncodedPath.trimmingCharacters(
+            in: CharacterSet(charactersIn: "/")
+        )
+        return path.isEmpty
+            ? host + port
+            : host + port + "/" + path
+    }
+
+    private static func sanitizedVersion(_ value: String?) -> String {
+        guard let value else { return "" }
+        let flattened = value
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return String(flattened.prefix(80))
+    }
+
     private func connect(_ credentials: ServerCredentials, persist: Bool) async {
         sessionGeneration += 1
         let generation = sessionGeneration
@@ -1839,7 +1899,8 @@ final class AppModel: ObservableObject {
         let isReplacingActiveSession = client != nil
         client = nil
         if isReplacingActiveSession {
-            AudioEngine.shared.configure(client: nil)
+            await AudioEngine.shared.shutdownForSessionEnd()
+            guard generation == sessionGeneration else { return }
         }
         if let previousAccountScope {
             await deactivateStores(accountScope: previousAccountScope)
@@ -1847,7 +1908,9 @@ final class AppModel: ObservableObject {
         guard generation == sessionGeneration else { return }
         home = .empty
         searchResults = .empty
+        connectedServerAddress = ""
         serverVersion = ""
+        subsonicAPIVersion = ""
         refreshInFlight = false
         lastHomeSnapshotSave = .distantPast
         isSearching = false
@@ -1858,7 +1921,7 @@ final class AppModel: ObservableObject {
         var activatedAccountScope: String?
         do {
             let client = try OpenSubsonicClient(credentials: credentials)
-            let accountScope = AccountScope.identifier(for: credentials)
+            let accountScope = AccountScope.identifier(for: client.credentials)
             async let statusRequest = client.ping()
             async let cachedSnapshotRequest = HomeSnapshotStore.shared.load(
                 accountScope: accountScope
@@ -1883,7 +1946,7 @@ final class AppModel: ObservableObject {
                 await deactivateStores(accountScope: accountScope)
                 return
             }
-            if persist { try secureStore.save(credentials) }
+            if persist { try secureStore.save(client.credentials) }
 
             reconcileFavoriteStates(
                 in: snapshot,
@@ -1893,7 +1956,11 @@ final class AppModel: ObservableObject {
             self.home = applyingFavoriteOverrides(to: snapshot)
             self.lastFullRefresh = .distantPast
             self.lastHomeSnapshotSave = .distantPast
-            self.serverVersion = status.serverVersion ?? status.version ?? ""
+            self.connectedServerAddress = Self.serverDisplayAddress(
+                from: client.credentials.serverURL
+            )
+            self.serverVersion = Self.sanitizedVersion(status.serverVersion)
+            self.subsonicAPIVersion = Self.sanitizedVersion(status.version)
             self.sessionState = .ready
             activatedAccountScope = nil
             AudioEngine.shared.configure(
@@ -1933,7 +2000,9 @@ final class AppModel: ObservableObject {
             client = nil
             home = .empty
             searchResults = .empty
+            connectedServerAddress = ""
             serverVersion = ""
+            subsonicAPIVersion = ""
             refreshInFlight = false
             lastHomeSnapshotSave = .distantPast
             isSearching = false
