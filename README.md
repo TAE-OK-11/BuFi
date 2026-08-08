@@ -15,7 +15,8 @@ It is designed around the iOS media stack rather than a web view.
 - Apple Music-led visual system with Spotify-style separated artwork paging, a subtle Deezer accent, and an optional native Liquid Glass seek bar on iOS 26+ while retaining Classic transport controls
 - Deterministic OKLab artwork clustering with neutral-cover support, spatial multicolor fields, and a versioned GRDB palette cache
 - Nuke-backed artwork request coalescing, caching, and downsampling
-- HTTP/3-capable API requests plus gzip, Brotli, and bounded Zstandard response decoding
+- HTTP/3 racing for API, artwork, and offline downloads; HTTP/2 fallback; gzip, Brotli, and bounded Zstandard API decoding
+- In-flight API request coalescing, a 16 MiB bounded response cache, and energy-aware next-track lyrics/artwork/AVURLAsset preparation for instant skips
 - Korean (default), English, and Japanese localization
 - Favorite songs, albums, and artists, with favorite artists pinned above an indexed artist library
 - Offline downloads stored in Application Support

@@ -122,10 +122,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(BuFiTheme.accent)
-                    .accessibilityLabel("서버 연결됨")
+                ServerLatencyBadge(client: model.client)
             }
             .padding(16)
         }

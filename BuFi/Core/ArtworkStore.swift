@@ -108,8 +108,10 @@ actor ArtworkStore {
             throw URLError(.userAuthenticationRequired)
         }
         let requestedPixelSize = min(max(pixelSize, 64), 1_536)
+        var urlRequest = URLRequest(url: url)
+        ModernNetworkPolicy.prepareImageRequest(&urlRequest)
         let request = ImageRequest(
-            url: url,
+            urlRequest: urlRequest,
             processors: [.resize(width: requestedPixelSize)]
         )
         let scopedPipeline = pipeline
@@ -119,6 +121,16 @@ actor ArtworkStore {
             throw CancellationError()
         }
         return image
+    }
+
+    func prefetch(urls: [URL], pixelSize: CGFloat) async {
+        guard activeScope != nil else { return }
+        var seen = Set<URL>()
+        for url in urls.prefix(2) where seen.insert(url).inserted {
+            guard !Task.isCancelled else { return }
+            _ = try? await image(for: url, pixelSize: pixelSize)
+            await Task.yield()
+        }
     }
 
     func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
@@ -365,6 +377,16 @@ actor ArtworkStore {
             name: name,
             sizeLimit: 256 * 1_024 * 1_024
         )
+        configuration.dataLoader = DataLoader(
+            configuration: ModernNetworkPolicy.makeEphemeralConfiguration(
+                requestTimeout: 20,
+                resourceTimeout: 120,
+                maximumConnectionsPerHost: 6,
+                allowsExpensiveNetworkAccess: true,
+                allowsConstrainedNetworkAccess: true
+            )
+        )
+        configuration.maximumResponseDataSize = 32 * 1_024 * 1_024
         configuration.isTaskCoalescingEnabled = true
         configuration.isProgressiveDecodingEnabled = false
         configuration.dataCachePolicy = .automatic

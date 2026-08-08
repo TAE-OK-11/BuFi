@@ -76,6 +76,18 @@ actor OpenSubsonicClient {
         var waiters: [UUID: CheckedContinuation<HTTPResponseData, Error>]
     }
 
+    private struct CachedAPIResponse: Sendable {
+        let data: Data
+        let storedAt: Date
+    }
+
+    private static let responseCacheLimit = 128
+    private static let responseCacheByteLimit = 16 * 1_024 * 1_024
+    private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
+    private var responseCache: [String: CachedAPIResponse] = [:]
+    private var responseCacheOrder: [String] = []
+    private var responseCacheBytes = 0
+
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
         var similarArtists: [Song] = []
@@ -111,13 +123,13 @@ actor OpenSubsonicClient {
             )
         )
 
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 18
-        configuration.timeoutIntervalForResource = 60
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.urlCache = nil
-        configuration.httpMaximumConnectionsPerHost = 4
-        configuration.waitsForConnectivity = true
+        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
+            requestTimeout: 18,
+            resourceTimeout: 60,
+            maximumConnectionsPerHost: 6,
+            allowsExpensiveNetworkAccess: true,
+            allowsConstrainedNetworkAccess: true
+        )
         self.session = URLSession(
             configuration: configuration,
             delegate: HTTPSOnlyURLSessionDelegate(),
@@ -234,10 +246,22 @@ actor OpenSubsonicClient {
         semantics: RequestSemantics
     ) async throws -> Payload {
         let url = try endpointURL(endpoint, queryItems: queryItems)
+        let cacheKey = Self.responseCacheKey(
+            endpoint: endpoint,
+            queryItems: queryItems
+        )
+        let cacheLifetime = Self.responseCacheLifetime(for: endpoint)
         do {
             let response: HTTPResponseData
             switch semantics {
             case .readOnly:
+                if cacheLifetime > 0,
+                   let cached = cachedResponse(
+                    for: cacheKey,
+                    lifetime: cacheLifetime
+                   ) {
+                    return try decodeResponseData(cached)
+                }
                 response = try await coalescedReadResponse(
                     from: url,
                     key: ReadRequestKey(
@@ -251,7 +275,18 @@ actor OpenSubsonicClient {
                     allowsRetry: false
                 )
             }
-            return try decodeResponse(response)
+            let payload: Payload = try decodeResponse(response)
+            switch semantics {
+            case .readOnly where cacheLifetime > 0:
+                // Store only a body that decoded into the endpoint's expected
+                // payload, never an HTTP or schema error response.
+                storeResponse(response.data, for: cacheKey)
+            case .mutation:
+                clearResponseCache()
+            default:
+                break
+            }
+            return payload
         } catch {
             logFailure(error, endpoint: endpoint)
             throw error
@@ -283,8 +318,13 @@ actor OpenSubsonicClient {
         guard (200..<300).contains(response.response.statusCode) else {
             throw OpenSubsonicError.http(response.response.statusCode)
         }
+        return try decodeResponseData(response.data)
+    }
 
-        let capture = try decoder.decode(DecoderCapture.self, from: response.data)
+    private func decodeResponseData<Payload: Decodable>(
+        _ data: Data
+    ) throws -> Payload {
+        let capture = try decoder.decode(DecoderCapture.self, from: data)
         let statusEnvelope = try StatusEnvelope(from: capture.decoder)
         guard statusEnvelope.response.status == "ok" else {
             throw OpenSubsonicError.server(
@@ -521,13 +561,10 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.insecureServerURL
         }
         var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(
-            acceptsZstandard ? "zstd, br, gzip" : "br, gzip",
-            forHTTPHeaderField: "Accept-Encoding"
+        ModernNetworkPolicy.prepareAPIRequest(
+            &request,
+            acceptsZstandard: acceptsZstandard
         )
-        request.assumesHTTP3Capable = true
 
         let encodedData: Data
         let response: URLResponse
@@ -538,7 +575,7 @@ actor OpenSubsonicClient {
             throw ZstandardNegotiationError()
         }
         try Task.checkCancellation()
-        guard encodedData.count <= Self.maximumResponseBytes else {
+        guard encodedData.count <= maximumResponseBytes else {
             throw URLError(.dataLengthExceedsMaximum)
         }
         guard let http = response as? HTTPURLResponse else {
@@ -593,6 +630,82 @@ actor OpenSubsonicClient {
             Self.logger.error(
                 "Request failed at \(endpoint, privacy: .public)"
             )
+        }
+    }
+
+    private func cachedResponse(
+        for key: String,
+        lifetime: TimeInterval
+    ) -> Data? {
+        guard let value = responseCache[key] else { return nil }
+        guard Date().timeIntervalSince(value.storedAt) <= lifetime else {
+            responseCache[key] = nil
+            responseCacheBytes = max(0, responseCacheBytes - value.data.count)
+            responseCacheOrder.removeAll { $0 == key }
+            return nil
+        }
+        responseCacheOrder.removeAll { $0 == key }
+        responseCacheOrder.append(key)
+        return value.data
+    }
+
+    private func storeResponse(_ data: Data, for key: String) {
+        guard data.count <= Self.maximumCachedResponseBytes else { return }
+        if let existing = responseCache[key] {
+            responseCacheBytes = max(0, responseCacheBytes - existing.data.count)
+        }
+        responseCache[key] = CachedAPIResponse(data: data, storedAt: Date())
+        responseCacheBytes += data.count
+        responseCacheOrder.removeAll { $0 == key }
+        responseCacheOrder.append(key)
+        while responseCacheOrder.count > Self.responseCacheLimit
+                || responseCacheBytes > Self.responseCacheByteLimit {
+            let evicted = responseCacheOrder.removeFirst()
+            if let removed = responseCache.removeValue(forKey: evicted) {
+                responseCacheBytes = max(0, responseCacheBytes - removed.data.count)
+            }
+        }
+    }
+
+    private func clearResponseCache() {
+        responseCache.removeAll(keepingCapacity: false)
+        responseCacheOrder.removeAll(keepingCapacity: false)
+        responseCacheBytes = 0
+    }
+
+    private static func responseCacheKey(
+        endpoint: String,
+        queryItems: [URLQueryItem]
+    ) -> String {
+        var parameters: [String] = []
+        parameters.reserveCapacity(queryItems.count)
+        for item in queryItems {
+            parameters.append(item.name + "=" + (item.value ?? ""))
+        }
+        parameters.sort()
+        return endpoint + "?" + parameters.joined(separator: "&")
+    }
+
+    private static func responseCacheLifetime(for endpoint: String) -> TimeInterval {
+        switch endpoint {
+        case "ping", "star", "unstar", "scrobble",
+             "reportPlayback", "savePlayQueue":
+            return 0
+        case "getOpenSubsonicExtensions":
+            return 60 * 60
+        case "getLyricsBySongId":
+            return 6 * 60 * 60
+        case "getGenres":
+            return 10 * 60
+        case "getArtistInfo2":
+            return 5 * 60
+        default:
+            // Coalesce bursts from overlapping views and recommendation
+            // providers without making library state visibly stale. Unknown
+            // mutation endpoints remain uncached by default.
+            return endpoint.hasPrefix("get") || endpoint.hasPrefix("search")
+                ? 2
+                : 0
         }
     }
 
@@ -1436,6 +1549,25 @@ actor OpenSubsonicClient {
             synced: source.synced ?? !lines.isEmpty,
             lines: lines.sorted { $0.start < $1.start }
         )
+    }
+
+    func prefetchLyrics(songIDs: [String]) async {
+        var seen = Set<String>()
+        for songID in songIDs.prefix(2) where seen.insert(songID).inserted {
+            guard !Task.isCancelled else { return }
+            _ = try? await lyrics(songID: songID)
+        }
+    }
+
+    func trimTransientNetworkCaches() {
+        for request in inFlightReadRequests.values {
+            request.task.cancel()
+            request.waiters.values.forEach {
+                $0.resume(throwing: CancellationError())
+            }
+        }
+        inFlightReadRequests.removeAll(keepingCapacity: false)
+        clearResponseCache()
     }
 
     func streamURL(
