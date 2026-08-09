@@ -190,29 +190,45 @@ private struct RecommendationProfile {
     var moods: [String: Double] = [:]
 
     func affinity(for song: Song) -> Double {
-        var values: [Double] = []
+        var strongest = 0.0
         if !song.artist.isEmpty {
-            values.append(artists[RecommendationMixer.normalized(song.artist)] ?? 0)
+            strongest = max(
+                strongest,
+                artists[RecommendationMixer.normalized(song.artist)] ?? 0
+            )
         }
         for genre in ([song.genre].compactMap { $0 } + (song.genres ?? []).map(\.name)) {
             if !genre.isEmpty {
-                values.append(genres[RecommendationMixer.normalized(genre)] ?? 0)
+                strongest = max(
+                    strongest,
+                    genres[RecommendationMixer.normalized(genre)] ?? 0
+                )
             }
         }
         for mood in song.moods ?? [] {
-            values.append(moods[RecommendationMixer.normalized(mood)] ?? 0)
+            strongest = max(
+                strongest,
+                moods[RecommendationMixer.normalized(mood)] ?? 0
+            )
         }
-        return values.max() ?? 0
+        return strongest
     }
 }
 
 private struct RankedRecommendation {
     let song: Song
     var score: Double
-    let confidence: Double
+    let artistKey: String
+    let albumKey: String
+    let deduplicationKey: String
     let isDiscovery: Bool
     let isNewArtist: Bool
     let isHiddenGem: Bool
+}
+
+private struct RecommendationScoringPlan {
+    let weights: [RecommendationFeature: Double]
+    let totalWeight: Double
 }
 
 private final class RecommendationMixCache: @unchecked Sendable {
@@ -363,30 +379,34 @@ enum RecommendationMixer {
         let discoveryRanks = rankMap(snapshot.randomSongs)
         let lastFMRanks = rankMap(snapshot.lastFMRecommendedSongs)
         let listenBrainzRanks = rankMap(snapshot.listenBrainzRecommendedSongs)
-        let maxRepeat = max(
-            1,
-            allBehaviors.map { log1p(Double($0.repeatCount)) }.max() ?? 1
-        )
-        let maxPlayCount = max(
-            1,
-            candidates.map { Double($0.playCount ?? 0) }.max()
-                ?? Double(allBehaviors.map(\.playCount).max() ?? 1)
-        )
-        let albumCandidateCounts = Dictionary(
-            grouping: candidates.compactMap { song -> (String, String)? in
-                guard let albumID = song.albumId else { return nil }
-                return (albumID, song.id)
-            },
-            by: { $0.0 }
-        ).mapValues(\.count)
-        let playedAlbumCounts = Dictionary(
-            grouping: allBehaviors.compactMap { value -> String? in
-                guard value.playCount > 0 else { return nil }
-                return value.song.albumId
-            },
-            by: { $0 }
-        ).mapValues(\.count)
+        let maxRepeat = max(1, allBehaviors.reduce(0) {
+            max($0, log1p(Double($1.repeatCount)))
+        })
+        let behaviorMaxPlayCount = allBehaviors.reduce(0) {
+            max($0, $1.playCount)
+        }
+        let maxPlayCount = max(1, candidates.reduce(Double(behaviorMaxPlayCount)) {
+            max($0, Double($1.playCount ?? 0))
+        })
+        var albumCandidateCounts: [String: Int] = [:]
+        for song in candidates {
+            if let albumID = song.albumId {
+                albumCandidateCounts[albumID, default: 0] += 1
+            }
+        }
+        var playedAlbumCounts: [String: Int] = [:]
+        for value in allBehaviors where value.playCount > 0 {
+            if let albumID = value.song.albumId {
+                playedAlbumCounts[albumID, default: 0] += 1
+            }
+        }
         let isColdStart = behavior.totalPlayCount < 5
+        let scoringPlan = scoringPlan(
+            weights: weights,
+            preset: preset,
+            coldStart: isColdStart
+        )
+        let currentHour = Calendar.current.component(.hour, from: date)
         let thirtyMinuteSeed = Int(date.timeIntervalSince1970 / 1_800)
 
         var ranked = candidates.map { song -> RankedRecommendation in
@@ -444,7 +464,7 @@ enum RecommendationMixer {
                 favoriteAffinity: favoriteAffinity,
                 recentArtists: recentArtists
             )
-            let timeScore = timeAwarenessScore(song, date: date)
+            let timeScore = timeAwarenessScore(song, hour: currentHour)
             let popularityScore = max(
                 rankScore(song.id, in: popularRanks),
                 min(1, log1p(Double(song.playCount ?? 0)) / log1p(maxPlayCount))
@@ -471,9 +491,7 @@ enum RecommendationMixer {
             ]
             let score = weightedScore(
                 features: features,
-                weights: weights,
-                preset: preset,
-                coldStart: isColdStart
+                plan: scoringPlan
             )
             let metadataConfidence = metadataConfidence(song)
             let sourceConfidence = sourceConfidence(
@@ -497,13 +515,16 @@ enum RecommendationMixer {
                     + jitter
             )
             let isDiscovery = !knownSongIDs.contains(song.id)
-            let isNewArtist = !knownArtists.contains(normalized(song.artist))
+            let artistKey = normalized(song.artist)
+            let isNewArtist = !knownArtists.contains(artistKey)
             let isHiddenGem = isDiscovery
                 && (song.playCount ?? 0) <= 2
             return RankedRecommendation(
                 song: song,
                 score: finalScore,
-                confidence: confidence,
+                artistKey: artistKey,
+                albumKey: normalized(song.albumId ?? song.album),
+                deduplicationKey: deduplicationKey(for: song),
                 isDiscovery: isDiscovery,
                 isNewArtist: isNewArtist,
                 isHiddenGem: isHiddenGem
@@ -530,12 +551,11 @@ enum RecommendationMixer {
         cache.removeAll()
     }
 
-    private static func weightedScore(
-        features: [RecommendationFeature: Double],
+    private static func scoringPlan(
         weights: RecommendationWeights,
         preset: RecommendationPreset,
         coldStart: Bool
-    ) -> Double {
+    ) -> RecommendationScoringPlan {
         var userWeights: [RecommendationFeature: Double] = [
             .history: weights.history,
             .favorites: weights.favorites,
@@ -566,16 +586,28 @@ enum RecommendationMixer {
             userWeights[.history] = 0.15
             userWeights[.behavior] = 0.15
         }
-        var total = 0.0
-        var weightTotal = 0.0
-        for (feature, featureScore) in features {
-            let weight = (preset.featureWeights[feature] ?? 0)
-                * (userWeights[feature] ?? 0)
-            guard weight > 0 else { continue }
-            total += min(max(featureScore, 0), 1) * weight
-            weightTotal += weight
+        var effectiveWeights: [RecommendationFeature: Double] = [:]
+        effectiveWeights.reserveCapacity(preset.featureWeights.count)
+        for (feature, presetWeight) in preset.featureWeights {
+            let weight = presetWeight * (userWeights[feature] ?? 0)
+            if weight > 0 { effectiveWeights[feature] = weight }
         }
-        return weightTotal > 0 ? total / weightTotal : 0
+        return RecommendationScoringPlan(
+            weights: effectiveWeights,
+            totalWeight: effectiveWeights.values.reduce(0, +)
+        )
+    }
+
+    private static func weightedScore(
+        features: [RecommendationFeature: Double],
+        plan: RecommendationScoringPlan
+    ) -> Double {
+        var total = 0.0
+        for (feature, featureScore) in features {
+            guard let weight = plan.weights[feature] else { continue }
+            total += min(max(featureScore, 0), 1) * weight
+        }
+        return plan.totalWeight > 0 ? total / plan.totalWeight : 0
     }
 
     private static func profile(
@@ -729,8 +761,7 @@ enum RecommendationMixer {
             : favoriteAffinity
     }
 
-    private static func timeAwarenessScore(_ song: Song, date: Date) -> Double {
-        let hour = Calendar.current.component(.hour, from: date)
+    private static func timeAwarenessScore(_ song: Song, hour: Int) -> Double {
         let text = normalized(
             (
                 [song.genre, song.title].compactMap { $0 }
@@ -872,9 +903,8 @@ enum RecommendationMixer {
             var bestIndex = 0
             var bestAdjustedScore = -Double.infinity
             for (index, value) in remaining.enumerated() {
-                let artistCount = artistCounts[normalized(value.song.artist), default: 0]
-                let albumKey = normalized(value.song.albumId ?? value.song.album)
-                let albumCount = albumCounts[albumKey, default: 0]
+                let artistCount = artistCounts[value.artistKey, default: 0]
+                let albumCount = albumCounts[value.albumKey, default: 0]
                 let adjusted = value.score
                     * diversityFactor(for: artistCount)
                     * diversityFactor(for: albumCount)
@@ -885,11 +915,8 @@ enum RecommendationMixer {
             }
             let selected = remaining.remove(at: bestIndex)
             result.append(selected)
-            artistCounts[normalized(selected.song.artist), default: 0] += 1
-            albumCounts[
-                normalized(selected.song.albumId ?? selected.song.album),
-                default: 0
-            ] += 1
+            artistCounts[selected.artistKey, default: 0] += 1
+            albumCounts[selected.albumKey, default: 0] += 1
         }
         return result
     }
@@ -908,19 +935,21 @@ enum RecommendationMixer {
     ) -> [RankedRecommendation] {
         var keys = Set<String>()
         return values.filter { value in
-            let key: String
-            if let mbid = value.song.musicBrainzId, !mbid.isEmpty {
-                key = "mbid:\(normalized(mbid))"
-            } else if let isrc = value.song.isrc?.first, !isrc.isEmpty {
-                key = "isrc:\(normalized(isrc))"
-            } else {
-                key = [
-                    normalized(value.song.artist),
-                    canonicalTitle(value.song.title)
-                ].joined(separator: "\u{1F}")
-            }
-            return keys.insert(key).inserted
+            keys.insert(value.deduplicationKey).inserted
         }
+    }
+
+    private static func deduplicationKey(for song: Song) -> String {
+        if let mbid = song.musicBrainzId, !mbid.isEmpty {
+            return "mbid:\(normalized(mbid))"
+        }
+        if let isrc = song.isrc?.first, !isrc.isEmpty {
+            return "isrc:\(normalized(isrc))"
+        }
+        return [
+            normalized(song.artist),
+            canonicalTitle(song.title)
+        ].joined(separator: "\u{1F}")
     }
 
     private static func canonicalTitle(_ value: String) -> String {
@@ -1006,12 +1035,22 @@ enum RecommendationMixer {
             snapshot.listenBrainzRecommendedSongs,
             snapshot.randomSongs,
             snapshot.mostPlayedSongs,
-            snapshot.starredSongs
+            snapshot.starredSongs,
+            snapshot.daylistSongs,
+            snapshot.recommendedSongs
         ]
         var hash: UInt64 = 14_695_981_039_346_656_037
-        for song in sources.flatMap({ $0 }) {
-            for byte in song.id.utf8 {
-                hash ^= UInt64(byte)
+        for (sourceIndex, source) in sources.enumerated() {
+            hash ^= UInt64(sourceIndex + 1)
+            hash &*= 1_099_511_628_211
+            for song in source {
+                for byte in song.id.utf8 {
+                    hash ^= UInt64(byte)
+                    hash &*= 1_099_511_628_211
+                }
+                // Delimit IDs so ["ab", "c"] and ["a", "bc"] cannot
+                // accidentally reuse the same recommendation cache entry.
+                hash ^= 0xFF
                 hash &*= 1_099_511_628_211
             }
         }
@@ -1122,9 +1161,20 @@ enum DaylistBuilder {
     }
 
     private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
-        songs.sorted {
-            stableHash($0.id, seed: seed) < stableHash($1.id, seed: seed)
+        let hashed: [(index: Int, song: Song, hash: UInt64)] =
+            songs.enumerated().map { index, song in
+                (
+                    index: index,
+                    song: song,
+                    hash: stableHash(song.id, seed: seed)
+                )
+            }
+        let ordered = hashed.sorted { lhs, rhs in
+            lhs.hash == rhs.hash
+                ? lhs.index < rhs.index
+                : lhs.hash < rhs.hash
         }
+        return ordered.map(\.song)
     }
 
     private static func unique(_ songs: [Song]) -> [Song] {
@@ -1219,7 +1269,40 @@ enum ArtistMixPreferences {
     }
 }
 
+private struct PersonalizedMixCacheKey: Equatable {
+    let snapshot: HomeSnapshot
+    let year: Int
+    let day: Int
+    let period: String
+    let calendarIdentifier: String
+    let timeZoneIdentifier: String
+    let localeIdentifier: String
+    let songLimit: Int
+    let selectedArtists: [String]
+}
+
+private final class PersonalizedMixResultCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var key: PersonalizedMixCacheKey?
+    private var mixes: [PersonalizedMix] = []
+
+    func value(for requestedKey: PersonalizedMixCacheKey) -> [PersonalizedMix]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return key == requestedKey ? mixes : nil
+    }
+
+    func insert(_ value: [PersonalizedMix], for newKey: PersonalizedMixCacheKey) {
+        lock.lock()
+        key = newKey
+        mixes = value
+        lock.unlock()
+    }
+}
+
 enum PersonalizedMixBuilder {
+    private static let cache = PersonalizedMixResultCache()
+
     static func make(
         snapshot: HomeSnapshot,
         date: Date = Date(),
@@ -1227,6 +1310,23 @@ enum PersonalizedMixBuilder {
         songLimit: Int = 24,
         selectedArtists: [String] = []
     ) -> [PersonalizedMix] {
+        guard songLimit > 0 else { return [] }
+        let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
+        let year = calendar.component(.year, from: date)
+        let period = dayPeriod(date, calendar: calendar)
+        let cacheKey = PersonalizedMixCacheKey(
+            snapshot: snapshot,
+            year: year,
+            day: day,
+            period: period.id,
+            calendarIdentifier: String(describing: calendar.identifier),
+            timeZoneIdentifier: calendar.timeZone.identifier,
+            localeIdentifier: Locale.current.identifier,
+            songLimit: songLimit,
+            selectedArtists: selectedArtists
+        )
+        if let cached = cache.value(for: cacheKey) { return cached }
+
         let pool = unique(
             snapshot.mostPlayedSongs +
             snapshot.starredSongs +
@@ -1238,9 +1338,16 @@ enum PersonalizedMixBuilder {
             snapshot.randomSongs
         )
         guard !pool.isEmpty else { return [] }
+        let searchableTexts = Dictionary(uniqueKeysWithValues: pool.map {
+            ($0.id, searchableText($0))
+        })
+        let normalizedArtists = Dictionary(uniqueKeysWithValues: pool.map {
+            ($0.id, normalized($0.artist))
+        })
+        let normalizedGenres = Dictionary(uniqueKeysWithValues: pool.compactMap {
+            song in song.genre.map { (song.id, normalized($0)) }
+        })
 
-        let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
-        let year = calendar.component(.year, from: date)
         let dailySeed = year * 1_000 + day
         let daylist = filled(
             preferred: DaylistBuilder.make(
@@ -1270,15 +1377,22 @@ enum PersonalizedMixBuilder {
             limit: songLimit
         )
 
-        let kPopMatches = pool.filter {
+        let kPopTokens = normalizedTokens(
+            ["k-pop", "kpop", "korean pop", "케이팝"]
+        )
+        let popTokens = normalizedTokens(["pop", "팝"])
+        let kPopMatches = pool.filter { song in
             containsAny(
-                searchableText($0),
-                tokens: ["k-pop", "kpop", "korean pop", "케이팝"]
+                searchableTexts[song.id] ?? "",
+                normalizedTokens: kPopTokens
             )
         }
-        let popMatches = pool.filter {
-            containsAny(searchableText($0), tokens: ["pop", "팝"]) &&
-                !kPopMatches.contains($0)
+        let kPopIDs = Set(kPopMatches.map(\.id))
+        let popMatches = pool.filter { song in
+            containsAny(
+                searchableTexts[song.id] ?? "",
+                normalizedTokens: popTokens
+            ) && !kPopIDs.contains(song.id)
         }
         let affinityCandidates = highestAffinityArtists(
             in: snapshot,
@@ -1313,9 +1427,9 @@ enum PersonalizedMixBuilder {
 
         var mixes: [PersonalizedMix] = [
             PersonalizedMix(
-                id: "daylist-\(dailySeed)-\(dayPeriod(date, calendar: calendar).id)",
+                id: "daylist-\(dailySeed)-\(period.id)",
                 title: daylistTitle(date, calendar: calendar),
-                subtitle: dayPeriod(date, calendar: calendar).subtitle,
+                subtitle: period.subtitle,
                 songs: daylist,
                 kind: .daylist
             ),
@@ -1364,6 +1478,8 @@ enum PersonalizedMixBuilder {
                 artistMix(
                     artist: artist,
                     pool: pool,
+                    normalizedArtists: normalizedArtists,
+                    normalizedGenres: normalizedGenres,
                     seed: dailySeed + 53 + index * 7,
                     limit: songLimit,
                     artworkCoverArt: artistArtwork[normalized(artist)]
@@ -1378,6 +1494,7 @@ enum PersonalizedMixBuilder {
                 subtitle: String(localized: "기분을 환하게 만드는 음악"),
                 tokens: ["happy", "smile", "joy", "summer", "disco", "funk", "행복", "여름"],
                 pool: pool,
+                searchableTexts: searchableTexts,
                 seed: dailySeed + 61,
                 limit: songLimit
             ),
@@ -1387,6 +1504,7 @@ enum PersonalizedMixBuilder {
                 subtitle: String(localized: "에너지가 필요한 순간을 위한 음악"),
                 tokens: ["dance", "edm", "electronic", "rock", "hip hop", "upbeat", "댄스"],
                 pool: pool,
+                searchableTexts: searchableTexts,
                 seed: dailySeed + 67,
                 limit: songLimit
             ),
@@ -1396,6 +1514,7 @@ enum PersonalizedMixBuilder {
                 subtitle: String(localized: "사랑과 설렘을 담은 음악"),
                 tokens: ["love", "romantic", "romance", "r&b", "soul", "ballad", "사랑"],
                 pool: pool,
+                searchableTexts: searchableTexts,
                 seed: dailySeed + 71,
                 limit: songLimit
             ),
@@ -1405,12 +1524,15 @@ enum PersonalizedMixBuilder {
                 subtitle: String(localized: "편안하게 흐르는 차분한 음악"),
                 tokens: ["chill", "ambient", "acoustic", "jazz", "lo-fi", "indie", "잔잔"],
                 pool: pool,
+                searchableTexts: searchableTexts,
                 seed: dailySeed + 79,
                 limit: songLimit
             )
         ])
 
-        return mixes.filter { !$0.songs.isEmpty }
+        let result = mixes.filter { !$0.songs.isEmpty }
+        cache.insert(result, for: cacheKey)
+        return result
     }
 
     static func favoriteSongs(_ songs: [Song]) -> PersonalizedMix {
@@ -1439,21 +1561,29 @@ enum PersonalizedMixBuilder {
     private static func artistMix(
         artist: String,
         pool: [Song],
+        normalizedArtists: [String: String],
+        normalizedGenres: [String: String],
         seed: Int,
         limit: Int,
         artworkCoverArt: String?
     ) -> PersonalizedMix {
         let normalizedArtist = normalized(artist)
         let primary = ordered(
-            pool.filter { normalized($0.artist) == normalizedArtist },
+            pool.filter {
+                normalizedArtists[$0.id] == normalizedArtist
+            },
             seed: seed
         )
-        let primaryGenres = Set(primary.compactMap { $0.genre.map(normalized) })
+        let primaryGenres = Set(primary.compactMap {
+            normalizedGenres[$0.id]
+        })
         let related = ordered(
             pool.filter { song in
-                guard normalized(song.artist) != normalizedArtist else { return false }
-                if let genre = song.genre {
-                    return primaryGenres.contains(normalized(genre))
+                guard normalizedArtists[song.id] != normalizedArtist else {
+                    return false
+                }
+                if let genre = normalizedGenres[song.id] {
+                    return primaryGenres.contains(genre)
                 }
                 return true
             },
@@ -1496,11 +1626,16 @@ enum PersonalizedMixBuilder {
         subtitle: String,
         tokens: [String],
         pool: [Song],
+        searchableTexts: [String: String],
         seed: Int,
         limit: Int
     ) -> PersonalizedMix {
-        let matches = pool.filter {
-            containsAny(searchableText($0), tokens: tokens)
+        let tokens = normalizedTokens(tokens)
+        let matches = pool.filter { song in
+            containsAny(
+                searchableTexts[song.id] ?? "",
+                normalizedTokens: tokens
+            )
         }
         return PersonalizedMix(
             id: id,
@@ -1579,9 +1714,21 @@ enum PersonalizedMixBuilder {
     }
 
     private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
-        unique(songs).sorted {
-            stableHash($0.id, seed: seed) < stableHash($1.id, seed: seed)
+        let values = unique(songs)
+        let hashed: [(index: Int, song: Song, hash: UInt64)] =
+            values.enumerated().map { index, song in
+                (
+                    index: index,
+                    song: song,
+                    hash: stableHash(song.id, seed: seed)
+                )
+            }
+        let ordered = hashed.sorted { lhs, rhs in
+            lhs.hash == rhs.hash
+                ? lhs.index < rhs.index
+                : lhs.hash < rhs.hash
         }
+        return ordered.map(\.song)
     }
 
     private static func unique(_ songs: [Song]) -> [Song] {
@@ -1597,8 +1744,15 @@ enum PersonalizedMixBuilder {
         )
     }
 
-    private static func containsAny(_ value: String, tokens: [String]) -> Bool {
-        tokens.contains { value.contains(normalized($0)) }
+    private static func normalizedTokens(_ values: [String]) -> [String] {
+        values.map(normalized)
+    }
+
+    private static func containsAny(
+        _ value: String,
+        normalizedTokens: [String]
+    ) -> Bool {
+        normalizedTokens.contains { value.contains($0) }
     }
 
     private static func normalized(_ value: String) -> String {

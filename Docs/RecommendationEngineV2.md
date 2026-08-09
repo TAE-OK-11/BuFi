@@ -128,10 +128,14 @@ canonical title은 괄호 또는 접미사의 live/remaster/deluxe/version/edit/
 - Home/Daylist/Autoplay: 30분
 - Artist mix: 6시간
 - Discovery: 24시간
+- SwiftUI의 개인화 믹스: 동일한 전체 스냅샷·선택 아티스트·날짜 구간은
+  직전 결과를 재사용한다.
 
-캐시 키는 후보 ID 해시, 목적, 사용자 가중치, 행동 revision, 시간 bucket을
-포함한다. 재생·스킵·좋아요·대기열 제거 등 행동이 기록되면 revision이
-증가하고 메모리 캐시를 즉시 무효화한다.
+캐시 키는 모든 실제 후보 목록의 경계가 구분된 ID 해시, 목적, 사용자
+가중치, 행동 revision, 시간 bucket을 포함한다. 재생·스킵·좋아요·대기열
+제거 등 행동이 기록되면 revision이 증가하고 메모리 캐시를 즉시
+무효화한다. 목적별 유효 가중치와 시간대는 한 계산당 한 번만 만들고,
+결정적 정렬 해시는 곡당 한 번만 계산한다.
 
 ## Swift 유지 결정
 

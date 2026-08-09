@@ -17,9 +17,11 @@ radio scheduling, and background behavior integrated with iOS.
 - OpenSubsonic JSON requests advertise `zstd, br, gzip` in that order. BuFi has a
   bounded zstd decoder and retries with `br, gzip` if a server returns malformed
   or unsupported zstd content.
-- Artwork requests use HTTP/3 racing and the system Brotli/gzip decoder. zstd is
-  not advertised to Nuke because those bytes do not pass through BuFi's custom
-  zstd decoder.
+- Artwork requests use HTTP/3 racing and the system Brotli/gzip decoder. Nuke's
+  URLSession forwards redirects and metrics through BuFi's HTTPS-only delegate,
+  so CDN redirects retain the transport policy without permitting a cleartext
+  downgrade. zstd is not advertised because those bytes do not pass through
+  BuFi's custom decoder.
 - Offline media downloads use HTTP/3 racing but explicitly request `identity`
   content coding. Audio is already compressed, and preserving byte identity is
   necessary for reliable range requests, seeking, and resume offsets.
@@ -33,9 +35,10 @@ radio scheduling, and background behavior integrated with iOS.
   only payloads that decode successfully enter the cache.
 - Structured lyrics are retained for up to six hours and the next two queued
   tracks have lyrics, 360 px artwork, authenticated stream URLs, and reusable
-  `AVURLAsset` metadata warmed opportunistically. A manual skip consumes the
-  same partially or fully prepared asset while the page animation runs instead
-  of opening a duplicate request. Low Power Mode, serious thermal pressure,
+  `AVURLAsset` metadata warmed only after the current item reaches the playing
+  state. A manual skip consumes the same partially or fully prepared asset while
+  the page animation runs instead of opening a duplicate request. Buffering,
+  pause, constrained/expensive paths, Low Power Mode, serious thermal pressure,
   logout, and memory warnings cancel or trim speculative work immediately.
 - HTTP/1.1 pipelining is enabled only as a legacy fallback optimization; modern
   HTTP/2 and HTTP/3 paths continue to use native stream multiplexing.

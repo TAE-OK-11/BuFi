@@ -97,6 +97,37 @@ final class RecommendationEngineTests: XCTestCase {
         XCTAssertEqual(Set(first.map(\.id)).count, first.count)
     }
 
+    func testCacheInvalidatesWhenPreparedRecommendationSourcesChange() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let firstSong = song(
+            id: "prepared-a",
+            title: "Prepared A",
+            artist: "Artist A"
+        )
+        let secondSong = song(
+            id: "prepared-b",
+            title: "Prepared B",
+            artist: "Artist B"
+        )
+
+        let first = RecommendationMixer.mix(
+            snapshot: HomeSnapshot(recommendedSongs: [firstSong]),
+            weights: weights(),
+            limit: 1,
+            date: date
+        )
+        let second = RecommendationMixer.mix(
+            snapshot: HomeSnapshot(recommendedSongs: [secondSong]),
+            weights: weights(),
+            limit: 1,
+            date: date
+        )
+
+        XCTAssertEqual(first.map(\.id), [firstSong.id])
+        XCTAssertEqual(second.map(\.id), [secondSong.id])
+    }
+
     func testPersonalizedMixesProvideSixDefaultAndFourSelectedArtists() {
         let songs = (0..<12).map { index in
             song(
@@ -139,6 +170,34 @@ final class RecommendationEngineTests: XCTestCase {
         )
 
         XCTAssertNotEqual(first.map(\.id), nextDay.map(\.id))
+    }
+
+    func testPersonalizedMixCacheInvalidatesWithSnapshotContent() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let firstSong = song(
+            id: "mix-a",
+            title: "Mix A",
+            artist: "Artist A"
+        )
+        let secondSong = song(
+            id: "mix-b",
+            title: "Mix B",
+            artist: "Artist B"
+        )
+
+        let first = PersonalizedMixBuilder.make(
+            snapshot: HomeSnapshot(randomSongs: [firstSong]),
+            date: date,
+            songLimit: 1
+        )
+        let second = PersonalizedMixBuilder.make(
+            snapshot: HomeSnapshot(randomSongs: [secondSong]),
+            date: date,
+            songLimit: 1
+        )
+
+        XCTAssertTrue(first.allSatisfy { $0.songs.map(\.id) == [firstSong.id] })
+        XCTAssertTrue(second.allSatisfy { $0.songs.map(\.id) == [secondSong.id] })
     }
 
     func testArtistMixPreferencesDeduplicateAndKeepFourRecentArtists() {

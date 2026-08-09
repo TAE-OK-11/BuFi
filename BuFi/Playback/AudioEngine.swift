@@ -169,6 +169,53 @@ final class PlayerPresentationState: ObservableObject {
     }
 }
 
+/// Pure queue snapshot used to keep speculative transfers away from the
+/// critical path of starting or recovering the current stream.
+struct PlaybackPrefetchPlan: Equatable, Sendable {
+    struct Key: Equatable, Sendable {
+        let currentSongID: String
+        let upcomingSongIDs: [String]
+        let quality: String
+    }
+
+    let key: Key
+    let upcomingSongs: [Song]
+
+    static func make(
+        currentSong: Song?,
+        queue: [Song],
+        queueIndex: Int,
+        quality: StreamQuality,
+        maximumUpcoming: Int,
+        isActivelyPlaying: Bool
+    ) -> PlaybackPrefetchPlan? {
+        guard isActivelyPlaying,
+              maximumUpcoming > 0,
+              let currentSong,
+              queue.indices.contains(queueIndex),
+              queue[queueIndex].id == currentSong.id,
+              queueIndex + 1 < queue.count else {
+            return nil
+        }
+
+        let upcoming = Array(
+            queue[(queueIndex + 1)...]
+                .lazy
+                .filter { $0.externalStreamURL == nil }
+                .prefix(maximumUpcoming)
+        )
+        guard !upcoming.isEmpty else { return nil }
+        return PlaybackPrefetchPlan(
+            key: Key(
+                currentSongID: currentSong.id,
+                upcomingSongIDs: upcoming.map(\.id),
+                quality: quality.rawValue
+            ),
+            upcomingSongs: upcoming
+        )
+    }
+}
+
 @MainActor
 final class AudioEngine: NSObject, ObservableObject {
     static let shared = AudioEngine()
@@ -275,7 +322,7 @@ final class AudioEngine: NSObject, ObservableObject {
         didSet {
             UserDefaults.standard.set(quality.rawValue, forKey: "stream-quality")
             guard oldValue != quality, currentSong != nil else { return }
-            discardPreparedPlaybackAssets()
+            suspendSpeculativePrefetch()
             restartPlaybackPlan(resumeFrom: elapsed)
         }
     }
@@ -326,6 +373,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
     private var networkPrefetchTask: Task<Void, Never>?
+    private var networkPrefetchToken: UUID?
+    private var offlinePrefetchToken: UUID?
+    private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
+    private var lastOfflinePrefetchKey: PlaybackPrefetchPlan.Key?
     private var preparedPlaybackAssets: [String: PreparedPlaybackAsset] = [:]
     private var preparedPlaybackAssetOrder: [String] = []
     private var preparedPlaybackWarmupTasks: [String: Task<Void, Never>] = [:]
@@ -407,11 +458,7 @@ final class AudioEngine: NSObject, ObservableObject {
             finalizeCurrentPlayback(reason: .stopped)
             queueSaveTask?.cancel()
             queueSaveTask = nil
-            offlinePrefetchTask?.cancel()
-            offlinePrefetchTask = nil
-            networkPrefetchTask?.cancel()
-            networkPrefetchTask = nil
-            discardPreparedPlaybackAssets()
+            suspendSpeculativePrefetch()
             cancelPlaybackRecovery()
             itemLoadTask?.cancel()
             itemLoadTask = nil
@@ -571,9 +618,11 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: activeCompatibilityFormat,
             resumeFrom: 0
         )
+        // Starting the selected stream owns the critical network path. Any
+        // previous speculative transfers are discarded now; the new queue is
+        // warmed only after AVPlayer confirms that playback is established.
+        suspendSpeculativePrefetch()
         loadLyrics(for: selectedSong)
-        scheduleNetworkPrefetch()
-        scheduleOfflinePrefetch()
         scheduleQueueSave()
         updateNowPlaying()
         scheduleAutoplayContinuationIfNeeded()
@@ -627,11 +676,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // Preserve the active player item and autoplay continuity. Only
         // speculative work is discarded so playback cannot be interrupted by
         // a system memory warning.
-        offlinePrefetchTask?.cancel()
-        offlinePrefetchTask = nil
-        networkPrefetchTask?.cancel()
-        networkPrefetchTask = nil
-        discardPreparedPlaybackAssets()
+        suspendSpeculativePrefetch()
         if let client {
             Task { await client.trimTransientNetworkCaches() }
         }
@@ -648,19 +693,18 @@ final class AudioEngine: NSObject, ObservableObject {
         guard lowPowerMode
                 || thermalState == .serious
                 || thermalState == .critical else {
+            scheduleNetworkPrefetch()
+            scheduleOfflinePrefetch()
             return
         }
-        offlinePrefetchTask?.cancel()
-        offlinePrefetchTask = nil
-        networkPrefetchTask?.cancel()
-        networkPrefetchTask = nil
-        discardPreparedPlaybackAssets()
+        suspendSpeculativePrefetch()
     }
 
     private func pausePlayback(persistsQueue: Bool) {
         wantsPlayback = false
         cancelPlaybackRecovery()
         player.pause()
+        suspendSpeculativePrefetch()
         isPlaying = false
         isBuffering = false
         endBackgroundBridge()
@@ -1247,11 +1291,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.scheduleNetworkPrefetch()
                     self.scheduleOfflinePrefetch()
                 } else {
-                    self.offlinePrefetchTask?.cancel()
-                    self.offlinePrefetchTask = nil
-                    self.networkPrefetchTask?.cancel()
-                    self.networkPrefetchTask = nil
-                    self.discardPreparedPlaybackAssets()
+                    self.suspendSpeculativePrefetch()
                 }
             }
         }
@@ -1388,13 +1428,45 @@ final class AudioEngine: NSObject, ObservableObject {
         preparedPlaybackAssetOrder.removeAll(keepingCapacity: false)
     }
 
-    private func scheduleNetworkPrefetch() {
+    private func cancelNetworkPrefetch(resetKey: Bool) {
         networkPrefetchTask?.cancel()
+        networkPrefetchTask = nil
+        networkPrefetchToken = nil
+        if resetKey { lastNetworkPrefetchKey = nil }
+    }
+
+    private func cancelOfflinePrefetch(resetKey: Bool) {
+        offlinePrefetchTask?.cancel()
+        offlinePrefetchTask = nil
+        offlinePrefetchToken = nil
+        if resetKey { lastOfflinePrefetchKey = nil }
+    }
+
+    private func suspendSpeculativePrefetch() {
+        cancelNetworkPrefetch(resetKey: true)
+        cancelOfflinePrefetch(resetKey: true)
+        discardPreparedPlaybackAssets()
+    }
+
+    private func playbackPrefetchPlan(
+        maximumUpcoming: Int
+    ) -> PlaybackPrefetchPlan? {
+        PlaybackPrefetchPlan.make(
+            currentSong: currentSong,
+            queue: queue,
+            queueIndex: queueIndex,
+            quality: quality,
+            maximumUpcoming: maximumUpcoming,
+            isActivelyPlaying:
+                wantsPlayback && player.timeControlStatus == .playing
+        )
+    }
+
+    private func scheduleNetworkPrefetch() {
         guard allowsSpeculativeNetworkPrefetch,
               let client,
-              queue.indices.contains(queueIndex),
-              queueIndex + 1 < queue.count else {
-            networkPrefetchTask = nil
+              let plan = playbackPrefetchPlan(maximumUpcoming: 2) else {
+            cancelNetworkPrefetch(resetKey: true)
             return
         }
 
@@ -1402,17 +1474,13 @@ final class AudioEngine: NSObject, ObservableObject {
         guard !processInfo.isLowPowerModeEnabled,
               processInfo.thermalState != .serious,
               processInfo.thermalState != .critical else {
-            networkPrefetchTask = nil
+            cancelNetworkPrefetch(resetKey: true)
             return
         }
 
-        let upperBound = min(queue.count, queueIndex + 3)
-        let upcoming = Array(queue[(queueIndex + 1)..<upperBound])
-            .filter { $0.externalStreamURL == nil }
-        guard !upcoming.isEmpty else {
-            networkPrefetchTask = nil
-            return
-        }
+        guard lastNetworkPrefetchKey != plan.key else { return }
+        cancelNetworkPrefetch(resetKey: false)
+        lastNetworkPrefetchKey = plan.key
 
         // Prepare the actual AVURLAsset in addition to lyrics and artwork.
         // The player consumes this same object on skip, so work completed while
@@ -1420,18 +1488,26 @@ final class AudioEngine: NSObject, ObservableObject {
         // Opening an AVURLAsset starts real media transport work. Warm only the
         // immediate successor so skip latency improves without spending radio,
         // decoder, and server resources on a track that may never be played.
-        if let nextSong = upcoming.first {
+        if let nextSong = plan.upcomingSongs.first {
             preparePlaybackAsset(for: nextSong)
         }
 
+        let token = UUID()
+        networkPrefetchToken = token
         networkPrefetchTask = Task(priority: .utility) { [weak self] in
+            defer {
+                if let self, self.networkPrefetchToken == token {
+                    self.networkPrefetchTask = nil
+                    self.networkPrefetchToken = nil
+                }
+            }
             async let lyricsPrefetch: Void = client.prefetchLyrics(
-                songIDs: upcoming.map(\.id)
+                songIDs: plan.upcomingSongs.map(\.id)
             )
 
             var coverURLs: [URL] = []
             var seenCoverIDs = Set<String>()
-            for song in upcoming {
+            for song in plan.upcomingSongs {
                 guard !Task.isCancelled else { return }
                 guard let coverID = song.coverArt,
                       seenCoverIDs.insert(coverID).inserted,
@@ -1446,19 +1522,10 @@ final class AudioEngine: NSObject, ObservableObject {
             )
             await lyricsPrefetch
             guard !Task.isCancelled else { return }
-            self?.networkPrefetchTask = nil
         }
     }
 
     private func scheduleOfflinePrefetch() {
-        offlinePrefetchTask?.cancel()
-        offlinePrefetchTask = nil
-        guard allowsSpeculativeNetworkPrefetch,
-              let client,
-              !queue.isEmpty,
-              queue.indices.contains(queueIndex) else {
-            return
-        }
         let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
         let defaultCount =
             UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
@@ -1468,18 +1535,32 @@ final class AudioEngine: NSObject, ObservableObject {
         guard !ProcessInfo.processInfo.isLowPowerModeEnabled,
               thermalState != .serious,
               thermalState != .critical else {
+            cancelOfflinePrefetch(resetKey: true)
             return
         }
         let cappedCount = min(max(defaultCount, 0), 3)
-        guard cappedCount > 0 else { return }
+        guard allowsSpeculativeNetworkPrefetch,
+              let client,
+              let plan = playbackPrefetchPlan(
+                maximumUpcoming: cappedCount
+              ) else {
+            cancelOfflinePrefetch(resetKey: true)
+            return
+        }
+        guard lastOfflinePrefetchKey != plan.key else { return }
+        cancelOfflinePrefetch(resetKey: false)
+        lastOfflinePrefetchKey = plan.key
 
-        let start = queueIndex + 1
-        let end = min(queue.count, start + cappedCount)
-        guard start < end else { return }
-        let candidates = Array(queue[start..<end])
-
-        offlinePrefetchTask = Task(priority: .utility) {
-            for song in candidates {
+        let token = UUID()
+        offlinePrefetchToken = token
+        offlinePrefetchTask = Task(priority: .utility) { [weak self] in
+            defer {
+                if let self, self.offlinePrefetchToken == token {
+                    self.offlinePrefetchTask = nil
+                    self.offlinePrefetchToken = nil
+                }
+            }
+            for song in plan.upcomingSongs {
                 guard !Task.isCancelled else { return }
                 if await OfflineStore.shared.localURL(for: song.id) == nil {
                     _ = try? await OfflineStore.shared.download(song: song, client: client)
@@ -1898,8 +1979,15 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.cancelPlaybackRecovery()
                     self.endBackgroundBridge()
                     self.reportPlaybackState("playing")
+                    self.scheduleNetworkPrefetch()
+                    self.scheduleOfflinePrefetch()
                 } else if !self.wantsPlayback {
                     self.reportPlaybackState("paused")
+                    self.suspendSpeculativePrefetch()
+                } else {
+                    // A buffering or recovery transition must give the active
+                    // stream sole use of the radio and server connection.
+                    self.suspendSpeculativePrefetch()
                 }
                 self.refreshIdleTimerPreference()
                 self.updateRemoteCommands()
