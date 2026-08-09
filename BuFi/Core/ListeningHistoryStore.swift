@@ -380,6 +380,7 @@ actor ListeningHistoryStore {
     }
 
     func snapshot(limit: Int = 30) -> ListeningHistorySnapshot {
+        let boundedLimit = max(0, limit)
         let values = Array(entries.values)
         let mostPlayed = values.sorted {
             if $0.playCount == $1.playCount {
@@ -389,17 +390,18 @@ actor ListeningHistoryStore {
         }
         let recent = values.sorted { $0.lastPlayed > $1.lastPlayed }
         return ListeningHistorySnapshot(
-            mostPlayedSongs: Array(mostPlayed.prefix(limit).map(\.song)),
-            recentlyPlayedSongs: Array(recent.prefix(limit).map(\.song))
+            mostPlayedSongs: Array(mostPlayed.prefix(boundedLimit).map(\.song)),
+            recentlyPlayedSongs: Array(recent.prefix(boundedLimit).map(\.song))
         )
     }
 
     func recommendationSnapshot(
         recentLimit: Int = 20
     ) -> RecommendationBehaviorSnapshot {
+        let boundedLimit = max(0, recentLimit)
         let recent = entries.values
             .sorted { $0.lastPlayed > $1.lastPlayed }
-            .prefix(recentLimit)
+            .prefix(boundedLimit)
             .map(\.song)
         return RecommendationBehaviorSnapshot(
             songs: entries,

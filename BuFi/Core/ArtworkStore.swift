@@ -380,7 +380,7 @@ actor ArtworkStore {
             name: name,
             sizeLimit: 256 * 1_024 * 1_024
         )
-        configuration.dataLoader = DataLoader(
+        let dataLoader = DataLoader(
             configuration: ModernNetworkPolicy.makeEphemeralConfiguration(
                 requestTimeout: 20,
                 resourceTimeout: 120,
@@ -389,6 +389,11 @@ actor ArtworkStore {
                 allowsConstrainedNetworkAccess: true
             )
         )
+        // Nuke forwards URLSession delegate callbacks to this proxy. Keeping
+        // BuFi's delegate attached ensures HTTPS-only redirects, HTTP/3 request
+        // policy reapplication, and transport metrics also cover artwork CDNs.
+        dataLoader.delegate = HTTPSOnlyURLSessionDelegate()
+        configuration.dataLoader = dataLoader
         configuration.maximumResponseDataSize = 32 * 1_024 * 1_024
         configuration.isTaskCoalescingEnabled = true
         configuration.isProgressiveDecodingEnabled = false

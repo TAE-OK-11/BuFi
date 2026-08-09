@@ -1105,30 +1105,20 @@ actor OpenSubsonicClient {
         let supportsSonic = await supportsExtension("sonicSimilarity")
 
         for seed in distinctSeeds.prefix(3) {
-            if supportsSonic,
-               let sonic: SonicSimilarPayload = try? await readRequest(
-                   "getSonicSimilarTracks",
-                   parameters: ["id": seed.id, "count": "\(max(8, count))"]
-               ) {
-                sonicSongs.append(
-                    contentsOf: (sonic.sonicMatch ?? [])
-                        .sorted {
-                            ($0.similarity ?? 0) > ($1.similarity ?? 0)
-                        }
-                        .map(\.entry)
-                )
-            }
-            if similarArtistSongs.count < count, let artistID = seed.artistId {
-                let similar: SimilarSongsPayload? = try? await readRequest(
-                    "getSimilarSongs2",
-                    parameters: ["id": artistID, "count": "\(max(8, count))"]
-                )
-                similarArtistSongs.append(contentsOf:
-                    similar?.similarSongs2?.song
-                    ?? similar?.similarSongs?.song
-                    ?? []
-                )
-            }
+            guard !Task.isCancelled else { break }
+            async let sonicResult = sonicRecommendations(
+                for: seed,
+                count: count,
+                enabled: supportsSonic
+            )
+            async let similarResult = similarArtistRecommendations(
+                for: seed,
+                count: count,
+                enabled: similarArtistSongs.count < count
+            )
+            let (sonic, similar) = await (sonicResult, similarResult)
+            sonicSongs.append(contentsOf: sonic)
+            similarArtistSongs.append(contentsOf: similar)
             if sonicSongs.count >= count,
                similarArtistSongs.count >= count {
                 break
@@ -1148,6 +1138,40 @@ actor OpenSubsonicClient {
                     .prefix(count)
             )
         )
+    }
+
+    private func sonicRecommendations(
+        for seed: Song,
+        count: Int,
+        enabled: Bool
+    ) async -> [Song] {
+        guard enabled, !Task.isCancelled else { return [] }
+        let payload: SonicSimilarPayload? = try? await readRequest(
+            "getSonicSimilarTracks",
+            parameters: ["id": seed.id, "count": "\(max(8, count))"]
+        )
+        return (payload?.sonicMatch ?? [])
+            .sorted { ($0.similarity ?? 0) > ($1.similarity ?? 0) }
+            .map(\.entry)
+    }
+
+    private func similarArtistRecommendations(
+        for seed: Song,
+        count: Int,
+        enabled: Bool
+    ) async -> [Song] {
+        guard enabled,
+              !Task.isCancelled,
+              let artistID = seed.artistId else {
+            return []
+        }
+        let payload: SimilarSongsPayload? = try? await readRequest(
+            "getSimilarSongs2",
+            parameters: ["id": artistID, "count": "\(max(8, count))"]
+        )
+        return payload?.similarSongs2?.song
+            ?? payload?.similarSongs?.song
+            ?? []
     }
 
     private func supportsExtension(_ name: String) async -> Bool {
