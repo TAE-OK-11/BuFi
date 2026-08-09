@@ -3,7 +3,7 @@ import Foundation
 import OSLog
 import SwiftSonic
 
-enum OpenSubsonicError: LocalizedError, Equatable {
+enum OpenSubsonicError: LocalizedError, Equatable, Sendable {
     case invalidServerURL
     case insecureServerURL
     case invalidResponse
@@ -29,6 +29,570 @@ enum OpenSubsonicError: LocalizedError, Equatable {
     }
 }
 
+/// A structural key for OpenSubsonic requests. Keeping query names and values
+/// as separate fields avoids collisions such as `a=b&c=d` being interpreted as
+/// either one value or two query items.
+struct OpenSubsonicRequestKey: Hashable, Sendable {
+    struct QueryItem: Hashable, Sendable {
+        let name: String
+        let value: String?
+    }
+
+    let endpoint: String
+    let queryItems: [QueryItem]
+
+    init(endpoint: String, queryItems: [URLQueryItem]) {
+        self.endpoint = endpoint
+        self.queryItems = queryItems
+            .map { QueryItem(name: $0.name, value: $0.value) }
+            .sorted { lhs, rhs in
+                if lhs.name != rhs.name { return lhs.name < rhs.name }
+                switch (lhs.value, rhs.value) {
+                case (nil, nil):
+                    return false
+                case (nil, _):
+                    return true
+                case (_, nil):
+                    return false
+                case (.some(let lhsValue), .some(let rhsValue)):
+                    return lhsValue < rhsValue
+                }
+            }
+    }
+
+    func containsQueryItem(name: String, value: String) -> Bool {
+        queryItems.contains { $0.name == name && $0.value == value }
+    }
+}
+
+/// Defines the read-cache dependencies of the mutations BuFi currently sends.
+/// Unknown mutations retain the conservative clear-all behavior so a future
+/// endpoint cannot silently leave unrelated model data stale.
+enum OpenSubsonicCacheInvalidationPolicy {
+    static func shouldInvalidate(
+        _ key: OpenSubsonicRequestKey,
+        afterMutation mutationEndpoint: String
+    ) -> Bool {
+        switch mutationEndpoint {
+        case "star", "unstar":
+            return key.endpoint == "getStarred"
+                || key.endpoint == "getStarred2"
+                || ((key.endpoint == "getAlbumList"
+                        || key.endpoint == "getAlbumList2")
+                    && key.containsQueryItem(name: "type", value: "starred"))
+        case "savePlayQueue":
+            return key.endpoint == "getPlayQueue"
+        case "reportPlayback", "scrobble":
+            return key.endpoint == "getNowPlaying"
+                || key.endpoint == "getNowPlaying2"
+                || ((key.endpoint == "getAlbumList"
+                        || key.endpoint == "getAlbumList2")
+                    && ["recent", "frequent", "highest"].contains { type in
+                        key.containsQueryItem(name: "type", value: type)
+                    })
+        default:
+            return true
+        }
+    }
+}
+
+/// A successful mutation advances this generation. Each coalesced read is
+/// stamped when its underlying transfer starts, so a response that completes
+/// after a mutation can still be returned to existing callers without being
+/// written back into the in-memory cache as stale data.
+struct OpenSubsonicCacheEpoch: Equatable, Sendable {
+    private(set) var currentValue: UInt64 = 0
+
+    mutating func advance() {
+        currentValue &+= 1
+    }
+
+    func permitsStorage(capturedValue: UInt64) -> Bool {
+        capturedValue == currentValue
+    }
+}
+
+/// Session-scoped capability memory for servers that expose `search2` but not
+/// `search3`. A new client starts optimistic; one authoritative unsupported
+/// response removes the extra failed request from every later search.
+struct OpenSubsonicSearchCapability: Equatable, Sendable {
+    private(set) var search3IsUnsupported = false
+
+    var shouldTrySearch3: Bool {
+        !search3IsUnsupported
+    }
+
+    mutating func recordSearch3Unsupported() {
+        search3IsUnsupported = true
+    }
+
+    static func isAuthoritativeUnsupported(_ error: Error) -> Bool {
+        guard let error = error as? OpenSubsonicError else { return false }
+        switch error {
+        case .http(let status):
+            return status == 404 || status == 405
+        case .server(_, let message):
+            let mentionsSearch3 = message.localizedCaseInsensitiveContains(
+                "search3"
+            )
+            let describesUnsupported = message.localizedCaseInsensitiveContains(
+                "unknown endpoint"
+            ) || message.localizedCaseInsensitiveContains("not found")
+                || message.localizedCaseInsensitiveContains("unsupported")
+                || message.localizedCaseInsensitiveContains("not implemented")
+            return mentionsSearch3 && describesUnsupported
+        default:
+            return false
+        }
+    }
+}
+
+/// Session-local discovery state for optional OpenSubsonic extensions.
+/// Authoritative endpoint absence is remembered for the client lifetime,
+/// whereas network and server failures suppress repeated discovery only for a
+/// short interval. The Sonic fallback preserves compatibility with older
+/// servers that implement the feature without advertising it.
+struct OpenSubsonicExtensionCapabilityState: Equatable, Sendable {
+    enum LookupDecision: Equatable, Sendable {
+        case discover
+        case resolved(Bool)
+    }
+
+    static let transientFailureBackoff: TimeInterval = 15
+
+    private var discoveredExtensions: Set<String>?
+    private var discoveryIsUnsupported = false
+    private var retryAfter: Date?
+
+    func decision(for name: String, now: Date) -> LookupDecision {
+        if let discoveredExtensions {
+            return .resolved(discoveredExtensions.contains(name))
+        }
+        if discoveryIsUnsupported {
+            return .resolved(Self.compatibilityFallback(for: name))
+        }
+        if let retryAfter, now < retryAfter {
+            return .resolved(Self.compatibilityFallback(for: name))
+        }
+        return .discover
+    }
+
+    mutating func recordSuccess(_ names: Set<String>) {
+        discoveredExtensions = names
+        discoveryIsUnsupported = false
+        retryAfter = nil
+    }
+
+    mutating func recordFailure(_ error: Error, now: Date) {
+        discoveredExtensions = nil
+        if Self.isAuthoritativeUnsupported(error) {
+            discoveryIsUnsupported = true
+            retryAfter = nil
+        } else {
+            discoveryIsUnsupported = false
+            retryAfter = now.addingTimeInterval(Self.transientFailureBackoff)
+        }
+    }
+
+    static func compatibilityFallback(for name: String) -> Bool {
+        name == "sonicSimilarity"
+    }
+
+    static func isAuthoritativeUnsupported(_ error: Error) -> Bool {
+        guard let error = error as? OpenSubsonicError else { return false }
+        switch error {
+        case .http(let status):
+            return status == 404 || status == 405
+        case .server(_, let message):
+            let mentionsEndpoint = message.localizedCaseInsensitiveContains(
+                "endpoint"
+            ) || message.localizedCaseInsensitiveContains(
+                "getOpenSubsonicExtensions"
+            ) || message.localizedCaseInsensitiveContains(
+                "OpenSubsonic extension"
+            )
+            let describesUnsupported = message.localizedCaseInsensitiveContains(
+                "unknown"
+            ) || message.localizedCaseInsensitiveContains("unsupported")
+                || message.localizedCaseInsensitiveContains("not supported")
+                || message.localizedCaseInsensitiveContains("not implemented")
+                || message.localizedCaseInsensitiveContains("not found")
+            return mentionsEndpoint && describesUnsupported
+        default:
+            return false
+        }
+    }
+}
+
+struct ExternalRecommendationMatchQuery: Hashable, Sendable {
+    let title: String
+    let artist: String
+    let album: String?
+    let recordingMBID: String?
+
+    init?(
+        title: String,
+        artist: String,
+        album: String?,
+        recordingMBID: String?
+    ) {
+        let normalizedTitle = ExternalRecommendationSongIndex.normalized(title)
+        guard !normalizedTitle.isEmpty else { return nil }
+        self.title = normalizedTitle
+        self.artist = ExternalRecommendationSongIndex.normalized(artist)
+        self.album = album.map(ExternalRecommendationSongIndex.normalized)
+        self.recordingMBID = recordingMBID.map {
+            ExternalRecommendationSongIndex.mbidKey($0)
+        }
+    }
+}
+
+/// Immutable, order-aware lookup tables for matching external metadata to a
+/// song collection. Each library field is normalized once during construction.
+/// Exact composite indexes provide the common fast path, while title buckets
+/// retain the original fuzzy artist-containment behavior and library ordering.
+struct ExternalRecommendationSongIndex: Sendable {
+    struct ArtistTitleKey: Hashable, Sendable {
+        let artist: String
+        let title: String
+    }
+
+    struct ArtistAlbumTitleKey: Hashable, Sendable {
+        let artist: String
+        let album: String
+        let title: String
+    }
+
+    private struct Entry: Sendable {
+        let position: Int
+        let song: Song
+        let title: String
+        let artist: String
+        let album: String
+    }
+
+    private let mbidIndex: [String: Entry]
+    private let artistTitleIndex: [ArtistTitleKey: Entry]
+    private let artistAlbumTitleIndex: [ArtistAlbumTitleKey: Entry]
+    private let titleIndex: [String: [Entry]]
+    private let orderedEntries: [Entry]
+
+    init(_ songs: [Song]) {
+        var mbidIndex: [String: Entry] = [:]
+        var artistTitleIndex: [ArtistTitleKey: Entry] = [:]
+        var artistAlbumTitleIndex: [ArtistAlbumTitleKey: Entry] = [:]
+        var titleIndex: [String: [Entry]] = [:]
+        var orderedEntries: [Entry] = []
+        mbidIndex.reserveCapacity(songs.count)
+        artistTitleIndex.reserveCapacity(songs.count)
+        artistAlbumTitleIndex.reserveCapacity(songs.count)
+        titleIndex.reserveCapacity(songs.count)
+        orderedEntries.reserveCapacity(songs.count)
+
+        for (position, song) in songs.enumerated() {
+            let entry = Entry(
+                position: position,
+                song: song,
+                title: Self.normalized(song.title),
+                artist: Self.normalized(song.artist),
+                album: Self.normalized(song.album)
+            )
+            orderedEntries.append(entry)
+            titleIndex[entry.title, default: []].append(entry)
+
+            let artistTitleKey = ArtistTitleKey(
+                artist: entry.artist,
+                title: entry.title
+            )
+            if artistTitleIndex[artistTitleKey] == nil {
+                artistTitleIndex[artistTitleKey] = entry
+            }
+
+            let artistAlbumTitleKey = ArtistAlbumTitleKey(
+                artist: entry.artist,
+                album: entry.album,
+                title: entry.title
+            )
+            if artistAlbumTitleIndex[artistAlbumTitleKey] == nil {
+                artistAlbumTitleIndex[artistAlbumTitleKey] = entry
+            }
+
+            if let value = song.musicBrainzId {
+                let key = Self.mbidKey(value)
+                if mbidIndex[key] == nil { mbidIndex[key] = entry }
+            }
+        }
+
+        self.mbidIndex = mbidIndex
+        self.artistTitleIndex = artistTitleIndex
+        self.artistAlbumTitleIndex = artistAlbumTitleIndex
+        self.titleIndex = titleIndex
+        self.orderedEntries = orderedEntries
+    }
+
+    func match(
+        _ query: ExternalRecommendationMatchQuery,
+        allowsTitleContainmentFallback: Bool = false
+    ) -> Song? {
+        if let song = firstSong(
+            normalizedTitle: query.title,
+            normalizedArtist: query.artist,
+            normalizedAlbum: query.album
+        ) {
+            return song
+        }
+        if let recordingMBID = query.recordingMBID,
+           let song = mbidIndex[recordingMBID]?.song {
+            return song
+        }
+        if let song = firstSong(
+            normalizedTitle: query.title,
+            normalizedArtist: query.artist,
+            normalizedAlbum: nil
+        ) {
+            return song
+        }
+        guard allowsTitleContainmentFallback else { return nil }
+        return orderedEntries.first {
+            $0.title.contains(query.title)
+        }?.song
+    }
+
+    func firstSong(recordingMBID: String) -> Song? {
+        mbidIndex[Self.mbidKey(recordingMBID)]?.song
+    }
+
+    func firstSong(title: String, artist: String) -> Song? {
+        firstSong(
+            normalizedTitle: Self.normalized(title),
+            normalizedArtist: Self.normalized(artist),
+            normalizedAlbum: nil
+        )
+    }
+
+    func firstSong(title: String, artist: String, album: String) -> Song? {
+        firstSong(
+            normalizedTitle: Self.normalized(title),
+            normalizedArtist: Self.normalized(artist),
+            normalizedAlbum: Self.normalized(album)
+        )
+    }
+
+    static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func mbidKey(_ value: String) -> String {
+        value.lowercased()
+    }
+
+    private func firstSong(
+        normalizedTitle title: String,
+        normalizedArtist artist: String,
+        normalizedAlbum album: String?
+    ) -> Song? {
+        guard !artist.isEmpty, let entries = titleIndex[title] else {
+            return nil
+        }
+
+        let constrainsAlbum = album.map { !$0.isEmpty } ?? false
+        let exact: Entry?
+        if constrainsAlbum, let album {
+            exact = artistAlbumTitleIndex[
+                ArtistAlbumTitleKey(
+                    artist: artist,
+                    album: album,
+                    title: title
+                )
+            ]
+        } else {
+            exact = artistTitleIndex[
+                ArtistTitleKey(artist: artist, title: title)
+            ]
+        }
+
+        // An earlier fuzzy artist match must win over a later exact-index hit
+        // because the previous implementation used `library.first(where:)`.
+        for entry in entries {
+            if let exact, entry.position >= exact.position {
+                return exact.song
+            }
+            guard Self.artistsMatch(entry.artist, artist) else { continue }
+            if constrainsAlbum, let album, entry.album != album { continue }
+            return entry.song
+        }
+        return exact?.song
+    }
+
+    private static func artistsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        lhs == rhs || lhs.contains(rhs) || rhs.contains(lhs)
+    }
+}
+
+struct ExternalRecommendationResolvedSong: Sendable {
+    let candidateIndex: Int
+    let song: Song
+}
+
+enum ExternalRecommendationMatchOrdering {
+    static func orderedUniqueSongs(
+        _ values: [ExternalRecommendationResolvedSong]
+    ) -> [Song] {
+        var ids = Set<String>()
+        return values
+            .sorted { $0.candidateIndex < $1.candidateIndex }
+            .compactMap { value in
+                ids.insert(value.song.id).inserted ? value.song : nil
+            }
+    }
+}
+
+/// Runs at most `maximumConcurrentTasks` operations while returning values in
+/// input order. Structured child-task cancellation is allowed to throw through
+/// the helper so callers can terminate the whole batch immediately.
+enum OrderedBoundedTaskGroup {
+    static func map<Input: Sendable, Output: Sendable>(
+        _ inputs: [Input],
+        maximumConcurrentTasks: Int,
+        operation: @escaping @Sendable (Input) async throws -> Output
+    ) async throws -> [Output] {
+        guard !inputs.isEmpty else { return [] }
+        try Task.checkCancellation()
+        let width = min(max(1, maximumConcurrentTasks), inputs.count)
+
+        return try await withThrowingTaskGroup(
+            of: (Int, Output).self,
+            returning: [Output].self
+        ) { group in
+            var nextIndex = width
+            var completed: [(Int, Output)] = []
+            completed.reserveCapacity(inputs.count)
+
+            for index in 0..<width {
+                let input = inputs[index]
+                group.addTask {
+                    try Task.checkCancellation()
+                    return (index, try await operation(input))
+                }
+            }
+
+            do {
+                while let value = try await group.next() {
+                    completed.append(value)
+                    if nextIndex < inputs.count {
+                        let index = nextIndex
+                        let input = inputs[index]
+                        group.addTask {
+                            try Task.checkCancellation()
+                            return (index, try await operation(input))
+                        }
+                        nextIndex += 1
+                    }
+                }
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+            try Task.checkCancellation()
+            return completed
+                .sorted { $0.0 < $1.0 }
+                .map(\.1)
+        }
+    }
+}
+
+private struct ExternalRecommendationSearchWork: Sendable {
+    let candidateIndex: Int
+    let candidate: ExternalRecommendationCandidate
+    let query: ExternalRecommendationMatchQuery
+}
+
+/// Cancellation-safe FIFO limiter for independent metadata transfers.
+///
+/// The permit is released from `defer`, including when the operation throws or
+/// is cancelled. A cancelled queued waiter is removed without consuming a
+/// permit, while a cancellation racing with a grant is handled by the post-
+/// acquisition cancellation check and the same deferred release.
+actor MetadataRequestLimiter {
+    struct Snapshot: Equatable, Sendable {
+        let limit: Int
+        let activeCount: Int
+        let waitingCount: Int
+    }
+
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<UUID, Error>
+    }
+
+    private let limit: Int
+    private var activePermits: Set<UUID> = []
+    private var waiters: [Waiter] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func withPermit<Value: Sendable>(
+        _ operation: @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let permit = try await acquire()
+        defer { release(permit) }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(
+            limit: limit,
+            activeCount: activePermits.count,
+            waitingCount: waiters.count
+        )
+    }
+
+    private func acquire() async throws -> UUID {
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                if activePermits.count < limit {
+                    activePermits.insert(id)
+                    continuation.resume(returning: id)
+                } else {
+                    waiters.append(Waiter(id: id, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(id)
+            }
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func release(_ id: UUID) {
+        guard activePermits.remove(id) != nil else { return }
+        guard !waiters.isEmpty else { return }
+        let waiter = waiters.removeFirst()
+        activePermits.insert(waiter.id)
+        waiter.continuation.resume(returning: waiter.id)
+    }
+}
+
 actor OpenSubsonicClient {
     static let apiVersion = "1.16.1"
     static let clientName = "BuFi"
@@ -43,24 +607,14 @@ actor OpenSubsonicClient {
     private let decoder: JSONDecoder
     private let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
-    private var supportedExtensions: Set<String>?
-    private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
+    private let metadataRequestLimiter = MetadataRequestLimiter(limit: 6)
+    private var extensionCapability = OpenSubsonicExtensionCapabilityState()
+    private var searchCapability = OpenSubsonicSearchCapability()
+    private var inFlightReadRequests: [OpenSubsonicRequestKey: InFlightReadRequest] = [:]
 
     private enum RequestSemantics {
         case readOnly
         case mutation
-    }
-
-    private struct ReadRequestKey: Hashable, Sendable {
-        let endpoint: String
-        let queryItems: [String]
-
-        init(endpoint: String, queryItems: [URLQueryItem]) {
-            self.endpoint = endpoint
-            self.queryItems = queryItems
-                .map { "\($0.name)=\($0.value ?? "")" }
-                .sorted()
-        }
     }
 
     private struct HTTPResponseData: @unchecked Sendable {
@@ -68,12 +622,18 @@ actor OpenSubsonicClient {
         let response: HTTPURLResponse
     }
 
+    private struct InFlightReadResponse: Sendable {
+        let response: HTTPResponseData
+        let cacheEpoch: UInt64
+    }
+
     private struct ZstandardNegotiationError: Error, Sendable {}
 
     private struct InFlightReadRequest {
         let token: UUID
         let task: Task<Void, Never>
-        var waiters: [UUID: CheckedContinuation<HTTPResponseData, Error>]
+        let cacheEpoch: UInt64
+        var waiters: [UUID: CheckedContinuation<InFlightReadResponse, Error>]
     }
 
     private struct CachedAPIResponse: Sendable {
@@ -84,9 +644,10 @@ actor OpenSubsonicClient {
     private static let responseCacheLimit = 128
     private static let responseCacheByteLimit = 16 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
-    private var responseCache: [String: CachedAPIResponse] = [:]
-    private var responseCacheOrder: [String] = []
+    private var responseCache: [OpenSubsonicRequestKey: CachedAPIResponse] = [:]
+    private var responseCacheOrder: [OpenSubsonicRequestKey] = []
     private var responseCacheBytes = 0
+    private var responseCacheEpoch = OpenSubsonicCacheEpoch()
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -246,13 +807,14 @@ actor OpenSubsonicClient {
         semantics: RequestSemantics
     ) async throws -> Payload {
         let url = try endpointURL(endpoint, queryItems: queryItems)
-        let cacheKey = Self.responseCacheKey(
+        let cacheKey = OpenSubsonicRequestKey(
             endpoint: endpoint,
             queryItems: queryItems
         )
         let cacheLifetime = Self.responseCacheLifetime(for: endpoint)
         do {
             let response: HTTPResponseData
+            var readCacheEpoch: UInt64? = nil
             switch semantics {
             case .readOnly:
                 if cacheLifetime > 0,
@@ -262,13 +824,13 @@ actor OpenSubsonicClient {
                    ) {
                     return try decodeResponseData(cached)
                 }
-                response = try await coalescedReadResponse(
+                let readResponse = try await coalescedReadResponse(
                     from: url,
-                    key: ReadRequestKey(
-                        endpoint: endpoint,
-                        queryItems: queryItems
-                    )
+                    key: cacheKey,
+                    usesMetadataPermit: true
                 )
+                response = readResponse.response
+                readCacheEpoch = readResponse.cacheEpoch
             case .mutation:
                 response = try await responseData(
                     from: url,
@@ -279,10 +841,17 @@ actor OpenSubsonicClient {
             switch semantics {
             case .readOnly where cacheLifetime > 0:
                 // Store only a body that decoded into the endpoint's expected
-                // payload, never an HTTP or schema error response.
-                storeResponse(response.data, for: cacheKey)
+                // payload, never an HTTP or schema error response. A response
+                // stamped before a successful mutation may still satisfy its
+                // original caller, but must not repopulate stale cache state.
+                if let readCacheEpoch,
+                   responseCacheEpoch.permitsStorage(
+                    capturedValue: readCacheEpoch
+                   ) {
+                    storeResponse(response.data, for: cacheKey)
+                }
             case .mutation:
-                clearResponseCache()
+                invalidateResponseCache(afterMutation: endpoint)
             default:
                 break
             }
@@ -340,10 +909,12 @@ actor OpenSubsonicClient {
         let endpoint = "ping"
         let url = try endpointURL(endpoint)
         do {
-            let response = try await coalescedReadResponse(
+            let readResponse = try await coalescedReadResponse(
                 from: url,
-                key: ReadRequestKey(endpoint: endpoint, queryItems: [])
+                key: OpenSubsonicRequestKey(endpoint: endpoint, queryItems: []),
+                usesMetadataPermit: false
             )
+            let response = readResponse.response
             guard (200..<300).contains(response.response.statusCode) else {
                 throw OpenSubsonicError.http(response.response.statusCode)
             }
@@ -367,8 +938,9 @@ actor OpenSubsonicClient {
 
     private func coalescedReadResponse(
         from url: URL,
-        key: ReadRequestKey
-    ) async throws -> HTTPResponseData {
+        key: OpenSubsonicRequestKey,
+        usesMetadataPermit: Bool
+    ) async throws -> InFlightReadResponse {
         try Task.checkCancellation()
         let waiter = UUID()
         let response = try await withTaskCancellationHandler {
@@ -377,7 +949,8 @@ actor OpenSubsonicClient {
                     continuation,
                     key: key,
                     waiter: waiter,
-                    url: url
+                    url: url,
+                    usesMetadataPermit: usesMetadataPermit
                 )
             }
         } onCancel: {
@@ -390,10 +963,11 @@ actor OpenSubsonicClient {
     }
 
     private func registerReadWaiter(
-        _ continuation: CheckedContinuation<HTTPResponseData, Error>,
-        key: ReadRequestKey,
+        _ continuation: CheckedContinuation<InFlightReadResponse, Error>,
+        key: OpenSubsonicRequestKey,
         waiter: UUID,
-        url: URL
+        url: URL,
+        usesMetadataPermit: Bool
     ) {
         guard !Task.isCancelled else {
             continuation.resume(throwing: CancellationError())
@@ -408,10 +982,20 @@ actor OpenSubsonicClient {
         let token = UUID()
         let task = Task { [self] in
             do {
-                let response = try await responseData(
-                    from: url,
-                    allowsRetry: true
-                )
+                let response: HTTPResponseData
+                if usesMetadataPermit {
+                    response = try await metadataRequestLimiter.withPermit {
+                        try await self.responseData(
+                            from: url,
+                            allowsRetry: true
+                        )
+                    }
+                } else {
+                    response = try await responseData(
+                        from: url,
+                        allowsRetry: true
+                    )
+                }
                 finishReadRequest(
                     key: key,
                     token: token,
@@ -428,12 +1012,13 @@ actor OpenSubsonicClient {
         inFlightReadRequests[key] = InFlightReadRequest(
             token: token,
             task: task,
+            cacheEpoch: responseCacheEpoch.currentValue,
             waiters: [waiter: continuation]
         )
     }
 
     private func cancelReadWaiter(
-        key: ReadRequestKey,
+        key: OpenSubsonicRequestKey,
         waiter: UUID
     ) {
         guard var request = inFlightReadRequests[key],
@@ -452,7 +1037,7 @@ actor OpenSubsonicClient {
     }
 
     private func finishReadRequest(
-        key: ReadRequestKey,
+        key: OpenSubsonicRequestKey,
         token: UUID,
         result: Result<HTTPResponseData, Error>
     ) {
@@ -464,7 +1049,12 @@ actor OpenSubsonicClient {
         for continuation in request.waiters.values {
             switch result {
             case .success(let response):
-                continuation.resume(returning: response)
+                continuation.resume(
+                    returning: InFlightReadResponse(
+                        response: response,
+                        cacheEpoch: request.cacheEpoch
+                    )
+                )
             case .failure(let error):
                 continuation.resume(throwing: error)
             }
@@ -634,7 +1224,7 @@ actor OpenSubsonicClient {
     }
 
     private func cachedResponse(
-        for key: String,
+        for key: OpenSubsonicRequestKey,
         lifetime: TimeInterval
     ) -> Data? {
         guard let value = responseCache[key] else { return nil }
@@ -649,7 +1239,10 @@ actor OpenSubsonicClient {
         return value.data
     }
 
-    private func storeResponse(_ data: Data, for key: String) {
+    private func storeResponse(
+        _ data: Data,
+        for key: OpenSubsonicRequestKey
+    ) {
         guard data.count <= Self.maximumCachedResponseBytes else { return }
         if let existing = responseCache[key] {
             responseCacheBytes = max(0, responseCacheBytes - existing.data.count)
@@ -673,17 +1266,26 @@ actor OpenSubsonicClient {
         responseCacheBytes = 0
     }
 
-    private static func responseCacheKey(
-        endpoint: String,
-        queryItems: [URLQueryItem]
-    ) -> String {
-        var parameters: [String] = []
-        parameters.reserveCapacity(queryItems.count)
-        for item in queryItems {
-            parameters.append(item.name + "=" + (item.value ?? ""))
+    private func invalidateResponseCache(afterMutation endpoint: String) {
+        responseCacheEpoch.advance()
+        let keys = Set(
+            responseCache.keys.filter {
+                OpenSubsonicCacheInvalidationPolicy.shouldInvalidate(
+                    $0,
+                    afterMutation: endpoint
+                )
+            }
+        )
+        guard !keys.isEmpty else { return }
+        for key in keys {
+            if let removed = responseCache.removeValue(forKey: key) {
+                responseCacheBytes = max(
+                    0,
+                    responseCacheBytes - removed.data.count
+                )
+            }
         }
-        parameters.sort()
-        return endpoint + "?" + parameters.joined(separator: "&")
+        responseCacheOrder.removeAll { keys.contains($0) }
     }
 
     private static func responseCacheLifetime(for endpoint: String) -> TimeInterval {
@@ -1012,70 +1614,83 @@ actor OpenSubsonicClient {
         library: [Song] = [],
         limit: Int = 10
     ) async -> [Song] {
-        var matches: [Song] = []
-        var ids = Set<String>()
-        for candidate in candidates.prefix(limit) {
-            guard !Task.isCancelled else { break }
-            let normalizedTitle = Self.normalized(candidate.title)
-            let normalizedArtist = Self.normalized(candidate.artist)
-            let normalizedAlbum = candidate.album.map(Self.normalized)
-            guard !normalizedTitle.isEmpty else { continue }
-            let localMatch = library.first { song in
-                Self.matchesExternalMetadata(
-                    song,
-                    title: normalizedTitle,
-                    artist: normalizedArtist,
-                    album: normalizedAlbum
-                )
-            } ?? library.first { song in
-                guard let recordingMBID = candidate.recordingMBID else {
-                    return false
-                }
-                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
-                    == .orderedSame
-            } ?? library.first { song in
-                Self.matchesExternalMetadata(
-                    song,
-                    title: normalizedTitle,
-                    artist: normalizedArtist,
-                    album: nil
-                )
+        guard limit > 0, !Task.isCancelled else { return [] }
+        let libraryIndex = ExternalRecommendationSongIndex(library)
+        var resolved: [ExternalRecommendationResolvedSong] = []
+        var serverSearches: [ExternalRecommendationSearchWork] = []
+        let candidateCount = min(limit, candidates.count)
+        resolved.reserveCapacity(candidateCount)
+        serverSearches.reserveCapacity(candidateCount)
+
+        for (candidateIndex, candidate) in candidates.prefix(limit).enumerated() {
+            guard !Task.isCancelled else { return [] }
+            guard let query = ExternalRecommendationMatchQuery(
+                title: candidate.title,
+                artist: candidate.artist,
+                album: candidate.album,
+                recordingMBID: candidate.recordingMBID
+            ) else {
+                continue
             }
-            let match: Song?
-            if let localMatch {
-                match = localMatch
+            if let song = libraryIndex.match(query) {
+                resolved.append(
+                    ExternalRecommendationResolvedSong(
+                        candidateIndex: candidateIndex,
+                        song: song
+                    )
+                )
             } else {
-                let query = "\(candidate.artist) \(candidate.title)"
-                guard let results = try? await search(query) else { continue }
-                match = results.songs.first { song in
-                    Self.matchesExternalMetadata(
-                        song,
-                        title: normalizedTitle,
-                        artist: normalizedArtist,
-                        album: normalizedAlbum
+                serverSearches.append(
+                    ExternalRecommendationSearchWork(
+                        candidateIndex: candidateIndex,
+                        candidate: candidate,
+                        query: query
                     )
-                } ?? results.songs.first { song in
-                    guard let recordingMBID = candidate.recordingMBID else {
-                        return false
-                    }
-                    return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
-                        == .orderedSame
-                } ?? results.songs.first { song in
-                    Self.matchesExternalMetadata(
-                        song,
-                        title: normalizedTitle,
-                        artist: normalizedArtist,
-                        album: nil
-                    )
-                } ?? results.songs.first { song in
-                    Self.normalized(song.title).contains(normalizedTitle)
-                }
-            }
-            if let match, ids.insert(match.id).inserted {
-                matches.append(match)
+                )
             }
         }
-        return matches
+
+        do {
+            let serverMatches = try await OrderedBoundedTaskGroup.map(
+                serverSearches,
+                maximumConcurrentTasks: 3
+            ) { [self] work -> ExternalRecommendationResolvedSong? in
+                try Task.checkCancellation()
+                let results: SearchResults
+                do {
+                    results = try await self.search(
+                        "\(work.candidate.artist) \(work.candidate.title)"
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    if Task.isCancelled { throw CancellationError() }
+                    return nil
+                }
+                try Task.checkCancellation()
+                let resultIndex = ExternalRecommendationSongIndex(results.songs)
+                guard let song = resultIndex.match(
+                    work.query,
+                    allowsTitleContainmentFallback: true
+                ) else {
+                    return nil
+                }
+                return ExternalRecommendationResolvedSong(
+                    candidateIndex: work.candidateIndex,
+                    song: song
+                )
+            }
+            try Task.checkCancellation()
+            resolved.append(contentsOf: serverMatches.compactMap { $0 })
+            return ExternalRecommendationMatchOrdering.orderedUniqueSongs(
+                resolved
+            )
+        } catch {
+            // The public API intentionally remains non-throwing. Returning no
+            // batch on cancellation prevents a partially completed concurrent
+            // search from being published by its caller.
+            return []
+        }
     }
 
     private func recommendationQueue(
@@ -1175,23 +1790,34 @@ actor OpenSubsonicClient {
     }
 
     private func supportsExtension(_ name: String) async -> Bool {
-        if let supportedExtensions {
-            return supportedExtensions.contains(name)
+        guard !Task.isCancelled else { return false }
+        switch extensionCapability.decision(for: name, now: Date()) {
+        case .resolved(let supported):
+            return supported
+        case .discover:
+            break
         }
-        guard let payload: OpenSubsonicExtensionsPayload =
-                try? await readRequest("getOpenSubsonicExtensions") else {
+
+        do {
+            let payload: OpenSubsonicExtensionsPayload = try await readRequest(
+                "getOpenSubsonicExtensions"
+            )
+            let names = Set(
+                (payload.openSubsonicExtensions ?? []).compactMap { value in
+                    value.versions.isEmpty ? nil : value.name
+                }
+            )
+            extensionCapability.recordSuccess(names)
+            return names.contains(name)
+        } catch {
+            guard !Task.isCancelled else { return false }
+            extensionCapability.recordFailure(error, now: Date())
             // Older Navidrome-compatible servers may implement the endpoint
             // without advertising extensions. Keep the existing best-effort
             // Sonic request in that compatibility case.
-            return name == "sonicSimilarity"
+            return OpenSubsonicExtensionCapabilityState
+                .compatibilityFallback(for: name)
         }
-        let names = Set(
-            (payload.openSubsonicExtensions ?? []).compactMap { value in
-                value.versions.isEmpty ? nil : value.name
-            }
-        )
-        supportedExtensions = names
-        return names.contains(name)
     }
 
     private func songsByGenres(
@@ -1439,36 +2065,13 @@ actor OpenSubsonicClient {
         }
     }
 
-    private static func matchesExternalMetadata(
-        _ song: Song,
-        title: String,
-        artist: String,
-        album: String?
-    ) -> Bool {
-        guard normalized(song.title) == title, !artist.isEmpty else {
-            return false
-        }
-        let songArtist = normalized(song.artist)
-        guard songArtist == artist ||
-                songArtist.contains(artist) ||
-                artist.contains(songArtist) else {
-            return false
-        }
-        guard let album, !album.isEmpty else { return true }
-        return normalized(song.album) == album
-    }
-
     private static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
         var ids = Set<String>()
         return artists.filter { ids.insert($0.id).inserted }
     }
 
     private static func normalized(_ value: String) -> String {
-        value.folding(
-            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-            locale: .current
-        )
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+        ExternalRecommendationSongIndex.normalized(value)
     }
 
     func search(_ query: String) async throws -> SearchResults {
@@ -1478,6 +2081,9 @@ actor OpenSubsonicClient {
             "albumCount": "14",
             "songCount": "30"
         ]
+        guard searchCapability.shouldTrySearch3 else {
+            return try await search2(parameters: parameters)
+        }
         do {
             let payload: SearchPayload = try await readRequest("search3", parameters: parameters)
             let result = payload.searchResult3 ?? payload.searchResult2
@@ -1485,9 +2091,23 @@ actor OpenSubsonicClient {
         } catch {
             guard !Task.isCancelled else { throw CancellationError() }
             guard Self.shouldFallbackToSearch2(error) else { throw error }
-            let payload: SearchPayload = try await readRequest("search2", parameters: parameters)
-            return Self.deduplicatedSearch(payload.searchResult2 ?? payload.searchResult3)
+            if OpenSubsonicSearchCapability.isAuthoritativeUnsupported(error) {
+                searchCapability.recordSearch3Unsupported()
+            }
+            return try await search2(parameters: parameters)
         }
+    }
+
+    private func search2(
+        parameters: [String: String]
+    ) async throws -> SearchResults {
+        let payload: SearchPayload = try await readRequest(
+            "search2",
+            parameters: parameters
+        )
+        return Self.deduplicatedSearch(
+            payload.searchResult2 ?? payload.searchResult3
+        )
     }
 
     private static func shouldFallbackToSearch2(_ error: Error) -> Bool {

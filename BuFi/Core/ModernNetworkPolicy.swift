@@ -37,7 +37,8 @@ enum ModernNetworkPolicy {
 
     /// Cached variant for public metadata services such as recommendation APIs.
     /// It keeps the same connection, privacy, and fallback policy as BuFi's
-    /// authenticated traffic while allowing small JSON responses to be reused.
+    /// authenticated traffic while allowing small JSON responses to be reused
+    /// only for the freshness lifetime declared by the origin.
     static func makeCachedConfiguration(
         requestTimeout: TimeInterval,
         resourceTimeout: TimeInterval,
@@ -54,7 +55,7 @@ enum ModernNetworkPolicy {
             allowsExpensiveNetworkAccess: allowsExpensiveNetworkAccess,
             allowsConstrainedNetworkAccess: allowsConstrainedNetworkAccess
         )
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.requestCachePolicy = .useProtocolCachePolicy
         configuration.urlCache = URLCache(
             memoryCapacity: memoryCapacity,
             diskCapacity: diskCapacity
@@ -84,7 +85,7 @@ enum ModernNetworkPolicy {
         prepareJSONRequest(
             &request,
             acceptsZstandard: acceptsZstandard,
-            cachePolicy: .returnCacheDataElseLoad
+            cachePolicy: .useProtocolCachePolicy
         )
     }
 

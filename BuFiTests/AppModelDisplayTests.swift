@@ -42,4 +42,46 @@ final class AppModelDisplayTests: XCTestCase {
             ""
         )
     }
+
+    func testHomeRevisionPolicyRequiresMatchingRevisionAndSource() {
+        XCTAssertTrue(
+            HomeRevisionPolicy.canCommit(
+                sourceRevision: 4,
+                currentRevision: 4,
+                source: "latest",
+                current: "latest"
+            )
+        )
+        XCTAssertFalse(
+            HomeRevisionPolicy.canCommit(
+                sourceRevision: 3,
+                currentRevision: 4,
+                source: "latest",
+                current: "latest"
+            )
+        )
+        XCTAssertFalse(
+            HomeRevisionPolicy.canCommit(
+                sourceRevision: 4,
+                currentRevision: 4,
+                source: "stale",
+                current: "latest"
+            )
+        )
+    }
+
+    func testDownloadBatchPolicyBoundsConcurrentWork() {
+        XCTAssertEqual(
+            DownloadBatchPolicy.initialTaskCount(itemCount: -1),
+            0
+        )
+        XCTAssertEqual(
+            DownloadBatchPolicy.initialTaskCount(itemCount: 1),
+            1
+        )
+        XCTAssertEqual(
+            DownloadBatchPolicy.initialTaskCount(itemCount: 20),
+            2
+        )
+    }
 }

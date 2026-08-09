@@ -7,14 +7,26 @@ struct OfflineDatabaseEntry: Sendable, Equatable {
     var lastAccessedAt: Date
 }
 
+private struct ArtworkPaletteCacheKey: Hashable, Sendable {
+    let scope: String
+    let artworkKey: String
+    let engineVersion: Int
+}
+
 actor AppDatabase {
     static let shared = AppDatabase()
 
     private let pool: DatabasePool?
     private let currentDate: @Sendable () -> Date
+    private let artworkPaletteTouchDelay: Duration
+    private var pendingArtworkPaletteTouches: Set<ArtworkPaletteCacheKey> = []
+    private var artworkPaletteTouchTask: Task<Void, Never>?
+    private var artworkPaletteTouchTaskToken: UUID?
+    private var artworkPaletteTouchRetryCount = 0
 
     private init() {
         currentDate = { Date() }
+        artworkPaletteTouchDelay = .milliseconds(1_500)
         do {
             let support = FileManager.default.urls(
                 for: .applicationSupportDirectory,
@@ -44,9 +56,11 @@ actor AppDatabase {
 
     init(
         databaseURL: URL,
-        currentDate: @escaping @Sendable () -> Date = { Date() }
+        currentDate: @escaping @Sendable () -> Date = { Date() },
+        artworkPaletteTouchDelay: Duration = .milliseconds(1_500)
     ) throws {
         self.currentDate = currentDate
+        self.artworkPaletteTouchDelay = artworkPaletteTouchDelay
         pool = try Self.makePool(path: databaseURL.path)
     }
 
@@ -362,52 +376,36 @@ actor AppDatabase {
               !artworkKey.isEmpty,
               artworkKey.utf8.count <= 4_096,
               engineVersion > 0 else { return nil }
-        let wallClock = currentDate().timeIntervalSince1970
+        let key = ArtworkPaletteCacheKey(
+            scope: scope,
+            artworkKey: artworkKey,
+            engineVersion: engineVersion
+        )
+        let data: Data?
         do {
-            return try await pool.write { db in
-                guard let row = try Row.fetchOne(
+            data = try await pool.read { db in
+                try Data.fetchOne(
                     db,
                     sql: """
                     SELECT palette_data FROM artwork_palette_cache
                     WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
                     """,
                     arguments: [scope, artworkKey, engineVersion]
-                ) else {
-                    return nil
-                }
-
-                let data: Data = row["palette_data"]
-                guard let palette = try? Self.decode(ArtworkPalette.self, from: data) else {
-                    try db.execute(
-                        sql: """
-                        DELETE FROM artwork_palette_cache
-                        WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
-                        """,
-                        arguments: [scope, artworkKey, engineVersion]
-                    )
-                    return nil
-                }
-                let accessedAt = try Self.nextPaletteAccessTimestamp(
-                    in: db,
-                    wallClock: wallClock
                 )
-                try db.execute(
-                    sql: """
-                    UPDATE artwork_palette_cache SET last_accessed_at = ?
-                    WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
-                    """,
-                    arguments: [
-                        accessedAt,
-                        scope,
-                        artworkKey,
-                        engineVersion
-                    ]
-                )
-                return palette
             }
         } catch {
             return nil
         }
+        guard let data else { return nil }
+        guard let palette = try? Self.decode(
+            ArtworkPalette.self,
+            from: data
+        ) else {
+            await deleteCorruptArtworkPalette(key, matching: data)
+            return nil
+        }
+        recordArtworkPaletteTouch(key)
+        return palette
     }
 
     @discardableResult
@@ -434,8 +432,14 @@ actor AppDatabase {
             totalLimit
         )
         let wallClock = currentDate().timeIntervalSince1970
+        let pendingTouches = takePendingArtworkPaletteTouches()
         do {
             try await pool.write { db in
+                try Self.applyArtworkPaletteTouches(
+                    pendingTouches,
+                    in: db,
+                    wallClock: wallClock
+                )
                 let accessedAt = try Self.nextPaletteAccessTimestamp(
                     in: db,
                     wallClock: wallClock
@@ -480,13 +484,16 @@ actor AppDatabase {
                     maximumEntries: totalLimit
                 )
             }
+            artworkPaletteTouchRetryCount = 0
             return true
         } catch {
+            restoreArtworkPaletteTouchesAfterFailure(pendingTouches)
             return false
         }
     }
 
     func clearArtworkPalettes(scope: String) async {
+        discardPendingArtworkPaletteTouches { $0.scope == scope }
         try? await pool?.write { db in
             try db.execute(
                 sql: "DELETE FROM artwork_palette_cache WHERE account_scope = ?",
@@ -496,21 +503,36 @@ actor AppDatabase {
     }
 
     func clearAllArtworkPalettes() async {
+        discardAllPendingArtworkPaletteTouches()
         try? await pool?.write { db in
             try db.execute(sql: "DELETE FROM artwork_palette_cache")
         }
     }
 
-    func loadQueue() async -> QueueSnapshot? {
+    func flushArtworkPaletteTouches() async {
+        cancelScheduledArtworkPaletteTouchFlush()
+        await persistPendingArtworkPaletteTouches()
+    }
+
+    func loadQueue(scope: String) async -> QueueSnapshot? {
+        guard Self.isValidAccountScope(scope) else { return nil }
         guard let pool else { return nil }
         do {
             return try await pool.read { db in
-                guard let state = try Row.fetchOne(db, sql: "SELECT * FROM queue_state WHERE id = 1") else {
+                guard let state = try Row.fetchOne(
+                    db,
+                    sql: "SELECT * FROM account_queue_state WHERE account_scope = ?",
+                    arguments: [scope]
+                ) else {
                     return nil
                 }
                 let itemRows = try Row.fetchAll(
                     db,
-                    sql: "SELECT song_data FROM queue_item ORDER BY position"
+                    sql: """
+                    SELECT song_data FROM account_queue_item
+                    WHERE account_scope = ? ORDER BY position
+                    """,
+                    arguments: [scope]
                 )
                 let songs = try itemRows.map { row in
                     try Self.decode(Song.self, from: row["song_data"] as Data)
@@ -533,34 +555,66 @@ actor AppDatabase {
     @discardableResult
     func saveQueue(
         _ snapshot: QueueSnapshot,
+        scope: String,
         replacingItems: Bool = true
     ) async -> Bool {
+        guard Self.isValidAccountScope(scope) else { return false }
         guard let pool else { return false }
         do {
             try await pool.write { db in
                 guard !snapshot.queue.isEmpty else {
-                    try db.execute(sql: "DELETE FROM queue_item")
-                    try db.execute(sql: "DELETE FROM queue_state")
+                    try db.execute(
+                        sql: "DELETE FROM account_queue_state WHERE account_scope = ?",
+                        arguments: [scope]
+                    )
                     return
                 }
+                let storedItemCount = try Int.fetchOne(
+                    db,
+                    sql: """
+                    SELECT COUNT(*) FROM account_queue_item
+                    WHERE account_scope = ?
+                    """,
+                    arguments: [scope]
+                ) ?? 0
                 try db.execute(
                     sql: """
-                    INSERT OR REPLACE INTO queue_state
-                        (id, current_song_id, current_index, elapsed, shuffle, repeat_mode, updated_at)
-                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO account_queue_state
+                        (account_scope, current_song_id, current_index, elapsed,
+                         shuffle, repeat_mode, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_scope) DO UPDATE SET
+                        current_song_id = excluded.current_song_id,
+                        current_index = excluded.current_index,
+                        elapsed = excluded.elapsed,
+                        shuffle = excluded.shuffle,
+                        repeat_mode = excluded.repeat_mode,
+                        updated_at = excluded.updated_at
                     """,
                     arguments: [
-                        snapshot.currentID, snapshot.index, snapshot.elapsed,
+                        scope, snapshot.currentID, snapshot.index, snapshot.elapsed,
                         snapshot.shuffle, snapshot.repeatMode.rawValue,
                         Date().timeIntervalSince1970
                     ]
                 )
-                guard replacingItems else { return }
-                try db.execute(sql: "DELETE FROM queue_item")
+                // `replacingItems` is an in-memory optimization hint. If a
+                // preceding clear won the race or the stored rows are partial,
+                // repair the item set even when the hint says state-only.
+                let shouldReplaceItems = replacingItems
+                    || storedItemCount != snapshot.queue.count
+                guard shouldReplaceItems else { return }
+                try db.execute(
+                    sql: "DELETE FROM account_queue_item WHERE account_scope = ?",
+                    arguments: [scope]
+                )
                 for (position, song) in snapshot.queue.enumerated() {
                     try db.execute(
-                        sql: "INSERT INTO queue_item (position, song_data) VALUES (?, ?)",
-                        arguments: [position, try Self.encode(song)]
+                        sql: """
+                        INSERT INTO account_queue_item
+                            (account_scope, position, song_data)
+                        VALUES (?, ?, ?)
+                        """,
+                        arguments: [scope, position, try Self.encode(song)]
                     )
                 }
             }
@@ -570,10 +624,166 @@ actor AppDatabase {
         }
     }
 
-    func clearQueue() async {
+    func clearQueue(scope: String) async {
+        guard Self.isValidAccountScope(scope) else { return }
         try? await pool?.write { db in
-            try db.execute(sql: "DELETE FROM queue_item")
-            try db.execute(sql: "DELETE FROM queue_state")
+            // Deleting state cascades to its ordered items.
+            try db.execute(
+                sql: "DELETE FROM account_queue_state WHERE account_scope = ?",
+                arguments: [scope]
+            )
+        }
+    }
+
+    private static func isValidAccountScope(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.count <= 256
+    }
+
+    private static let maximumArtworkPaletteTouchRetryCount = 2
+
+    private func recordArtworkPaletteTouch(_ key: ArtworkPaletteCacheKey) {
+        pendingArtworkPaletteTouches.insert(key)
+        artworkPaletteTouchRetryCount = 0
+        scheduleArtworkPaletteTouchFlushIfNeeded()
+    }
+
+    private func scheduleArtworkPaletteTouchFlushIfNeeded() {
+        guard !pendingArtworkPaletteTouches.isEmpty,
+              artworkPaletteTouchTask == nil else { return }
+        let token = UUID()
+        let delay = artworkPaletteTouchDelay
+        artworkPaletteTouchTaskToken = token
+        artworkPaletteTouchTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            await self?.flushScheduledArtworkPaletteTouches(token: token)
+        }
+    }
+
+    private func flushScheduledArtworkPaletteTouches(token: UUID) async {
+        guard artworkPaletteTouchTaskToken == token else { return }
+        artworkPaletteTouchTask = nil
+        artworkPaletteTouchTaskToken = nil
+        await persistPendingArtworkPaletteTouches()
+    }
+
+    private func persistPendingArtworkPaletteTouches() async {
+        guard pool != nil else {
+            discardAllPendingArtworkPaletteTouches()
+            return
+        }
+        let touches = takePendingArtworkPaletteTouches()
+        guard !touches.isEmpty, let pool else { return }
+        let wallClock = currentDate().timeIntervalSince1970
+        do {
+            try await pool.write { db in
+                try Self.applyArtworkPaletteTouches(
+                    touches,
+                    in: db,
+                    wallClock: wallClock
+                )
+            }
+            artworkPaletteTouchRetryCount = 0
+        } catch {
+            restoreArtworkPaletteTouchesAfterFailure(touches)
+        }
+    }
+
+    private func takePendingArtworkPaletteTouches()
+        -> Set<ArtworkPaletteCacheKey> {
+        cancelScheduledArtworkPaletteTouchFlush()
+        let touches = pendingArtworkPaletteTouches
+        pendingArtworkPaletteTouches.removeAll(keepingCapacity: true)
+        return touches
+    }
+
+    private func restoreArtworkPaletteTouchesAfterFailure(
+        _ touches: Set<ArtworkPaletteCacheKey>
+    ) {
+        guard !touches.isEmpty else { return }
+        pendingArtworkPaletteTouches.formUnion(touches)
+        artworkPaletteTouchRetryCount += 1
+        guard artworkPaletteTouchRetryCount <= Self.maximumArtworkPaletteTouchRetryCount else {
+            return
+        }
+        scheduleArtworkPaletteTouchFlushIfNeeded()
+    }
+
+    private func discardPendingArtworkPaletteTouches(
+        where shouldDiscard: (ArtworkPaletteCacheKey) -> Bool
+    ) {
+        pendingArtworkPaletteTouches.subtract(
+            Set(pendingArtworkPaletteTouches.filter(shouldDiscard))
+        )
+        if pendingArtworkPaletteTouches.isEmpty {
+            cancelScheduledArtworkPaletteTouchFlush()
+            artworkPaletteTouchRetryCount = 0
+        }
+    }
+
+    private func discardAllPendingArtworkPaletteTouches() {
+        cancelScheduledArtworkPaletteTouchFlush()
+        pendingArtworkPaletteTouches.removeAll(keepingCapacity: false)
+        artworkPaletteTouchRetryCount = 0
+    }
+
+    private func cancelScheduledArtworkPaletteTouchFlush() {
+        artworkPaletteTouchTask?.cancel()
+        artworkPaletteTouchTask = nil
+        artworkPaletteTouchTaskToken = nil
+    }
+
+    private func deleteCorruptArtworkPalette(
+        _ key: ArtworkPaletteCacheKey,
+        matching data: Data
+    ) async {
+        discardPendingArtworkPaletteTouches { $0 == key }
+        try? await pool?.write { db in
+            // Match the bytes read by the failed decoder so a concurrent save
+            // of a repaired value cannot be deleted by this delayed cleanup.
+            try db.execute(
+                sql: """
+                DELETE FROM artwork_palette_cache
+                WHERE account_scope = ? AND artwork_key = ?
+                  AND engine_version = ? AND palette_data = ?
+                """,
+                arguments: [
+                    key.scope,
+                    key.artworkKey,
+                    key.engineVersion,
+                    data
+                ]
+            )
+        }
+    }
+
+    private static func applyArtworkPaletteTouches(
+        _ touches: Set<ArtworkPaletteCacheKey>,
+        in db: Database,
+        wallClock: Double
+    ) throws {
+        guard !touches.isEmpty else { return }
+        let accessedAt = try nextPaletteAccessTimestamp(
+            in: db,
+            wallClock: wallClock
+        )
+        for key in touches {
+            try db.execute(
+                sql: """
+                UPDATE artwork_palette_cache SET last_accessed_at = ?
+                WHERE account_scope = ? AND artwork_key = ?
+                  AND engine_version = ?
+                """,
+                arguments: [
+                    accessedAt,
+                    key.scope,
+                    key.artworkKey,
+                    key.engineVersion
+                ]
+            )
         }
     }
 
@@ -800,6 +1010,34 @@ actor AppDatabase {
                     );
                 CREATE INDEX artwork_palette_cache_global_lru
                     ON artwork_palette_cache(last_accessed_at DESC);
+                """)
+        }
+        migrator.registerMigration("create-account-queue-v4") { db in
+            try db.execute(sql: """
+                CREATE TABLE account_queue_state (
+                    account_scope TEXT PRIMARY KEY NOT NULL,
+                    current_song_id TEXT,
+                    current_index INTEGER NOT NULL,
+                    elapsed DOUBLE NOT NULL,
+                    shuffle INTEGER NOT NULL,
+                    repeat_mode TEXT NOT NULL,
+                    updated_at DOUBLE NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE account_queue_item (
+                    account_scope TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    song_data BLOB NOT NULL,
+                    PRIMARY KEY (account_scope, position),
+                    FOREIGN KEY (account_scope)
+                        REFERENCES account_queue_state(account_scope)
+                        ON DELETE CASCADE
+                ) WITHOUT ROWID;
+
+                -- The v1 queue has no account identity. Assigning it to the
+                -- next login could expose one account's songs to another, so
+                -- discard only this unattributable legacy queue once.
+                DELETE FROM queue_item;
+                DELETE FROM queue_state;
                 """)
         }
         return migrator

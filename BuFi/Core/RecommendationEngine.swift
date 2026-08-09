@@ -285,7 +285,7 @@ enum RecommendationMixer {
         limit: Int = 30,
         date: Date = Date()
     ) -> [Song] {
-        guard limit > 0 else { return [] }
+        guard limit > 0, !Task.isCancelled else { return [] }
         let key = cacheKey(
             snapshot: snapshot,
             weights: weights,
@@ -314,8 +314,16 @@ enum RecommendationMixer {
             from: allBehaviors.filter { $0.lastPlayed >= longCutoff },
             date: date
         )
+        let recentBehaviors = behavior.recentSongs.compactMap {
+            song -> SongBehavior? in
+            guard let value = behavior.songs[song.id],
+                  value.playCount > 0 else {
+                return nil
+            }
+            return value
+        }
         let contextProfile = profile(
-            from: behavior.recentSongs.compactMap { behavior.songs[$0.id] },
+            from: recentBehaviors,
             date: date,
             appliesDecay: false
         )
@@ -325,7 +333,8 @@ enum RecommendationMixer {
                     ?? SongBehavior(song: $0, at: date)
             },
             date: date,
-            appliesDecay: false
+            appliesDecay: false,
+            includesValuesWithoutPositiveSignals: true
         )
 
         let knownSongIDs = Set(
@@ -339,7 +348,7 @@ enum RecommendationMixer {
             + allBehaviors.map { normalized($0.song.artist) }
         )
         let recentArtists = Set(
-            behavior.recentSongs.prefix(10).map { normalized($0.artist) }
+            recentBehaviors.prefix(10).map { normalized($0.song.artist) }
         )
         let favoriteGenres = Set(
             snapshot.starredSongs.flatMap {
@@ -348,7 +357,7 @@ enum RecommendationMixer {
             }
         )
 
-        let sourceLists: [[Song]] = [
+        let primarySourceLists: [[Song]] = [
             snapshot.serverRecommendedSongs,
             snapshot.sonicRecommendedSongs,
             snapshot.similarArtistSongs,
@@ -361,11 +370,17 @@ enum RecommendationMixer {
             snapshot.listenBrainzRecommendedSongs,
             snapshot.randomSongs,
             snapshot.mostPlayedSongs,
-            snapshot.starredSongs,
-            snapshot.daylistSongs,
-            snapshot.recommendedSongs
+            snapshot.starredSongs
         ]
-        let candidates = unique(sourceLists.flatMap { $0 })
+        let primaryCandidates = unique(primarySourceLists.flatMap { $0 })
+        // `recommendedSongs` and `daylistSongs` are outputs of this engine.
+        // Reusing them while authoritative sources exist creates a feedback
+        // loop where removed server candidates can keep themselves alive.
+        // They remain a last-resort offline fallback for older cached homes
+        // that contain no original candidate lists.
+        let candidates = primaryCandidates.isEmpty
+            ? unique(snapshot.recommendedSongs + snapshot.daylistSongs)
+            : primaryCandidates
         guard !candidates.isEmpty else { return [] }
 
         let serverRanks = rankMap(snapshot.serverRecommendedSongs)
@@ -409,7 +424,12 @@ enum RecommendationMixer {
         let currentHour = Calendar.current.component(.hour, from: date)
         let thirtyMinuteSeed = Int(date.timeIntervalSince1970 / 1_800)
 
-        var ranked = candidates.map { song -> RankedRecommendation in
+        var scoredCandidates: [RankedRecommendation] = []
+        scoredCandidates.reserveCapacity(candidates.count)
+        for (index, song) in candidates.enumerated() {
+            if index.isMultiple(of: 32), Task.isCancelled {
+                return []
+            }
             let songBehavior = behavior.songs[song.id]
             let shortAffinity = shortProfile.affinity(for: song)
             let longAffinity = longProfile.affinity(for: song)
@@ -519,17 +539,21 @@ enum RecommendationMixer {
             let isNewArtist = !knownArtists.contains(artistKey)
             let isHiddenGem = isDiscovery
                 && (song.playCount ?? 0) <= 2
-            return RankedRecommendation(
-                song: song,
-                score: finalScore,
-                artistKey: artistKey,
-                albumKey: normalized(song.albumId ?? song.album),
-                deduplicationKey: deduplicationKey(for: song),
-                isDiscovery: isDiscovery,
-                isNewArtist: isNewArtist,
-                isHiddenGem: isHiddenGem
+            scoredCandidates.append(
+                RankedRecommendation(
+                    song: song,
+                    score: finalScore,
+                    artistKey: artistKey,
+                    albumKey: normalized(song.albumId ?? song.album),
+                    deduplicationKey: deduplicationKey(for: song),
+                    isDiscovery: isDiscovery,
+                    isNewArtist: isNewArtist,
+                    isHiddenGem: isHiddenGem
+                )
             )
         }
+        guard !Task.isCancelled else { return [] }
+        var ranked = scoredCandidates
         ranked.sort {
             if $0.score == $1.score { return $0.song.id < $1.song.id }
             return $0.score > $1.score
@@ -542,7 +566,11 @@ enum RecommendationMixer {
                 : weights.discoveryRatio,
             limit: limit
         )
-        let result = diversityReranked(ranked, limit: limit).map(\.song)
+        guard let reranked = diversityReranked(ranked, limit: limit),
+              !Task.isCancelled else {
+            return []
+        }
+        let result = reranked.map(\.song)
         cache.insert(result, for: key, now: date)
         return result
     }
@@ -613,10 +641,15 @@ enum RecommendationMixer {
     private static func profile(
         from values: [SongBehavior],
         date: Date,
-        appliesDecay: Bool = true
+        appliesDecay: Bool = true,
+        includesValuesWithoutPositiveSignals: Bool = false
     ) -> RecommendationProfile {
         var result = RecommendationProfile()
         for value in values {
+            guard includesValuesWithoutPositiveSignals
+                    || hasPositivePreferenceSignal(value) else {
+                continue
+            }
             let behavior = behaviorAffinity(value)
             let decay = appliesDecay
                 ? timeDecay(since: value.lastPlayed, now: date)
@@ -639,6 +672,22 @@ enum RecommendationMixer {
         normalizeMap(&result.genres)
         normalizeMap(&result.moods)
         return result
+    }
+
+    private static func hasPositivePreferenceSignal(
+        _ value: SongBehavior
+    ) -> Bool {
+        value.playCount > 0
+            || value.completedCount > 0
+            || value.repeatCount > 0
+            || value.manualPlayCount > 0
+            || value.searchPlayCount > 0
+            || value.albumSelectionCount > 0
+            || value.playlistPlayCount > 0
+            || value.autoplayCount > 0
+            || value.playlistAddCount > 0
+            || value.favoriteCount > 0
+            || value.totalCompletion > 0
     }
 
     private static func normalizeMap(_ values: inout [String: Double]) {
@@ -894,15 +943,20 @@ enum RecommendationMixer {
     private static func diversityReranked(
         _ values: [RankedRecommendation],
         limit: Int
-    ) -> [RankedRecommendation] {
+    ) -> [RankedRecommendation]? {
+        guard !Task.isCancelled else { return nil }
         var remaining = values
         var result: [RankedRecommendation] = []
         var artistCounts: [String: Int] = [:]
         var albumCounts: [String: Int] = [:]
         while !remaining.isEmpty, result.count < limit {
+            guard !Task.isCancelled else { return nil }
             var bestIndex = 0
             var bestAdjustedScore = -Double.infinity
             for (index, value) in remaining.enumerated() {
+                if index.isMultiple(of: 32), Task.isCancelled {
+                    return nil
+                }
                 let artistCount = artistCounts[value.artistKey, default: 0]
                 let albumCount = albumCounts[value.albumKey, default: 0]
                 let adjusted = value.score
@@ -1022,7 +1076,7 @@ enum RecommendationMixer {
         limit: Int,
         date: Date
     ) -> String {
-        let sources = [
+        var sources = [
             snapshot.serverRecommendedSongs,
             snapshot.sonicRecommendedSongs,
             snapshot.similarArtistSongs,
@@ -1035,26 +1089,25 @@ enum RecommendationMixer {
             snapshot.listenBrainzRecommendedSongs,
             snapshot.randomSongs,
             snapshot.mostPlayedSongs,
-            snapshot.starredSongs,
-            snapshot.daylistSongs,
-            snapshot.recommendedSongs
+            snapshot.starredSongs
         ]
-        var hash: UInt64 = 14_695_981_039_346_656_037
+        if sources.allSatisfy({ $0.isEmpty }) {
+            sources.append(snapshot.recommendedSongs)
+            sources.append(snapshot.daylistSongs)
+        }
+        var hasher = Hasher()
+        hasher.combine(sources.count)
         for (sourceIndex, source) in sources.enumerated() {
-            hash ^= UInt64(sourceIndex + 1)
-            hash &*= 1_099_511_628_211
+            hasher.combine(sourceIndex)
+            hasher.combine(source.count)
             for song in source {
-                for byte in song.id.utf8 {
-                    hash ^= UInt64(byte)
-                    hash &*= 1_099_511_628_211
-                }
-                // Delimit IDs so ["ab", "c"] and ["a", "bc"] cannot
-                // accidentally reuse the same recommendation cache entry.
-                hash ^= 0xFF
-                hash &*= 1_099_511_628_211
+                // Song's synthesized Hashable conformance covers every field
+                // that can affect scoring, canonical deduplication, or the
+                // cached value returned to the UI.
+                hasher.combine(song)
             }
         }
-        let weightValues = [
+        let weightBitPatterns = [
             weights.history, weights.favorites, weights.serverSimilarity,
             weights.discovery, weights.lastFM, weights.listenBrainz,
             weights.behavior, weights.completion, weights.repeatListening,
@@ -1062,16 +1115,20 @@ enum RecommendationMixer {
             weights.playlistAffinity, weights.albumCompletion,
             weights.forgottenFavorites, weights.artistRotation,
             weights.timeAwareness, weights.discoveryRatio
-        ].map { String(format: "%.3f", $0) }.joined(separator: ",")
+        ].map(\.bitPattern)
+        for bitPattern in weightBitPatterns {
+            hasher.combine(bitPattern)
+        }
+        let calendar = Calendar.current
+        hasher.combine(purpose.rawValue)
+        hasher.combine(limit)
+        hasher.combine(behaviorRevision)
+        hasher.combine(Locale.current.identifier)
+        hasher.combine(String(describing: calendar.identifier))
+        hasher.combine(calendar.timeZone.identifier)
         let timeBucket = Int(date.timeIntervalSince1970 / 1_800)
-        return [
-            purpose.rawValue,
-            String(limit),
-            String(behaviorRevision),
-            String(hash),
-            String(timeBucket),
-            weightValues
-        ].joined(separator: "|")
+        hasher.combine(timeBucket)
+        return String(hasher.finalize())
     }
 }
 
@@ -1082,6 +1139,7 @@ enum DaylistBuilder {
         calendar: Calendar = .current,
         limit: Int = 24
     ) -> [Song] {
+        guard limit > 0 else { return [] }
         let hour = calendar.component(.hour, from: date)
         let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
         let period: Int
@@ -1098,13 +1156,19 @@ enum DaylistBuilder {
             familiarSlots = 3
         }
         let seed = day * 3 + period
+        var recommendedSongsByAlbumID: [String: [Song]] = [:]
+        for song in snapshot.recommendedSongs {
+            guard let albumID = song.albumId else { continue }
+            recommendedSongsByAlbumID[albumID, default: []].append(song)
+        }
+        let recentlyPlayedAlbumSongs = snapshot.recentlyPlayedAlbums.flatMap {
+            recommendedSongsByAlbumID[$0.id] ?? []
+        }
         let familiar = ordered(
             unique(
                 snapshot.mostPlayedSongs +
                 snapshot.starredSongs +
-                snapshot.recentlyPlayedAlbums.flatMap { album in
-                    snapshot.recommendedSongs.filter { $0.albumId == album.id }
-                }
+                recentlyPlayedAlbumSongs
             ),
             seed: seed
         )
@@ -1142,11 +1206,12 @@ enum DaylistBuilder {
                 } else {
                     candidate = nil
                 }
-                guard let candidate, ids.insert(candidate.id).inserted else {
+                guard let candidate, !ids.contains(candidate.id) else {
                     continue
                 }
                 let artist = normalized(candidate.artist)
                 guard (artistCounts[artist] ?? 0) < 2 else { continue }
+                ids.insert(candidate.id)
                 artistCounts[artist, default: 0] += 1
                 result.append(candidate)
             }
@@ -1298,6 +1363,12 @@ private final class PersonalizedMixResultCache: @unchecked Sendable {
         mixes = value
         lock.unlock()
     }
+}
+
+private struct PersonalizedMixOrderedSong {
+    let index: Int
+    let song: Song
+    let hash: UInt64
 }
 
 enum PersonalizedMixBuilder {
@@ -1568,26 +1639,30 @@ enum PersonalizedMixBuilder {
         artworkCoverArt: String?
     ) -> PersonalizedMix {
         let normalizedArtist = normalized(artist)
-        let primary = ordered(
-            pool.filter {
-                normalizedArtists[$0.id] == normalizedArtist
-            },
-            seed: seed
-        )
-        let primaryGenres = Set(primary.compactMap {
+        let primaryCandidates = pool.filter {
+            normalizedArtists[$0.id] == normalizedArtist
+        }
+        let primaryGenres = Set(primaryCandidates.compactMap {
             normalizedGenres[$0.id]
         })
-        let related = ordered(
-            pool.filter { song in
-                guard normalizedArtists[song.id] != normalizedArtist else {
-                    return false
-                }
-                if let genre = normalizedGenres[song.id] {
-                    return primaryGenres.contains(genre)
-                }
-                return true
-            },
-            seed: seed + 7
+        let primary = orderedPrefix(
+            primaryCandidates,
+            seed: seed,
+            limit: limit
+        )
+        let relatedCandidates = pool.filter { song in
+            guard normalizedArtists[song.id] != normalizedArtist else {
+                return false
+            }
+            if let genre = normalizedGenres[song.id] {
+                return primaryGenres.contains(genre)
+            }
+            return true
+        }
+        let related = orderedPrefix(
+            relatedCandidates,
+            seed: seed + 7,
+            limit: limit
         )
 
         var songs: [Song] = []
@@ -1704,31 +1779,81 @@ enum PersonalizedMixBuilder {
         seed: Int,
         limit: Int
     ) -> [Song] {
-        Array(
-            unique(
-                ordered(preferred, seed: seed) +
-                ordered(pool, seed: seed + 97)
-            )
-            .prefix(limit)
+        var result = orderedPrefix(
+            preferred,
+            seed: seed,
+            limit: limit
         )
+        guard result.count < limit else { return result }
+        let selectedIDs = Set(result.map(\.id))
+        result.append(
+            contentsOf: orderedPrefix(
+                pool,
+                seed: seed + 97,
+                limit: limit - result.count,
+                excluding: selectedIDs
+            )
+        )
+        return result
     }
 
-    private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
-        let values = unique(songs)
-        let hashed: [(index: Int, song: Song, hash: UInt64)] =
-            values.enumerated().map { index, song in
-                (
+    static func orderedPrefix(
+        _ songs: [Song],
+        seed: Int,
+        limit: Int,
+        excluding excludedIDs: Set<String> = []
+    ) -> [Song] {
+        guard limit > 0 else { return [] }
+        var seen = Set<String>()
+        var uniqueIndex = 0
+        var selected: [PersonalizedMixOrderedSong] = []
+        selected.reserveCapacity(min(limit, songs.count))
+        for song in songs {
+            guard seen.insert(song.id).inserted else { continue }
+            let index = uniqueIndex
+            uniqueIndex += 1
+            guard !excludedIDs.contains(song.id) else { continue }
+            insertBounded(
+                PersonalizedMixOrderedSong(
                     index: index,
                     song: song,
                     hash: stableHash(song.id, seed: seed)
-                )
-            }
-        let ordered = hashed.sorted { lhs, rhs in
-            lhs.hash == rhs.hash
-                ? lhs.index < rhs.index
-                : lhs.hash < rhs.hash
+                ),
+                into: &selected,
+                limit: limit,
+                by: { lhs, rhs in
+                    lhs.hash == rhs.hash
+                        ? lhs.index < rhs.index
+                        : lhs.hash < rhs.hash
+                }
+            )
         }
-        return ordered.map(\.song)
+        return selected.map(\.song)
+    }
+
+    private static func insertBounded<Value>(
+        _ value: Value,
+        into values: inout [Value],
+        limit: Int,
+        by areInIncreasingOrder: (Value, Value) -> Bool
+    ) {
+        if values.count == limit,
+           let last = values.last,
+           !areInIncreasingOrder(value, last) {
+            return
+        }
+        var lowerBound = 0
+        var upperBound = values.count
+        while lowerBound < upperBound {
+            let middle = lowerBound + (upperBound - lowerBound) / 2
+            if areInIncreasingOrder(values[middle], value) {
+                lowerBound = middle + 1
+            } else {
+                upperBound = middle
+            }
+        }
+        values.insert(value, at: lowerBound)
+        if values.count > limit { values.removeLast() }
     }
 
     private static func unique(_ songs: [Song]) -> [Song] {

@@ -73,9 +73,12 @@ final class AppDatabaseTests: XCTestCase {
             shuffle: true,
             repeatMode: .all
         )
-        let queueSaved = await context.database.saveQueue(queue)
+        let queueSaved = await context.database.saveQueue(
+            queue,
+            scope: "account-a"
+        )
         XCTAssertTrue(queueSaved)
-        let restored = await context.database.loadQueue()
+        let restored = await context.database.loadQueue(scope: "account-a")
         XCTAssertEqual(restored?.queue, [first, second])
         XCTAssertEqual(restored?.currentID, second.id)
         XCTAssertEqual(restored?.elapsed, 42)
@@ -91,10 +94,11 @@ final class AppDatabaseTests: XCTestCase {
         )
         let stateSaved = await context.database.saveQueue(
             stateOnlyUpdate,
+            scope: "account-a",
             replacingItems: false
         )
         XCTAssertTrue(stateSaved)
-        let stateRestored = await context.database.loadQueue()
+        let stateRestored = await context.database.loadQueue(scope: "account-a")
         XCTAssertEqual(stateRestored?.queue, [first, second])
         XCTAssertEqual(stateRestored?.currentID, first.id)
         XCTAssertEqual(stateRestored?.elapsed, 84)
@@ -113,6 +117,79 @@ final class AppDatabaseTests: XCTestCase {
             maximumAge: 60
         )
         XCTAssertEqual(loadedSnapshot, snapshot)
+    }
+
+    func testQueueIsIsolatedAndClearedPerAccount() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        let accountAQueue = QueueSnapshot(
+            queue: [song(id: "account-a-song")],
+            currentID: "account-a-song",
+            index: 0,
+            elapsed: 10,
+            shuffle: false,
+            repeatMode: .off
+        )
+        let accountBQueue = QueueSnapshot(
+            queue: [song(id: "account-b-song")],
+            currentID: "account-b-song",
+            index: 0,
+            elapsed: 20,
+            shuffle: true,
+            repeatMode: .one
+        )
+
+        let accountASaved = await context.database.saveQueue(
+            accountAQueue,
+            scope: "account-a"
+        )
+        let accountBSaved = await context.database.saveQueue(
+            accountBQueue,
+            scope: "account-b"
+        )
+        XCTAssertTrue(accountASaved)
+        XCTAssertTrue(accountBSaved)
+        let loadedAccountA = await context.database.loadQueue(scope: "account-a")
+        let loadedAccountB = await context.database.loadQueue(scope: "account-b")
+        XCTAssertEqual(loadedAccountA?.queue, accountAQueue.queue)
+        XCTAssertEqual(loadedAccountB?.queue, accountBQueue.queue)
+
+        await context.database.clearQueue(scope: "account-a")
+
+        let clearedAccountA = await context.database.loadQueue(scope: "account-a")
+        let preservedAccountB = await context.database.loadQueue(scope: "account-b")
+        XCTAssertNil(clearedAccountA)
+        XCTAssertEqual(preservedAccountB?.queue, accountBQueue.queue)
+    }
+
+    func testStateOnlyQueueSaveRepairsItemsAfterAStaleClear() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        let snapshot = QueueSnapshot(
+            queue: [song(id: "one"), song(id: "two")],
+            currentID: "two",
+            index: 1,
+            elapsed: 12,
+            shuffle: false,
+            repeatMode: .off
+        )
+        let initiallySaved = await context.database.saveQueue(
+            snapshot,
+            scope: "account-a"
+        )
+        XCTAssertTrue(initiallySaved)
+        await context.database.clearQueue(scope: "account-a")
+
+        let repaired = await context.database.saveQueue(
+            snapshot,
+            scope: "account-a",
+            replacingItems: false
+        )
+
+        XCTAssertTrue(repaired)
+        let restored = await context.database.loadQueue(scope: "account-a")
+        XCTAssertEqual(restored?.queue, snapshot.queue)
+        XCTAssertEqual(restored?.currentID, "two")
     }
 
     func testArtworkPaletteCacheIsAccountAndVersionIsolated() async throws {
@@ -240,6 +317,73 @@ final class AppDatabaseTests: XCTestCase {
         )
         XCTAssertNil(cleared)
         XCTAssertEqual(preserved, otherAccountPalette)
+    }
+
+    func testArtworkPaletteTouchesBatchRepeatedHitsAcrossKeys() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        for index in 1...3 {
+            let saved = await context.database.saveArtworkPalette(
+                artworkPalette(seed: Double(index) / 10),
+                scope: "account-a",
+                artworkKey: "batch-\(index)",
+                engineVersion: 3,
+                maximumEntriesPerScope: 3,
+                maximumTotalEntries: 4
+            )
+            XCTAssertTrue(saved)
+        }
+
+        for _ in 0..<5 {
+            let repeated = await context.database.loadArtworkPalette(
+                scope: "account-a",
+                artworkKey: "batch-1",
+                engineVersion: 3
+            )
+            XCTAssertNotNil(repeated)
+        }
+        let secondTouched = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "batch-2",
+            engineVersion: 3
+        )
+        XCTAssertNotNil(secondTouched)
+        await context.database.flushArtworkPaletteTouches()
+
+        let fourthSaved = await context.database.saveArtworkPalette(
+            artworkPalette(seed: 0.4),
+            scope: "account-a",
+            artworkKey: "batch-4",
+            engineVersion: 3,
+            maximumEntriesPerScope: 3,
+            maximumTotalEntries: 4
+        )
+        XCTAssertTrue(fourthSaved)
+
+        let first = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "batch-1",
+            engineVersion: 3
+        )
+        let second = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "batch-2",
+            engineVersion: 3
+        )
+        let untouched = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "batch-3",
+            engineVersion: 3
+        )
+        let newest = await context.database.loadArtworkPalette(
+            scope: "account-a",
+            artworkKey: "batch-4",
+            engineVersion: 3
+        )
+        XCTAssertNotNil(first)
+        XCTAssertNotNil(second)
+        XCTAssertNil(untouched)
+        XCTAssertNotNil(newest)
     }
 
     func testArtworkPaletteCacheEnforcesIndependentTotalLimit() async throws {

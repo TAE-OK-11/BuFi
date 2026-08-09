@@ -15,7 +15,10 @@ struct ReadRequestRetryPolicy: Sendable {
     }
 
     func shouldRetry(statusCode: Int) -> Bool {
-        statusCode == 408 || statusCode == 429 || (500...599).contains(statusCode)
+        statusCode == 408
+            || statusCode == 425
+            || statusCode == 429
+            || (500...599).contains(statusCode)
     }
 
     func shouldRetry(error: Error) -> Bool {
