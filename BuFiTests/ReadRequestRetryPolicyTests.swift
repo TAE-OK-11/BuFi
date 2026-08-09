@@ -7,6 +7,7 @@ final class ReadRequestRetryPolicyTests: XCTestCase {
 
     func testRetriesOnlyTransientHTTPStatuses() {
         XCTAssertTrue(policy.shouldRetry(statusCode: 408))
+        XCTAssertTrue(policy.shouldRetry(statusCode: 425))
         XCTAssertTrue(policy.shouldRetry(statusCode: 429))
         XCTAssertTrue(policy.shouldRetry(statusCode: 500))
         XCTAssertTrue(policy.shouldRetry(statusCode: 599))

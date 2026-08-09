@@ -1,5 +1,24 @@
 import Foundation
 
+protocol ListeningHistoryPersistence: Sendable {
+    func loadListeningHistory(scope: String) async -> [String: SongBehavior]
+
+    func applyListeningHistory(
+        _ values: [String: SongBehavior],
+        deletedIDs: Set<String>,
+        scope: String
+    ) async -> Bool
+
+    func replaceListeningHistory(
+        _ values: [String: SongBehavior],
+        scope: String
+    ) async -> Bool
+
+    func clearListeningHistory(scope: String) async
+}
+
+extension AppDatabase: ListeningHistoryPersistence {}
+
 enum PlaybackOrigin: String, Codable, Sendable {
     case manual
     case search
@@ -230,52 +249,122 @@ actor ListeningHistoryStore {
 
     private let storagePrefix = "listening-history-v2"
     private let legacyStoragePrefix = "listening-history-v1"
+    private let database: any ListeningHistoryPersistence
     private var activeScope: String?
     private var entries: [String: SongBehavior] = [:]
     private var revision: UInt64 = 0
+    private var scopeGeneration: UInt64 = 0
+    private var scopeTransitionGeneration: UInt64?
     private var lastStartedSongID: String?
     private var persistenceTask: Task<Void, Never>?
+    private var persistenceTaskToken: UUID?
     private var dirtySongIDs: Set<String> = []
     private var deletedSongIDs: Set<String> = []
+    private var preparedOrdering: PreparedOrdering?
 
-    private init() {}
+    init(database: any ListeningHistoryPersistence = AppDatabase.shared) {
+        self.database = database
+    }
 
-    func activate(accountScope: String) async {
-        guard activeScope != accountScope else { return }
+    @discardableResult
+    func activate(accountScope: String) async -> Bool {
+        guard activeScope != accountScope || scopeTransitionGeneration != nil else {
+            return true
+        }
+        let previousScope = activeScope
+        let generation = beginScopeTransition()
+        if let previousScope {
+            let persisted = await persistPendingWrites(
+                scope: previousScope,
+                generation: generation,
+                retryOnFailure: true
+            )
+            guard isCurrentTransition(generation) else { return false }
+            guard persisted, !Task.isCancelled else {
+                abortScopeTransition(generation)
+                return false
+            }
+        }
+
         activeScope = accountScope
-        entries = await AppDatabase.shared.loadListeningHistory(scope: accountScope)
-        if entries.isEmpty, let legacyEntries = loadLegacyEntries() {
-            entries = legacyEntries
-            if await AppDatabase.shared.replaceListeningHistory(
+        entries.removeAll(keepingCapacity: false)
+        dirtySongIDs.removeAll(keepingCapacity: true)
+        deletedSongIDs.removeAll(keepingCapacity: true)
+        lastStartedSongID = nil
+        preparedOrdering = nil
+
+        var loadedEntries = await database.loadListeningHistory(
+            scope: accountScope
+        )
+        guard isCurrentTransition(
+            generation,
+            accountScope: accountScope
+        ) else { return false }
+        if loadedEntries.isEmpty,
+           let legacyEntries = loadLegacyEntries(accountScope: accountScope) {
+            if await database.replaceListeningHistory(
                 legacyEntries,
                 scope: accountScope
             ) {
-                removeLegacyStorage()
+                removeLegacyStorage(accountScope: accountScope)
             }
+            guard isCurrentTransition(
+                generation,
+                accountScope: accountScope
+            ) else { return false }
+            loadedEntries = legacyEntries
         }
+        guard isCurrentTransition(
+            generation,
+            accountScope: accountScope
+        ) else { return false }
+        entries = loadedEntries
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
-        revision &+= 1
         lastStartedSongID = nil
+        preparedOrdering = nil
+        scopeTransitionGeneration = nil
+        return true
+    }
+
+    func isActive(accountScope: String) -> Bool {
+        activeScope == accountScope && scopeTransitionGeneration == nil
     }
 
     func deactivate(accountScope: String) async {
         guard activeScope == accountScope else { return }
-        await flushPendingWrites()
+        let generation = beginScopeTransition()
+        let persisted = await persistPendingWrites(
+            scope: accountScope,
+            generation: generation,
+            retryOnFailure: true
+        )
+        guard isCurrentTransition(
+            generation,
+            accountScope: accountScope
+        ) else { return }
+        guard persisted, !Task.isCancelled else {
+            abortScopeTransition(generation)
+            return
+        }
         activeScope = nil
         entries.removeAll(keepingCapacity: false)
         dirtySongIDs.removeAll(keepingCapacity: false)
         deletedSongIDs.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
-        revision &+= 1
+        preparedOrdering = nil
+        scopeTransitionGeneration = nil
     }
 
     func recordStart(
         _ song: Song,
+        accountScope: String,
         origin: PlaybackOrigin,
         at date: Date = Date()
     ) {
-        guard activeScope != nil, song.externalStreamURL == nil else { return }
+        guard activeScope == accountScope,
+              scopeTransitionGeneration == nil,
+              song.externalStreamURL == nil else { return }
         var value = entries[song.id] ?? SongBehavior(song: song, at: date)
         value.song = song
         value.playCount += 1
@@ -308,11 +397,13 @@ actor ListeningHistoryStore {
 
     func recordEnd(
         _ song: Song,
+        accountScope: String,
         playedSeconds: TimeInterval,
         duration: TimeInterval,
         reason: PlaybackEndReason
     ) {
-        guard activeScope != nil,
+        guard activeScope == accountScope,
+              scopeTransitionGeneration == nil,
               song.externalStreamURL == nil,
               var value = entries[song.id] else {
             return
@@ -353,8 +444,9 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
-    func recordQueueRemoval(_ song: Song) {
-        guard activeScope != nil,
+    func recordQueueRemoval(_ song: Song, accountScope: String) {
+        guard activeScope == accountScope,
+              scopeTransitionGeneration == nil,
               song.externalStreamURL == nil else {
             return
         }
@@ -366,8 +458,13 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
-    func recordFavorite(_ song: Song, enabled: Bool) {
-        guard activeScope != nil,
+    func recordFavorite(
+        _ song: Song,
+        accountScope: String,
+        enabled: Bool
+    ) {
+        guard activeScope == accountScope,
+              scopeTransitionGeneration == nil,
               song.externalStreamURL == nil else {
             return
         }
@@ -381,17 +478,20 @@ actor ListeningHistoryStore {
 
     func snapshot(limit: Int = 30) -> ListeningHistorySnapshot {
         let boundedLimit = max(0, limit)
-        let values = Array(entries.values)
-        let mostPlayed = values.sorted {
-            if $0.playCount == $1.playCount {
-                return $0.lastPlayed > $1.lastPlayed
-            }
-            return $0.playCount > $1.playCount
+        guard scopeTransitionGeneration == nil, boundedLimit > 0 else {
+            return ListeningHistorySnapshot(
+                mostPlayedSongs: [],
+                recentlyPlayedSongs: []
+            )
         }
-        let recent = values.sorted { $0.lastPlayed > $1.lastPlayed }
+        let ordering = preparedBehaviorOrdering()
         return ListeningHistorySnapshot(
-            mostPlayedSongs: Array(mostPlayed.prefix(boundedLimit).map(\.song)),
-            recentlyPlayedSongs: Array(recent.prefix(boundedLimit).map(\.song))
+            mostPlayedSongs: Array(
+                ordering.mostPlayed.prefix(boundedLimit).map(\.song)
+            ),
+            recentlyPlayedSongs: Array(
+                ordering.recent.prefix(boundedLimit).map(\.song)
+            )
         )
     }
 
@@ -399,10 +499,18 @@ actor ListeningHistoryStore {
         recentLimit: Int = 20
     ) -> RecommendationBehaviorSnapshot {
         let boundedLimit = max(0, recentLimit)
-        let recent = entries.values
-            .sorted { $0.lastPlayed > $1.lastPlayed }
-            .prefix(boundedLimit)
-            .map(\.song)
+        guard scopeTransitionGeneration == nil else {
+            return RecommendationBehaviorSnapshot(
+                songs: [:],
+                recentSongs: [],
+                revision: revision
+            )
+        }
+        let recent = boundedLimit > 0
+            ? preparedBehaviorOrdering().recent
+                .prefix(boundedLimit)
+                .map(\.song)
+            : []
         return RecommendationBehaviorSnapshot(
             songs: entries,
             recentSongs: Array(recent),
@@ -411,29 +519,33 @@ actor ListeningHistoryStore {
     }
 
     func clear() async {
-        guard let scope = activeScope else { return }
+        guard scopeTransitionGeneration == nil,
+              let scope = activeScope else { return }
         persistenceTask?.cancel()
         persistenceTask = nil
+        persistenceTaskToken = nil
         entries.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
-        await AppDatabase.shared.clearListeningHistory(scope: scope)
-        removeLegacyStorage()
+        preparedOrdering = nil
         revision &+= 1
         RecommendationMixer.invalidateCache()
+        await database.clearListeningHistory(scope: scope)
+        removeLegacyStorage(accountScope: scope)
     }
 
-    private var storageKey: String {
-        "\(storagePrefix).\(activeScope ?? "inactive")"
+    private func storageKey(accountScope: String) -> String {
+        "\(storagePrefix).\(accountScope)"
     }
 
-    private var legacyStorageKey: String {
-        "\(legacyStoragePrefix).\(activeScope ?? "inactive")"
+    private func legacyStorageKey(accountScope: String) -> String {
+        "\(legacyStoragePrefix).\(accountScope)"
     }
 
     private func didMutate() {
         revision &+= 1
+        preparedOrdering = nil
         trimEntriesIfNeeded()
         schedulePersistence()
         RecommendationMixer.invalidateCache()
@@ -442,8 +554,13 @@ actor ListeningHistoryStore {
     func flushPendingWrites() async {
         persistenceTask?.cancel()
         persistenceTask = nil
-        guard activeScope != nil else { return }
-        await persist()
+        persistenceTaskToken = nil
+        guard let scope = activeScope else { return }
+        _ = await persistPendingWrites(
+            scope: scope,
+            generation: scopeGeneration,
+            retryOnFailure: true
+        )
     }
 
     private func trimEntriesIfNeeded() {
@@ -461,33 +578,114 @@ actor ListeningHistoryStore {
     }
 
     private func schedulePersistence() {
+        guard let scope = activeScope,
+              scopeTransitionGeneration == nil else { return }
         persistenceTask?.cancel()
-        let scope = activeScope
+        let token = UUID()
+        persistenceTaskToken = token
+        let generation = scopeGeneration
         persistenceTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            await self?.flushScheduledPersistence(scope: scope)
+            do {
+                try await Task.sleep(for: .milliseconds(600))
+            } catch {
+                return
+            }
+            await self?.flushScheduledPersistence(
+                scope: scope,
+                generation: generation,
+                token: token
+            )
         }
     }
 
-    private func flushScheduledPersistence(scope: String?) async {
-        guard activeScope == scope else { return }
+    private func flushScheduledPersistence(
+        scope: String,
+        generation: UInt64,
+        token: UUID
+    ) async {
+        guard activeScope == scope,
+              scopeGeneration == generation,
+              scopeTransitionGeneration == nil,
+              persistenceTaskToken == token else { return }
         persistenceTask = nil
-        await persist()
+        persistenceTaskToken = nil
+        _ = await persistPendingWrites(
+            scope: scope,
+            generation: generation,
+            retryOnFailure: true
+        )
     }
 
-    private func persist() async {
-        guard let scope = activeScope,
-              !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty else { return }
+    private enum PersistenceAttempt {
+        case saved
+        case failed
+        case stale
+    }
+
+    private static let maximumPersistenceRetryCount = 2
+
+    private func persistPendingWrites(
+        scope: String,
+        generation: UInt64,
+        retryOnFailure: Bool
+    ) async -> Bool {
+        var retryCount = 0
+        while activeScope == scope,
+              scopeGeneration == generation,
+              (!dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty) {
+            switch await persist(
+                scope: scope,
+                generation: generation
+            ) {
+            case .saved:
+                retryCount = 0
+                if Task.isCancelled {
+                    return dirtySongIDs.isEmpty && deletedSongIDs.isEmpty
+                }
+            case .failed:
+                guard retryOnFailure,
+                      retryCount < Self.maximumPersistenceRetryCount else {
+                    return false
+                }
+                retryCount += 1
+                let delay: Duration = retryCount == 1
+                    ? .milliseconds(250)
+                    : .milliseconds(750)
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return false
+                }
+            case .stale:
+                return false
+            }
+        }
+        return activeScope == scope
+            && scopeGeneration == generation
+            && dirtySongIDs.isEmpty
+            && deletedSongIDs.isEmpty
+    }
+
+    private func persist(
+        scope: String,
+        generation: UInt64
+    ) async -> PersistenceAttempt {
+        guard activeScope == scope, scopeGeneration == generation else {
+            return .stale
+        }
         let dirty = Dictionary(uniqueKeysWithValues: dirtySongIDs.compactMap { id in
             entries[id].map { (id, $0) }
         })
         let deleted = deletedSongIDs
-        guard await AppDatabase.shared.applyListeningHistory(
+        let saved = await database.applyListeningHistory(
             dirty,
             deletedIDs: deleted,
             scope: scope
-        ) else { return }
+        )
+        guard activeScope == scope, scopeGeneration == generation else {
+            return .stale
+        }
+        guard saved else { return .failed }
         // The actor can accept a newer playback event while the database write
         // is suspended. Only acknowledge the exact values that were written;
         // otherwise the newer mutation must remain dirty for the next flush.
@@ -497,6 +695,7 @@ actor ListeningHistoryStore {
         for id in deleted where entries[id] == nil {
             deletedSongIDs.remove(id)
         }
+        return .saved
     }
 
     private func markDirty(_ songID: String) {
@@ -504,8 +703,70 @@ actor ListeningHistoryStore {
         deletedSongIDs.remove(songID)
     }
 
-    private func loadLegacyEntries() -> [String: SongBehavior]? {
-        for key in [storageKey, legacyStorageKey] {
+    private struct PreparedOrdering {
+        let revision: UInt64
+        let mostPlayed: [SongBehavior]
+        let recent: [SongBehavior]
+    }
+
+    private func preparedBehaviorOrdering() -> PreparedOrdering {
+        if let preparedOrdering, preparedOrdering.revision == revision {
+            return preparedOrdering
+        }
+        let values = Array(entries.values)
+        let value = PreparedOrdering(
+            revision: revision,
+            mostPlayed: values.sorted {
+                if $0.playCount == $1.playCount {
+                    return $0.lastPlayed > $1.lastPlayed
+                }
+                return $0.playCount > $1.playCount
+            },
+            recent: values.sorted { $0.lastPlayed > $1.lastPlayed }
+        )
+        preparedOrdering = value
+        return value
+    }
+
+    private func beginScopeTransition() -> UInt64 {
+        scopeGeneration &+= 1
+        let generation = scopeGeneration
+        scopeTransitionGeneration = generation
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        persistenceTaskToken = nil
+        preparedOrdering = nil
+        revision &+= 1
+        RecommendationMixer.invalidateCache()
+        return generation
+    }
+
+    private func abortScopeTransition(_ generation: UInt64) {
+        guard isCurrentTransition(generation) else { return }
+        scopeTransitionGeneration = nil
+        if !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty {
+            schedulePersistence()
+        }
+    }
+
+    private func isCurrentTransition(
+        _ generation: UInt64,
+        accountScope: String? = nil
+    ) -> Bool {
+        guard scopeGeneration == generation,
+              scopeTransitionGeneration == generation else {
+            return false
+        }
+        return accountScope.map { activeScope == $0 } ?? true
+    }
+
+    private func loadLegacyEntries(
+        accountScope: String
+    ) -> [String: SongBehavior]? {
+        for key in [
+            storageKey(accountScope: accountScope),
+            legacyStorageKey(accountScope: accountScope)
+        ] {
             guard let data = UserDefaults.standard.data(forKey: key),
                   let values = try? JSONDecoder().decode(
                       [String: SongBehavior].self,
@@ -516,8 +777,12 @@ actor ListeningHistoryStore {
         return nil
     }
 
-    private func removeLegacyStorage() {
-        UserDefaults.standard.removeObject(forKey: storageKey)
-        UserDefaults.standard.removeObject(forKey: legacyStorageKey)
+    private func removeLegacyStorage(accountScope: String) {
+        UserDefaults.standard.removeObject(
+            forKey: storageKey(accountScope: accountScope)
+        )
+        UserDefaults.standard.removeObject(
+            forKey: legacyStorageKey(accountScope: accountScope)
+        )
     }
 }
