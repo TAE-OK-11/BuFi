@@ -1161,16 +1161,20 @@ enum DaylistBuilder {
     }
 
     private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
-        songs.enumerated()
-            .map { index, song in
-                (index: index, song: song, hash: stableHash(song.id, seed: seed))
+        let hashed: [(index: Int, song: Song, hash: UInt64)] =
+            songs.enumerated().map { index, song in
+                (
+                    index: index,
+                    song: song,
+                    hash: stableHash(song.id, seed: seed)
+                )
             }
-            .sorted {
-                $0.hash == $1.hash
-                    ? $0.index < $1.index
-                    : $0.hash < $1.hash
-            }
-            .map(\.song)
+        let ordered = hashed.sorted { lhs, rhs in
+            lhs.hash == rhs.hash
+                ? lhs.index < rhs.index
+                : lhs.hash < rhs.hash
+        }
+        return ordered.map(\.song)
     }
 
     private static func unique(_ songs: [Song]) -> [Song] {
@@ -1710,16 +1714,21 @@ enum PersonalizedMixBuilder {
     }
 
     private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
-        unique(songs).enumerated()
-            .map { index, song in
-                (index: index, song: song, hash: stableHash(song.id, seed: seed))
+        let values = unique(songs)
+        let hashed: [(index: Int, song: Song, hash: UInt64)] =
+            values.enumerated().map { index, song in
+                (
+                    index: index,
+                    song: song,
+                    hash: stableHash(song.id, seed: seed)
+                )
             }
-            .sorted {
-                $0.hash == $1.hash
-                    ? $0.index < $1.index
-                    : $0.hash < $1.hash
-            }
-            .map(\.song)
+        let ordered = hashed.sorted { lhs, rhs in
+            lhs.hash == rhs.hash
+                ? lhs.index < rhs.index
+                : lhs.hash < rhs.hash
+        }
+        return ordered.map(\.song)
     }
 
     private static func unique(_ songs: [Song]) -> [Song] {
