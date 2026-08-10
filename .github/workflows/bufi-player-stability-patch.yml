@@ -1,0 +1,100 @@
+name: Apply player artwork stability patch
+
+on:
+  push:
+    branches:
+      - fix/player-artwork-queue-stability
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/player-artwork-queue-stability
+
+      - name: Patch stale artwork handling
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}")
+              file.write_text(text.replace(old, new, 1))
+
+          components = "BuFi/UI/Components.swift"
+          replace_once(
+              components,
+              '''    @State private var image: UIImage?\n\n    var body: some View {\n''',
+              '''    @State private var image: UIImage?\n    @State private var imageIdentity: String?\n\n    var body: some View {\n'''
+          )
+          replace_once(
+              components,
+              '''            if let image {\n                Image(uiImage: image)\n''',
+              '''            if imageIdentity == artworkRequestIdentity, let image {\n                Image(uiImage: image)\n'''
+          )
+          replace_once(
+              components,
+              '''        .task(id: "\\(coverArt ?? "")-\\(Int(size * displayScale))") {\n            image = nil\n''',
+              '''        .task(id: artworkRequestIdentity) {\n            let requestID = artworkRequestIdentity\n            image = nil\n            imageIdentity = nil\n'''
+          )
+          replace_once(
+              components,
+              '''                guard !Task.isCancelled else { return }\n                image = loaded\n                guard let onPalette else { return }\n''',
+              '''                guard !Task.isCancelled,\n                      artworkRequestIdentity == requestID else { return }\n                imageIdentity = requestID\n                image = loaded\n                guard let onPalette else { return }\n'''
+          )
+          replace_once(
+              components,
+              '''                guard !Task.isCancelled else { return }\n                onPalette(palette)\n                return\n''',
+              '''                guard !Task.isCancelled,\n                      artworkRequestIdentity == requestID else { return }\n                onPalette(palette)\n                return\n'''
+          )
+          replace_once(
+              components,
+              '''        .accessibilityHidden(true)\n    }\n}\n\nstruct AlbumCard''',
+              '''        .accessibilityHidden(true)\n    }\n\n    private var artworkRequestIdentity: String {\n        "\\(coverArt ?? "")-\\(Int(size * displayScale))"\n    }\n}\n\nstruct AlbumCard'''
+          )
+
+          player = "BuFi/UI/PlayerView.swift"
+          replace_once(
+              player,
+              '''        let songs = playbackQueue.songs.isEmpty ? [song] : playbackQueue.songs\n''',
+              '''        let songs: [Song]\n        if playbackQueue.songs.indices.contains(playbackQueue.index),\n           playbackQueue.songs[playbackQueue.index].id == song.id,\n           playbackQueue.songs[playbackQueue.index].coverArt == song.coverArt {\n            songs = playbackQueue.songs\n        } else {\n            // PlaybackItemState is the visual source of truth. Queue and item\n            // publication can be observed in separate SwiftUI update passes.\n            songs = [song]\n        }\n'''
+          )
+          replace_once(
+              player,
+              '''        let songs = playbackQueue.songs.isEmpty\n            ? (playbackItem.currentSong.map { [$0] } ?? [])\n            : playbackQueue.songs\n''',
+              '''        let songs: [Song]\n        if let currentSong = playbackItem.currentSong,\n           playbackQueue.songs.indices.contains(index),\n           playbackQueue.songs[index].id == currentSong.id,\n           playbackQueue.songs[index].coverArt == currentSong.coverArt {\n            songs = playbackQueue.songs\n        } else {\n            songs = playbackItem.currentSong.map { [$0] } ?? []\n        }\n'''
+          )
+          replace_once(
+              player,
+              '''                                    ArtworkView(coverArt: song.coverArt, size: 48, cornerRadius: 5)\n                                        .frame(width: 48, height: 48)\n''',
+              '''                                    ArtworkView(coverArt: song.coverArt, size: 48, cornerRadius: 5)\n                                        .frame(width: 48, height: 48)\n                                        .id("\\(index)-\\(song.id)-\\(song.coverArt ?? "")")\n'''
+          )
+
+          root = "BuFi/UI/RootView.swift"
+          replace_once(
+              root,
+              '''    private var currentArtworkPageID: PlayerArtworkPageID? {\n        if playbackQueue.songs.indices.contains(playbackQueue.index) {\n            let song = playbackQueue.songs[playbackQueue.index]\n            return PlayerArtworkPageID(\n                queueIndex: playbackQueue.index,\n                songID: song.id,\n                coverArtID: song.coverArt\n            )\n        }\n        guard let song = playbackItem.currentSong else { return nil }\n        return PlayerArtworkPageID(\n            queueIndex: 0,\n            songID: song.id,\n            coverArtID: song.coverArt\n        )\n    }\n''',
+              '''    private var currentArtworkPageID: PlayerArtworkPageID? {\n        guard let song = playbackItem.currentSong else { return nil }\n\n        if playbackQueue.songs.indices.contains(playbackQueue.index) {\n            let queuedSong = playbackQueue.songs[playbackQueue.index]\n            if queuedSong.id == song.id, queuedSong.coverArt == song.coverArt {\n                return PlayerArtworkPageID(\n                    queueIndex: playbackQueue.index,\n                    songID: song.id,\n                    coverArtID: song.coverArt\n                )\n            }\n        }\n\n        if let matchingIndex = playbackQueue.songs.firstIndex(where: {\n            $0.id == song.id && $0.coverArt == song.coverArt\n        }) {\n            return PlayerArtworkPageID(\n                queueIndex: matchingIndex,\n                songID: song.id,\n                coverArtID: song.coverArt\n            )\n        }\n\n        return PlayerArtworkPageID(\n            queueIndex: 0,\n            songID: song.id,\n            coverArtID: song.coverArt\n        )\n    }\n'''
+          )
+
+          Path(".github/workflows/bufi-player-stability-patch.yml").unlink()
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Fix stale artwork across queue replacements"
+          git push origin HEAD:fix/player-artwork-queue-stability
