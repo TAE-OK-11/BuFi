@@ -1,0 +1,51 @@
+name: Harden current-song artwork synchronization
+
+on:
+  push:
+    branches:
+      - fix/player-artwork-queue-stability
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/player-artwork-queue-stability
+
+      - name: Patch current-song synchronization
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("BuFi/UI/PlayerView.swift")
+          text = path.read_text()
+
+          old = '''        .onChange(of: playbackItem.currentSong?.id) { _, _ in\n            applyCachedPalette(at: playbackQueue.index)\n        }\n'''
+          new = '''        .onChange(of: playbackItem.currentSong.map { [$0.id, $0.coverArt ?? ""] }) { _, _ in\n            // Queue and current-item state are published independently. Always\n            // re-anchor the pager when the visual now-playing identity changes.\n            syncArtworkPage(to: playbackQueue.index, animated: false)\n            applyCachedPalette(at: playbackQueue.index)\n        }\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"currentSong change block: expected one match, found {text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old = '''    private func applyCachedPalette(at index: Int) {\n        guard playbackQueue.songs.indices.contains(index) else {\n            palette = .fallback\n            return\n        }\n        let song = playbackQueue.songs[index]\n        let page = PlayerArtworkPageID(\n            queueIndex: index,\n            songID: song.id,\n            coverArtID: song.coverArt\n        )\n        if let cached = artworkPalettes[page] {\n            if palette != cached { palette = cached }\n        } else if palette != .fallback {\n            palette = .fallback\n        }\n    }\n'''
+          new = '''    private func applyCachedPalette(at index: Int) {\n        guard let currentSong = playbackItem.currentSong else {\n            palette = .fallback\n            return\n        }\n\n        let resolvedIndex: Int\n        if playbackQueue.songs.indices.contains(index),\n           playbackQueue.songs[index].id == currentSong.id,\n           playbackQueue.songs[index].coverArt == currentSong.coverArt {\n            resolvedIndex = index\n        } else {\n            // Match the single-page fallback used while queue publication is\n            // temporarily out of step with PlaybackItemState.\n            resolvedIndex = 0\n        }\n\n        let page = PlayerArtworkPageID(\n            queueIndex: resolvedIndex,\n            songID: currentSong.id,\n            coverArtID: currentSong.coverArt\n        )\n        if let cached = artworkPalettes[page] {\n            if palette != cached { palette = cached }\n        } else if palette != .fallback {\n            palette = .fallback\n        }\n    }\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"palette function: expected one match, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+
+          Path(".github/workflows/bufi-player-stability-followup.yml").unlink()
+          PY
+
+      - name: Commit follow-up
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Keep player artwork anchored to current song"
+          git push origin HEAD:fix/player-artwork-queue-stability
