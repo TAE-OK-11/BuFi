@@ -374,6 +374,7 @@ struct ArtworkView: View {
     var onPalette: ((ArtworkPalette) -> Void)?
 
     @State private var image: UIImage?
+    @State private var imageIdentity: String?
 
     var body: some View {
         ZStack {
@@ -386,7 +387,7 @@ struct ArtworkView: View {
                 .font(.system(size: size * 0.22, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.34))
 
-            if let image {
+            if imageIdentity == artworkRequestIdentity, let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -400,8 +401,10 @@ struct ArtworkView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: "\(coverArt ?? "")-\(Int(size * displayScale))") {
+        .task(id: artworkRequestIdentity) {
+            let requestID = artworkRequestIdentity
             image = nil
+            imageIdentity = nil
             if let coverURL = await model.artworkURL(id: coverArt, size: Int(size * 2)) {
                 guard !Task.isCancelled else { return }
                 guard let loaded = try? await ArtworkStore.shared.image(
@@ -411,14 +414,17 @@ struct ArtworkView: View {
                     onPalette?(.fallback)
                     return
                 }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      artworkRequestIdentity == requestID else { return }
+                imageIdentity = requestID
                 image = loaded
                 guard let onPalette else { return }
                 let palette = await ArtworkStore.shared.palette(
                     for: coverURL,
                     image: loaded
                 )
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      artworkRequestIdentity == requestID else { return }
                 onPalette(palette)
                 return
             }
@@ -426,6 +432,10 @@ struct ArtworkView: View {
             onPalette?(.fallback)
         }
         .accessibilityHidden(true)
+    }
+
+    private var artworkRequestIdentity: String {
+        "\(coverArt ?? "")-\(Int(size * displayScale))"
     }
 }
 

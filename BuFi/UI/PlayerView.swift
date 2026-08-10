@@ -339,7 +339,16 @@ struct PlayerView: View {
         let viewportWidth = max(240, availableWidth - 44)
         let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
         let sideInset = max(0, (viewportWidth - edge) / 2)
-        let songs = playbackQueue.songs.isEmpty ? [song] : playbackQueue.songs
+        let songs: [Song]
+        if playbackQueue.songs.indices.contains(playbackQueue.index),
+           playbackQueue.songs[playbackQueue.index].id == song.id,
+           playbackQueue.songs[playbackQueue.index].coverArt == song.coverArt {
+            songs = playbackQueue.songs
+        } else {
+            // PlaybackItemState is the visual source of truth. Queue and item
+            // publication can be observed in separate SwiftUI update passes.
+            songs = [song]
+        }
         let pages = songs.indices.map {
             PlayerArtworkPageID(
                 queueIndex: $0,
@@ -607,9 +616,15 @@ struct PlayerView: View {
     }
 
     private func syncArtworkPage(to index: Int, animated: Bool) {
-        let songs = playbackQueue.songs.isEmpty
-            ? (playbackItem.currentSong.map { [$0] } ?? [])
-            : playbackQueue.songs
+        let songs: [Song]
+        if let currentSong = playbackItem.currentSong,
+           playbackQueue.songs.indices.contains(index),
+           playbackQueue.songs[index].id == currentSong.id,
+           playbackQueue.songs[index].coverArt == currentSong.coverArt {
+            songs = playbackQueue.songs
+        } else {
+            songs = playbackItem.currentSong.map { [$0] } ?? []
+        }
         guard !songs.isEmpty else {
             artworkPage = nil
             palette = .fallback
@@ -1588,6 +1603,7 @@ private struct QueueView: View {
                                 HStack(spacing: 12) {
                                     ArtworkView(coverArt: song.coverArt, size: 48, cornerRadius: 5)
                                         .frame(width: 48, height: 48)
+                                        .id("\(index)-\(song.id)-\(song.coverArt ?? "")")
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
                                             .foregroundStyle(index == playbackQueue.index ? BuFiTheme.accentSoft : Color.primary)
