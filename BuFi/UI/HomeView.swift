@@ -327,7 +327,7 @@ struct HomeView: View {
                     LazyHStack(alignment: .top, spacing: 15) {
                         ForEach(albums.prefix(12)) { album in
                             NavigationLink(value: MusicRoute.album(album)) {
-                                AlbumCard(album: album)
+                                HomeAlbumCard(album: album)
                             }
                             .buttonStyle(BuFiPressStyle())
                         }
@@ -459,6 +459,55 @@ struct HomeView: View {
 
     private func countText(_ count: Int) -> String {
         String(format: String(localized: "%d곡"), count)
+    }
+}
+
+private struct HomeAlbumCard: View {
+    let album: Album
+
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+    private let width: CGFloat = 166
+
+    @ViewBuilder
+    var body: some View {
+        if motionEnabled {
+            card
+                .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                    content
+                        .scaleEffect(phase.isIdentity ? 1 : 0.985)
+                        .opacity(phase.isIdentity ? 1 : 0.94)
+                }
+        } else {
+            card
+        }
+    }
+
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ArtworkView(
+                coverArt: album.coverArt,
+                size: width,
+                cornerRadius: 14
+            )
+            .frame(width: width, height: width)
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 0.6)
+            }
+
+            Text(album.name)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(album.artist)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(width: width, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }
 
