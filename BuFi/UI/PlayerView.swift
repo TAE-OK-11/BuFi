@@ -107,7 +107,10 @@ struct PlayerView: View {
             syncArtworkPage(to: index, animated: true)
             prefetchUpcomingArtwork(after: index)
         }
-        .onChange(of: playbackItem.currentSong?.id) { _, _ in
+        .onChange(of: playbackItem.currentSong.map { [$0.id, $0.coverArt ?? ""] }) { _, _ in
+            // Queue and current-item state are published independently. Always
+            // re-anchor the pager when the visual now-playing identity changes.
+            syncArtworkPage(to: playbackQueue.index, animated: false)
             applyCachedPalette(at: playbackQueue.index)
         }
         .onChange(of: playbackQueue.songs.map { [$0.id, $0.coverArt ?? ""] }) { _, _ in
@@ -657,15 +660,26 @@ struct PlayerView: View {
     }
 
     private func applyCachedPalette(at index: Int) {
-        guard playbackQueue.songs.indices.contains(index) else {
+        guard let currentSong = playbackItem.currentSong else {
             palette = .fallback
             return
         }
-        let song = playbackQueue.songs[index]
+
+        let resolvedIndex: Int
+        if playbackQueue.songs.indices.contains(index),
+           playbackQueue.songs[index].id == currentSong.id,
+           playbackQueue.songs[index].coverArt == currentSong.coverArt {
+            resolvedIndex = index
+        } else {
+            // Match the single-page fallback used while queue publication is
+            // temporarily out of step with PlaybackItemState.
+            resolvedIndex = 0
+        }
+
         let page = PlayerArtworkPageID(
-            queueIndex: index,
-            songID: song.id,
-            coverArtID: song.coverArt
+            queueIndex: resolvedIndex,
+            songID: currentSong.id,
+            coverArtID: currentSong.coverArt
         )
         if let cached = artworkPalettes[page] {
             if palette != cached { palette = cached }
