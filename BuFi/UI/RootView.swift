@@ -19,6 +19,11 @@ private struct MiniPlayerPlacementPreferenceKey: PreferenceKey {
     }
 }
 
+private struct PlayerPresentationSession: Identifiable {
+    let id: UUID
+    let initialArtworkPage: PlayerArtworkPageID?
+}
+
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
@@ -135,15 +140,10 @@ struct RootView: View {
         } message: {
             Text(playerPresentation.playbackError ?? "")
         }
-        .fullScreenCover(
-            isPresented: Binding(
-                get: { playerPresentation.showPlayer },
-                set: { audio.showPlayer = $0 }
-            )
-        ) {
+        .fullScreenCover(item: playerPresentationSession) { presentation in
             NavigationStack {
                 PlayerView(
-                    initialArtworkPage: currentArtworkPageID
+                    initialArtworkPage: presentation.initialArtworkPage
                 )
                     .navigationDestination(for: MusicRoute.self) { route in
                         MusicDetailView(route: route)
@@ -152,8 +152,25 @@ struct RootView: View {
             .environmentObject(model)
             .environmentObject(audio)
             .environment(\.buFiMotionEnabled, effectiveMotion)
-            .id(playerPresentation.presentationID)
+            .id(presentation.id)
         }
+    }
+
+    private var playerPresentationSession: Binding<PlayerPresentationSession?> {
+        Binding(
+            get: {
+                guard playerPresentation.showPlayer else { return nil }
+                return PlayerPresentationSession(
+                    id: playerPresentation.presentationID,
+                    initialArtworkPage: currentArtworkPageID
+                )
+            },
+            set: { presentation in
+                if presentation == nil {
+                    audio.showPlayer = false
+                }
+            }
+        )
     }
 
     private var currentArtworkPageID: PlayerArtworkPageID? {
