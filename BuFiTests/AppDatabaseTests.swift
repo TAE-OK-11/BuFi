@@ -10,9 +10,11 @@ final class AppDatabaseTests: XCTestCase {
             password: "secret"
         )
         let client = try OpenSubsonicClient(credentials: credentials)
-        let expected = AccountScope.identifier(for: client.credentials)
+        let clientCredentials = await client.credentials
+        let clientScope = await client.accountScope
+        let expected = AccountScope.identifier(for: clientCredentials)
 
-        XCTAssertEqual(client.accountScope, expected)
+        XCTAssertEqual(clientScope, expected)
         XCTAssertEqual(
             AccountScope.identifier(for: credentials),
             AccountScope.identifier(for: ServerCredentials(
