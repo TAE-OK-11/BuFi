@@ -93,6 +93,100 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         )
     }
 
+    func testPlaybackRecoveryNudgesOnlyOnceAtTheStreamStart() {
+        let target = PlaybackRecoveryPolicy.startupNudgeTarget(
+            elapsed: 0,
+            duration: 180,
+            alreadyAttempted: false
+        )
+        XCTAssertNotNil(target)
+        XCTAssertEqual(
+            target ?? -1,
+            0.18,
+            accuracy: 0.001
+        )
+        XCTAssertNil(PlaybackRecoveryPolicy.startupNudgeTarget(
+            elapsed: 0.2,
+            duration: 180,
+            alreadyAttempted: false
+        ))
+        XCTAssertNil(PlaybackRecoveryPolicy.startupNudgeTarget(
+            elapsed: 0,
+            duration: 180,
+            alreadyAttempted: true
+        ))
+        XCTAssertNil(PlaybackRecoveryPolicy.startupNudgeTarget(
+            elapsed: 0,
+            duration: 0,
+            alreadyAttempted: false
+        ))
+        let forwardTarget = PlaybackRecoveryPolicy.startupNudgeTarget(
+            elapsed: 0.1,
+            duration: 20,
+            alreadyAttempted: false
+        )
+        XCTAssertGreaterThan(forwardTarget ?? 0, 0.1)
+        XCTAssertNil(PlaybackRecoveryPolicy.startupNudgeTarget(
+            elapsed: 0.1,
+            duration: 0.1,
+            alreadyAttempted: false
+        ))
+    }
+
+    func testPlaybackRecoveryRequiresActualClockProgress() {
+        XCTAssertFalse(PlaybackRecoveryPolicy.hasMeaningfulProgress(
+            from: 0,
+            to: 0
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.hasMeaningfulProgress(
+            from: 42,
+            to: 42.05
+        ))
+        XCTAssertTrue(PlaybackRecoveryPolicy.hasMeaningfulProgress(
+            from: 42,
+            to: 42.2
+        ))
+    }
+
+    func testNetworkRecoverySkipsRawBeforeTryingLowerBandwidthFormat() {
+        let originalQualityFallbacks = ["aac", "mp3"]
+        let opusQualityFallbacks = ["aac", "mp3", "raw"]
+
+        XCTAssertEqual(
+            PlaybackRecoveryPolicy.nextCompatibilityIndex(
+                in: originalQualityFallbacks,
+                from: 0,
+                allowsRaw: false
+            ),
+            0
+        )
+        XCTAssertEqual(
+            PlaybackRecoveryPolicy.nextCompatibilityIndex(
+                in: opusQualityFallbacks,
+                from: 2,
+                allowsRaw: false
+            ),
+            nil
+        )
+    }
+
+    func testOpusQualityCompatibilityFallbackNeverIncreasesBitRate() {
+        XCTAssertEqual(
+            OpenSubsonicClient.compatibilityBitRate(
+                for: .opus160,
+                format: "aac"
+            ),
+            160
+        )
+        XCTAssertEqual(
+            OpenSubsonicClient.compatibilityBitRate(
+                for: .opus160,
+                format: "mp3"
+            ),
+            160
+        )
+    }
+
     func testGaplessPlanStagesOnlyDeterministicSuccessor() {
         XCTAssertEqual(
             GaplessSuccessorPlan.make(

@@ -2258,27 +2258,66 @@ actor ExternalRecommendationClient {
         url: URL,
         token: String? = nil
     ) async -> Value? {
+        do {
+            let data = try await responseData(
+                url: url,
+                token: token,
+                acceptsZstandard: true
+            )
+            return try decoder.decode(Value.self, from: data)
+        } catch let error as URLError where error.code == .cannotDecodeContentData {
+            do {
+                let data = try await responseData(
+                    url: url,
+                    token: token,
+                    acceptsZstandard: false
+                )
+                return try decoder.decode(Value.self, from: data)
+            } catch {
+                return nil
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    private func responseData(
+        url: URL,
+        token: String?,
+        acceptsZstandard: Bool
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         ModernNetworkPolicy.prepareExternalAPIRequest(
             &request,
-            acceptsZstandard: false
+            acceptsZstandard: acceptsZstandard
         )
+        if !acceptsZstandard {
+            // Do not let a malformed zstd response cached by an intermediary
+            // satisfy the compatibility retry with the same bytes.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
         request.setValue("BuFi/1.0.0", forHTTPHeaderField: "User-Agent")
         if let token, !token.isEmpty {
             request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         }
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard !Task.isCancelled,
-                  let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  data.count <= 4 * 1_024 * 1_024 else {
-                return nil
-            }
-            return try decoder.decode(Value.self, from: data)
-        } catch {
-            return nil
+        try Task.checkCancellation()
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
         }
+        guard data.count <= 4 * 1_024 * 1_024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        let decoded = try HTTPContentDecoder.decode(
+            data,
+            contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+        )
+        guard decoded.count <= 4 * 1_024 * 1_024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        return decoded
     }
 }
 

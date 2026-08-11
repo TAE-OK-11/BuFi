@@ -21,6 +21,49 @@ final class UIOptimizationTests: XCTestCase {
         XCTAssertTrue(gate.shouldStartPlayback(for: current))
     }
 
+    func testProgrammaticPagerAnimationIgnoresIntermediatePages() {
+        let current = PlayerArtworkPageID(
+            queueIndex: 0,
+            songID: "song-a",
+            coverArtID: "cover-a"
+        )
+        let intermediate = PlayerArtworkPageID(
+            queueIndex: 1,
+            songID: "song-b",
+            coverArtID: "cover-b"
+        )
+        let destination = PlayerArtworkPageID(
+            queueIndex: 2,
+            songID: "song-c",
+            coverArtID: "cover-c"
+        )
+        var gate = PlayerPagerSelectionGate()
+
+        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
+        XCTAssertFalse(gate.shouldStartPlayback(for: intermediate))
+        XCTAssertEqual(gate.programmaticDestination, destination)
+        XCTAssertFalse(gate.shouldStartPlayback(for: destination))
+        XCTAssertNil(gate.programmaticDestination)
+    }
+
+    func testUserGestureInterruptsProgrammaticPagerGate() {
+        let current = PlayerArtworkPageID(
+            queueIndex: 0,
+            songID: "song-a",
+            coverArtID: nil
+        )
+        let destination = PlayerArtworkPageID(
+            queueIndex: 1,
+            songID: "song-b",
+            coverArtID: nil
+        )
+        var gate = PlayerPagerSelectionGate()
+
+        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
+        gate.beginUserInteraction()
+        XCTAssertTrue(gate.shouldStartPlayback(for: destination))
+    }
+
     func testPagerDoesNotArmWhenAlreadyAtDestination() {
         let page = PlayerArtworkPageID(
             queueIndex: 0,

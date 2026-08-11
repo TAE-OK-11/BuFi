@@ -31,6 +31,18 @@ references; no source was copied into BuFi.
 - A memory warning keeps the active item and in-flight visible detail requests,
   while clearing reusable detail/artwork caches and cancelling speculative
   offline prefetch.
+- Full-player, mini-player, queue, and system now-playing artwork use the visual
+  identity `(song ID, coverArt ID)`. A transient queue/current-item publication
+  mismatch therefore renders the current song directly instead of exposing the
+  previous queue entry's cover.
+- Every AVPlayer waiting transition starts one bounded watchdog. The watchdog
+  forces an immediate-rate retry, performs one exact near-zero seek nudge for a
+  stream that never leaves `0:00`, reloads the active format at most twice, then
+  tries a bandwidth-bounded compatibility format before surfacing an error.
+- Network-path loss pauses speculative work and leaves playback intent intact;
+  path restoration immediately resumes AVPlayer and re-arms the watchdog. A
+  confirmed playing state cancels recovery and resets its budget only after an
+  eight-second stability window.
 
 ## Energy pass
 

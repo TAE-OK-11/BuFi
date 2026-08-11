@@ -1630,18 +1630,10 @@ actor OpenSubsonicClient {
         let requestedFormat = compatibilityFormat ?? quality.parameters["format"]
         let requestedBitRate: Int?
         if let compatibilityFormat {
-            switch compatibilityFormat.lowercased() {
-            case "aac":
-                requestedBitRate = quality == .aac320 ? 320 : 256
-            case "opus":
-                requestedBitRate = 160
-            case "mp3":
-                requestedBitRate = 256
-            case "raw":
-                requestedBitRate = nil
-            default:
-                requestedBitRate = 256
-            }
+            requestedBitRate = Self.compatibilityBitRate(
+                for: quality,
+                format: compatibilityFormat
+            )
         } else if let value = quality.parameters["maxBitRate"], let bitRate = Int(value), bitRate > 0 {
             requestedBitRate = bitRate
         } else {
@@ -1656,6 +1648,20 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.insecureServerURL
         }
         return url
+    }
+
+    static func compatibilityBitRate(
+        for quality: StreamQuality,
+        format: String
+    ) -> Int? {
+        let constrainedFallbackBitRate = quality == .opus160 ? 160 : 256
+        return switch format.lowercased() {
+        case "aac": quality == .aac320 ? 320 : constrainedFallbackBitRate
+        case "opus": 160
+        case "mp3": constrainedFallbackBitRate
+        case "raw": nil
+        default: constrainedFallbackBitRate
+        }
     }
 
     func coverURL(id: String, size: Int = 600) throws -> URL {

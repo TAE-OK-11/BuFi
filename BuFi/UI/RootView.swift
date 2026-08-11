@@ -175,33 +175,11 @@ struct RootView: View {
 
     private var currentArtworkPageID: PlayerArtworkPageID? {
         guard let song = playbackItem.currentSong else { return nil }
-
-        if playbackQueue.songs.indices.contains(playbackQueue.index) {
-            let queuedSong = playbackQueue.songs[playbackQueue.index]
-            if queuedSong.id == song.id, queuedSong.coverArt == song.coverArt {
-                return PlayerArtworkPageID(
-                    queueIndex: playbackQueue.index,
-                    songID: song.id,
-                    coverArtID: song.coverArt
-                )
-            }
-        }
-
-        if let matchingIndex = playbackQueue.songs.firstIndex(where: {
-            $0.id == song.id && $0.coverArt == song.coverArt
-        }) {
-            return PlayerArtworkPageID(
-                queueIndex: matchingIndex,
-                songID: song.id,
-                coverArtID: song.coverArt
-            )
-        }
-
-        return PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: song.id,
-            coverArtID: song.coverArt
-        )
+        return PlayerArtworkPagerSnapshot.make(
+            currentSong: song,
+            queue: playbackQueue.songs,
+            queueIndex: playbackQueue.index
+        ).currentPage
     }
 
     private var isThermallyConstrained: Bool {
