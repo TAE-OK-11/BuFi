@@ -1944,7 +1944,7 @@ enum PersonalizedMixBuilder {
         limit: Int
     ) -> [Song] {
         let fallbackLimit = limit > Int.max / 2 ? Int.max : limit * 2
-        Array(
+        return Array(
             unique(
                 orderedPrefix(preferred, seed: seed, limit: limit) +
                 orderedPrefix(pool, seed: seed + 97, limit: fallbackLimit)
