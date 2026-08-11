@@ -42,6 +42,22 @@ final class PlayerPresentationStateTests: XCTestCase {
             original,
             PlayerArtworkPageID(queueIndex: 2, songID: "song-a", coverArtID: "cover-b")
         )
+        XCTAssertNotEqual(
+            PlayerArtworkPageID(
+                queueIndex: 2,
+                songID: "song-a",
+                coverArtID: "cover-a",
+                artworkRevision: "revision-a",
+                accountScope: "account"
+            ),
+            PlayerArtworkPageID(
+                queueIndex: 2,
+                songID: "song-a",
+                coverArtID: "cover-a",
+                artworkRevision: "revision-b",
+                accountScope: "account"
+            )
+        )
     }
 
     func testArtworkSnapshotUsesExactCoverWhenQueueIndexStillPointsAtOldMetadata() {

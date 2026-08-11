@@ -678,7 +678,8 @@ final class AppModel: ObservableObject {
             albumDetailTasks[id] = nil
             reconcileFavoriteStates(songs: value.songs)
             resolvedValue = AlbumDetail(
-                songs: value.songs.map(applyingFavoriteOverride)
+                songs: value.songs.map(applyingFavoriteOverride),
+                album: value.album
             )
             Self.storeDetail(
                 resolvedValue,
@@ -735,7 +736,8 @@ final class AppModel: ObservableObject {
             playlistDetailTasks[id] = nil
             reconcileFavoriteStates(songs: value.songs)
             resolvedValue = PlaylistDetail(
-                songs: value.songs.map(applyingFavoriteOverride)
+                songs: value.songs.map(applyingFavoriteOverride),
+                playlist: value.playlist
             )
             Self.storeDetail(
                 resolvedValue,
@@ -1478,7 +1480,7 @@ final class AppModel: ObservableObject {
             guard let cached = albumDetailCache[key] else { continue }
             let songs = cached.value.songs.map(updatingFavorite)
             albumDetailCache[key] = CachedValue(
-                value: AlbumDetail(songs: songs),
+                value: AlbumDetail(songs: songs, album: cached.value.album),
                 expiresAt: cached.expiresAt
             )
         }
@@ -1486,7 +1488,10 @@ final class AppModel: ObservableObject {
             guard let cached = playlistDetailCache[key] else { continue }
             let songs = cached.value.songs.map(updatingFavorite)
             playlistDetailCache[key] = CachedValue(
-                value: PlaylistDetail(songs: songs),
+                value: PlaylistDetail(
+                    songs: songs,
+                    playlist: cached.value.playlist
+                ),
                 expiresAt: cached.expiresAt
             )
         }

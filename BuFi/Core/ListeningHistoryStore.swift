@@ -309,7 +309,12 @@ actor ListeningHistoryStore {
     ) {
         guard activeScope != nil, song.externalStreamURL == nil else { return }
         var value = entries[song.id] ?? SongBehavior(song: song, at: date)
-        value.song = song
+        // A list/recommendation row is provisional until playback's getSong
+        // resolver calls refreshMetadata. Never let a later stale row
+        // downgrade metadata that was already canonicalized in history.
+        if value.song.isStarred != song.isStarred {
+            value.song.starred = song.starred
+        }
         value.playCount += 1
         value.lastPlayed = date
         if lastStartedSongID == song.id {
@@ -407,7 +412,9 @@ actor ListeningHistoryStore {
             return
         }
         var value = entries[song.id] ?? SongBehavior(song: song, at: Date())
-        value.song = song
+        if value.song.isStarred != song.isStarred {
+            value.song.starred = song.starred
+        }
         value.queueRemovalCount += 1
         entries[song.id] = value
         markDirty(song.id)

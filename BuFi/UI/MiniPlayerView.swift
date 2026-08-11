@@ -14,8 +14,11 @@ struct MiniPlayerView: View {
     var body: some View {
         if let song = playbackItem.currentSong {
             let artworkIdentity = MiniPlayerArtworkIdentity(
+                occurrenceID: playbackItem.currentItem?.id,
                 songID: song.id,
-                coverArtID: song.artworkID
+                coverArtID: song.artworkID,
+                artworkRevision: song.artworkRevision,
+                accountScope: playbackItem.currentItem?.accountScope
             )
             ZStack {
                 Button {
@@ -38,9 +41,11 @@ struct MiniPlayerView: View {
                             coverArt: song.artworkID,
                             size: 50,
                             cornerRadius: 5,
+                            cacheRevision: artworkIdentity.artworkRevision,
                             onPalette: { nextPalette in
                                 guard playbackItem.currentSong?.id == artworkIdentity.songID,
-                                      playbackItem.currentSong?.artworkID == artworkIdentity.coverArtID else {
+                                      playbackItem.currentSong?.artworkID == artworkIdentity.coverArtID,
+                                      playbackItem.currentItem?.id == artworkIdentity.occurrenceID else {
                                     return
                                 }
                                 if nextPalette == .fallback {
@@ -67,7 +72,7 @@ struct MiniPlayerView: View {
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.76)
                             }
-                            .id(song.id)
+                            .id(playbackItem.currentItem?.id)
                             .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -141,8 +146,11 @@ struct MiniPlayerView: View {
     private var currentArtworkIdentity: MiniPlayerArtworkIdentity? {
         guard let song = playbackItem.currentSong else { return nil }
         return MiniPlayerArtworkIdentity(
+            occurrenceID: playbackItem.currentItem?.id,
             songID: song.id,
-            coverArtID: song.artworkID
+            coverArtID: song.artworkID,
+            artworkRevision: song.artworkRevision,
+            accountScope: playbackItem.currentItem?.accountScope
         )
     }
 
@@ -184,8 +192,11 @@ private struct MiniPlayerPlaybackButton: View {
 }
 
 private struct MiniPlayerArtworkIdentity: Hashable {
+    let occurrenceID: UUID?
     let songID: String
     let coverArtID: String?
+    let artworkRevision: String
+    let accountScope: String?
 }
 
 private struct MiniPlayerProgressView: View {

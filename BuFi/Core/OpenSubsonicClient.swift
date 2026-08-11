@@ -1628,7 +1628,18 @@ actor OpenSubsonicClient {
             albumID: albumID,
             coverArt: value.coverArt
         )
-        return AlbumDetail(songs: songs)
+        let album = value.name.map {
+            Album(
+                id: albumID,
+                name: $0,
+                artist: value.artist ?? "",
+                coverArt: value.coverArt,
+                year: value.year,
+                starred: value.starred,
+                songCount: value.songCount ?? songs.count
+            )
+        }
+        return AlbumDetail(songs: songs, album: album)
     }
 
     /// Returns the server's current canonical metadata for one song. List and
@@ -1646,10 +1657,42 @@ actor OpenSubsonicClient {
         return song
     }
 
+    /// Canonical API boundary for an active playback occurrence. The caller's
+    /// UUID survives metadata refresh, while all server-owned media fields are
+    /// replaced together from one `getSong` response.
+    func playbackMedia(
+        for provisional: Song,
+        occurrenceID: UUID
+    ) async throws -> PlaybackMediaItem {
+        var canonical = try await song(id: provisional.id)
+        canonical.starred = provisional.starred
+        if canonical.artworkID == nil,
+           provisional.artworkID != nil,
+           let albumID = canonical.albumId,
+           albumID == provisional.albumId {
+            canonical.coverArt = provisional.artworkID
+        }
+        return PlaybackMediaItem(
+            song: canonical,
+            accountScope: accountScope,
+            occurrenceID: occurrenceID
+        )
+    }
+
     func playlist(id: String) async throws -> PlaylistDetail {
         let payload: PlaylistPayload = try await readRequest("getPlaylist", parameters: ["id": id])
         guard let value = payload.playlist else { throw OpenSubsonicError.invalidResponse }
-        return PlaylistDetail(songs: value.entry ?? [])
+        let songs = value.entry ?? []
+        let playlist = value.name.map {
+            Playlist(
+                id: value.id ?? id,
+                name: $0,
+                owner: value.owner,
+                songCount: value.songCount ?? songs.count,
+                coverArt: value.coverArt
+            )
+        }
+        return PlaylistDetail(songs: songs, playlist: playlist)
     }
 
     func artist(id: String, name: String) async throws -> ArtistDetail {

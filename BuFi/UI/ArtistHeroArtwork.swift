@@ -7,12 +7,14 @@ struct ArtistHeroArtwork: View {
     @Environment(\.displayScale) private var displayScale
 
     let coverArt: String?
+    var cacheRevision: String? = nil
     var onPalette: ((ArtworkPalette) -> Void)?
 
     private let height: CGFloat = 360
     private let cornerRadius: CGFloat = 24
 
     @State private var image: UIImage?
+    @State private var imageIdentity: String?
 
     var body: some View {
         ZStack {
@@ -29,7 +31,7 @@ struct ArtistHeroArtwork: View {
                 .font(.system(size: 72, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.25))
 
-            if let image {
+            if imageIdentity == artworkRequestIdentity, let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -64,18 +66,28 @@ struct ArtistHeroArtwork: View {
     @MainActor
     private func loadImage(requestID: String) async {
         image = nil
+        imageIdentity = nil
 
         // OpenSubsonic may include third-party artist-image URLs. Fetching those
         // directly would disclose the user's IP address and viewing time to an
         // unrelated image host, so artist art is loaded only through the user's
         // authenticated OpenSubsonic server.
-        guard let coverURL = await model.artworkURL(
+        guard let sourceURL = await model.artworkURL(
                   id: normalizedCoverArt,
                   size: 1200
               ),
               !Task.isCancelled,
-              artworkRequestIdentity == requestID,
-              let loaded = try? await ArtworkStore.shared.image(
+              artworkRequestIdentity == requestID else {
+            guard !Task.isCancelled,
+                  artworkRequestIdentity == requestID else { return }
+            onPalette?(.fallback)
+            return
+        }
+        let coverURL = ArtworkStore.cacheURL(
+            for: sourceURL,
+            revision: cacheRevision
+        )
+        guard let loaded = try? await ArtworkStore.shared.image(
                   for: coverURL,
                   pixelSize: max(height * displayScale, 480)
               ),
@@ -87,6 +99,7 @@ struct ArtistHeroArtwork: View {
             return
         }
 
+        imageIdentity = requestID
         image = loaded
         guard let onPalette else { return }
         let palette = await ArtworkStore.shared.palette(
@@ -99,7 +112,7 @@ struct ArtistHeroArtwork: View {
     }
 
     private var artworkRequestIdentity: String {
-        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(Int(height * displayScale))"
+        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(cacheRevision ?? "base")-\(Int(height * displayScale))"
     }
 
     private var normalizedCoverArt: String? {

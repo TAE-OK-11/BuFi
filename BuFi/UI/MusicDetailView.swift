@@ -55,7 +55,7 @@ struct MusicDetailView: View {
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .onChange(of: route) { _, _ in
-            palette = .fallback
+            resetRoutePresentation()
         }
         .onChange(of: coverArt) { _, _ in
             palette = .fallback
@@ -82,6 +82,7 @@ struct MusicDetailView: View {
         return ZStack(alignment: .bottomLeading) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
+                cacheRevision: identity.cacheRevision,
                 onPalette: { nextPalette in
                     receivePalette(nextPalette, for: identity)
                 }
@@ -131,6 +132,7 @@ struct MusicDetailView: View {
                 coverArt: coverArt,
                 size: 270,
                 cornerRadius: 18,
+                cacheRevision: identity.cacheRevision,
                 onPalette: { nextPalette in
                     receivePalette(nextPalette, for: identity)
                 }
@@ -589,6 +591,20 @@ struct MusicDetailView: View {
         }
     }
 
+    @MainActor
+    private func resetRoutePresentation() {
+        isLoading = true
+        title = ""
+        subtitle = ""
+        coverArt = nil
+        songs = []
+        albums = []
+        artistBiography = ""
+        artistAlbumCount = 0
+        discography = .empty
+        palette = .fallback
+    }
+
     /// `.task(id: route)`는 라우트가 바뀌면 이전 로드 작업을 자동으로 취소한다.
     /// 취소된 작업이 뒤늦게 catch 블록까지 도달하면 "정상적인 실패"처럼
     /// `model.errorMessage`를 띄우거나, 새 라우트가 이미 로딩을 시작한 뒤에
@@ -599,6 +615,9 @@ struct MusicDetailView: View {
         let loadingRoute = route
         isLoading = true
         palette = .fallback
+        title = ""
+        subtitle = ""
+        coverArt = nil
         albums = []
         songs = []
         artistBiography = ""
@@ -619,6 +638,18 @@ struct MusicDetailView: View {
                 coverArt = album.coverArt
                 let detail = try await model.album(id: album.id)
                 guard !Task.isCancelled, route == loadingRoute else { return }
+                if let canonical = detail.album, canonical.id == album.id {
+                    title = canonical.name
+                    subtitle = [
+                        String(localized: "앨범"),
+                        canonical.artist,
+                        canonical.year.map(String.init)
+                    ]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · ")
+                    coverArt = canonical.coverArt
+                }
                 songs = detail.songs
             case .playlist(let playlist):
                 title = playlist.name
@@ -635,6 +666,21 @@ struct MusicDetailView: View {
                 coverArt = playlist.coverArt
                 let detail = try await model.playlist(id: playlist.id)
                 guard !Task.isCancelled, route == loadingRoute else { return }
+                if let canonical = detail.playlist,
+                   canonical.id == playlist.id {
+                    title = canonical.name
+                    subtitle = [
+                        String(localized: "플레이리스트"),
+                        canonical.owner,
+                        canonical.songCount.map {
+                            String(format: String(localized: "%d곡"), $0)
+                        }
+                    ]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · ")
+                    coverArt = canonical.coverArt
+                }
                 songs = detail.songs
             case .artist(let artist):
                 title = artist.name
@@ -687,6 +733,17 @@ struct MusicDetailView: View {
 struct MusicDetailArtworkIdentity: Hashable, Sendable {
     let route: MusicRoute
     let coverArtID: String?
+
+    var cacheRevision: String {
+        switch route {
+        case .album(let album):
+            "album-\(album.id)-\(coverArtID ?? "")"
+        case .artist(let artist):
+            "artist-\(artist.id)-\(coverArtID ?? "")"
+        case .playlist(let playlist):
+            "playlist-\(playlist.id)-\(coverArtID ?? "")"
+        }
+    }
 }
 
 enum ArtistBiographySanitizer {

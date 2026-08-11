@@ -371,6 +371,7 @@ struct ArtworkView: View {
     let coverArt: String?
     let size: CGFloat
     let cornerRadius: CGFloat
+    var cacheRevision: String? = nil
     var onPalette: ((ArtworkPalette) -> Void)?
 
     @State private var image: UIImage?
@@ -405,11 +406,15 @@ struct ArtworkView: View {
             let requestID = artworkRequestIdentity
             image = nil
             imageIdentity = nil
-            if let coverURL = await model.artworkURL(
+            if let sourceURL = await model.artworkURL(
                 id: normalizedCoverArt,
                 size: Int(size * 2)
             ) {
                 guard !Task.isCancelled else { return }
+                let coverURL = ArtworkStore.cacheURL(
+                    for: sourceURL,
+                    revision: cacheRevision
+                )
                 guard let loaded = try? await ArtworkStore.shared.image(
                     for: coverURL,
                     pixelSize: max(size * displayScale, 96)
@@ -441,7 +446,7 @@ struct ArtworkView: View {
     }
 
     private var artworkRequestIdentity: String {
-        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(Int(size * displayScale))"
+        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(cacheRevision ?? "base")-\(Int(size * displayScale))"
     }
 
     private var normalizedCoverArt: String? {

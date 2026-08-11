@@ -92,6 +92,100 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
         }
         return value
     }
+
+    /// Stable across processes and launches, unlike Swift's randomized
+    /// `Hashable` seed. This revision lets playback consumers agree that the
+    /// metadata, artwork reference, and stream hints belong to one snapshot.
+    var playbackMetadataRevision: String {
+        stableMediaRevision([
+            id,
+            title,
+            artist,
+            album,
+            artistId ?? "",
+            albumId ?? "",
+            artworkID ?? "",
+            duration.map { String($0) } ?? "",
+            track.map { String($0) } ?? "",
+            suffix ?? "",
+            contentType ?? "",
+            created ?? "",
+            externalStreamURL ?? ""
+        ])
+    }
+
+    /// Artwork deliberately excludes mutable social state such as `starred`
+    /// so liking a song never invalidates an otherwise identical image.
+    var artworkRevision: String {
+        stableMediaRevision([
+            albumId ?? "",
+            artworkID ?? "",
+            created ?? ""
+        ])
+    }
+
+    private func stableMediaRevision(_ fields: [String]) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for field in fields {
+            for byte in field.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+            hash ^= 0xff
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+}
+
+struct PlaybackArtworkReference: Equatable, Hashable, Sendable {
+    let id: String?
+    let revision: String
+}
+
+struct PlaybackStreamReference: Equatable, Hashable, Sendable {
+    let songID: String
+    let externalURL: String?
+    let sourceSuffix: String?
+    let contentType: String?
+}
+
+/// One atomic now-playing value. The occurrence ID distinguishes two
+/// consecutive plays of the same server song, while the nested references
+/// guarantee that artwork and stream work are derived from the same metadata
+/// snapshot rather than independently sampled mutable state.
+struct PlaybackMediaItem: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let accountScope: String?
+    var song: Song
+
+    init(
+        song: Song,
+        accountScope: String?,
+        occurrenceID: UUID = UUID()
+    ) {
+        id = occurrenceID
+        self.accountScope = accountScope
+        self.song = song
+    }
+
+    var metadataRevision: String { song.playbackMetadataRevision }
+
+    var artwork: PlaybackArtworkReference {
+        PlaybackArtworkReference(
+            id: song.artworkID,
+            revision: song.artworkRevision
+        )
+    }
+
+    var stream: PlaybackStreamReference {
+        PlaybackStreamReference(
+            songID: song.id,
+            externalURL: song.externalStreamURL,
+            sourceSuffix: song.suffix,
+            contentType: song.contentType
+        )
+    }
 }
 
 extension Song {
@@ -248,10 +342,12 @@ struct SearchResults: Equatable, Sendable {
 
 struct AlbumDetail: Sendable {
     var songs: [Song]
+    var album: Album? = nil
 }
 
 struct PlaylistDetail: Sendable {
     var songs: [Song]
+    var playlist: Playlist? = nil
 }
 
 struct ArtistDetail: Sendable {
@@ -403,7 +499,12 @@ struct AlbumPayload: Decodable {
 
 struct AlbumWithSongs: Decodable {
     let id: String?
+    let name: String?
+    let artist: String?
     let coverArt: String?
+    let year: Int?
+    let starred: String?
+    let songCount: Int?
     let song: [Song]?
 }
 
@@ -412,6 +513,11 @@ struct PlaylistPayload: Decodable {
 }
 
 struct PlaylistWithSongs: Decodable {
+    let id: String?
+    let name: String?
+    let owner: String?
+    let songCount: Int?
+    let coverArt: String?
     let entry: [Song]?
 }
 

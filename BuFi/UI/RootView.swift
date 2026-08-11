@@ -178,7 +178,8 @@ struct RootView: View {
         return PlayerArtworkPagerSnapshot.make(
             currentSong: song,
             queue: playbackQueue.songs,
-            queueIndex: playbackQueue.index
+            queueIndex: playbackQueue.index,
+            accountScope: playbackItem.currentItem?.accountScope
         ).currentPage
     }
 

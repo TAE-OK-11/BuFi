@@ -5,6 +5,8 @@ struct PlayerArtworkPageID: Hashable, Sendable {
     let queueIndex: Int
     let songID: String
     let coverArtID: String?
+    var artworkRevision: String? = nil
+    var accountScope: String? = nil
 }
 
 struct PlayerArtworkPagerPage: Identifiable {
@@ -19,7 +21,8 @@ struct PlayerArtworkPagerSnapshot {
     static func make(
         currentSong: Song,
         queue: [Song],
-        queueIndex: Int
+        queueIndex: Int,
+        accountScope: String? = nil
     ) -> PlayerArtworkPagerSnapshot {
         let resolvedIndex: Int?
         if queue.indices.contains(queueIndex),
@@ -35,7 +38,9 @@ struct PlayerArtworkPagerSnapshot {
             let fallback = PlayerArtworkPageID(
                 queueIndex: -1,
                 songID: currentSong.id,
-                coverArtID: currentSong.artworkID
+                coverArtID: currentSong.artworkID,
+                artworkRevision: currentSong.artworkRevision,
+                accountScope: accountScope
             )
             return PlayerArtworkPagerSnapshot(
                 pages: [PlayerArtworkPagerPage(id: fallback, song: currentSong)],
@@ -48,7 +53,9 @@ struct PlayerArtworkPagerSnapshot {
                 id: PlayerArtworkPageID(
                     queueIndex: index,
                     songID: queue[index].id,
-                    coverArtID: queue[index].artworkID
+                    coverArtID: queue[index].artworkID,
+                    artworkRevision: queue[index].artworkRevision,
+                    accountScope: accountScope
                 ),
                 song: queue[index]
             )
@@ -60,7 +67,9 @@ struct PlayerArtworkPagerSnapshot {
     }
 
     private static func visuallyMatches(_ lhs: Song, _ rhs: Song) -> Bool {
-        lhs.id == rhs.id && lhs.artworkID == rhs.artworkID
+        lhs.id == rhs.id
+            && lhs.artworkID == rhs.artworkID
+            && lhs.artworkRevision == rhs.artworkRevision
     }
 }
 
@@ -170,14 +179,18 @@ struct PlayerView: View {
             }
             prefetchUpcomingArtwork(after: index)
         }
-        .onChange(of: playbackItem.currentSong.map { [$0.id, $0.artworkID ?? ""] }) { _, _ in
+        .onChange(of: playbackItem.currentItem.map {
+            [$0.id.uuidString, $0.metadataRevision]
+        }) { _, _ in
             // Queue and current-item state are published independently. Always
             // re-anchor the pager when the visual now-playing identity changes.
             pendingUserArtworkPage = nil
             syncArtworkPage(to: playbackQueue.index, animated: false)
             applyCachedPalette(at: playbackQueue.index)
         }
-        .onChange(of: playbackQueue.songs.map { [$0.id, $0.artworkID ?? ""] }) { _, _ in
+        .onChange(of: playbackQueue.songs.map {
+            [$0.id, $0.artworkID ?? "", $0.artworkRevision]
+        }) { _, _ in
             pruneArtworkPalettes()
             let pendingPageIsStillValid: Bool
             if let pendingPage = pendingUserArtworkPage,
@@ -185,6 +198,7 @@ struct PlayerView: View {
                 let pendingSong = playbackQueue.songs[pendingPage.queueIndex]
                 pendingPageIsStillValid = pendingSong.id == pendingPage.songID
                     && pendingSong.artworkID == pendingPage.coverArtID
+                    && pendingSong.artworkRevision == pendingPage.artworkRevision
             } else {
                 pendingPageIsStillValid = false
             }
@@ -423,7 +437,8 @@ struct PlayerView: View {
         let snapshot = PlayerArtworkPagerSnapshot.make(
             currentSong: song,
             queue: playbackQueue.songs,
-            queueIndex: playbackQueue.index
+            queueIndex: playbackQueue.index,
+            accountScope: playbackItem.currentItem?.accountScope
         )
         let pagerPosition = Binding<PlayerArtworkPageID?>(
             get: { artworkPage },
@@ -448,6 +463,7 @@ struct PlayerView: View {
                             coverArt: page.song.artworkID,
                             size: edge,
                             cornerRadius: 14,
+                            cacheRevision: page.id.artworkRevision,
                             onPalette: { nextPalette in
                                 receivePalette(
                                     nextPalette,
@@ -483,6 +499,7 @@ struct PlayerView: View {
                     coverArt: song.artworkID,
                     size: edge,
                     cornerRadius: 14,
+                    cacheRevision: song.artworkRevision,
                     onPalette: { nextPalette in
                         receiveCurrentPalette(
                             nextPalette,
@@ -492,7 +509,7 @@ struct PlayerView: View {
                     }
                 )
                 .frame(width: edge, height: edge)
-                .id("active-\(song.id)-\(song.artworkID ?? "")")
+                .id("active-\(song.id)-\(song.artworkID ?? "")-\(song.artworkRevision)")
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
@@ -504,7 +521,8 @@ struct PlayerView: View {
             guard let page,
                   playbackQueue.songs.indices.contains(page.queueIndex),
                   playbackQueue.songs[page.queueIndex].id == page.songID,
-                  playbackQueue.songs[page.queueIndex].artworkID == page.coverArtID else {
+                  playbackQueue.songs[page.queueIndex].artworkID == page.coverArtID,
+                  playbackQueue.songs[page.queueIndex].artworkRevision == page.artworkRevision else {
                 return
             }
             let index = page.queueIndex
@@ -713,7 +731,8 @@ struct PlayerView: View {
         let page = PlayerArtworkPagerSnapshot.make(
             currentSong: currentSong,
             queue: playbackQueue.songs,
-            queueIndex: index
+            queueIndex: index,
+            accountScope: playbackItem.currentItem?.accountScope
         ).currentPage
         guard pagerSelectionGate.prepareProgrammaticChange(
             from: artworkPage,
@@ -747,7 +766,8 @@ struct PlayerView: View {
         return PlayerArtworkPagerSnapshot.make(
             currentSong: currentSong,
             queue: playbackQueue.songs,
-            queueIndex: playbackQueue.index
+            queueIndex: playbackQueue.index,
+            accountScope: playbackItem.currentItem?.accountScope
         ).currentPage
     }
 
@@ -758,7 +778,8 @@ struct PlayerView: View {
     ) {
         artworkPalettes[page] = nextPalette
         guard playbackItem.currentSong?.id == song.id,
-              playbackItem.currentSong?.artworkID == song.artworkID else {
+              playbackItem.currentSong?.artworkID == song.artworkID,
+              playbackItem.currentSong?.artworkRevision == song.artworkRevision else {
             return
         }
         if palette != nextPalette {
@@ -775,7 +796,8 @@ struct PlayerView: View {
         let page = PlayerArtworkPagerSnapshot.make(
             currentSong: currentSong,
             queue: playbackQueue.songs,
-            queueIndex: index
+            queueIndex: index,
+            accountScope: playbackItem.currentItem?.accountScope
         ).currentPage
         if let cached = artworkPalettes[page] {
             if palette != cached { palette = cached }
@@ -789,7 +811,9 @@ struct PlayerView: View {
             PlayerArtworkPageID(
                 queueIndex: $0,
                 songID: playbackQueue.songs[$0].id,
-                coverArtID: playbackQueue.songs[$0].artworkID
+                coverArtID: playbackQueue.songs[$0].artworkID,
+                artworkRevision: playbackQueue.songs[$0].artworkRevision,
+                accountScope: playbackItem.currentItem?.accountScope
             )
         })
         if let currentSong = playbackItem.currentSong {
@@ -797,7 +821,8 @@ struct PlayerView: View {
                 PlayerArtworkPagerSnapshot.make(
                     currentSong: currentSong,
                     queue: playbackQueue.songs,
-                    queueIndex: playbackQueue.index
+                    queueIndex: playbackQueue.index,
+                    accountScope: playbackItem.currentItem?.accountScope
                 ).currentPage
             )
         }
@@ -829,7 +854,9 @@ struct PlayerView: View {
                 page: PlayerArtworkPageID(
                     queueIndex: index,
                     songID: playbackQueue.songs[index].id,
-                    coverArtID: playbackQueue.songs[index].artworkID
+                    coverArtID: playbackQueue.songs[index].artworkID,
+                    artworkRevision: playbackQueue.songs[index].artworkRevision,
+                    accountScope: playbackItem.currentItem?.accountScope
                 ),
                 song: playbackQueue.songs[index]
             )
@@ -838,9 +865,13 @@ struct PlayerView: View {
         artworkPrefetchTask = Task(priority: .utility) {
             for item in upcoming {
                 guard !Task.isCancelled,
-                      let url = await model.artworkURL(id: item.song.artworkID, size: 600) else {
+                      let sourceURL = await model.artworkURL(id: item.song.artworkID, size: 600) else {
                     continue
                 }
+                let url = ArtworkStore.cacheURL(
+                    for: sourceURL,
+                    revision: item.page.artworkRevision
+                )
                 guard let image = try? await ArtworkStore.shared.image(
                     for: url,
                     pixelSize: 600
@@ -854,7 +885,8 @@ struct PlayerView: View {
                 guard !Task.isCancelled,
                       playbackQueue.songs.indices.contains(item.page.queueIndex),
                       playbackQueue.songs[item.page.queueIndex].id == item.page.songID,
-                      playbackQueue.songs[item.page.queueIndex].artworkID == item.page.coverArtID else {
+                      playbackQueue.songs[item.page.queueIndex].artworkID == item.page.coverArtID,
+                      playbackQueue.songs[item.page.queueIndex].artworkRevision == item.page.artworkRevision else {
                     return
                 }
                 artworkPalettes[item.page] = nextPalette

@@ -58,6 +58,53 @@ final class BackendMetadataTests: XCTestCase {
         XCTAssertEqual(first.map(\.id), ["shared", "first-only", "second-only"])
     }
 
+    func testPlaybackMediaBundlesOneSnapshotButDistinguishesReplays() {
+        let value = song(id: "same", coverArt: "cover")
+
+        let first = PlaybackMediaItem(song: value, accountScope: "account")
+        let replay = PlaybackMediaItem(song: value, accountScope: "account")
+
+        XCTAssertNotEqual(first.id, replay.id)
+        XCTAssertEqual(first.metadataRevision, replay.metadataRevision)
+        XCTAssertEqual(first.artwork, replay.artwork)
+        XCTAssertEqual(first.stream, replay.stream)
+        XCTAssertEqual(first.stream.songID, first.song.id)
+        XCTAssertEqual(first.artwork.id, first.song.artworkID)
+    }
+
+    func testArtworkRevisionChangesWithCoverButNotFavoriteState() {
+        let original = song(id: "song", coverArt: "cover-a")
+        var favorite = original
+        favorite.starred = "2026-08-11T00:00:00Z"
+        var changedCover = original
+        changedCover.coverArt = "cover-b"
+
+        XCTAssertEqual(original.artworkRevision, favorite.artworkRevision)
+        XCTAssertEqual(
+            original.playbackMetadataRevision,
+            favorite.playbackMetadataRevision
+        )
+        XCTAssertNotEqual(original.artworkRevision, changedCover.artworkRevision)
+        XCTAssertNotEqual(
+            original.playbackMetadataRevision,
+            changedCover.playbackMetadataRevision
+        )
+    }
+
+    func testArtworkRevisionUsesFragmentWithoutChangingServerQuery() throws {
+        let source = try XCTUnwrap(
+            URL(string: "https://music.example/rest/getCoverArt.view?id=cover&u=user&t=token")
+        )
+
+        let first = ArtworkStore.cacheURL(for: source, revision: "revision-a")
+        let second = ArtworkStore.cacheURL(for: source, revision: "revision-b")
+
+        XCTAssertEqual(first.query, source.query)
+        XCTAssertEqual(second.query, source.query)
+        XCTAssertNotEqual(first.fragment, second.fragment)
+        XCTAssertTrue(first.fragment?.contains("media-v2") == true)
+    }
+
     private func song(
         id: String,
         albumID: String? = "album",

@@ -56,6 +56,7 @@ actor ArtworkStore {
     static let shared = ArtworkStore()
 
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
+    private static let cacheSchemaRevision = "media-v2"
     private static let paletteEngineVersion = 5
     private static let sampleSide = 48
     private static let neutralChromaLimit = 0.035
@@ -77,6 +78,33 @@ actor ArtworkStore {
         pipeline = Self.makePipeline(name: Self.legacyCacheName)
         self.database = database
         paletteMemory.countLimit = 160
+    }
+
+    /// URL fragments are never transmitted in HTTP requests, but Nuke keeps
+    /// them in its cache identity. This gives an updated metadata snapshot a
+    /// fresh decoded image, data-cache entry, and palette without adding an
+    /// unsupported query parameter to an OpenSubsonic server.
+    nonisolated static func cacheURL(for url: URL, revision: String?) -> URL {
+        guard var components = URLComponents(
+            url: url,
+            resolvingAgainstBaseURL: false
+        ) else {
+            return url
+        }
+        // OpenSubsonic does not standardize an artwork validator. Explicitly
+        // revisioned player/detail requests therefore receive a bounded
+        // twelve-hour freshness epoch. Generic list thumbnails keep the base
+        // key, avoiding a broad periodic redownload across the whole library.
+        let boundedRevision: String
+        if let revision {
+            let freshnessEpoch = Int(Date().timeIntervalSince1970 / (12 * 60 * 60))
+            boundedRevision = "\(revision)-\(freshnessEpoch)"
+        } else {
+            boundedRevision = "base"
+        }
+        components.fragment = [cacheSchemaRevision, boundedRevision]
+            .joined(separator: "-")
+        return components.url ?? url
     }
 
     func activate(accountScope: String) async {

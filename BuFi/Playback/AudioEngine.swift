@@ -99,11 +99,35 @@ final class LyricsPlaybackState: ObservableObject {
 
 @MainActor
 final class PlaybackItemState: ObservableObject {
-    @Published fileprivate(set) var currentSong: Song?
+    @Published fileprivate(set) var currentItem: PlaybackMediaItem?
+
+    var currentSong: Song? { currentItem?.song }
+
+    fileprivate func begin(_ song: Song, accountScope: String?) {
+        currentItem = PlaybackMediaItem(
+            song: song,
+            accountScope: accountScope
+        )
+    }
 
     fileprivate func setCurrentSong(_ value: Song?) {
-        guard currentSong != value else { return }
-        currentSong = value
+        guard let value else {
+            guard currentItem != nil else { return }
+            currentItem = nil
+            return
+        }
+        guard var currentItem else {
+            begin(value, accountScope: nil)
+            return
+        }
+        guard currentItem.song != value else { return }
+        currentItem.song = value
+        self.currentItem = currentItem
+    }
+
+    fileprivate func setCurrentItem(_ value: PlaybackMediaItem) {
+        guard currentItem != value else { return }
+        currentItem = value
     }
 }
 
@@ -333,6 +357,18 @@ final class AudioEngine: NSObject, ObservableObject {
     private(set) var currentSong: Song? {
         get { itemState.currentSong }
         set { itemState.setCurrentSong(newValue) }
+    }
+
+    private var currentPlaybackItem: PlaybackMediaItem? {
+        itemState.currentItem
+    }
+
+    private func beginCurrentSong(_ song: Song) {
+        itemState.begin(song, accountScope: currentAccountScope)
+    }
+
+    private func setCurrentPlaybackItem(_ item: PlaybackMediaItem) {
+        itemState.setCurrentItem(item)
     }
 
     private(set) var queue: [Song] {
@@ -581,6 +617,7 @@ final class AudioEngine: NSObject, ObservableObject {
         currentAccountScope = client?.accountScope
         if previousAccountScope != currentAccountScope {
             lastServerQueueSaveRequest = .distantPast
+            suspendSpeculativePrefetch()
         }
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
         self.autoplayContinuationProvider = autoplayContinuationProvider
@@ -635,6 +672,9 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         if let song = currentSong {
+            if previousAccountScope != currentAccountScope {
+                beginCurrentSong(song)
+            }
             restartPlaybackPlan(resumeFrom: elapsed)
             loadLyrics(for: song)
             refreshCanonicalMetadata(for: song)
@@ -673,7 +713,7 @@ final class AudioEngine: NSObject, ObservableObject {
             let restoredIndex = serverQueue.songs.firstIndex {
                 $0.id == serverQueue.currentID
             } ?? 0
-            self.currentSong = serverQueue.songs[restoredIndex]
+            self.beginCurrentSong(serverQueue.songs[restoredIndex])
             self.queue = serverQueue.songs
             self.queueIndex = restoredIndex
             self.queueMutationGeneration &+= 1
@@ -683,6 +723,9 @@ final class AudioEngine: NSObject, ObservableObject {
             self.elapsed = self.duration > 0 ? min(restoredPosition, self.duration) : restoredPosition
             self.applyLyricsDocument(.empty)
             self.updateNowPlaying()
+            self.refreshCanonicalMetadata(
+                for: serverQueue.songs[restoredIndex]
+            )
         }
     }
 
@@ -772,7 +815,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // Publish the selected item before queue/index. Player artwork derives
         // from currentSong and can safely fall back while the queue catches up;
         // the reverse order exposes the previous currentSong at the new index.
-        currentSong = selectedSong
+        beginCurrentSong(selectedSong)
         queue = normalizedQueue
         queueIndex = resolvedIndex
         queueMutationGeneration &+= 1
@@ -1976,7 +2019,9 @@ final class AudioEngine: NSObject, ObservableObject {
         compatibilityFormat: String? = nil,
         resumeFrom requestedPosition: TimeInterval? = nil
     ) {
-        guard let song = currentSong else { return }
+        guard let playbackItem = currentPlaybackItem else { return }
+        let song = playbackItem.song
+        let playbackItemID = playbackItem.id
         let resumePosition = max(0, requestedPosition ?? elapsed)
         itemLoadTask?.cancel()
         itemLoadGeneration &+= 1
@@ -2010,6 +2055,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 )
                 guard !Task.isCancelled,
                       self.itemLoadGeneration == generation,
+                      self.currentPlaybackItem?.id == playbackItemID,
                       self.currentSong?.id == song.id else {
                     return
                 }
@@ -2133,7 +2179,7 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorSong = nil
         stagedSuccessorQueueIndex = nil
         stagedSuccessorObservation = nil
-        currentSong = song
+        beginCurrentSong(song)
         queueIndex = successorIndex
         recordPlaybackStart(song, origin: .autoplay)
         rememberShuffleSelection(song.id)
@@ -2524,6 +2570,7 @@ final class AudioEngine: NSObject, ObservableObject {
         lyricsTask?.cancel()
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
+        let playbackItemID = currentPlaybackItem?.id
         guard song.externalStreamURL == nil else {
             applyLyricsDocument(.empty)
             return
@@ -2538,6 +2585,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard let self,
                       !Task.isCancelled,
                       self.lyricsLoadGeneration == generation,
+                      self.currentPlaybackItem?.id == playbackItemID,
                       self.currentSong?.id == song.id else {
                     return
                 }
@@ -2547,6 +2595,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard let self,
                       !Task.isCancelled,
                       self.lyricsLoadGeneration == generation,
+                      self.currentPlaybackItem?.id == playbackItemID,
                       self.currentSong?.id == song.id else {
                     return
                 }
@@ -3190,15 +3239,20 @@ final class AudioEngine: NSObject, ObservableObject {
         songMetadataTask?.cancel()
         songMetadataTask = nil
         songMetadataGeneration &+= 1
-        guard selectedSong.externalStreamURL == nil, let client else { return }
+        guard selectedSong.externalStreamURL == nil,
+              let selectedItemID = currentPlaybackItem?.id,
+              let client else { return }
 
         let generation = songMetadataGeneration
         let sessionGeneration = playbackSessionGeneration
         let accountScope = currentAccountScope
         songMetadataTask = Task(priority: .utility) { [weak self] in
-            let canonical: Song
+            let canonicalItem: PlaybackMediaItem
             do {
-                canonical = try await client.song(id: selectedSong.id)
+                canonicalItem = try await client.playbackMedia(
+                    for: selectedSong,
+                    occurrenceID: selectedItemID
+                )
             } catch {
                 return
             }
@@ -3207,19 +3261,23 @@ final class AudioEngine: NSObject, ObservableObject {
                   generation == self.songMetadataGeneration,
                   sessionGeneration == self.playbackSessionGeneration,
                   accountScope == self.currentAccountScope,
+                  self.currentPlaybackItem?.id == selectedItemID,
                   let current = self.currentSong,
                   current.id == selectedSong.id else {
                 return
             }
             self.songMetadataTask = nil
 
-            // Favorite state may be an optimistic local mutation newer than
-            // the read response, while all media metadata comes from getSong.
-            var resolved = canonical
+            var resolved = canonicalItem.song
+            // Favorite state may have changed again while getSong was in
+            // flight. Preserve the latest optimistic value on the atomic item.
             resolved.starred = current.starred
             guard resolved != current else { return }
 
-            self.currentSong = resolved
+            let previousStream = self.currentPlaybackItem?.stream
+            var resolvedItem = canonicalItem
+            resolvedItem.song = resolved
+            self.setCurrentPlaybackItem(resolvedItem)
             var updatedQueue = self.queue
             var queueChanged = false
             for index in updatedQueue.indices
@@ -3239,6 +3297,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 for: self.quality,
                 song: resolved
             )
+            if previousStream != resolvedItem.stream,
+               !self.isPlaying,
+               self.currentPlayerPosition() < 1 {
+                // A provisional row can omit or misreport suffix/MIME data.
+                // Before meaningful playback begins, rebuild the transport
+                // from the same canonical payload used by artwork/metadata.
+                self.restartPlaybackPlan(resumeFrom: self.elapsed)
+            }
             self.updateNowPlaying()
             self.scheduleQueueSave()
 
@@ -3251,7 +3317,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func updateNowPlaying() {
-        guard let song = currentSong else {
+        guard let playbackItem = currentPlaybackItem else {
             nowPlayingArtworkTask?.cancel()
             nowPlayingVisualKey = nil
             nowPlayingArtworkKey = nil
@@ -3259,7 +3325,13 @@ final class AudioEngine: NSObject, ObservableObject {
             updateRemoteCommands()
             return
         }
-        let visualKey = "\(song.id)|\(song.artworkID ?? "")"
+        let song = playbackItem.song
+        let visualKey = [
+            playbackItem.accountScope ?? "",
+            playbackItem.id.uuidString,
+            playbackItem.metadataRevision,
+            playbackItem.artwork.revision
+        ].joined(separator: "|")
         let visualChanged = nowPlayingVisualKey != visualKey
         if visualChanged {
             nowPlayingArtworkTask?.cancel()
@@ -3296,9 +3368,16 @@ final class AudioEngine: NSObject, ObservableObject {
         nowPlayingArtworkTask?.cancel()
         nowPlayingArtworkKey = artworkKey
         nowPlayingArtworkTask = Task {
-            guard let url = try? await client.coverURL(id: coverID, size: 600),
-                  let image = try? await ArtworkStore.shared.image(for: url, pixelSize: 600),
+            guard let sourceURL = try? await client.coverURL(id: coverID, size: 600) else {
+                return
+            }
+            let url = ArtworkStore.cacheURL(
+                for: sourceURL,
+                revision: playbackItem.artwork.revision
+            )
+            guard let image = try? await ArtworkStore.shared.image(for: url, pixelSize: 600),
                   !Task.isCancelled,
+                  self.currentPlaybackItem?.id == playbackItem.id,
                   self.currentSong?.id == song.id,
                   self.currentSong?.artworkID == coverID,
                   self.nowPlayingArtworkKey == artworkKey else {
@@ -3548,7 +3627,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 snapshot.queue.firstIndex(where: { $0.id == currentID })
             } ?? 0
         }
-        currentSong = snapshot.queue[restoredIndex]
+        beginCurrentSong(snapshot.queue[restoredIndex])
         queue = snapshot.queue
         queueIndex = restoredIndex
         let restoredElapsed = snapshot.elapsed.isFinite ? max(0, snapshot.elapsed) : 0
