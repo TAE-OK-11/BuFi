@@ -1,6 +1,15 @@
 import CryptoKit
 import Foundation
 
+struct AccountSessionToken: Hashable, Sendable {
+    let accountScope: String
+    let generation: UInt64
+
+    func matches(accountScope: String?, generation: UInt64) -> Bool {
+        self.accountScope == accountScope && self.generation == generation
+    }
+}
+
 enum AccountScope {
     static func identifier(for credentials: ServerCredentials) -> String {
         let rawServer = credentials.serverURL.trimmingCharacters(in: .whitespacesAndNewlines)

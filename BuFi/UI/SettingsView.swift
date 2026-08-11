@@ -718,11 +718,16 @@ private struct RecommendationSettingsView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            Slider(value: value, in: 0...1, step: 0.05)
-                .tint(BuFiTheme.accent)
-                .onChange(of: value.wrappedValue) { _, _ in
+            Slider(
+                value: value,
+                in: 0...1,
+                step: 0.05,
+                onEditingChanged: { isEditing in
+                    guard !isEditing else { return }
                     model.rebuildRecommendations()
                 }
+            )
+                .tint(BuFiTheme.accent)
         }
     }
 

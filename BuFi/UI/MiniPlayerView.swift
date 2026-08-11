@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MiniPlayerView: View {
     @EnvironmentObject private var playbackItem: PlaybackItemState
-    @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
@@ -81,15 +80,9 @@ struct MiniPlayerView: View {
                         AirPlayButton(lightContent: !usesDarkForeground)
                             .frame(width: 36, height: 36)
 
-                        Button {
+                        MiniPlayerPlaybackButton {
                             audio.togglePlayback()
-                        } label: {
-                            Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
-                                .font(.system(size: 21, weight: .semibold))
-                                .frame(width: 40, height: 40)
                         }
-                        .buttonStyle(BuFiPressStyle())
-                        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
                     }
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)
@@ -170,6 +163,23 @@ struct MiniPlayerView: View {
             insertion: .offset(y: 5).combined(with: .opacity),
             removal: .offset(y: -4).combined(with: .opacity)
         )
+    }
+}
+
+private struct MiniPlayerPlaybackButton: View {
+    @EnvironmentObject private var playbackControl: PlaybackControlState
+
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
+                .font(.system(size: 21, weight: .semibold))
+                .frame(width: 40, height: 40)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(BuFiPressStyle())
+        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
 }
 

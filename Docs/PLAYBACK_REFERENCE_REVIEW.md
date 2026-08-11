@@ -1,6 +1,6 @@
 # Playback stability reference review
 
-Reviewed on 2026-08-01. These projects were used as architectural
+Reviewed on 2026-08-11. These projects were used as architectural
 references; no source was copied into BuFi.
 
 | Project | Reviewed revision | License | Patterns applied to BuFi |
@@ -79,10 +79,16 @@ Official references:
 
 ## Deliberately not adopted
 
-- BuFi was not migrated from `AVPlayer` to TIDAL's `AVQueuePlayer` architecture.
-  That is a large engine change with higher regression risk for OpenSubsonic
-  transcoding, seeking, lyrics, and existing queue restoration. Gapless
-  playback should be introduced as a separately tested engine milestone.
+- BuFi uses `AVQueuePlayer` only as a bounded two-item transport window. The
+  app's account-scoped logical queue remains authoritative, and only the
+  current item plus one validated deterministic successor is staged. Shuffle,
+  repeat-one, quality changes, queue edits, and account changes invalidate that
+  successor. This provides gapless hand-off without adopting an SDK-specific
+  queue model.
+- Crossfade and a custom byte-range resource loader were not adopted. Direct
+  and downloaded assets can use deterministic staging; server-transcoded
+  streams remain best effort and fall back to the normal bounded recovery and
+  codec-compatibility plan.
 - Pocket Casts and Telegram implementation code was not copied. This keeps
   BuFi's licensing boundaries clear and makes the changes fit its existing
   SwiftUI/OpenSubsonic design.

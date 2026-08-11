@@ -13,7 +13,7 @@ BuFi v2 추천 엔진은 서버를 교체하지 않고 OpenSubsonic/Navidrome가
 6. Canonical deduplication
 7. Discovery allocation
 8. Artist/album diversity re-ranking
-9. Small deterministic shuffle
+9. Purpose-lifetime deterministic jitter
 
 `RecommendationCandidateProviding`이 후보 생성 경계다. 추후 CLAP, MERT,
 Sonic 대체 엔진이나 서버 임베딩을 추가할 때 점수·다양성 코드를 변경하지
@@ -110,7 +110,10 @@ artist+title은 0.95, 정규화 title은 0.85, title 단독은 0.40이다.
 - Autoplay: 최근 20곡 context와 Sonic/similar 결과를 우선한다.
 
 사용자의 discovery ratio는 점수 배수가 아니다. 최종 후보를 known song,
-unknown song, hidden gem, new artist로 나눈 뒤 구성 비율을 결정한다.
+unknown song, hidden gem, new artist로 나눈 뒤 구성 비율을 결정한다. 비율은
+모든 purpose에서 `0...1`을 그대로 사용한다. Discovery purpose도 최소값을
+강제하지 않으므로 0은 가능한 한 known song만, 1은 가능한 한 unknown song만
+선택하며, 한쪽 후보가 부족할 때만 반대쪽 후보로 제한 개수를 채운다.
 
 ## 중복·다양성
 
@@ -119,23 +122,53 @@ canonical title은 괄호 또는 접미사의 live/remaster/deluxe/version/edit/
 제거해 동일 녹음의 과다 노출을 줄인다.
 
 동일 아티스트와 앨범의 반복 계수는 첫 등장 1.0, 두 번째 0.90,
-세 번째 0.75, 네 번째부터 0.55다. 상위 후보에는 30분 단위의 작은
-결정적 jitter를 적용해 화면 재렌더링 때 순서가 흔들리지는 않으면서
-추천이 영구히 고정되지 않게 한다.
+세 번째 0.75, 네 번째부터 0.55다. 상위 후보에는 작은 결정적 jitter를
+적용한다. jitter seed는 아래 목적별 캐시 lifetime과
+같은 시간 bucket을 사용하므로 장기 캐시 목적이 30분마다 무효화되지 않는다.
+
+점수 합산은 enum에 선언된 고정 feature 순서로 수행한다. 행동 dictionary는
+song ID, 마지막 재생 시각 순으로 정렬한 뒤 프로필을 만들고, 정규화 map의
+key도 정렬한다. 따라서 Swift dictionary의 임의 순회 순서나 프로세스별 hash
+seed가 부동소수점 누적 순서와 최종 순위를 바꾸지 않는다. 문자열 정규화에는
+고정 POSIX locale을 사용한다.
 
 ## 캐시
 
-- Home/Daylist/Autoplay: 30분
+- Home/Daylist/Taste/Frequent/Autoplay: 30분
 - Artist mix: 6시간
 - Discovery: 24시간
 - SwiftUI의 개인화 믹스: 동일한 전체 스냅샷·선택 아티스트·날짜 구간은
   직전 결과를 재사용한다.
 
-캐시 키는 모든 실제 후보 목록의 경계가 구분된 ID 해시, 목적, 사용자
-가중치, 행동 revision, 시간 bucket을 포함한다. 재생·스킵·좋아요·대기열
-제거 등 행동이 기록되면 revision이 증가하고 메모리 캐시를 즉시
-무효화한다. 목적별 유효 가중치와 시간대는 한 계산당 한 번만 만들고,
-결정적 정렬 해시는 곡당 한 번만 계산한다.
+캐시 키는 실제 후보 목록별 경계와 순서, 결과 또는 점수에 영향을 줄 수 있는
+`Song`의 전체 metadata, 행동 snapshot의 전체 집계값과 recent-song 순서,
+목적, limit, 정확한 IEEE-754 사용자 가중치, calendar/time-zone, 목적별 시간
+bucket을 포함한다. 따라서 동일 ID의 title, favorite, cover art, play count,
+BPM, mood, genre, MBID/ISRC 등이 바뀌어도 오래된 `Song` 값이나 점수를
+재사용하지 않는다. 0.001보다 작은 가중치 변경도 별도 항목이다.
+
+재생·스킵·좋아요·대기열 제거 등 행동이 기록되면 revision이 증가해 기존
+entry와 분리된다. revision이 잘못 재사용되더라도 전체 행동 fingerprint가
+달라지면 캐시는 분리된다. 캐시 lifetime과 jitter bucket은 같은
+purpose-specific 값을 사용한다.
+시간 감쇠와 time-awareness도 해당 bucket 시작 시각을 평가 기준으로 사용해,
+같은 cache key를 eviction 후 다시 계산해도 동일한 순위를 만든다.
+
+## 계산 비용과 취소
+
+개인화 믹스는 한 snapshot에서 deduplicated song corpus를 한 번 만들고,
+searchable text, normalized artist/genre, artist별 곡, genre별 곡을 함께
+indexing한다. 아티스트 믹스마다 전체 후보 풀을 다시 스캔하지 않고 이 index로
+primary/related 후보를 구성한다. 각 믹스에 필요한 deterministic order는 전체
+풀을 매번 정렬하지 않고 최대 `limit` 또는 fallback용 `2 × limit` 항목만
+유지하는 bounded max-heap으로 구한다. 이 방식은 기존 stable-hash 순서의
+prefix와 동등하면서 임시 메모리를 후보 수가 아닌 출력 제한에 맞춘다.
+Discovery allocation도 한 번의 partition pass에서 known/unknown 배열을 만든다.
+
+fingerprint 생성, rank map 생성, profile 집계, candidate scoring, discovery
+partition, diversity reranking, personalized corpus/ordering의 긴 loop는 주기적으로
+`Task.isCancelled`를 확인한다. 취소를 관찰하면 부분 결과를 cache/publish하지
+않고 빈 결과로 종료한다.
 
 ## Swift 유지 결정
 

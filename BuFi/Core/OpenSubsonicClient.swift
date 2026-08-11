@@ -39,12 +39,15 @@ actor OpenSubsonicClient {
     )
 
     let credentials: ServerCredentials
+    let accountScope: String
     private let session: URLSession
     private let decoder: JSONDecoder
     private let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
     private var supportedExtensions: Set<String>?
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
+    private var mutationEpoch: UInt64 = 0
+    private var mutationsInFlight = 0
 
     private enum RequestSemantics {
         case readOnly
@@ -54,9 +57,15 @@ actor OpenSubsonicClient {
     private struct ReadRequestKey: Hashable, Sendable {
         let endpoint: String
         let queryItems: [String]
+        let mutationEpoch: UInt64
 
-        init(endpoint: String, queryItems: [URLQueryItem]) {
+        init(
+            endpoint: String,
+            queryItems: [URLQueryItem],
+            mutationEpoch: UInt64
+        ) {
             self.endpoint = endpoint
+            self.mutationEpoch = mutationEpoch
             self.queryItems = queryItems
                 .map { "\($0.name)=\($0.value ?? "")" }
                 .sorted()
@@ -105,11 +114,13 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.insecureServerURL
         }
         let username = credentials.username.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.credentials = ServerCredentials(
+        let normalizedCredentials = ServerCredentials(
             serverURL: normalized.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
             username: username,
             password: credentials.password
         )
+        self.credentials = normalizedCredentials
+        self.accountScope = AccountScope.identifier(for: normalizedCredentials)
         self.swiftSonic = SwiftSonicClient(
             configuration: ServerConfiguration(
                 serverURL: normalized,
@@ -253,9 +264,12 @@ actor OpenSubsonicClient {
         let cacheLifetime = Self.responseCacheLifetime(for: endpoint)
         do {
             let response: HTTPResponseData
+            let requestEpoch: UInt64
             switch semantics {
             case .readOnly:
-                if cacheLifetime > 0,
+                requestEpoch = mutationEpoch
+                if mutationsInFlight == 0,
+                   cacheLifetime > 0,
                    let cached = cachedResponse(
                     for: cacheKey,
                     lifetime: cacheLifetime
@@ -266,10 +280,15 @@ actor OpenSubsonicClient {
                     from: url,
                     key: ReadRequestKey(
                         endpoint: endpoint,
-                        queryItems: queryItems
+                        queryItems: queryItems,
+                        mutationEpoch: requestEpoch
                     )
                 )
             case .mutation:
+                mutationsInFlight += 1
+                mutationEpoch &+= 1
+                requestEpoch = mutationEpoch
+                clearResponseCache()
                 response = try await responseData(
                     from: url,
                     allowsRetry: false
@@ -277,17 +296,26 @@ actor OpenSubsonicClient {
             }
             let payload: Payload = try decodeResponse(response)
             switch semantics {
-            case .readOnly where cacheLifetime > 0:
+            case .readOnly where mutationsInFlight == 0
+                    && cacheLifetime > 0
+                    && mutationEpoch == requestEpoch:
                 // Store only a body that decoded into the endpoint's expected
                 // payload, never an HTTP or schema error response.
                 storeResponse(response.data, for: cacheKey)
             case .mutation:
+                mutationsInFlight = max(0, mutationsInFlight - 1)
+                mutationEpoch &+= 1
                 clearResponseCache()
             default:
                 break
             }
             return payload
         } catch {
+            if case .mutation = semantics {
+                mutationsInFlight = max(0, mutationsInFlight - 1)
+                mutationEpoch &+= 1
+                clearResponseCache()
+            }
             logFailure(error, endpoint: endpoint)
             throw error
         }
@@ -342,7 +370,11 @@ actor OpenSubsonicClient {
         do {
             let response = try await coalescedReadResponse(
                 from: url,
-                key: ReadRequestKey(endpoint: endpoint, queryItems: [])
+                key: ReadRequestKey(
+                    endpoint: endpoint,
+                    queryItems: [],
+                    mutationEpoch: mutationEpoch
+                )
             )
             guard (200..<300).contains(response.response.statusCode) else {
                 throw OpenSubsonicError.http(response.response.statusCode)
@@ -1584,13 +1616,9 @@ actor OpenSubsonicClient {
     }
 
     func trimTransientNetworkCaches() {
-        for request in inFlightReadRequests.values {
-            request.task.cancel()
-            request.waiters.values.forEach {
-                $0.resume(throwing: CancellationError())
-            }
-        }
-        inFlightReadRequests.removeAll(keepingCapacity: false)
+        // Memory pressure should not turn a visible, awaited request into a
+        // user-facing cancellation. Shared transfers are released naturally
+        // when their last waiter goes away.
         clearResponseCache()
     }
 

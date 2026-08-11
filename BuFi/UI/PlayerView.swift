@@ -13,7 +13,6 @@ struct PlayerView: View {
     @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @EnvironmentObject private var audio: AudioEngine
     @EnvironmentObject private var playbackItem: PlaybackItemState
-    @EnvironmentObject private var playbackControl: PlaybackControlState
     @EnvironmentObject private var playbackQueue: PlaybackQueueState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.dismiss) private var dismiss
@@ -23,6 +22,7 @@ struct PlayerView: View {
     @State private var palette = ArtworkPalette.fallback
     @State private var showQueue = false
     @State private var artworkPage: PlayerArtworkPageID?
+    @State private var pagerSelectionGate = PlayerPagerSelectionGate()
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPrefetchTask: Task<Void, Never>?
@@ -394,6 +394,7 @@ struct PlayerView: View {
         .frame(height: edge + heightPadding)
         .contentShape(Rectangle())
         .onChange(of: artworkPage) { oldPage, page in
+            guard pagerSelectionGate.shouldStartPlayback(for: page) else { return }
             guard let page,
                   playbackQueue.songs.indices.contains(page.queueIndex),
                   playbackQueue.songs[page.queueIndex].id == page.songID,
@@ -480,10 +481,15 @@ struct PlayerView: View {
                 audio.previous()
             }
             Spacer()
-            playButton(
+            PlayerPlaybackButton(
                 diameter: compact ? 62 : 70,
-                iconSize: compact ? 24 : 27
-            )
+                iconSize: compact ? 24 : 27,
+                foreground: playerPrimary,
+                buttonForeground: playerButtonForeground,
+                motionEnabled: allowsMotion
+            ) {
+                audio.togglePlayback()
+            }
             Spacer()
             control(
                 "forward.end.fill",
@@ -503,34 +509,6 @@ struct PlayerView: View {
             }
         }
         .frame(height: compact ? 82 : 112)
-    }
-
-    private func playButton(
-        diameter: CGFloat,
-        iconSize: CGFloat
-    ) -> some View {
-        Button {
-            audio.togglePlayback()
-        } label: {
-            ZStack {
-                Circle()
-                    .fill(playerPrimary)
-                    .frame(width: diameter, height: diameter)
-                if playbackControl.isBuffering {
-                    ProgressView()
-                        .tint(playerButtonForeground)
-                } else {
-                    Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
-                        .font(.system(size: iconSize, weight: .bold))
-                        .foregroundStyle(playerButtonForeground)
-                        .offset(x: playbackControl.wantsPlayback ? 0 : 2)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-            }
-        }
-        .buttonStyle(BuFiPressStyle())
-        .animation(allowsMotion ? BuFiMotion.tap : .none, value: playbackControl.wantsPlayback)
-        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
 
     private func utilityRow(
@@ -639,6 +617,10 @@ struct PlayerView: View {
             songID: songs[resolved].id,
             coverArtID: songs[resolved].coverArt
         )
+        guard pagerSelectionGate.prepareProgrammaticChange(
+            from: artworkPage,
+            to: page
+        ) else { return }
         if animated && allowsMotion {
             withAnimation(BuFiMotion.trackPage) {
                 artworkPage = page
@@ -805,6 +787,70 @@ struct PlayerView: View {
 
     private var playerButtonForeground: Color {
         usesDarkForeground ? .white : Color(palette.bottom)
+    }
+}
+
+struct PlayerPagerSelectionGate {
+    private(set) var programmaticDestination: PlayerArtworkPageID?
+
+    mutating func prepareProgrammaticChange(
+        from current: PlayerArtworkPageID?,
+        to destination: PlayerArtworkPageID
+    ) -> Bool {
+        guard current != destination else {
+            if programmaticDestination != destination {
+                programmaticDestination = nil
+            }
+            return false
+        }
+        programmaticDestination = destination
+        return true
+    }
+
+    mutating func shouldStartPlayback(for selection: PlayerArtworkPageID?) -> Bool {
+        if selection == programmaticDestination {
+            programmaticDestination = nil
+            return false
+        }
+        programmaticDestination = nil
+        return selection != nil
+    }
+}
+
+private struct PlayerPlaybackButton: View {
+    @EnvironmentObject private var playbackControl: PlaybackControlState
+
+    let diameter: CGFloat
+    let iconSize: CGFloat
+    let foreground: Color
+    let buttonForeground: Color
+    let motionEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(foreground)
+                    .frame(width: diameter, height: diameter)
+                if playbackControl.isBuffering {
+                    ProgressView()
+                        .tint(buttonForeground)
+                } else {
+                    Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
+                        .font(.system(size: iconSize, weight: .bold))
+                        .foregroundStyle(buttonForeground)
+                        .offset(x: playbackControl.wantsPlayback ? 0 : 2)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+        }
+        .buttonStyle(BuFiPressStyle())
+        .animation(
+            motionEnabled ? BuFiMotion.tap : .none,
+            value: playbackControl.wantsPlayback
+        )
+        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
 }
 
@@ -1217,7 +1263,6 @@ private struct FullLyricsList: View {
 }
 
 private struct FullLyricsFooter: View {
-    @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @ObservedObject var timeline: PlaybackTimeline
 
@@ -1237,33 +1282,15 @@ private struct FullLyricsFooter: View {
             )
             .environmentObject(audio)
 
-            Button { audio.togglePlayback() } label: {
-                ZStack {
-                    Circle()
-                        .fill(primary)
-                        .frame(width: 72, height: 72)
-                    if playbackControl.isBuffering {
-                        ProgressView()
-                            .tint(playButtonForeground)
-                    } else {
-                        Image(
-                            systemName: playbackControl.wantsPlayback
-                                ? "pause.fill"
-                                : "play.fill"
-                        )
-                        .font(.system(size: 29, weight: .bold))
-                        .foregroundStyle(playButtonForeground)
-                        .offset(x: playbackControl.wantsPlayback ? 0 : 2)
-                        .contentTransition(.symbolEffect(.replace))
-                    }
-                }
+            PlayerPlaybackButton(
+                diameter: 72,
+                iconSize: 29,
+                foreground: primary,
+                buttonForeground: playButtonForeground,
+                motionEnabled: motionEnabled
+            ) {
+                audio.togglePlayback()
             }
-            .buttonStyle(BuFiPressStyle())
-            .animation(
-                motionEnabled ? BuFiMotion.tap : .none,
-                value: playbackControl.wantsPlayback
-            )
-            .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
         }
         .padding(.horizontal, 24)
         .padding(.top, 10)

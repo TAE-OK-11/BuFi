@@ -7,6 +7,8 @@ struct LoginView: View {
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""
+    @State private var isSubmitting = false
+    @State private var loginTask: Task<Void, Never>?
     @FocusState private var focus: Field?
 
     private enum Field {
@@ -90,11 +92,11 @@ struct LoginView: View {
 
                     Button(action: connect) {
                         HStack {
-                            if session.phase == .connecting {
+                            if isSubmitting || session.phase == .connecting {
                                 ProgressView().tint(.white)
                             }
                             Text(
-                                session.phase == .connecting
+                                isSubmitting || session.phase == .connecting
                                     ? String(localized: "연결 중…")
                                     : String(localized: "서버에 연결")
                             )
@@ -109,7 +111,7 @@ struct LoginView: View {
                         server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         password.isEmpty ||
-                        session.phase == .connecting
+                        isSubmitting || session.phase == .connecting
                     )
                     .buttonStyle(BuFiPressStyle())
                     .padding(.top, 22)
@@ -156,9 +158,25 @@ struct LoginView: View {
     }
 
     private func connect() {
+        let trimmedServer = server.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isSubmitting,
+              session.phase != .connecting,
+              !trimmedServer.isEmpty,
+              !trimmedUsername.isEmpty,
+              !password.isEmpty else { return }
+
         focus = nil
-        Task {
-            await model.login(serverURL: server, username: username, password: password)
+        isSubmitting = true
+        let submittedPassword = password
+        loginTask = Task {
+            await model.login(
+                serverURL: trimmedServer,
+                username: trimmedUsername,
+                password: submittedPassword
+            )
+            isSubmitting = false
+            loginTask = nil
         }
     }
 }

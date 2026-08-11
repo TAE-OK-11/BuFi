@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum MusicRoute: Hashable {
+enum MusicRoute: Hashable, Sendable {
     case album(Album)
     case artist(Artist)
     case playlist(Playlist)
@@ -13,6 +13,10 @@ struct HomeView: View {
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
     @State private var filter = HomeFilter.all
+    @State private var presentation = HomePresentation.empty
+    @State private var presentationInput: HomePresentationInput?
+    @State private var presentationGeneration: UInt64 = 0
+    @State private var presentationTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -35,6 +39,18 @@ struct HomeView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
+        .onAppear { updatePresentationIfNeeded() }
+        .onChange(of: library.snapshot) { _, _ in
+            updatePresentationIfNeeded()
+        }
+        .onChange(of: selectedArtistMixes) { _, _ in
+            updatePresentationIfNeeded()
+        }
+        .onDisappear {
+            presentationTask?.cancel()
+            presentationTask = nil
+            presentationInput = nil
+        }
     }
 
     private var filterBar: some View {
@@ -51,13 +67,13 @@ struct HomeView: View {
             switch filter {
             case .all:
                 allContent(
-                    mixes: personalizedMixes
+                    mixes: presentation.personalizedMixes
                 )
             case .playlists:
                 playlistSection(showEmpty: true)
             case .personalized:
                 personalizedContent(
-                    personalizedMixes
+                    presentation.personalizedMixes
                 )
             }
         }
@@ -65,27 +81,20 @@ struct HomeView: View {
         .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
     }
 
-    private var personalizedMixes: [PersonalizedMix] {
-        PersonalizedMixBuilder.make(
-            snapshot: library.snapshot,
-            selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
-        )
-    }
-
     private func allContent(mixes: [PersonalizedMix]) -> some View {
         VStack(alignment: .leading, spacing: 28) {
             shortcuts
             albumSection("오늘 골라본 앨범", albums: library.snapshot.randomAlbums)
             albumSection("좋아하는 앨범", albums: library.snapshot.starredAlbums)
-            albumSection("취향을 닮은 앨범", albums: recommendedAlbums)
-            artistSection("즐겨 듣는 아티스트", artists: primaryArtists)
+            albumSection("취향을 닮은 앨범", albums: presentation.recommendedAlbums)
+            artistSection("즐겨 듣는 아티스트", artists: presentation.primaryArtists)
             personalizedMixSection(
                 "아티스트에서 이어 듣기",
                 mixes: mixes.filter { $0.kind == .artist }
             )
             artistSection(
                 "놓치면 아쉬운 아티스트",
-                artists: featuredArtists
+                artists: presentation.featuredArtists
             )
             albumSection(
                 "최근 감상",
@@ -129,9 +138,7 @@ struct HomeView: View {
             spacing: 10
         ) {
             NavigationLink(
-                value: PersonalizedMixBuilder.favoriteSongs(
-                    library.snapshot.starredSongs
-                )
+                value: presentation.favoriteSongsMix
             ) {
                 BuFiShortcutCard(
                     title: "좋아요 표시한 곡",
@@ -143,9 +150,7 @@ struct HomeView: View {
             .disabled(library.snapshot.starredSongs.isEmpty)
 
             NavigationLink(
-                value: PersonalizedMixBuilder.mostPlayedSongs(
-                    library.snapshot.mostPlayedSongs
-                )
+                value: presentation.mostPlayedSongsMix
             ) {
                 BuFiShortcutCard(
                     title: "자주 들은 곡",
@@ -338,35 +343,100 @@ struct HomeView: View {
         }
     }
 
-    private var primaryArtists: [Artist] {
-        if !library.snapshot.starredArtists.isEmpty {
-            return library.snapshot.starredArtists
+    private func updatePresentationIfNeeded() {
+        let input = HomePresentationInput(
+            snapshot: library.snapshot,
+            selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
+        )
+        guard input != presentationInput else { return }
+        if presentationInput == nil {
+            presentationInput = input
+            presentation = HomePresentation.make(input: input)
+            return
         }
-        return Array(library.snapshot.artists.prefix(12))
+
+        presentationInput = input
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+        presentationTask?.cancel()
+        presentationTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 120_000_000)
+            } catch {
+                return
+            }
+            let work = Task.detached(priority: .userInitiated) {
+                HomePresentation.make(input: input)
+            }
+            let next = await withTaskCancellationHandler {
+                await work.value
+            } onCancel: {
+                work.cancel()
+            }
+            guard !Task.isCancelled,
+                  generation == presentationGeneration,
+                  input == presentationInput else { return }
+            presentation = next
+            presentationTask = nil
+        }
     }
 
-    private var featuredArtists: [Artist] {
-        let songSources =
-            library.snapshot.starredSongs +
-            library.snapshot.mostPlayedSongs +
-            library.snapshot.recommendedSongs +
-            library.snapshot.randomSongs
-        let artistSources =
-            library.snapshot.recommendedArtists +
-            library.snapshot.starredArtists +
-            library.snapshot.artists
+    private func countText(_ count: Int) -> String {
+        String(format: String(localized: "%d곡"), count)
+    }
+}
+
+struct HomePresentationInput: Equatable, Sendable {
+    let snapshot: HomeSnapshot
+    let selectedArtists: [String]
+}
+
+struct HomePresentation: Sendable {
+    let personalizedMixes: [PersonalizedMix]
+    let favoriteSongsMix: PersonalizedMix
+    let mostPlayedSongsMix: PersonalizedMix
+    let recommendedAlbums: [Album]
+    let primaryArtists: [Artist]
+    let featuredArtists: [Artist]
+
+    static let empty = HomePresentation(
+        personalizedMixes: [],
+        favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs([]),
+        mostPlayedSongsMix: PersonalizedMixBuilder.mostPlayedSongs([]),
+        recommendedAlbums: [],
+        primaryArtists: [],
+        featuredArtists: []
+    )
+
+    static func make(input: HomePresentationInput) -> HomePresentation {
+        let snapshot = input.snapshot
+        return HomePresentation(
+            personalizedMixes: PersonalizedMixBuilder.make(
+                snapshot: snapshot,
+                selectedArtists: input.selectedArtists
+            ),
+            favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),
+            mostPlayedSongsMix: PersonalizedMixBuilder.mostPlayedSongs(snapshot.mostPlayedSongs),
+            recommendedAlbums: makeRecommendedAlbums(snapshot: snapshot),
+            primaryArtists: snapshot.starredArtists.isEmpty
+                ? Array(snapshot.artists.prefix(12))
+                : snapshot.starredArtists,
+            featuredArtists: makeFeaturedArtists(snapshot: snapshot)
+        )
+    }
+
+    private static func makeFeaturedArtists(snapshot: HomeSnapshot) -> [Artist] {
+        let songSources = snapshot.starredSongs + snapshot.mostPlayedSongs
+            + snapshot.recommendedSongs + snapshot.randomSongs
+        let artistSources = snapshot.recommendedArtists + snapshot.starredArtists
+            + snapshot.artists
 
         var taylor = artistSources.first {
             normalizedArtistName($0.name) == "taylor swift"
         }
         if taylor == nil,
-           let album = (
-               library.snapshot.starredAlbums +
-               library.snapshot.randomAlbums +
-               library.snapshot.recentAlbums
-           ).first(where: {
-               normalizedArtistName($0.artist) == "taylor swift"
-           }),
+           let album = (snapshot.starredAlbums + snapshot.randomAlbums + snapshot.recentAlbums)
+            .first(where: { normalizedArtistName($0.artist) == "taylor swift" }),
            let artistID = album.artistId,
            !artistID.isEmpty {
             taylor = Artist(
@@ -400,15 +470,14 @@ struct HomeView: View {
             guard !key.isEmpty, seen.insert(key).inserted else { return }
             values.append(artist)
         }
-
         append(taylor)
-        library.snapshot.starredArtists.forEach { append($0) }
-        library.snapshot.recommendedArtists.forEach { append($0) }
-        library.snapshot.artists.forEach { append($0) }
+        snapshot.starredArtists.forEach { append($0) }
+        snapshot.recommendedArtists.forEach { append($0) }
+        snapshot.artists.forEach { append($0) }
         return Array(values.prefix(12))
     }
 
-    private func normalizedArtistName(_ value: String) -> String {
+    private static func normalizedArtistName(_ value: String) -> String {
         value.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
             locale: .current
@@ -416,13 +485,10 @@ struct HomeView: View {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var recommendedAlbums: [Album] {
-        let sourceAlbums =
-            library.snapshot.randomAlbums +
-            library.snapshot.recentAlbums +
-            library.snapshot.frequentAlbums +
-            library.snapshot.recentlyPlayedAlbums +
-            library.snapshot.starredAlbums
+    private static func makeRecommendedAlbums(snapshot: HomeSnapshot) -> [Album] {
+        let sourceAlbums = snapshot.randomAlbums + snapshot.recentAlbums
+            + snapshot.frequentAlbums + snapshot.recentlyPlayedAlbums
+            + snapshot.starredAlbums
         var albumsByID: [String: Album] = [:]
         for album in sourceAlbums where albumsByID[album.id] == nil {
             albumsByID[album.id] = album
@@ -430,12 +496,10 @@ struct HomeView: View {
 
         var result: [Album] = []
         var seen = Set<String>()
-        for song in library.snapshot.recommendedSongs {
+        for song in snapshot.recommendedSongs {
             guard let albumID = song.albumId,
                   !albumID.isEmpty,
-                  seen.insert(albumID).inserted else {
-                continue
-            }
+                  seen.insert(albumID).inserted else { continue }
             if let album = albumsByID[albumID] {
                 result.append(album)
             } else if !song.album.isEmpty {
@@ -455,10 +519,6 @@ struct HomeView: View {
             if result.count == 12 { break }
         }
         return result
-    }
-
-    private func countText(_ count: Int) -> String {
-        String(format: String(localized: "%d곡"), count)
     }
 }
 

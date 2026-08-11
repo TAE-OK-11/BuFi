@@ -188,6 +188,8 @@ final class AppModel: ObservableObject {
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
     private var recommendationTask: Task<Void, Never>?
+    private var recommendationGeneration: UInt64 = 0
+    private var loginInFlight = false
     private var refreshInFlight = false
     private var lastFullRefresh = Date.distantPast
     private var lastHomeSnapshotSave = Date.distantPast
@@ -244,6 +246,9 @@ final class AppModel: ObservableObject {
 
 
     func login(serverURL: String, username: String, password: String) async {
+        guard !loginInFlight else { return }
+        loginInFlight = true
+        defer { loginInFlight = false }
         let credentials = ServerCredentials(
             serverURL: serverURL,
             username: username,
@@ -267,7 +272,7 @@ final class AppModel: ObservableObject {
         clearDetailCaches()
         secureStore.delete()
         client = nil
-        home = .empty
+        publishHome(.empty)
         searchResults = .empty
         isSearching = false
         refreshInFlight = false
@@ -333,7 +338,7 @@ final class AppModel: ObservableObject {
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
             let snapshotChanged = home != resolvedSnapshot
-            if snapshotChanged { home = resolvedSnapshot }
+            if snapshotChanged { publishHome(resolvedSnapshot) }
             let now = Date()
             if snapshotChanged
                 || now.timeIntervalSince(lastHomeSnapshotSave) >= 3_600 {
@@ -500,7 +505,7 @@ final class AppModel: ObservableObject {
                 try secureStore.saveSecret(key, account: Self.lastFMKeyAccount)
                 hasLastFMAPIKey = true
             }
-            home = snapshot
+            publishHome(snapshot)
             if let client {
                 scheduleExternalRecommendationRefresh(
                     client: client,
@@ -534,7 +539,7 @@ final class AppModel: ObservableObject {
             }
             var snapshot = home
             snapshot.listenBrainzRecommendedSongs = []
-            home = snapshot
+            publishHome(snapshot)
             if let client {
                 scheduleExternalRecommendationRefresh(
                     client: client,
@@ -555,7 +560,7 @@ final class AppModel: ObservableObject {
         listenBrainzUsername = ""
         var snapshot = home
         snapshot.listenBrainzRecommendedSongs = []
-        home = snapshot
+        publishHome(snapshot)
         if let client {
             scheduleExternalRecommendationRefresh(
                 client: client,
@@ -568,23 +573,39 @@ final class AppModel: ObservableObject {
     }
 
     func rebuildRecommendations() {
-        let generation = sessionGeneration
-        Task { [weak self] in
+        recommendationTask?.cancel()
+        recommendationGeneration &+= 1
+        let requestGeneration = recommendationGeneration
+        let session = sessionGeneration
+        let source = home
+        let weights = RecommendationWeights.current()
+        recommendationTask = Task { [weak self] in
             guard let self else { return }
             let behavior = await ListeningHistoryStore.shared
                 .recommendationSnapshot()
-            guard generation == self.sessionGeneration else { return }
-            var snapshot = self.home
-            let weights = RecommendationWeights.current()
+            guard !Task.isCancelled,
+                  requestGeneration == self.recommendationGeneration,
+                  session == self.sessionGeneration,
+                  source == self.home else { return }
+            var snapshot = source
             let sections = await Self.recommendationSections(
                 snapshot: snapshot,
                 weights: weights,
                 behavior: behavior
             )
+            let latestBehaviorRevision = await ListeningHistoryStore.shared
+                .recommendationSnapshot().revision
             snapshot.recommendedSongs = sections.recommended
             snapshot.daylistSongs = sections.daylist
-            guard generation == self.sessionGeneration else { return }
-            if snapshot != self.home { self.home = snapshot }
+            guard !Task.isCancelled,
+                  requestGeneration == self.recommendationGeneration,
+                  session == self.sessionGeneration,
+                  behavior.revision == latestBehaviorRevision,
+                  source == self.home else { return }
+            if snapshot != self.home {
+                self.publishHome(snapshot)
+            }
+            self.recommendationTask = nil
         }
     }
 
@@ -1410,8 +1431,7 @@ final class AppModel: ObservableObject {
         snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
             $0.id == song.id ? updated : $0
         }
-        homeRevision &+= 1
-        home = snapshot
+        publishHome(snapshot)
 
         if searchResults.songs.contains(where: { $0.id == song.id }) {
             var results = searchResults
@@ -1461,8 +1481,7 @@ final class AppModel: ObservableObject {
             $0.id == album.id ? updated : $0
         }
         snapshot.randomAlbums = snapshot.randomAlbums.map { $0.id == album.id ? updated : $0 }
-        homeRevision &+= 1
-        home = snapshot
+        publishHome(snapshot)
 
         if searchResults.albums.contains(where: { $0.id == album.id }) {
             var results = searchResults
@@ -1491,8 +1510,7 @@ final class AppModel: ObservableObject {
         snapshot.recommendedArtists = snapshot.recommendedArtists.map {
             $0.id == artist.id ? updated : $0
         }
-        homeRevision &+= 1
-        home = snapshot
+        publishHome(snapshot)
 
         if searchResults.artists.contains(where: { $0.id == artist.id }) {
             var results = searchResults
@@ -1563,6 +1581,12 @@ final class AppModel: ObservableObject {
     }
 
     private var isHomeEmpty: Bool { home == .empty }
+
+    private func publishHome(_ snapshot: HomeSnapshot) {
+        guard snapshot != home else { return }
+        homeRevision &+= 1
+        home = snapshot
+    }
 
     private func mergingListeningHistory(
         into snapshot: HomeSnapshot
@@ -1639,7 +1663,7 @@ final class AppModel: ObservableObject {
         behavior: RecommendationBehaviorSnapshot = .empty,
         limit: Int = 30
     ) async -> [Song] {
-        await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) {
             RecommendationMixer.mix(
                 snapshot: snapshot,
                 weights: weights,
@@ -1647,7 +1671,12 @@ final class AppModel: ObservableObject {
                 behavior: behavior,
                 limit: limit
             )
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     nonisolated private static func recommendationSections(
@@ -1655,7 +1684,7 @@ final class AppModel: ObservableObject {
         weights: RecommendationWeights,
         behavior: RecommendationBehaviorSnapshot
     ) async -> (recommended: [Song], daylist: [Song]) {
-        await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) {
             let recommended = RecommendationMixer.mix(
                 snapshot: snapshot,
                 weights: weights,
@@ -1670,7 +1699,12 @@ final class AppModel: ObservableObject {
                 limit: 24
             )
             return (recommended, daylist)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func resolvedRecommendedArtists(
@@ -1792,6 +1826,8 @@ final class AppModel: ObservableObject {
         generation: Int
     ) {
         recommendationTask?.cancel()
+        recommendationGeneration &+= 1
+        let requestGeneration = recommendationGeneration
         guard hasLastFMAPIKey || !listenBrainzUsername.isEmpty,
               !ProcessInfo.processInfo.isLowPowerModeEnabled,
               ProcessInfo.processInfo.thermalState.rawValue <
@@ -1806,11 +1842,14 @@ final class AppModel: ObservableObject {
                 client: client
             )
             guard !Task.isCancelled,
+                  requestGeneration == self.recommendationGeneration,
                   generation == self.sessionGeneration,
-                  self.client === client else {
+                  self.client === client,
+                  source == self.home else {
                 return
             }
-            var value = self.home
+            let publicationSource = self.home
+            var value = publicationSource
             if !enriched.lastFMRecommendedSongs.isEmpty {
                 value.lastFMRecommendedSongs = enriched.lastFMRecommendedSongs
             }
@@ -1821,8 +1860,10 @@ final class AppModel: ObservableObject {
             let behavior = await ListeningHistoryStore.shared
                 .recommendationSnapshot()
             guard !Task.isCancelled,
+                  requestGeneration == self.recommendationGeneration,
                   generation == self.sessionGeneration,
-                  self.client === client else {
+                  self.client === client,
+                  publicationSource == self.home else {
                 return
             }
             let weights = RecommendationWeights.current()
@@ -1831,19 +1872,24 @@ final class AppModel: ObservableObject {
                 weights: weights,
                 behavior: behavior
             )
+            let latestBehaviorRevision = await ListeningHistoryStore.shared
+                .recommendationSnapshot().revision
             value.recommendedSongs = sections.recommended
             value.recommendedArtists = self.resolvedRecommendedArtists(
                 in: value
             )
             value.daylistSongs = sections.daylist
             guard !Task.isCancelled,
+                  requestGeneration == self.recommendationGeneration,
                   generation == self.sessionGeneration,
-                  self.client === client else {
+                  self.client === client,
+                  behavior.revision == latestBehaviorRevision,
+                  publicationSource == self.home else {
                 return
             }
             value = self.applyingFavoriteOverrides(to: value)
             if value != self.home {
-                self.home = value
+                self.publishHome(value)
                 let accountScope = AccountScope.identifier(
                     for: client.credentials
                 )
@@ -1851,6 +1897,9 @@ final class AppModel: ObservableObject {
                     value,
                     accountScope: accountScope
                 )
+            }
+            if requestGeneration == self.recommendationGeneration {
+                self.recommendationTask = nil
             }
         }
     }
@@ -1906,7 +1955,7 @@ final class AppModel: ObservableObject {
             await deactivateStores(accountScope: previousAccountScope)
         }
         guard generation == sessionGeneration else { return }
-        home = .empty
+        publishHome(.empty)
         searchResults = .empty
         connectedServerAddress = ""
         serverVersion = ""
@@ -1931,10 +1980,18 @@ final class AppModel: ObservableObject {
             try Task.checkCancellation()
             guard generation == sessionGeneration else { return }
 
-            await OfflineStore.shared.activate(accountScope: accountScope)
-            await ArtworkStore.shared.activate(accountScope: accountScope)
-            await ListeningHistoryStore.shared.activate(accountScope: accountScope)
             activatedAccountScope = accountScope
+            await OfflineStore.shared.activate(accountScope: accountScope)
+            guard generation == sessionGeneration else {
+                await deactivateStores(accountScope: accountScope)
+                return
+            }
+            await ArtworkStore.shared.activate(accountScope: accountScope)
+            guard generation == sessionGeneration else {
+                await deactivateStores(accountScope: accountScope)
+                return
+            }
+            await ListeningHistoryStore.shared.activate(accountScope: accountScope)
             guard generation == sessionGeneration else {
                 await deactivateStores(accountScope: accountScope)
                 return
@@ -1953,7 +2010,7 @@ final class AppModel: ObservableObject {
                 authoritative: false
             )
             self.client = client
-            self.home = applyingFavoriteOverrides(to: snapshot)
+            self.publishHome(applyingFavoriteOverrides(to: snapshot))
             self.lastFullRefresh = .distantPast
             self.lastHomeSnapshotSave = .distantPast
             self.connectedServerAddress = Self.serverDisplayAddress(
@@ -1998,7 +2055,7 @@ final class AppModel: ObservableObject {
             }
             guard generation == sessionGeneration else { return }
             client = nil
-            home = .empty
+            publishHome(.empty)
             searchResults = .empty
             connectedServerAddress = ""
             serverVersion = ""

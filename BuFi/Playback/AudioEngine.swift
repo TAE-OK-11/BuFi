@@ -216,6 +216,64 @@ struct PlaybackPrefetchPlan: Equatable, Sendable {
     }
 }
 
+enum PlaybackFailureDisposition: Equatable, Sendable {
+    case retryTransport
+    case tryCompatibilityFormat
+}
+
+enum PlaybackFailureClassifier {
+    static func disposition(for error: Error?) -> PlaybackFailureDisposition {
+        disposition(for: error, depth: 0)
+    }
+
+    private static func disposition(
+        for error: Error?,
+        depth: Int
+    ) -> PlaybackFailureDisposition {
+        guard let error else { return .tryCompatibilityFormat }
+        let value = error as NSError
+        guard value.domain == NSURLErrorDomain else {
+            if depth < 2,
+               let underlying = value.userInfo[NSUnderlyingErrorKey] as? Error {
+                return disposition(for: underlying, depth: depth + 1)
+            }
+            return .tryCompatibilityFormat
+        }
+        let code = URLError.Code(rawValue: value.code)
+        switch code {
+        case .timedOut, .cannotFindHost, .cannotConnectToHost,
+             .dnsLookupFailed, .networkConnectionLost, .notConnectedToInternet,
+             .internationalRoamingOff, .callIsActive, .dataNotAllowed,
+             .secureConnectionFailed, .cannotLoadFromNetwork:
+            return .retryTransport
+        default:
+            return .tryCompatibilityFormat
+        }
+    }
+}
+
+struct GaplessSuccessorPlan: Equatable, Sendable {
+    let queueIndex: Int
+
+    static func make(
+        queueCount: Int,
+        currentIndex: Int,
+        shuffleEnabled: Bool,
+        repeatMode: RepeatMode
+    ) -> GaplessSuccessorPlan? {
+        guard queueCount > 0,
+              (0..<queueCount).contains(currentIndex),
+              !shuffleEnabled,
+              repeatMode != .one else { return nil }
+        if currentIndex + 1 < queueCount {
+            return GaplessSuccessorPlan(queueIndex: currentIndex + 1)
+        }
+        return repeatMode == .all
+            ? GaplessSuccessorPlan(queueIndex: 0)
+            : nil
+    }
+}
+
 @MainActor
 final class AudioEngine: NSObject, ObservableObject {
     static let shared = AudioEngine()
@@ -327,7 +385,10 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    let player = AVPlayer()
+    // The logical queue below remains the source of truth. AVQueuePlayer is
+    // used as a two-item transport window so a validated successor can begin
+    // without rebuilding the playback pipeline at the track boundary.
+    let player = AVQueuePlayer()
 
     private static let iso8601Formatter = ISO8601DateFormatter()
     private static let logger = Logger(
@@ -349,10 +410,17 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private var nowPlayingSession: MPNowPlayingSession?
     private var client: OpenSubsonicClient?
+    private var currentAccountScope: String?
+    private var playbackSessionGeneration: UInt64 = 0
+    private var queueMutationGeneration: UInt64 = 0
+    private var queueRestorationGeneration: UInt64 = 0
     private var songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)?
     private var autoplayContinuationProvider:
         (@MainActor (Song, Set<String>) async -> [Song])?
     private var itemObservation: NSKeyValueObservation?
+    private weak var logicalCurrentItem: AVPlayerItem?
+    private var currentItemTransitionObservation: NSKeyValueObservation?
+    private var stagedSuccessorObservation: NSKeyValueObservation?
     private var itemBufferObservations: [NSKeyValueObservation] = []
     private var timeControlObservation: NSKeyValueObservation?
     private lazy var playbackObservers = PlaybackObserverCoordinator(
@@ -367,6 +435,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var fallbackFormats: [String] = []
     private var scrobbled = false
     private var queueSaveTask: Task<Void, Never>?
+    private var queueClearTask: Task<Void, Never>?
     private var itemLoadTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
     private var serverQueueTask: Task<Void, Never>?
@@ -380,13 +449,18 @@ final class AudioEngine: NSObject, ObservableObject {
     private var preparedPlaybackAssets: [String: PreparedPlaybackAsset] = [:]
     private var preparedPlaybackAssetOrder: [String] = []
     private var preparedPlaybackWarmupTasks: [String: Task<Void, Never>] = [:]
+    private weak var stagedSuccessorItem: AVPlayerItem?
+    private var stagedSuccessorSong: Song?
+    private var stagedSuccessorQueueIndex: Int?
     private var autoplayTask: Task<Void, Never>?
     private var historyMutationTask: Task<Void, Never>?
+    private var playbackReportTask: Task<Void, Never>?
     private var nowPlayingSongID: String?
     private var nowPlayingArtworkKey: String?
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryTask: Task<Void, Never>?
+    private var recoveryStabilityTask: Task<Void, Never>?
     private var audioSessionActivationTask: Task<Void, Never>?
     private var audioSessionActivationToken: UUID?
     private var audioSessionDeactivationTask: Task<Void, Never>?
@@ -409,6 +483,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var pendingSeekPosition: TimeInterval?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
+    private var lastServerQueueSaveRequest = Date.distantPast
     private var lastMaintenanceSecond = -1
     private var behaviorStartRecordedForSongID: String?
     private var lastPlaybackReportSongID: String?
@@ -434,9 +509,6 @@ final class AudioEngine: NSObject, ObservableObject {
         installSystemObservers()
         installNetworkPathMonitor()
         installRemoteCommands()
-        if queueRestorationEnabled {
-            restoreLocalQueue()
-        }
     }
 
     func configure(
@@ -445,6 +517,9 @@ final class AudioEngine: NSObject, ObservableObject {
         autoplayContinuationProvider:
             (@MainActor (Song, Set<String>) async -> [Song])? = nil
     ) {
+        playbackSessionGeneration &+= 1
+        let sessionGeneration = playbackSessionGeneration
+        let previousAccountScope = currentAccountScope
         serverQueueTask?.cancel()
         serverQueueTask = nil
         autoplayTask?.cancel()
@@ -452,10 +527,15 @@ final class AudioEngine: NSObject, ObservableObject {
         autoplayGeneration &+= 1
         autoplayShouldAdvance = false
         self.client = client
+        currentAccountScope = client?.accountScope
+        if previousAccountScope != currentAccountScope {
+            lastServerQueueSaveRequest = .distantPast
+        }
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
         self.autoplayContinuationProvider = autoplayContinuationProvider
         if client == nil {
             finalizeCurrentPlayback(reason: .stopped)
+            let pendingQueueSave = queueSaveTask
             queueSaveTask?.cancel()
             queueSaveTask = nil
             suspendSpeculativePrefetch()
@@ -475,11 +555,21 @@ final class AudioEngine: NSObject, ObservableObject {
             lastPersistedQueue = nil
             queueRestoreTask?.cancel()
             queueRestoreTask = nil
-            Task { await AppDatabase.shared.clearQueue() }
+            if let previousAccountScope {
+                let previousClear = queueClearTask
+                queueClearTask = Task {
+                    _ = await previousClear?.value
+                    _ = await pendingQueueSave?.value
+                    await AppDatabase.shared.clearQueue(
+                        scope: previousAccountScope
+                    )
+                }
+            }
             pausePlayback(persistsQueue: false)
             currentSong = nil
             queue = []
             queueIndex = -1
+            queueMutationGeneration &+= 1
             elapsed = 0
             duration = 0
             isBuffering = false
@@ -487,6 +577,7 @@ final class AudioEngine: NSObject, ObservableObject {
             showFullLyrics = false
             applyLyricsDocument(.empty)
             removeCurrentItemObservers()
+            invalidateStagedSuccessor(removeFromPlayer: true)
             player.replaceCurrentItem(with: nil)
             updateNowPlaying()
             return
@@ -497,11 +588,31 @@ final class AudioEngine: NSObject, ObservableObject {
             loadLyrics(for: song)
         }
 
-        guard queueRestorationEnabled else { return }
+        guard queueRestorationEnabled,
+              let accountScope = currentAccountScope else { return }
+        let restorationRevision = queueMutationGeneration
+        restoreLocalQueue(
+            accountScope: accountScope,
+            sessionGeneration: sessionGeneration,
+            expectedQueueRevision: restorationRevision
+        )
+        let localRestoreTask = queueRestoreTask
         serverQueueTask = Task { [weak self] in
+            _ = await localRestoreTask?.value
             guard let self,
-                  let serverQueue = try? await client?.playQueue(),
                   !Task.isCancelled,
+                  sessionGeneration == self.playbackSessionGeneration,
+                  accountScope == self.currentAccountScope,
+                  self.queue.isEmpty,
+                  self.currentSong == nil else {
+                return
+            }
+            let requestRevision = self.queueMutationGeneration
+            guard let serverQueue = try? await client?.playQueue(),
+                  !Task.isCancelled,
+                  sessionGeneration == self.playbackSessionGeneration,
+                  accountScope == self.currentAccountScope,
+                  requestRevision == self.queueMutationGeneration,
                   !serverQueue.songs.isEmpty,
                   !self.isPlaying,
                   !self.wantsPlayback else {
@@ -512,13 +623,12 @@ final class AudioEngine: NSObject, ObservableObject {
                 $0.id == serverQueue.currentID
             } ?? 0
             self.currentSong = serverQueue.songs[self.queueIndex]
+            self.queueMutationGeneration &+= 1
             self.behaviorStartRecordedForSongID = nil
             self.duration = self.currentSong?.safeDuration ?? 0
             let restoredPosition = max(0, serverQueue.position)
             self.elapsed = self.duration > 0 ? min(restoredPosition, self.duration) : restoredPosition
             self.applyLyricsDocument(.empty)
-            self.restartPlaybackPlan(resumeFrom: self.elapsed)
-            if let song = self.currentSong { self.loadLyrics(for: song) }
             self.updateNowPlaying()
         }
     }
@@ -530,14 +640,18 @@ final class AudioEngine: NSObject, ObservableObject {
         finalizeCurrentPlayback(reason: .stopped)
         let finalHistoryMutation = historyMutationTask
         let pendingQueueSave = queueSaveTask
+        let finalPlaybackReport = playbackReportTask
         configure(client: nil)
+        let finalQueueClear = queueClearTask
         // Cancellation cannot interrupt a GRDB transaction that has already
         // started. Wait for the old save task before the final delete so a
         // late account-session snapshot can never recreate the queue.
         _ = await pendingQueueSave?.value
+        _ = await finalQueueClear?.value
         _ = await finalHistoryMutation?.value
+        _ = await finalPlaybackReport?.value
         historyMutationTask = nil
-        await AppDatabase.shared.clearQueue()
+        playbackReportTask = nil
     }
 
     func play(
@@ -568,6 +682,15 @@ final class AudioEngine: NSObject, ObservableObject {
         origin: PlaybackOrigin = .manual,
         transitionReason: PlaybackEndReason = .replaced
     ) {
+        reconcilePendingTransportTransition()
+        // Every concrete track transition supersedes an in-flight autoplay
+        // request. Keeping this invalidation here (rather than only in the
+        // public `play` entry point) also covers queue taps, skips, restores,
+        // and repeat transitions.
+        autoplayTask?.cancel()
+        autoplayTask = nil
+        autoplayGeneration &+= 1
+        autoplayShouldAdvance = false
         // An explicit selection supersedes a pending server queue restore,
         // including the interval before AVPlayer reaches the playing state.
         serverQueueTask?.cancel()
@@ -584,12 +707,14 @@ final class AudioEngine: NSObject, ObservableObject {
         let selectedSong = normalizedQueue[resolvedIndex]
         queue = normalizedQueue
         queueIndex = resolvedIndex
+        queueMutationGeneration &+= 1
         player.pause()
         isPlaying = false
         seekGeneration &+= 1
         isSeekInFlight = false
         pendingSeekPosition = nil
         removeCurrentItemObservers()
+        invalidateStagedSuccessor(removeFromPlayer: true)
         player.replaceCurrentItem(with: nil)
         currentSong = selectedSong
         recordPlaybackStart(selectedSong, origin: origin)
@@ -600,6 +725,8 @@ final class AudioEngine: NSObject, ObservableObject {
         fallbackIndex = 0
         fallbackFormats = Self.fallbackFormats(for: quality, song: selectedSong)
         recoveryAttempt = 0
+        recoveryStabilityTask?.cancel()
+        recoveryStabilityTask = nil
         activeCompatibilityFormat = Self.initialCompatibilityFormat(
             for: quality,
             song: selectedSong
@@ -651,6 +778,7 @@ final class AudioEngine: NSObject, ObservableObject {
             player.currentItem == nil
             || player.currentItem?.status == .failed
         if needsReload {
+            recoveryAttempt = 0
             isBuffering = true
             restartPlaybackPlan(resumeFrom: elapsed)
         } else if duration > 0, elapsed >= max(0, duration - 0.5) {
@@ -669,6 +797,9 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func pause() {
+        // A pause chosen while an audio interruption is active must remain a
+        // pause when the interruption ends.
+        resumeAfterInterruption = false
         pausePlayback(persistsQueue: true)
     }
 
@@ -733,9 +864,9 @@ final class AudioEngine: NSObject, ObservableObject {
         invalidateLyricBoundaryObserver()
         updateActiveLyric(at: target)
         updateNowPlaying()
-        if persistsQueue { scheduleQueueSave() }
         guard player.currentItem != nil else {
             isSeekInFlight = false
+            if persistsQueue { scheduleQueueSave() }
             return
         }
         let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
@@ -746,7 +877,7 @@ final class AudioEngine: NSObject, ObservableObject {
             to: CMTime(seconds: target, preferredTimescale: 600),
             toleranceBefore: tolerance,
             toleranceAfter: tolerance
-        ) { [weak self] _ in
+        ) { [weak self] finished in
             Task { @MainActor in
                 guard let self, self.seekGeneration == generation else { return }
                 self.isSeekInFlight = false
@@ -754,6 +885,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.recomputeTimelineFromPlayer()
                 self.installNextLyricBoundary(after: self.elapsed)
                 self.updateNowPlaying()
+                if persistsQueue, finished {
+                    self.scheduleQueueSave()
+                }
             }
         }
     }
@@ -763,6 +897,7 @@ final class AudioEngine: NSObject, ObservableObject {
     /// "1곡 반복" 모드여도 같은 곡을 재시작하지 않고 실제로 다음 곡으로 넘어가야 함.
     /// (이전에는 이 구분이 없어 수동 스킵도 같은 곡이 반복 재생되는 버그가 있었음.)
     func next(isAutoAdvance: Bool = false) {
+        reconcilePendingTransportTransition()
         guard !queue.isEmpty else { return }
         if isAutoAdvance, repeatMode == .one, let song = currentSong {
             startPlayback(
@@ -865,6 +1000,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func previous() {
+        reconcilePendingTransportTransition()
         if elapsed > 4 {
             seek(to: 0)
             return
@@ -881,6 +1017,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func playQueueItem(at index: Int) {
+        reconcilePendingTransportTransition()
         guard queue.indices.contains(index) else { return }
         queueIndex = index
         startPlayback(
@@ -893,6 +1030,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func removeQueueItem(at index: Int) {
+        reconcilePendingTransportTransition()
         guard queue.indices.contains(index) else { return }
         if index == queueIndex {
             excludeCurrentAndAdvance()
@@ -904,12 +1042,11 @@ final class AudioEngine: NSObject, ObservableObject {
             await ListeningHistoryStore.shared.recordQueueRemoval(removedSong)
         }
         if index < queueIndex { queueIndex -= 1 }
-        updateRemoteCommands()
-        updateNowPlaying()
-        scheduleQueueSave(immediate: true)
+        queueDidChange()
     }
 
     func enqueueNext(_ song: Song) {
+        reconcilePendingTransportTransition()
         guard queue.indices.contains(queueIndex) else {
             play(song, in: [song])
             return
@@ -920,6 +1057,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func enqueue(_ song: Song) {
+        reconcilePendingTransportTransition()
         guard queue.indices.contains(queueIndex) else {
             play(song, in: [song])
             return
@@ -930,14 +1068,15 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func moveQueueItems(from offsets: IndexSet, to destination: Int) {
+        reconcilePendingTransportTransition()
         guard !offsets.isEmpty else { return }
-        let currentID = currentSong?.id
+        let currentOriginalIndex = queueIndex
         let moved = offsets.sorted().compactMap { index in
-            queue.indices.contains(index) ? queue[index] : nil
+            queue.indices.contains(index) ? (index, queue[index]) : nil
         }
         guard moved.count == offsets.count else { return }
         var remaining = queue.enumerated().compactMap { index, song in
-            offsets.contains(index) ? nil : song
+            offsets.contains(index) ? nil : (index, song)
         }
         let removedBeforeDestination = offsets.lazy.filter {
             $0 < destination
@@ -947,15 +1086,17 @@ final class AudioEngine: NSObject, ObservableObject {
             remaining.count
         )
         remaining.insert(contentsOf: moved, at: insertionIndex)
-        queue = remaining
-        if let currentID,
-           let index = queue.firstIndex(where: { $0.id == currentID }) {
+        queue = remaining.map { $0.1 }
+        if let index = remaining.firstIndex(where: {
+            $0.0 == currentOriginalIndex
+        }) {
             queueIndex = index
         }
         queueDidChange()
     }
 
     func reshuffleUpcoming() {
+        reconcilePendingTransportTransition()
         guard queue.indices.contains(queueIndex),
               queueIndex + 1 < queue.count else {
             return
@@ -976,6 +1117,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func clearUpcomingQueue() {
+        reconcilePendingTransportTransition()
         guard queue.indices.contains(queueIndex),
               queueIndex + 1 < queue.count else {
             return
@@ -995,11 +1137,13 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func excludeCurrentAndAdvance() {
+        reconcilePendingTransportTransition()
         guard queue.indices.contains(queueIndex) else { return }
         finalizeCurrentPlayback(reason: .queueRemoved)
         let removedIndex = queueIndex
         queue.remove(at: removedIndex)
         guard !queue.isEmpty else {
+            queueMutationGeneration &+= 1
             pause()
             itemLoadTask?.cancel()
             cancelPlaybackRecovery()
@@ -1017,6 +1161,7 @@ final class AudioEngine: NSObject, ObservableObject {
             applyLyricsDocument(.empty)
             showFullLyrics = false
             removeCurrentItemObservers()
+            invalidateStagedSuccessor(removeFromPlayer: true)
             player.replaceCurrentItem(with: nil)
             updateNowPlaying()
             scheduleQueueSave(immediate: true)
@@ -1033,10 +1178,13 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func toggleShuffle() {
+        reconcilePendingTransportTransition()
         isShuffleEnabled.toggle()
+        invalidateStagedSuccessor(removeFromPlayer: true)
         updateRemoteCommands()
         scheduleQueueSave()
         if !isShuffleEnabled { scheduleAutoplayContinuationIfNeeded() }
+        scheduleGaplessSuccessor()
     }
 
     private func nextShuffleIndex() -> Int {
@@ -1071,6 +1219,8 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func queueDidChange() {
+        queueMutationGeneration &+= 1
+        invalidateStagedSuccessor(removeFromPlayer: true)
         updateRemoteCommands()
         updateNowPlaying()
         scheduleNetworkPrefetch()
@@ -1079,14 +1229,17 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func cycleRepeat() {
+        reconcilePendingTransportTransition()
         switch repeatMode {
         case .off: repeatMode = .all
         case .all: repeatMode = .one
         case .one: repeatMode = .off
         }
+        invalidateStagedSuccessor(removeFromPlayer: true)
         updateRemoteCommands()
         scheduleQueueSave()
         if repeatMode == .off { scheduleAutoplayContinuationIfNeeded() }
+        scheduleGaplessSuccessor()
     }
 
     func updateStarred(songID: String, enabled: Bool) {
@@ -1094,6 +1247,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func synchronizeStarredStates(_ states: [String: Bool]) {
+        reconcilePendingTransportTransition()
         guard !states.isEmpty else { return }
 
         var updatedCurrentSong = currentSong
@@ -1127,13 +1281,26 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func setQueueRestoration(enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: "restore-play-queue")
+        queueRestorationGeneration &+= 1
+        let generation = queueRestorationGeneration
         if enabled {
             scheduleQueueSave(immediate: true)
         } else {
+            let pendingSave = queueSaveTask
             queueSaveTask?.cancel()
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
             lastPersistedQueue = nil
-            Task { await AppDatabase.shared.clearQueue() }
+            if let currentAccountScope {
+                let previousClear = queueClearTask
+                queueClearTask = Task { [weak self] in
+                    _ = await previousClear?.value
+                    _ = await pendingSave?.value
+                    guard let self,
+                          generation == self.queueRestorationGeneration,
+                          !self.queueRestorationEnabled else { return }
+                    await AppDatabase.shared.clearQueue(scope: currentAccountScope)
+                }
+            }
         }
     }
 
@@ -1334,8 +1501,11 @@ final class AudioEngine: NSObject, ObservableObject {
             quality: preparedQuality,
             compatibilityFormat: compatibilityFormat
         )
-        guard preparedPlaybackAssets[key] == nil,
-              preparedPlaybackWarmupTasks[key] == nil else {
+        if let prepared = preparedPlaybackAssets[key] {
+            stagePreparedSuccessorIfPossible(prepared)
+            return
+        }
+        guard preparedPlaybackWarmupTasks[key] == nil else {
             return
         }
 
@@ -1358,26 +1528,21 @@ final class AudioEngine: NSObject, ObservableObject {
                     url: resource.url,
                     mimeType: resource.mimeType
                 )
-                self.storePreparedPlaybackAsset(
-                    PreparedPlaybackAsset(
-                        key: key,
-                        songID: song.id,
-                        compatibilityFormat: compatibilityFormat,
-                        asset: asset
-                    )
-                )
-
                 do {
                     // This opens the transport, validates the stream response,
                     // and loads enough AVFoundation metadata that a skip can
                     // reuse the same asset during the page transition.
                     _ = try await asset.load(.isPlayable)
-                } catch {
-                    if self.preparedPlaybackAssets[key]?.asset === asset {
-                        self.preparedPlaybackAssets[key] = nil
-                        self.preparedPlaybackAssetOrder.removeAll { $0 == key }
-                    }
-                }
+                    guard !Task.isCancelled else { return }
+                    let prepared = PreparedPlaybackAsset(
+                        key: key,
+                        songID: song.id,
+                        compatibilityFormat: compatibilityFormat,
+                        asset: asset
+                    )
+                    self.storePreparedPlaybackAsset(prepared)
+                    self.stagePreparedSuccessorIfPossible(prepared)
+                } catch {}
             } catch {
                 // Warming is speculative. Active playback retains its normal
                 // codec fallback and recovery path if preparation fails.
@@ -1385,6 +1550,116 @@ final class AudioEngine: NSObject, ObservableObject {
             self.preparedPlaybackWarmupTasks[key] = nil
         }
         preparedPlaybackWarmupTasks[key] = task
+    }
+
+    private func scheduleGaplessSuccessor() {
+        guard wantsPlayback,
+              player.timeControlStatus == .playing,
+              stagedSuccessorItem == nil,
+              let plan = GaplessSuccessorPlan.make(
+                queueCount: queue.count,
+                currentIndex: queueIndex,
+                shuffleEnabled: isShuffleEnabled,
+                repeatMode: repeatMode
+              ) else {
+            return
+        }
+        preparePlaybackAsset(for: queue[plan.queueIndex])
+    }
+
+    private func stagePreparedSuccessorIfPossible(
+        _ prepared: PreparedPlaybackAsset
+    ) {
+        guard stagedSuccessorItem == nil,
+              !isShuffleEnabled,
+              repeatMode != .one,
+              wantsPlayback,
+              let currentItem = player.currentItem,
+              queue.indices.contains(queueIndex),
+              currentSong?.id == queue[queueIndex].id else {
+            return
+        }
+        guard let plan = GaplessSuccessorPlan.make(
+            queueCount: queue.count,
+            currentIndex: queueIndex,
+            shuffleEnabled: isShuffleEnabled,
+            repeatMode: repeatMode
+        ) else { return }
+        let successorIndex = plan.queueIndex
+        let successor = queue[successorIndex]
+        guard successor.id == prepared.songID else { return }
+
+        let item = AVPlayerItem(asset: prepared.asset)
+        item.preferredForwardBufferDuration = 0
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        guard player.canInsert(item, after: currentItem) else { return }
+        player.insert(item, after: currentItem)
+        stagedSuccessorItem = item
+        stagedSuccessorSong = successor
+        stagedSuccessorQueueIndex = successorIndex
+        stagedSuccessorObservation = item.observe(
+            \.status,
+            options: [.new]
+        ) { [weak self, weak item] itemStatus, _ in
+            guard itemStatus.status == .failed else { return }
+            Task { @MainActor in
+                guard let self,
+                      let item,
+                      self.stagedSuccessorItem === item else { return }
+                if self.player.currentItem === item {
+                    // Commit the logical boundary first; the active-item
+                    // observer will then run the normal codec fallback plan.
+                    self.activateStagedSuccessor(item)
+                } else {
+                    self.invalidateStagedSuccessor(removeFromPlayer: true)
+                }
+            }
+        }
+        preparedPlaybackAssets[prepared.key] = nil
+        preparedPlaybackAssetOrder.removeAll { $0 == prepared.key }
+        preparedPlaybackWarmupTasks[prepared.key] = nil
+    }
+
+    private func invalidateStagedSuccessor(removeFromPlayer: Bool) {
+        if let stagedSuccessorItem,
+           player.currentItem === stagedSuccessorItem {
+            // AVQueuePlayer may have advanced before its KVO callback reaches
+            // MainActor. Commit that boundary synchronously so clearing staged
+            // metadata can never leave transport and logical state divergent.
+            activateStagedSuccessor(
+                stagedSuccessorItem,
+                schedulesFollowingSuccessor: false
+            )
+            if self.stagedSuccessorItem === stagedSuccessorItem {
+                // The logical queue changed so the staged identity no longer
+                // resolves. Restore the authoritative logical item instead.
+                self.stagedSuccessorItem = nil
+                stagedSuccessorSong = nil
+                stagedSuccessorQueueIndex = nil
+                stagedSuccessorObservation = nil
+                restartPlaybackPlan(resumeFrom: elapsed)
+            }
+            return
+        }
+        if removeFromPlayer,
+           let stagedSuccessorItem,
+           player.currentItem !== stagedSuccessorItem,
+           player.items().contains(where: { $0 === stagedSuccessorItem }) {
+            player.remove(stagedSuccessorItem)
+        }
+        stagedSuccessorItem = nil
+        stagedSuccessorSong = nil
+        stagedSuccessorQueueIndex = nil
+        stagedSuccessorObservation = nil
+    }
+
+    private func reconcilePendingTransportTransition() {
+        guard let stagedSuccessorItem,
+              player.currentItem === stagedSuccessorItem else { return }
+        activateStagedSuccessor(
+            stagedSuccessorItem,
+            schedulesFollowingSuccessor: false
+        )
     }
 
     private func storePreparedPlaybackAsset(_ prepared: PreparedPlaybackAsset) {
@@ -1573,6 +1848,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private func restartPlaybackPlan(resumeFrom: TimeInterval) {
         guard let song = currentSong else { return }
         cancelPlaybackRecovery()
+        recoveryStabilityTask?.cancel()
+        recoveryStabilityTask = nil
+        recoveryAttempt = 0
         fallbackIndex = 0
         fallbackFormats = Self.fallbackFormats(for: quality, song: song)
         activeCompatibilityFormat = Self.initialCompatibilityFormat(
@@ -1636,7 +1914,7 @@ final class AudioEngine: NSObject, ObservableObject {
             } catch {
                 guard !Task.isCancelled, self.itemLoadGeneration == generation else { return }
                 self.isBuffering = false
-                self.handlePlaybackFailure()
+                self.handlePlaybackFailure(error: error)
             }
         }
     }
@@ -1658,11 +1936,24 @@ final class AudioEngine: NSObject, ObservableObject {
     ) {
         cancelPlaybackRecovery()
         removeCurrentItemObservers()
+        invalidateStagedSuccessor(removeFromPlayer: true)
         let item = AVPlayerItem(asset: asset)
         // Let AVFoundation adapt buffering to throughput and decoder cost.
         // Large fixed buffers increase system-resource demand.
         item.preferredForwardBufferDuration = 0
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        observeActiveItem(item, resumePosition: resumePosition)
+        player.replaceCurrentItem(with: item)
+        handledFailedItem = nil
+        updateActiveLyric(at: elapsed)
+        installNextLyricBoundary(after: elapsed)
+    }
+
+    private func observeActiveItem(
+        _ item: AVPlayerItem,
+        resumePosition: TimeInterval
+    ) {
+        logicalCurrentItem = item
         installItemObservers(for: item)
         installBufferObservers(for: item)
         let observerGeneration = itemObserverGeneration
@@ -1677,7 +1968,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     self.isBuffering = false
-                    self.recoveryAttempt = 0
                     self.updateDuration(using: item.duration.seconds)
                     let targetPosition = self.pendingSeekPosition ?? resumePosition
                     if targetPosition > 0 {
@@ -1705,10 +1995,58 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
             }
         }
-        player.replaceCurrentItem(with: item)
+    }
+
+    private func activateStagedSuccessor(
+        _ item: AVPlayerItem,
+        schedulesFollowingSuccessor: Bool = true
+    ) {
+        guard item === stagedSuccessorItem,
+              let stagedSong = stagedSuccessorSong,
+              let successorIndex = stagedSuccessorQueueIndex,
+              queue.indices.contains(successorIndex),
+              queue[successorIndex].id == stagedSong.id else {
+            return
+        }
+        // Metadata (notably favorite and cover-art state) may have changed
+        // while the media asset was staged. Publish the current logical entry.
+        let song = queue[successorIndex]
+
+        let previousSongID = currentSong?.id
+        if duration > 0 { elapsed = duration }
+        finalizeCurrentPlayback(reason: .completed)
+        removeCurrentItemObservers()
+        stagedSuccessorItem = nil
+        stagedSuccessorSong = nil
+        stagedSuccessorQueueIndex = nil
+        stagedSuccessorObservation = nil
+        queueIndex = successorIndex
+        currentSong = song
+        recordPlaybackStart(song, origin: .autoplay)
+        rememberShuffleSelection(song.id)
+        elapsed = 0
+        duration = song.safeDuration
+        pendingSeekPosition = nil
+        isSeekInFlight = false
+        applyLyricsDocument(.empty)
+        fallbackIndex = 0
+        fallbackFormats = Self.fallbackFormats(for: quality, song: song)
+        activeCompatibilityFormat = Self.initialCompatibilityFormat(
+            for: quality,
+            song: song
+        )
+        recoveryAttempt = 0
+        playbackError = nil
+        scrobbled = false
+        lastMaintenanceSecond = -1
         handledFailedItem = nil
-        updateActiveLyric(at: elapsed)
-        installNextLyricBoundary(after: elapsed)
+        observeActiveItem(item, resumePosition: 0)
+        loadLyrics(for: song)
+        scheduleQueueSave(immediate: true)
+        updateNowPlaying()
+        scheduleAutoplayContinuationIfNeeded()
+        if previousSongID != song.id { provideTrackChangeHaptic() }
+        if schedulesFollowingSuccessor { scheduleGaplessSuccessor() }
     }
 
     private func updateDuration(using playerDuration: TimeInterval) {
@@ -1737,6 +2075,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func removeCurrentItemObservers() {
         itemObserverGeneration &+= 1
+        logicalCurrentItem = nil
         itemObservation = nil
         itemBufferObservations.removeAll()
         playbackObservers.removeItemNotifications()
@@ -1790,9 +2129,15 @@ final class AudioEngine: NSObject, ObservableObject {
                         guard let self,
                               let item,
                               self.itemObserverGeneration == generation,
-                              self.player.currentItem === item else {
+                              (self.player.currentItem === item
+                                || self.player.currentItem == nil) else {
                             return
                         }
+                        // AVQueuePlayer advances to the staged item without a
+                        // replacement. The current-item observer commits that
+                        // logical transition; this path is only the fallback
+                        // when no successor was ready in time.
+                        guard self.stagedSuccessorItem == nil else { return }
                         self.next(isAutoAdvance: true)
                     }
                 }
@@ -1825,7 +2170,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
                 guard item.isPlaybackLikelyToKeepUp else { return }
                 self.cancelPlaybackRecovery()
-                self.recoveryAttempt = 0
                 if self.wantsPlayback, self.player.timeControlStatus != .playing {
                     self.configureAudioSession()
                     self.player.play()
@@ -1837,7 +2181,10 @@ final class AudioEngine: NSObject, ObservableObject {
         itemBufferObservations = [empty, likelyToKeepUp]
     }
 
-    private func handlePlaybackFailure(failedItem: AVPlayerItem? = nil) {
+    private func handlePlaybackFailure(
+        failedItem: AVPlayerItem? = nil,
+        error: Error? = nil
+    ) {
         guard currentSong != nil else { return }
         if let failedItem {
             guard player.currentItem === failedItem,
@@ -1847,20 +2194,34 @@ final class AudioEngine: NSObject, ObservableObject {
             handledFailedItem = failedItem
         }
         cancelPlaybackRecovery()
+        let resolvedError = error ?? failedItem?.error
+        if PlaybackFailureClassifier.disposition(for: resolvedError) == .retryTransport {
+            recoveryAttempt += 1
+            if recoveryAttempt <= 2 {
+                Self.logger.warning(
+                    "Playback transport failed; retrying the active format"
+                )
+                loadCurrentItem(
+                    compatibilityFormat: activeCompatibilityFormat,
+                    resumeFrom: elapsed
+                )
+                return
+            }
+            finishPlaybackFailure(
+                message: String(
+                    localized: "네트워크 연결이 불안정해 재생을 계속할 수 없습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요."
+                )
+            )
+            return
+        }
         guard fallbackFormats.indices.contains(fallbackIndex) else {
             Self.logger.error(
                 "Playback failed after exhausting compatibility fallbacks"
             )
-            wantsPlayback = false
-            isPlaying = false
-            isBuffering = false
-            player.pause()
-            endBackgroundBridge()
-            refreshIdleTimerPreference()
-            updateNowPlaying()
-            scheduleQueueSave(immediate: true)
-            playbackError = String(
-                localized: "이 음악을 재생하지 못했습니다. 서버의 스트리밍 형식과 네트워크 상태를 확인해 주세요."
+            finishPlaybackFailure(
+                message: String(
+                    localized: "이 음악을 재생하지 못했습니다. 서버의 스트리밍 형식과 네트워크 상태를 확인해 주세요."
+                )
             )
             return
         }
@@ -1873,10 +2234,43 @@ final class AudioEngine: NSObject, ObservableObject {
         loadCurrentItem(compatibilityFormat: format, resumeFrom: elapsed)
     }
 
+    private func finishPlaybackFailure(message: String) {
+        wantsPlayback = false
+        isPlaying = false
+        isBuffering = false
+        player.pause()
+        endBackgroundBridge()
+        refreshIdleTimerPreference()
+        updateNowPlaying()
+        scheduleQueueSave(immediate: true)
+        playbackError = message
+    }
+
     private func cancelPlaybackRecovery() {
         recoveryToken = nil
         recoveryTask?.cancel()
         recoveryTask = nil
+    }
+
+    private func scheduleRecoveryAttemptReset(for item: AVPlayerItem?) {
+        recoveryStabilityTask?.cancel()
+        guard let item else {
+            recoveryStabilityTask = nil
+            return
+        }
+        recoveryStabilityTask = Task { [weak self, weak item] in
+            do {
+                try await Task.sleep(for: .seconds(8))
+            } catch {
+                return
+            }
+            guard let self,
+                  let item,
+                  self.player.currentItem === item,
+                  self.player.timeControlStatus == .playing else { return }
+            self.recoveryAttempt = 0
+            self.recoveryStabilityTask = nil
+        }
     }
 
     private func schedulePlaybackRecovery() {
@@ -1960,6 +2354,15 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func installPlayerObservers() {
         guard timeControlObservation == nil else { return }
+        currentItemTransitionObservation = player.observe(
+            \.currentItem,
+            options: [.new]
+        ) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let self, let item = player.currentItem else { return }
+                self.activateStagedSuccessor(item)
+            }
+        }
         timeControlObservation = player.observe(
             \.timeControlStatus,
             options: [.initial, .new]
@@ -1977,14 +2380,20 @@ final class AudioEngine: NSObject, ObservableObject {
                     )
                 if player.timeControlStatus == .playing {
                     self.cancelPlaybackRecovery()
+                    self.scheduleRecoveryAttemptReset(for: player.currentItem)
                     self.endBackgroundBridge()
                     self.reportPlaybackState("playing")
+                    self.scheduleGaplessSuccessor()
                     self.scheduleNetworkPrefetch()
                     self.scheduleOfflinePrefetch()
                 } else if !self.wantsPlayback {
+                    self.recoveryStabilityTask?.cancel()
+                    self.recoveryStabilityTask = nil
                     self.reportPlaybackState("paused")
                     self.suspendSpeculativePrefetch()
                 } else {
+                    self.recoveryStabilityTask?.cancel()
+                    self.recoveryStabilityTask = nil
                     // A buffering or recovery transition must give the active
                     // stream sole use of the radio and server connection.
                     self.suspendSpeculativePrefetch()
@@ -2019,7 +2428,8 @@ final class AudioEngine: NSObject, ObservableObject {
                       self.timelineObserverGeneration == generation else {
                     return
                 }
-                guard self.player.currentItem != nil else { return }
+                guard let logicalCurrentItem = self.logicalCurrentItem,
+                      self.player.currentItem === logicalCurrentItem else { return }
                 let seconds = time.seconds
                 let lyricPosition = seconds.isFinite
                     ? max(0, seconds)
@@ -2046,7 +2456,13 @@ final class AudioEngine: NSObject, ObservableObject {
                     }
                     self.submitScrobbleIfNeeded()
                     if Date().timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
-                        self.scheduleQueueSave(immediate: true)
+                        let shouldSyncServer = Date().timeIntervalSince(
+                            self.lastServerQueueSaveRequest
+                        ) >= 180
+                        self.scheduleQueueSave(
+                            immediate: true,
+                            syncServer: shouldSyncServer
+                        )
                     }
                 }
             }
@@ -2708,7 +3124,10 @@ final class AudioEngine: NSObject, ObservableObject {
         lastPlaybackReportSongID = song.id
         lastPlaybackReportState = state
         let resolvedPosition = position ?? elapsed
-        Task {
+        let previousReport = playbackReportTask
+        playbackReportTask = Task {
+            _ = await previousReport?.value
+            guard !Task.isCancelled else { return }
             await client.reportPlayback(
                 id: song.id,
                 position: resolvedPosition,
@@ -2731,9 +3150,14 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func scheduleQueueSave(immediate: Bool = false) {
+    private func scheduleQueueSave(
+        immediate: Bool = false,
+        syncServer: Bool = true
+    ) {
         queueSaveTask?.cancel()
         lastQueueSaveRequest = Date()
+        guard let accountScope = currentAccountScope else { return }
+        let sessionGeneration = playbackSessionGeneration
         let snapshot = QueueSnapshot(
             queue: queue,
             currentID: currentSong?.id,
@@ -2743,55 +3167,72 @@ final class AudioEngine: NSObject, ObservableObject {
             repeatMode: repeatMode
         )
         let restorationEnabled = queueRestorationEnabled
+        let restorationGeneration = queueRestorationGeneration
+        let pendingClear = queueClearTask
         let replacingItems = snapshot.queue != lastPersistedQueue
         queueSaveTask = Task {
             if !immediate { try? await Task.sleep(for: .milliseconds(450)) }
+            _ = await pendingClear?.value
             guard !Task.isCancelled else { return }
+            guard restorationGeneration == queueRestorationGeneration else { return }
             let containsOnlyServerSongs = snapshot.queue.allSatisfy {
                 $0.externalStreamURL == nil
             }
             if restorationEnabled && containsOnlyServerSongs {
                 let saved = await AppDatabase.shared.saveQueue(
                     snapshot,
+                    scope: accountScope,
                     replacingItems: replacingItems
                 )
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      sessionGeneration == playbackSessionGeneration,
+                      accountScope == currentAccountScope else { return }
                 if saved { lastPersistedQueue = snapshot.queue }
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
                 lastPersistedQueue = nil
-                await AppDatabase.shared.clearQueue()
+                await AppDatabase.shared.clearQueue(scope: accountScope)
             }
             guard let client,
+                  syncServer,
+                  client.accountScope == accountScope,
+                  sessionGeneration == playbackSessionGeneration,
                   let current = snapshot.currentID,
                   !snapshot.queue.isEmpty,
                   containsOnlyServerSongs else {
                 return
             }
-            try? await client.savePlayQueue(
-                songIDs: snapshot.queue.map(\.id),
-                current: current,
-                position: snapshot.elapsed
-            )
+            do {
+                lastServerQueueSaveRequest = Date()
+                try await client.savePlayQueue(
+                    songIDs: snapshot.queue.map(\.id),
+                    current: current,
+                    position: snapshot.elapsed
+                )
+                guard !Task.isCancelled,
+                      sessionGeneration == playbackSessionGeneration,
+                      accountScope == currentAccountScope else { return }
+            } catch {}
         }
     }
 
-    private func restoreLocalQueue() {
+    private func restoreLocalQueue(
+        accountScope: String,
+        sessionGeneration: UInt64,
+        expectedQueueRevision: UInt64
+    ) {
         queueRestoreTask?.cancel()
         queueRestoreTask = Task { [weak self] in
             guard let self else { return }
-            var snapshot = await AppDatabase.shared.loadQueue()
-            if snapshot == nil,
-               let data = UserDefaults.standard.data(forKey: self.queueStorageKey),
-               let legacy = try? JSONDecoder().decode(QueueSnapshot.self, from: data),
-               !legacy.queue.isEmpty,
-               legacy.queue.allSatisfy({ $0.externalStreamURL == nil }),
-               await AppDatabase.shared.saveQueue(legacy) {
-                snapshot = legacy
-                UserDefaults.standard.removeObject(forKey: self.queueStorageKey)
-            }
+            let snapshot = await AppDatabase.shared.loadQueue(scope: accountScope)
+            // The old UserDefaults queue has no account owner and must never
+            // be adopted into an authenticated scope.
+            UserDefaults.standard.removeObject(forKey: self.queueStorageKey)
             guard !Task.isCancelled, let snapshot,
+                  sessionGeneration == self.playbackSessionGeneration,
+                  accountScope == self.currentAccountScope,
+                  expectedQueueRevision == self.queueMutationGeneration,
                   !snapshot.queue.isEmpty,
                   snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }),
                   self.queue.isEmpty,
@@ -2816,6 +3257,7 @@ final class AudioEngine: NSObject, ObservableObject {
         duration = restoredDuration
         isShuffleEnabled = snapshot.shuffle
         repeatMode = snapshot.repeatMode
+        queueMutationGeneration &+= 1
     }
 }
 

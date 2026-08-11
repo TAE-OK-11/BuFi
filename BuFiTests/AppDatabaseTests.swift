@@ -3,6 +3,26 @@ import XCTest
 @testable import BuFi
 
 final class AppDatabaseTests: XCTestCase {
+    func testAccountScopeCanonicalizationMatchesClientScope() async throws {
+        let credentials = ServerCredentials(
+            serverURL: " HTTPS://Music.Example.test/?ignored=true#fragment ",
+            username: " listener ",
+            password: "secret"
+        )
+        let client = try OpenSubsonicClient(credentials: credentials)
+        let expected = AccountScope.identifier(for: client.credentials)
+
+        XCTAssertEqual(client.accountScope, expected)
+        XCTAssertEqual(
+            AccountScope.identifier(for: credentials),
+            AccountScope.identifier(for: ServerCredentials(
+                serverURL: "https://music.example.test",
+                username: "listener",
+                password: "different-password"
+            ))
+        )
+    }
+
     func testListeningHistoryIsIsolatedByAccountAndUpdatesOneSong() async throws {
         let context = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: context.directory) }
@@ -60,6 +80,57 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertTrue(afterDelete.isEmpty)
     }
 
+    func testListeningHistorySkipsOnlyCorruptRows() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let valid = SongBehavior(song: song(id: "valid"), at: date)
+        let corrupt = SongBehavior(song: song(id: "corrupt"), at: date)
+        let inserted = await context.database.applyListeningHistory(
+            ["valid": valid, "corrupt": corrupt],
+            deletedIDs: [],
+            scope: "account-a"
+        )
+        XCTAssertTrue(inserted)
+
+        let overwritten = await context.database
+            .overwriteListeningHistoryPayloadForTesting(
+                Data([0]),
+                songID: "corrupt",
+                scope: "account-a"
+            )
+        XCTAssertTrue(overwritten)
+
+        let loaded = await context.database.loadListeningHistory(scope: "account-a")
+        XCTAssertEqual(Set(loaded.keys), ["valid"])
+    }
+
+    func testOfflineStoreRejectsClientFromAnotherAccountScope() async throws {
+        let store = OfflineStore()
+        let activeCredentials = ServerCredentials(
+            serverURL: "https://active.example.test",
+            username: "listener",
+            password: "secret"
+        )
+        let otherClient = try OpenSubsonicClient(credentials: ServerCredentials(
+            serverURL: "https://other.example.test",
+            username: "listener",
+            password: "secret"
+        ))
+        let scope = AccountScope.identifier(for: activeCredentials)
+        await store.activate(accountScope: scope)
+
+        do {
+            _ = try await store.download(song: song(id: "one"), client: otherClient)
+            XCTFail("A client from another account scope must be rejected")
+        } catch let error as OpenSubsonicError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+
+        try await store.removeAll()
+        await store.deactivate(accountScope: scope)
+    }
+
     func testQueueAndHomeSnapshotRoundTripBinaryPayloads() async throws {
         let context = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: context.directory) }
@@ -73,13 +144,15 @@ final class AppDatabaseTests: XCTestCase {
             shuffle: true,
             repeatMode: .all
         )
-        let queueSaved = await context.database.saveQueue(queue)
+        let queueSaved = await context.database.saveQueue(queue, scope: "account-a")
         XCTAssertTrue(queueSaved)
-        let restored = await context.database.loadQueue()
+        let restored = await context.database.loadQueue(scope: "account-a")
         XCTAssertEqual(restored?.queue, [first, second])
         XCTAssertEqual(restored?.currentID, second.id)
         XCTAssertEqual(restored?.elapsed, 42)
         XCTAssertEqual(restored?.repeatMode, .all)
+        let missingOtherAccount = await context.database.loadQueue(scope: "account-b")
+        XCTAssertNil(missingOtherAccount)
 
         let stateOnlyUpdate = QueueSnapshot(
             queue: [first, second],
@@ -91,15 +164,34 @@ final class AppDatabaseTests: XCTestCase {
         )
         let stateSaved = await context.database.saveQueue(
             stateOnlyUpdate,
+            scope: "account-a",
             replacingItems: false
         )
         XCTAssertTrue(stateSaved)
-        let stateRestored = await context.database.loadQueue()
+        let stateRestored = await context.database.loadQueue(scope: "account-a")
         XCTAssertEqual(stateRestored?.queue, [first, second])
         XCTAssertEqual(stateRestored?.currentID, first.id)
         XCTAssertEqual(stateRestored?.elapsed, 84)
         XCTAssertEqual(stateRestored?.shuffle, false)
         XCTAssertEqual(stateRestored?.repeatMode, .one)
+
+        let secondAccountQueue = QueueSnapshot(
+            queue: [second],
+            currentID: second.id,
+            index: 0,
+            elapsed: 12,
+            shuffle: false,
+            repeatMode: .off
+        )
+        let secondAccountSaved = await context.database.saveQueue(
+            secondAccountQueue,
+            scope: "account-b"
+        )
+        XCTAssertTrue(secondAccountSaved)
+        let firstAccountRestored = await context.database.loadQueue(scope: "account-a")
+        let secondAccountRestored = await context.database.loadQueue(scope: "account-b")
+        XCTAssertEqual(firstAccountRestored?.queue, [first, second])
+        XCTAssertEqual(secondAccountRestored?.queue, [second])
 
         let snapshot = HomeSnapshot(starredSongs: [first])
         let snapshotSaved = await context.database.saveHomeSnapshot(
@@ -387,17 +479,18 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertNotNil(new)
     }
 
-    private func makeDatabase() throws -> (database: AppDatabase, directory: URL) {
+    private func makeDatabase() throws -> (
+        database: AppDatabase,
+        directory: URL
+    ) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
         )
-        return (
-            try AppDatabase(databaseURL: directory.appendingPathComponent("test.sqlite")),
-            directory
-        )
+        let databaseURL = directory.appendingPathComponent("test.sqlite")
+        return (try AppDatabase(databaseURL: databaseURL), directory)
     }
 
     private func song(id: String) -> Song {
