@@ -99,6 +99,7 @@
 "서버 요청이 실패했습니다." = "The server request failed.";
 "서버 연결에 실패했습니다." = "Could not connect to the server.";
 "이 음악을 재생하지 못했습니다. 서버의 스트리밍 형식과 네트워크 상태를 확인해 주세요." = "This song couldn't be played. Check the server's streaming format and your network.";
+"네트워크 연결이 불안정해 재생을 계속할 수 없습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요." = "Playback stopped because the network connection is unstable. Check your connection and try again.";
 "보안 저장소 데이터를 인코딩하지 못했습니다." = "Could not encode secure storage data.";
 "Keychain 오류가 발생했습니다. (%d)" = "A Keychain error occurred. (%d)";
 "목록에서 제거" = "Remove from Queue";

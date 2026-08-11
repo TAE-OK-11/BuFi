@@ -76,7 +76,7 @@ enum RecommendationPurpose: String, Sendable {
     case autoplay
 }
 
-private enum RecommendationFeature: Hashable {
+private enum RecommendationFeature: Int, CaseIterable, Hashable {
     case history
     case favorites
     case server
@@ -95,6 +95,62 @@ private enum RecommendationFeature: Hashable {
     case artistRotation
     case timeAwareness
     case popularity
+}
+
+private struct StableFingerprint {
+    private(set) var value: UInt64 = 14_695_981_039_346_656_037
+
+    mutating func append(_ value: String) {
+        append(UInt64(value.utf8.count))
+        for byte in value.utf8 {
+            self.value ^= UInt64(byte)
+            self.value &*= 1_099_511_628_211
+        }
+    }
+
+    mutating func append(_ value: UInt64) {
+        var value = value
+        for _ in 0..<8 {
+            self.value ^= value & 0xFF
+            self.value &*= 1_099_511_628_211
+            value >>= 8
+        }
+    }
+
+    mutating func append(_ value: Int) {
+        append(UInt64(bitPattern: Int64(value)))
+    }
+
+    mutating func append(_ value: Double) {
+        append(value.bitPattern)
+    }
+
+    mutating func append(_ value: String?) {
+        guard let value else {
+            append(UInt64.max)
+            return
+        }
+        append(UInt64.max - 1)
+        append(value)
+    }
+
+    mutating func append(_ value: Int?) {
+        guard let value else {
+            append(UInt64.max)
+            return
+        }
+        append(UInt64.max - 1)
+        append(value)
+    }
+
+    mutating func append(_ value: Double?) {
+        guard let value else {
+            append(UInt64.max)
+            return
+        }
+        append(UInt64.max - 1)
+        append(value)
+    }
 }
 
 private struct RecommendationPreset {
@@ -285,48 +341,56 @@ enum RecommendationMixer {
         limit: Int = 30,
         date: Date = Date()
     ) -> [Song] {
-        guard limit > 0 else { return [] }
-        let key = cacheKey(
+        guard limit > 0, !Task.isCancelled else { return [] }
+        guard let key = cacheKey(
             snapshot: snapshot,
             weights: weights,
             purpose: purpose,
-            behaviorRevision: behavior.revision,
+            behavior: behavior,
             limit: limit,
             date: date
-        )
+        ) else { return [] }
+        guard !Task.isCancelled else { return [] }
         if let cached = cache.value(
             for: key,
             lifetime: cacheLifetime(for: purpose),
             now: date
         ) {
-            return cached
+            return Task.isCancelled ? [] : cached
         }
 
+        let evaluationDate = temporalEvaluationDate(for: purpose, date: date)
         let preset = RecommendationPreset.value(for: purpose)
-        let allBehaviors = Array(behavior.songs.values)
-        let shortCutoff = date.addingTimeInterval(-14 * 86_400)
-        let longCutoff = date.addingTimeInterval(-365 * 86_400)
+        let allBehaviors = behavior.songs.values.sorted {
+            if $0.song.id == $1.song.id {
+                return $0.lastPlayed < $1.lastPlayed
+            }
+            return $0.song.id < $1.song.id
+        }
+        let shortCutoff = evaluationDate.addingTimeInterval(-14 * 86_400)
+        let longCutoff = evaluationDate.addingTimeInterval(-365 * 86_400)
         let shortProfile = profile(
             from: allBehaviors.filter { $0.lastPlayed >= shortCutoff },
-            date: date
+            date: evaluationDate
         )
         let longProfile = profile(
             from: allBehaviors.filter { $0.lastPlayed >= longCutoff },
-            date: date
+            date: evaluationDate
         )
         let contextProfile = profile(
             from: behavior.recentSongs.compactMap { behavior.songs[$0.id] },
-            date: date,
+            date: evaluationDate,
             appliesDecay: false
         )
         let favoriteProfile = profile(
             from: snapshot.starredSongs.map {
                 behavior.songs[$0.id]
-                    ?? SongBehavior(song: $0, at: date)
+                    ?? SongBehavior(song: $0, at: evaluationDate)
             },
-            date: date,
+            date: evaluationDate,
             appliesDecay: false
         )
+        guard !Task.isCancelled else { return [] }
 
         let knownSongIDs = Set(
             snapshot.starredSongs.map(\.id)
@@ -379,6 +443,7 @@ enum RecommendationMixer {
         let discoveryRanks = rankMap(snapshot.randomSongs)
         let lastFMRanks = rankMap(snapshot.lastFMRecommendedSongs)
         let listenBrainzRanks = rankMap(snapshot.listenBrainzRecommendedSongs)
+        guard !Task.isCancelled else { return [] }
         let maxRepeat = max(1, allBehaviors.reduce(0) {
             max($0, log1p(Double($1.repeatCount)))
         })
@@ -389,7 +454,8 @@ enum RecommendationMixer {
             max($0, Double($1.playCount ?? 0))
         })
         var albumCandidateCounts: [String: Int] = [:]
-        for song in candidates {
+        for (index, song) in candidates.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return [] }
             if let albumID = song.albumId {
                 albumCandidateCounts[albumID, default: 0] += 1
             }
@@ -406,10 +472,13 @@ enum RecommendationMixer {
             preset: preset,
             coldStart: isColdStart
         )
-        let currentHour = Calendar.current.component(.hour, from: date)
-        let thirtyMinuteSeed = Int(date.timeIntervalSince1970 / 1_800)
+        let currentHour = Calendar.current.component(.hour, from: evaluationDate)
+        let rankingSeed = temporalBucket(for: purpose, date: date)
 
-        var ranked = candidates.map { song -> RankedRecommendation in
+        var ranked: [RankedRecommendation] = []
+        ranked.reserveCapacity(candidates.count)
+        for (index, song) in candidates.enumerated() {
+            if index.isMultiple(of: 32), Task.isCancelled { return [] }
             let songBehavior = behavior.songs[song.id]
             let shortAffinity = shortProfile.affinity(for: song)
             let longAffinity = longProfile.affinity(for: song)
@@ -437,7 +506,9 @@ enum RecommendationMixer {
                 log1p(Double(songBehavior?.repeatCount ?? 0)) / maxRepeat
             )
             let recencyScore = max(
-                songBehavior.map { timeDecay(since: $0.lastPlayed, now: date) } ?? 0,
+                songBehavior.map {
+                    timeDecay(since: $0.lastPlayed, now: evaluationDate)
+                } ?? 0,
                 rankScore(song.id, in: recentRanks)
             )
             let metadataScore = localMetadataAffinity(song)
@@ -457,7 +528,7 @@ enum RecommendationMixer {
                 song: song,
                 behavior: songBehavior,
                 favoriteAffinity: favoriteAffinity,
-                now: date
+                now: evaluationDate
             )
             let rotationScore = artistRotationScore(
                 song: song,
@@ -507,7 +578,7 @@ enum RecommendationMixer {
                 * metadataConfidence
                 * sourceConfidence
             let penalty = negativePreferencePenalty(songBehavior)
-            let jitter = stableJitter(song.id, seed: thirtyMinuteSeed)
+            let jitter = stableJitter(song.id, seed: rankingSeed)
             let finalScore = max(
                 0,
                 score * (0.55 + 0.45 * confidence)
@@ -519,7 +590,7 @@ enum RecommendationMixer {
             let isNewArtist = !knownArtists.contains(artistKey)
             let isHiddenGem = isDiscovery
                 && (song.playCount ?? 0) <= 2
-            return RankedRecommendation(
+            ranked.append(RankedRecommendation(
                 song: song,
                 score: finalScore,
                 artistKey: artistKey,
@@ -528,8 +599,9 @@ enum RecommendationMixer {
                 isDiscovery: isDiscovery,
                 isNewArtist: isNewArtist,
                 isHiddenGem: isHiddenGem
-            )
+            ))
         }
+        guard !Task.isCancelled else { return [] }
         ranked.sort {
             if $0.score == $1.score { return $0.song.id < $1.song.id }
             return $0.score > $1.score
@@ -537,12 +609,12 @@ enum RecommendationMixer {
         ranked = deduplicated(ranked)
         ranked = allocateDiscovery(
             ranked,
-            ratio: purpose == .discovery
-                ? max(0.70, weights.discoveryRatio)
-                : weights.discoveryRatio,
+            ratio: weights.discoveryRatio,
             limit: limit
         )
+        guard !Task.isCancelled else { return [] }
         let result = diversityReranked(ranked, limit: limit).map(\.song)
+        guard !Task.isCancelled else { return [] }
         cache.insert(result, for: key, now: date)
         return result
     }
@@ -588,13 +660,18 @@ enum RecommendationMixer {
         }
         var effectiveWeights: [RecommendationFeature: Double] = [:]
         effectiveWeights.reserveCapacity(preset.featureWeights.count)
-        for (feature, presetWeight) in preset.featureWeights {
+        for feature in RecommendationFeature.allCases {
+            guard let presetWeight = preset.featureWeights[feature] else {
+                continue
+            }
             let weight = presetWeight * (userWeights[feature] ?? 0)
             if weight > 0 { effectiveWeights[feature] = weight }
         }
         return RecommendationScoringPlan(
             weights: effectiveWeights,
-            totalWeight: effectiveWeights.values.reduce(0, +)
+            totalWeight: RecommendationFeature.allCases.reduce(0) {
+                $0 + (effectiveWeights[$1] ?? 0)
+            }
         )
     }
 
@@ -603,8 +680,9 @@ enum RecommendationMixer {
         plan: RecommendationScoringPlan
     ) -> Double {
         var total = 0.0
-        for (feature, featureScore) in features {
-            guard let weight = plan.weights[feature] else { continue }
+        for feature in RecommendationFeature.allCases {
+            guard let featureScore = features[feature],
+                  let weight = plan.weights[feature] else { continue }
             total += min(max(featureScore, 0), 1) * weight
         }
         return plan.totalWeight > 0 ? total / plan.totalWeight : 0
@@ -616,7 +694,8 @@ enum RecommendationMixer {
         appliesDecay: Bool = true
     ) -> RecommendationProfile {
         var result = RecommendationProfile()
-        for value in values {
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { break }
             let behavior = behaviorAffinity(value)
             let decay = appliesDecay
                 ? timeDecay(since: value.lastPlayed, now: date)
@@ -643,7 +722,7 @@ enum RecommendationMixer {
 
     private static func normalizeMap(_ values: inout [String: Double]) {
         guard let maximum = values.values.max(), maximum > 0 else { return }
-        for key in values.keys {
+        for key in values.keys.sorted() {
             values[key] = min(max((values[key] ?? 0) / maximum, 0), 1)
         }
     }
@@ -849,8 +928,18 @@ enum RecommendationMixer {
         let desiredDiscovery = Int(
             (Double(limit) * clampedRatio).rounded()
         )
-        let discoveries = values.filter(\.isDiscovery)
-        let known = values.filter { !$0.isDiscovery }
+        var discoveries: [RankedRecommendation] = []
+        var known: [RankedRecommendation] = []
+        discoveries.reserveCapacity(values.count)
+        known.reserveCapacity(values.count)
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return [] }
+            if value.isDiscovery {
+                discoveries.append(value)
+            } else {
+                known.append(value)
+            }
+        }
         let newArtistTarget = Int(
             (Double(desiredDiscovery) * 0.40).rounded()
         )
@@ -900,6 +989,7 @@ enum RecommendationMixer {
         var artistCounts: [String: Int] = [:]
         var albumCounts: [String: Int] = [:]
         while !remaining.isEmpty, result.count < limit {
+            if Task.isCancelled { return [] }
             var bestIndex = 0
             var bestAdjustedScore = -Double.infinity
             for (index, value) in remaining.enumerated() {
@@ -969,9 +1059,13 @@ enum RecommendationMixer {
     }
 
     private static func rankMap(_ values: [Song]) -> [String: Int] {
-        Dictionary(uniqueKeysWithValues: unique(values).enumerated().map {
-            ($0.element.id, $0.offset)
-        })
+        var result: [String: Int] = [:]
+        result.reserveCapacity(values.count)
+        for (index, song) in values.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return [:] }
+            if result[song.id] == nil { result[song.id] = result.count }
+        }
+        return result
     }
 
     private static func rankScore(_ id: String, in ranks: [String: Int]) -> Double {
@@ -983,13 +1077,19 @@ enum RecommendationMixer {
 
     private static func unique(_ values: [Song]) -> [Song] {
         var ids = Set<String>()
-        return values.filter { ids.insert($0.id).inserted }
+        var result: [Song] = []
+        result.reserveCapacity(values.count)
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return [] }
+            if ids.insert(value.id).inserted { result.append(value) }
+        }
+        return result
     }
 
     fileprivate static func normalized(_ value: String) -> String {
         value.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-            locale: .current
+            locale: Locale(identifier: "en_US_POSIX")
         )
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -1014,14 +1114,31 @@ enum RecommendationMixer {
         }
     }
 
+    private static func temporalBucket(
+        for purpose: RecommendationPurpose,
+        date: Date
+    ) -> Int {
+        Int(floor(date.timeIntervalSince1970 / cacheLifetime(for: purpose)))
+    }
+
+    private static func temporalEvaluationDate(
+        for purpose: RecommendationPurpose,
+        date: Date
+    ) -> Date {
+        Date(
+            timeIntervalSince1970: Double(temporalBucket(for: purpose, date: date))
+                * cacheLifetime(for: purpose)
+        )
+    }
+
     private static func cacheKey(
         snapshot: HomeSnapshot,
         weights: RecommendationWeights,
         purpose: RecommendationPurpose,
-        behaviorRevision: UInt64,
+        behavior: RecommendationBehaviorSnapshot,
         limit: Int,
         date: Date
-    ) -> String {
+    ) -> String? {
         let sources = [
             snapshot.serverRecommendedSongs,
             snapshot.sonicRecommendedSongs,
@@ -1039,21 +1156,35 @@ enum RecommendationMixer {
             snapshot.daylistSongs,
             snapshot.recommendedSongs
         ]
-        var hash: UInt64 = 14_695_981_039_346_656_037
+        var snapshotFingerprint = StableFingerprint()
         for (sourceIndex, source) in sources.enumerated() {
-            hash ^= UInt64(sourceIndex + 1)
-            hash &*= 1_099_511_628_211
-            for song in source {
-                for byte in song.id.utf8 {
-                    hash ^= UInt64(byte)
-                    hash &*= 1_099_511_628_211
-                }
-                // Delimit IDs so ["ab", "c"] and ["a", "bc"] cannot
-                // accidentally reuse the same recommendation cache entry.
-                hash ^= 0xFF
-                hash &*= 1_099_511_628_211
+            if sourceIndex.isMultiple(of: 4), Task.isCancelled { return nil }
+            snapshotFingerprint.append(sourceIndex)
+            snapshotFingerprint.append(source.count)
+            for (songIndex, song) in source.enumerated() {
+                if songIndex.isMultiple(of: 64), Task.isCancelled { return nil }
+                append(song, to: &snapshotFingerprint)
             }
         }
+
+        var behaviorFingerprint = StableFingerprint()
+        behaviorFingerprint.append(behavior.revision)
+        let behaviorKeys = behavior.songs.keys.sorted()
+        behaviorFingerprint.append(behaviorKeys.count)
+        for (index, key) in behaviorKeys.enumerated() {
+            if index.isMultiple(of: 32), Task.isCancelled { return nil }
+            behaviorFingerprint.append(key)
+            if let value = behavior.songs[key] {
+                append(value, to: &behaviorFingerprint)
+            }
+        }
+        behaviorFingerprint.append(behavior.recentSongs.count)
+        for (index, song) in behavior.recentSongs.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return nil }
+            append(song, to: &behaviorFingerprint)
+        }
+
+        var weightsFingerprint = StableFingerprint()
         let weightValues = [
             weights.history, weights.favorites, weights.serverSimilarity,
             weights.discovery, weights.lastFM, weights.listenBrainz,
@@ -1062,16 +1193,85 @@ enum RecommendationMixer {
             weights.playlistAffinity, weights.albumCompletion,
             weights.forgottenFavorites, weights.artistRotation,
             weights.timeAwareness, weights.discoveryRatio
-        ].map { String(format: "%.3f", $0) }.joined(separator: ",")
-        let timeBucket = Int(date.timeIntervalSince1970 / 1_800)
+        ]
+        for value in weightValues { weightsFingerprint.append(value) }
+        let calendar = Calendar.current
         return [
             purpose.rawValue,
             String(limit),
-            String(behaviorRevision),
-            String(hash),
-            String(timeBucket),
-            weightValues
+            String(snapshotFingerprint.value),
+            String(behaviorFingerprint.value),
+            String(weightsFingerprint.value),
+            String(temporalBucket(for: purpose, date: date)),
+            String(describing: calendar.identifier),
+            calendar.timeZone.identifier
         ].joined(separator: "|")
+    }
+
+    private static func append(
+        _ song: Song,
+        to fingerprint: inout StableFingerprint
+    ) {
+        fingerprint.append(song.id)
+        fingerprint.append(song.title)
+        fingerprint.append(song.artist)
+        fingerprint.append(song.album)
+        fingerprint.append(song.artistId)
+        fingerprint.append(song.albumId)
+        fingerprint.append(song.coverArt)
+        fingerprint.append(song.duration)
+        fingerprint.append(song.track)
+        fingerprint.append(song.suffix)
+        fingerprint.append(song.contentType)
+        fingerprint.append(song.starred)
+        fingerprint.append(song.playCount)
+        fingerprint.append(song.played)
+        fingerprint.append(song.genre)
+        append(song.genres?.map(\.name), to: &fingerprint)
+        fingerprint.append(song.musicBrainzId)
+        append(song.isrc, to: &fingerprint)
+        fingerprint.append(song.bpm)
+        append(song.moods, to: &fingerprint)
+        fingerprint.append(song.created)
+        fingerprint.append(song.externalStreamURL)
+    }
+
+    private static func append(
+        _ behavior: SongBehavior,
+        to fingerprint: inout StableFingerprint
+    ) {
+        append(behavior.song, to: &fingerprint)
+        fingerprint.append(behavior.playCount)
+        fingerprint.append(behavior.firstPlayed.timeIntervalSince1970)
+        fingerprint.append(behavior.lastPlayed.timeIntervalSince1970)
+        fingerprint.append(behavior.completedCount)
+        fingerprint.append(behavior.skipCount)
+        fingerprint.append(behavior.earlySkipCount)
+        fingerprint.append(behavior.repeatedSkipCount)
+        fingerprint.append(behavior.repeatCount)
+        fingerprint.append(behavior.manualPlayCount)
+        fingerprint.append(behavior.searchPlayCount)
+        fingerprint.append(behavior.albumSelectionCount)
+        fingerprint.append(behavior.playlistPlayCount)
+        fingerprint.append(behavior.autoplayCount)
+        fingerprint.append(behavior.queueRemovalCount)
+        fingerprint.append(behavior.playlistAddCount)
+        fingerprint.append(behavior.favoriteCount)
+        fingerprint.append(behavior.totalCompletion)
+        fingerprint.append(behavior.completionSamples)
+        fingerprint.append(behavior.consecutiveSkips)
+    }
+
+    private static func append(
+        _ values: [String]?,
+        to fingerprint: inout StableFingerprint
+    ) {
+        guard let values else {
+            fingerprint.append(UInt64.max)
+            return
+        }
+        fingerprint.append(values.count)
+        for value in values { fingerprint.append(value) }
     }
 }
 
@@ -1300,6 +1500,69 @@ private final class PersonalizedMixResultCache: @unchecked Sendable {
     }
 }
 
+private struct PersonalizedSongCorpus {
+    let pool: [Song]
+    let canonicalSongs: [String: Song]
+    let searchableTexts: [String: String]
+    let normalizedArtists: [String: String]
+    let normalizedGenres: [String: String]
+    let songsByArtist: [String: [Song]]
+    let songsByGenre: [String: [Song]]
+    let songsWithoutGenre: [Song]
+
+    init(snapshot: HomeSnapshot) {
+        let resolvedPool = PersonalizedMixBuilder.unique(
+            snapshot.serverRecommendedSongs
+                + snapshot.lastFMRecommendedSongs
+                + snapshot.listenBrainzRecommendedSongs
+                + snapshot.randomSongs
+                + snapshot.recommendedSongs
+                + snapshot.daylistSongs
+                + snapshot.starredSongs
+                + snapshot.mostPlayedSongs
+        )
+        pool = resolvedPool
+        canonicalSongs = Dictionary(
+            uniqueKeysWithValues: resolvedPool.map { ($0.id, $0) }
+        )
+        var searchableTexts: [String: String] = [:]
+        var normalizedArtists: [String: String] = [:]
+        var normalizedGenres: [String: String] = [:]
+        var songsByArtist: [String: [Song]] = [:]
+        var songsByGenre: [String: [Song]] = [:]
+        var songsWithoutGenre: [Song] = []
+        searchableTexts.reserveCapacity(pool.count)
+        normalizedArtists.reserveCapacity(pool.count)
+        normalizedGenres.reserveCapacity(pool.count)
+        for (index, song) in pool.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { break }
+            let artist = PersonalizedMixBuilder.normalized(song.artist)
+            searchableTexts[song.id] = PersonalizedMixBuilder.searchableText(song)
+            normalizedArtists[song.id] = artist
+            songsByArtist[artist, default: []].append(song)
+            if let genre = song.genre {
+                let normalizedGenre = PersonalizedMixBuilder.normalized(genre)
+                normalizedGenres[song.id] = normalizedGenre
+                songsByGenre[normalizedGenre, default: []].append(song)
+            } else {
+                songsWithoutGenre.append(song)
+            }
+        }
+        self.searchableTexts = searchableTexts
+        self.normalizedArtists = normalizedArtists
+        self.normalizedGenres = normalizedGenres
+        self.songsByArtist = songsByArtist
+        self.songsByGenre = songsByGenre
+        self.songsWithoutGenre = songsWithoutGenre
+    }
+}
+
+private struct StableOrderedSong {
+    let index: Int
+    let song: Song
+    let hash: UInt64
+}
+
 enum PersonalizedMixBuilder {
     private static let cache = PersonalizedMixResultCache()
 
@@ -1327,34 +1590,25 @@ enum PersonalizedMixBuilder {
         )
         if let cached = cache.value(for: cacheKey) { return cached }
 
-        let pool = unique(
-            snapshot.mostPlayedSongs +
-            snapshot.starredSongs +
-            snapshot.daylistSongs +
-            snapshot.recommendedSongs +
-            snapshot.serverRecommendedSongs +
-            snapshot.lastFMRecommendedSongs +
-            snapshot.listenBrainzRecommendedSongs +
-            snapshot.randomSongs
-        )
+        guard !Task.isCancelled else { return [] }
+        let corpus = PersonalizedSongCorpus(snapshot: snapshot)
+        guard !Task.isCancelled else { return [] }
+        let pool = corpus.pool
         guard !pool.isEmpty else { return [] }
-        let searchableTexts = Dictionary(uniqueKeysWithValues: pool.map {
-            ($0.id, searchableText($0))
-        })
-        let normalizedArtists = Dictionary(uniqueKeysWithValues: pool.map {
-            ($0.id, normalized($0.artist))
-        })
-        let normalizedGenres = Dictionary(uniqueKeysWithValues: pool.compactMap {
-            song in song.genre.map { (song.id, normalized($0)) }
-        })
+        let searchableTexts = corpus.searchableTexts
+        func canonicalized(_ songs: [Song]) -> [Song] {
+            songs.map { corpus.canonicalSongs[$0.id] ?? $0 }
+        }
 
         let dailySeed = year * 1_000 + day
         let daylist = filled(
-            preferred: DaylistBuilder.make(
-                snapshot: snapshot,
-                date: date,
-                calendar: calendar,
-                limit: songLimit
+            preferred: canonicalized(
+                DaylistBuilder.make(
+                    snapshot: snapshot,
+                    date: date,
+                    calendar: calendar,
+                    limit: songLimit
+                )
             ),
             from: pool,
             seed: dailySeed,
@@ -1362,7 +1616,9 @@ enum PersonalizedMixBuilder {
         )
 
         let repeatSongs = filled(
-            preferred: snapshot.mostPlayedSongs + snapshot.starredSongs,
+            preferred: canonicalized(
+                snapshot.mostPlayedSongs + snapshot.starredSongs
+            ),
             from: pool,
             seed: dailySeed + 11,
             limit: songLimit
@@ -1371,7 +1627,9 @@ enum PersonalizedMixBuilder {
             ($0.played ?? "") > ($1.played ?? "")
         }
         let listenAgain = filled(
-            preferred: recentlyPlayed + snapshot.mostPlayedSongs,
+            preferred: canonicalized(
+                recentlyPlayed + snapshot.mostPlayedSongs
+            ),
             from: pool,
             seed: dailySeed + 23,
             limit: songLimit
@@ -1474,12 +1732,11 @@ enum PersonalizedMixBuilder {
         ]
 
         for (index, artist) in (defaultArtists + customArtists).enumerated() {
+            if Task.isCancelled { return [] }
             mixes.append(
                 artistMix(
                     artist: artist,
-                    pool: pool,
-                    normalizedArtists: normalizedArtists,
-                    normalizedGenres: normalizedGenres,
+                    corpus: corpus,
                     seed: dailySeed + 53 + index * 7,
                     limit: songLimit,
                     artworkCoverArt: artistArtwork[normalized(artist)]
@@ -1530,6 +1787,7 @@ enum PersonalizedMixBuilder {
             )
         ])
 
+        guard !Task.isCancelled else { return [] }
         let result = mixes.filter { !$0.songs.isEmpty }
         cache.insert(result, for: cacheKey)
         return result
@@ -1560,34 +1818,29 @@ enum PersonalizedMixBuilder {
 
     private static func artistMix(
         artist: String,
-        pool: [Song],
-        normalizedArtists: [String: String],
-        normalizedGenres: [String: String],
+        corpus: PersonalizedSongCorpus,
         seed: Int,
         limit: Int,
         artworkCoverArt: String?
     ) -> PersonalizedMix {
         let normalizedArtist = normalized(artist)
-        let primary = ordered(
-            pool.filter {
-                normalizedArtists[$0.id] == normalizedArtist
-            },
-            seed: seed
+        let primary = orderedPrefix(
+            corpus.songsByArtist[normalizedArtist] ?? [],
+            seed: seed,
+            limit: limit
         )
         let primaryGenres = Set(primary.compactMap {
-            normalizedGenres[$0.id]
+            corpus.normalizedGenres[$0.id]
         })
-        let related = ordered(
-            pool.filter { song in
-                guard normalizedArtists[song.id] != normalizedArtist else {
-                    return false
-                }
-                if let genre = normalizedGenres[song.id] {
-                    return primaryGenres.contains(genre)
-                }
-                return true
+        let relatedPool = primaryGenres.sorted().flatMap {
+            corpus.songsByGenre[$0] ?? []
+        } + corpus.songsWithoutGenre
+        let related = orderedPrefix(
+            relatedPool.filter { song in
+                corpus.normalizedArtists[song.id] != normalizedArtist
             },
-            seed: seed + 7
+            seed: seed + 7,
+            limit: limit
         )
 
         var songs: [Song] = []
@@ -1606,7 +1859,7 @@ enum PersonalizedMixBuilder {
         }
         songs = filled(
             preferred: songs,
-            from: primary + related + pool,
+            from: primary + related + corpus.pool,
             seed: seed,
             limit: limit
         )
@@ -1704,39 +1957,99 @@ enum PersonalizedMixBuilder {
         seed: Int,
         limit: Int
     ) -> [Song] {
-        Array(
+        let fallbackLimit = limit > Int.max / 2 ? Int.max : limit * 2
+        return Array(
             unique(
-                ordered(preferred, seed: seed) +
-                ordered(pool, seed: seed + 97)
+                orderedPrefix(preferred, seed: seed, limit: limit) +
+                orderedPrefix(pool, seed: seed + 97, limit: fallbackLimit)
             )
             .prefix(limit)
         )
     }
 
-    private static func ordered(_ songs: [Song], seed: Int) -> [Song] {
+    private static func orderedPrefix(
+        _ songs: [Song],
+        seed: Int,
+        limit: Int
+    ) -> [Song] {
+        guard limit > 0 else { return [] }
         let values = unique(songs)
-        let hashed: [(index: Int, song: Song, hash: UInt64)] =
-            values.enumerated().map { index, song in
-                (
-                    index: index,
-                    song: song,
-                    hash: stableHash(song.id, seed: seed)
-                )
+        guard !Task.isCancelled else { return [] }
+        var heap: [StableOrderedSong] = []
+        heap.reserveCapacity(min(values.count, limit))
+        for (index, song) in values.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return [] }
+            let candidate = StableOrderedSong(
+                index: index,
+                song: song,
+                hash: stableHash(song.id, seed: seed)
+            )
+            if heap.count < limit {
+                heap.append(candidate)
+                siftUpLatest(&heap, from: heap.count - 1)
+            } else if let latest = heap.first,
+                      isEarlier(candidate, than: latest) {
+                heap[0] = candidate
+                siftDownLatest(&heap, from: 0)
             }
-        let ordered = hashed.sorted { lhs, rhs in
-            lhs.hash == rhs.hash
-                ? lhs.index < rhs.index
-                : lhs.hash < rhs.hash
         }
-        return ordered.map(\.song)
+        return heap.sorted {
+            isEarlier($0, than: $1)
+        }
+        .map(\.song)
     }
 
-    private static func unique(_ songs: [Song]) -> [Song] {
+    private static func isEarlier(
+        _ lhs: StableOrderedSong,
+        than rhs: StableOrderedSong
+    ) -> Bool {
+        lhs.hash == rhs.hash ? lhs.index < rhs.index : lhs.hash < rhs.hash
+    }
+
+    private static func siftUpLatest(
+        _ heap: inout [StableOrderedSong],
+        from startIndex: Int
+    ) {
+        var child = startIndex
+        while child > 0 {
+            let parent = (child - 1) / 2
+            guard isEarlier(heap[parent], than: heap[child]) else { return }
+            heap.swapAt(parent, child)
+            child = parent
+        }
+    }
+
+    private static func siftDownLatest(
+        _ heap: inout [StableOrderedSong],
+        from startIndex: Int
+    ) {
+        var parent = startIndex
+        while true {
+            let left = parent * 2 + 1
+            guard left < heap.count else { return }
+            let right = left + 1
+            var latest = left
+            if right < heap.count, isEarlier(heap[left], than: heap[right]) {
+                latest = right
+            }
+            guard isEarlier(heap[parent], than: heap[latest]) else { return }
+            heap.swapAt(parent, latest)
+            parent = latest
+        }
+    }
+
+    fileprivate static func unique(_ songs: [Song]) -> [Song] {
         var ids = Set<String>()
-        return songs.filter { ids.insert($0.id).inserted }
+        var result: [Song] = []
+        result.reserveCapacity(songs.count)
+        for (index, song) in songs.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return [] }
+            if ids.insert(song.id).inserted { result.append(song) }
+        }
+        return result
     }
 
-    private static func searchableText(_ song: Song) -> String {
+    fileprivate static func searchableText(_ song: Song) -> String {
         normalized(
             [song.genre, song.title, song.album, song.artist]
                 .compactMap { $0 }
@@ -1755,10 +2068,10 @@ enum PersonalizedMixBuilder {
         normalizedTokens.contains { value.contains($0) }
     }
 
-    private static func normalized(_ value: String) -> String {
+    fileprivate static func normalized(_ value: String) -> String {
         value.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-            locale: .current
+            locale: Locale(identifier: "en_US_POSIX")
         )
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -1959,27 +2272,66 @@ actor ExternalRecommendationClient {
         url: URL,
         token: String? = nil
     ) async -> Value? {
+        do {
+            let data = try await responseData(
+                url: url,
+                token: token,
+                acceptsZstandard: true
+            )
+            return try decoder.decode(Value.self, from: data)
+        } catch let error as URLError where error.code == .cannotDecodeContentData {
+            do {
+                let data = try await responseData(
+                    url: url,
+                    token: token,
+                    acceptsZstandard: false
+                )
+                return try decoder.decode(Value.self, from: data)
+            } catch {
+                return nil
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    private func responseData(
+        url: URL,
+        token: String?,
+        acceptsZstandard: Bool
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         ModernNetworkPolicy.prepareExternalAPIRequest(
             &request,
-            acceptsZstandard: false
+            acceptsZstandard: acceptsZstandard
         )
+        if !acceptsZstandard {
+            // Do not let a malformed zstd response cached by an intermediary
+            // satisfy the compatibility retry with the same bytes.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
         request.setValue("BuFi/1.0.0", forHTTPHeaderField: "User-Agent")
         if let token, !token.isEmpty {
             request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         }
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard !Task.isCancelled,
-                  let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  data.count <= 4 * 1_024 * 1_024 else {
-                return nil
-            }
-            return try decoder.decode(Value.self, from: data)
-        } catch {
-            return nil
+        try Task.checkCancellation()
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
         }
+        guard data.count <= 4 * 1_024 * 1_024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        let decoded = try HTTPContentDecoder.decode(
+            data,
+            contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+        )
+        guard decoded.count <= 4 * 1_024 * 1_024 else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        return decoded
     }
 }
 

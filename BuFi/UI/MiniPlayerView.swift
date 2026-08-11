@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MiniPlayerView: View {
     @EnvironmentObject private var playbackItem: PlaybackItemState
-    @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
@@ -15,8 +14,11 @@ struct MiniPlayerView: View {
     var body: some View {
         if let song = playbackItem.currentSong {
             let artworkIdentity = MiniPlayerArtworkIdentity(
+                occurrenceID: playbackItem.currentItem?.id,
                 songID: song.id,
-                coverArtID: song.coverArt
+                coverArtID: song.artworkID,
+                artworkRevision: song.artworkRevision,
+                accountScope: playbackItem.currentItem?.accountScope
             )
             ZStack {
                 Button {
@@ -36,12 +38,14 @@ struct MiniPlayerView: View {
                 VStack(spacing: 0) {
                     HStack(spacing: 9) {
                         ArtworkView(
-                            coverArt: song.coverArt,
+                            coverArt: song.artworkID,
                             size: 50,
                             cornerRadius: 5,
+                            cacheRevision: artworkIdentity.artworkRevision,
                             onPalette: { nextPalette in
                                 guard playbackItem.currentSong?.id == artworkIdentity.songID,
-                                      playbackItem.currentSong?.coverArt == artworkIdentity.coverArtID else {
+                                      playbackItem.currentSong?.artworkID == artworkIdentity.coverArtID,
+                                      playbackItem.currentItem?.id == artworkIdentity.occurrenceID else {
                                     return
                                 }
                                 if nextPalette == .fallback {
@@ -68,7 +72,7 @@ struct MiniPlayerView: View {
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.76)
                             }
-                            .id(song.id)
+                            .id(playbackItem.currentItem?.id)
                             .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -81,15 +85,9 @@ struct MiniPlayerView: View {
                         AirPlayButton(lightContent: !usesDarkForeground)
                             .frame(width: 36, height: 36)
 
-                        Button {
+                        MiniPlayerPlaybackButton {
                             audio.togglePlayback()
-                        } label: {
-                            Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
-                                .font(.system(size: 21, weight: .semibold))
-                                .frame(width: 40, height: 40)
                         }
-                        .buttonStyle(BuFiPressStyle())
-                        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
                     }
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)
@@ -148,8 +146,11 @@ struct MiniPlayerView: View {
     private var currentArtworkIdentity: MiniPlayerArtworkIdentity? {
         guard let song = playbackItem.currentSong else { return nil }
         return MiniPlayerArtworkIdentity(
+            occurrenceID: playbackItem.currentItem?.id,
             songID: song.id,
-            coverArtID: song.coverArt
+            coverArtID: song.artworkID,
+            artworkRevision: song.artworkRevision,
+            accountScope: playbackItem.currentItem?.accountScope
         )
     }
 
@@ -173,9 +174,29 @@ struct MiniPlayerView: View {
     }
 }
 
+private struct MiniPlayerPlaybackButton: View {
+    @EnvironmentObject private var playbackControl: PlaybackControlState
+
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
+                .font(.system(size: 21, weight: .semibold))
+                .frame(width: 40, height: 40)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(BuFiPressStyle())
+        .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
+    }
+}
+
 private struct MiniPlayerArtworkIdentity: Hashable {
+    let occurrenceID: UUID?
     let songID: String
     let coverArtID: String?
+    let artworkRevision: String
+    let accountScope: String?
 }
 
 private struct MiniPlayerProgressView: View {

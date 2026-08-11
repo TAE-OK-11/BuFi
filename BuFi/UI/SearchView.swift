@@ -135,10 +135,15 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(library.snapshot.starredSongs) { song in
-                            SongRow(song: song, queue: library.snapshot.starredSongs)
+                        ForEach(library.snapshot.starredSongs.indices, id: \.self) { index in
+                            let song = library.snapshot.starredSongs[index]
+                            SongRow(
+                                song: song,
+                                queue: library.snapshot.starredSongs,
+                                queueIndex: index
+                            )
                                 .padding(.horizontal, 14)
-                            if song.id != library.snapshot.starredSongs.last?.id {
+                            if index < library.snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
                         }
@@ -366,15 +371,17 @@ struct SearchView: View {
                 }
                 if !searchContent.results.songs.isEmpty {
                     resultSection("곡") {
-                        ForEach(searchContent.results.songs) { song in
+                        ForEach(searchContent.results.songs.indices, id: \.self) { index in
+                            let song = searchContent.results.songs[index]
                             SongRow(
                                 song: song,
                                 queue: searchContent.results.songs,
+                                queueIndex: index,
                                 playbackOrigin: .search,
                                 textLineLimit: 2
                             )
                             .padding(.horizontal, 14)
-                            if song.id != searchContent.results.songs.last?.id {
+                            if index < searchContent.results.songs.count - 1 {
                                 rowSeparator
                             }
                         }
@@ -465,7 +472,7 @@ struct SearchView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(
                             Array(library.snapshot.mostPlayedSongs.enumerated()),
-                            id: \.element.id
+                            id: \.offset
                         ) { index, song in
                             HStack(spacing: 10) {
                                 Text("\(index + 1)")
@@ -486,12 +493,13 @@ struct SearchView: View {
                                 SongRow(
                                     song: song,
                                     queue: library.snapshot.mostPlayedSongs,
+                                    queueIndex: index,
                                     artworkSize: 52,
                                     textLineLimit: 2
                                 )
                             }
                             .padding(.horizontal, 12)
-                            if song.id != library.snapshot.mostPlayedSongs.last?.id {
+                            if index < library.snapshot.mostPlayedSongs.count - 1 {
                                 Divider()
                                     .padding(.leading, 112)
                                     .opacity(0.50)

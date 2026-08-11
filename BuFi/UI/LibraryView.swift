@@ -6,6 +6,10 @@ struct LibraryView: View {
     @EnvironmentObject private var library: HomeLibraryState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var filter = LibraryFilter.playlists
+    @State private var artistPresentation = LibraryArtistPresentation.empty
+    @State private var artistPresentationInput: LibraryArtistPresentationInput?
+    @State private var artistPresentationGeneration: UInt64 = 0
+    @State private var artistPresentationTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -26,6 +30,15 @@ struct LibraryView: View {
                 MusicDetailView(route: route)
             }
             .toolbar(.hidden, for: .navigationBar)
+        }
+        .onAppear { updateArtistPresentationIfNeeded() }
+        .onChange(of: library.snapshot) { _, _ in
+            updateArtistPresentationIfNeeded()
+        }
+        .onDisappear {
+            artistPresentationTask?.cancel()
+            artistPresentationTask = nil
+            artistPresentationInput = nil
         }
     }
 
@@ -94,10 +107,15 @@ struct LibraryView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(library.snapshot.starredSongs) { song in
-                            SongRow(song: song, queue: library.snapshot.starredSongs)
+                        ForEach(library.snapshot.starredSongs.indices, id: \.self) { index in
+                            let song = library.snapshot.starredSongs[index]
+                            SongRow(
+                                song: song,
+                                queue: library.snapshot.starredSongs,
+                                queueIndex: index
+                            )
                                 .padding(.horizontal, 14)
-                            if song.id != library.snapshot.starredSongs.last?.id {
+                            if index < library.snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
                         }
@@ -110,22 +128,15 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var artistsContent: some View {
-        let artists = allArtists
-        let favorites = artists.filter(\.isStarred).sorted(by: artistSort)
-        let favoriteIDs = Set(favorites.map(\.id))
-        let sections = makeArtistSections(
-            artists.filter { !favoriteIDs.contains($0.id) }
-        )
-
-        if artists.isEmpty {
+        if artistPresentation.allArtists.isEmpty {
             empty("아티스트가 없습니다", icon: "person.2")
         } else {
-            if !favorites.isEmpty {
+            if !artistPresentation.favorites.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     librarySectionTitle("좋아하는 아티스트")
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: 16) {
-                            ForEach(favorites) { artist in
+                            ForEach(artistPresentation.favorites) { artist in
                                 favoriteArtistCard(artist)
                             }
                         }
@@ -136,7 +147,7 @@ struct LibraryView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 librarySectionTitle("모든 아티스트")
-                ForEach(sections) { section in
+                ForEach(artistPresentation.sections) { section in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(section.title)
                             .font(.system(size: 14, weight: .bold))
@@ -337,20 +348,80 @@ struct LibraryView: View {
             .padding(.top, 70)
     }
 
-    private var allArtists: [Artist] {
+    private func updateArtistPresentationIfNeeded() {
+        let input = LibraryArtistPresentationInput(
+            artists: library.snapshot.artists,
+            starredArtists: library.snapshot.starredArtists
+        )
+        guard input != artistPresentationInput else { return }
+        if artistPresentationInput == nil {
+            artistPresentationInput = input
+            artistPresentation = LibraryArtistPresentation.make(input: input)
+            return
+        }
+
+        artistPresentationInput = input
+        artistPresentationGeneration &+= 1
+        let generation = artistPresentationGeneration
+        artistPresentationTask?.cancel()
+        artistPresentationTask = Task {
+            let work = Task.detached(priority: .userInitiated) {
+                LibraryArtistPresentation.make(input: input)
+            }
+            let next = await withTaskCancellationHandler {
+                await work.value
+            } onCancel: {
+                work.cancel()
+            }
+            guard !Task.isCancelled,
+                  generation == artistPresentationGeneration,
+                  input == artistPresentationInput else { return }
+            artistPresentation = next
+            artistPresentationTask = nil
+        }
+    }
+}
+
+struct LibraryArtistPresentationInput: Equatable, Sendable {
+    let artists: [Artist]
+    let starredArtists: [Artist]
+}
+
+struct LibraryArtistPresentation: Sendable {
+    let allArtists: [Artist]
+    let favorites: [Artist]
+    let sections: [ArtistSection]
+
+    static let empty = LibraryArtistPresentation(
+        allArtists: [],
+        favorites: [],
+        sections: []
+    )
+
+    static func make(input: LibraryArtistPresentationInput) -> LibraryArtistPresentation {
         var values: [String: Artist] = [:]
-        for artist in library.snapshot.artists { values[artist.id] = artist }
-        for artist in library.snapshot.starredArtists {
+        for artist in input.artists { values[artist.id] = artist }
+        for artist in input.starredArtists {
             var starred = artist
             if starred.starred == nil {
-                starred.starred = ISO8601DateFormatter().string(from: Date())
+                starred.starred = "starred"
             }
             values[artist.id] = starred
         }
-        return values.values.sorted(by: artistSort)
+        let artists = values.values.sorted(by: artistSort)
+        let favorites = artists.filter(\.isStarred).sorted(by: artistSort)
+        let favoriteIDs = Set(favorites.map(\.id))
+        let sections = makeArtistSections(
+            artists.filter { !favoriteIDs.contains($0.id) }
+        )
+        return LibraryArtistPresentation(
+            allArtists: artists,
+            favorites: favorites,
+            sections: sections
+        )
     }
 
-    private func makeArtistSections(_ artists: [Artist]) -> [ArtistSection] {
+    private static func makeArtistSections(_ artists: [Artist]) -> [ArtistSection] {
         let grouped = Dictionary(grouping: artists) {
             ArtistSectioning.title(for: $0.name)
         }
@@ -359,7 +430,7 @@ struct LibraryView: View {
         }
     }
 
-    private func artistSort(_ lhs: Artist, _ rhs: Artist) -> Bool {
+    private static func artistSort(_ lhs: Artist, _ rhs: Artist) -> Bool {
         lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
 }
@@ -383,7 +454,7 @@ private enum LibraryFilter: Int, CaseIterable, Identifiable {
 
 }
 
-private struct ArtistSection: Identifiable {
+struct ArtistSection: Identifiable, Sendable {
     let title: String
     let artists: [Artist]
     var id: String { title }

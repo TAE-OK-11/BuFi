@@ -7,10 +7,11 @@ struct ServerLatencyBadge: View {
     @State private var isMeasuring = false
     @State private var measurementFailed = false
     @State private var measurementGeneration: UInt64 = 0
+    @State private var measurementTask: Task<Void, Never>?
 
     var body: some View {
         Button {
-            Task { await measure() }
+            startMeasurement()
         } label: {
             VStack(alignment: .trailing, spacing: 5) {
                 statusIcon
@@ -34,8 +35,14 @@ struct ServerLatencyBadge: View {
         .disabled(client == nil || isMeasuring)
         .accessibilityLabel("서버 Ping 측정")
         .accessibilityValue(latencyText)
-        .task(id: clientIdentifier) {
-            await measure()
+        .onAppear {
+            startMeasurement()
+        }
+        .onChange(of: clientIdentifier) { _, _ in
+            startMeasurement()
+        }
+        .onDisappear {
+            cancelMeasurement()
         }
     }
 
@@ -65,8 +72,9 @@ struct ServerLatencyBadge: View {
         client.map { ObjectIdentifier($0) }
     }
 
-    @MainActor
-    private func measure() async {
+    private func startMeasurement() {
+        measurementTask?.cancel()
+        measurementTask = nil
         measurementGeneration &+= 1
         let generation = measurementGeneration
 
@@ -79,23 +87,35 @@ struct ServerLatencyBadge: View {
 
         isMeasuring = true
         measurementFailed = false
-        defer {
-            if measurementGeneration == generation {
+        measurementTask = Task {
+            do {
+                let latency = try await client.measuredServerLatency()
+                guard !Task.isCancelled,
+                      measurementGeneration == generation else { return }
+                latencyMilliseconds = latency
+                measurementFailed = false
                 isMeasuring = false
+                measurementTask = nil
+            } catch is CancellationError {
+                guard measurementGeneration == generation else { return }
+                isMeasuring = false
+                measurementTask = nil
+                return
+            } catch {
+                guard !Task.isCancelled,
+                      measurementGeneration == generation else { return }
+                latencyMilliseconds = nil
+                measurementFailed = true
+                isMeasuring = false
+                measurementTask = nil
             }
         }
+    }
 
-        do {
-            let latency = try await client.measuredServerLatency()
-            guard measurementGeneration == generation else { return }
-            latencyMilliseconds = latency
-            measurementFailed = false
-        } catch is CancellationError {
-            return
-        } catch {
-            guard measurementGeneration == generation else { return }
-            latencyMilliseconds = nil
-            measurementFailed = true
-        }
+    private func cancelMeasurement() {
+        measurementGeneration &+= 1
+        measurementTask?.cancel()
+        measurementTask = nil
+        isMeasuring = false
     }
 }

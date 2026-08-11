@@ -128,6 +128,239 @@ final class RecommendationEngineTests: XCTestCase {
         XCTAssertEqual(second.map(\.id), [secondSong.id])
     }
 
+    func testCacheInvalidatesWhenCandidateMetadataChangesWithoutIDChange() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let original = song(
+            id: "metadata-stable-id",
+            title: "Original Title",
+            artist: "Artist"
+        )
+        var updated = original
+        updated.title = "Updated Title"
+        updated.coverArt = "updated-cover"
+        updated.bpm = 128
+
+        let first = RecommendationMixer.mix(
+            snapshot: HomeSnapshot(randomSongs: [original]),
+            weights: weights(),
+            limit: 1,
+            date: date
+        )
+        let second = RecommendationMixer.mix(
+            snapshot: HomeSnapshot(randomSongs: [updated]),
+            weights: weights(),
+            limit: 1,
+            date: date
+        )
+
+        XCTAssertEqual(first.first?.title, "Original Title")
+        XCTAssertEqual(second.first?.title, "Updated Title")
+        XCTAssertEqual(second.first?.coverArt, "updated-cover")
+        XCTAssertEqual(second.first?.bpm, 128)
+    }
+
+    func testCacheFingerprintPreservesSubThousandthWeightChanges() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let firstSong = song(
+            id: "weight-12",
+            title: "Weight A",
+            artist: "Artist A"
+        )
+        let secondSong = song(
+            id: "weight-95",
+            title: "Weight B",
+            artist: "Artist B"
+        )
+        let snapshot = HomeSnapshot(
+            randomSongs: [secondSong, firstSong],
+            serverRecommendedSongs: [firstSong, secondSong]
+        )
+        var serverLeaning = isolatedWeights()
+        serverLeaning.serverSimilarity = 0.3124
+        serverLeaning.discovery = 0.9996
+        var discoveryLeaning = serverLeaning
+        discoveryLeaning.discovery = 0.9998
+
+        let first = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: serverLeaning,
+            purpose: .artistMix,
+            limit: 2,
+            date: date
+        )
+        let second = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: discoveryLeaning,
+            purpose: .artistMix,
+            limit: 2,
+            date: date
+        )
+
+        XCTAssertEqual(first.first?.id, firstSong.id)
+        XCTAssertEqual(second.first?.id, secondSong.id)
+    }
+
+    func testDiscoveryRatioHasNoPurposeSpecificDeadZone() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let known = (0..<6).map { index in
+            song(
+                id: "known-\(index)",
+                title: "Known \(index)",
+                artist: "Known Artist \(index)",
+                starred: "2026-08-01T00:00:00Z"
+            )
+        }
+        let discoveries = (0..<6).map { index in
+            song(
+                id: "discovery-\(index)",
+                title: "Discovery \(index)",
+                artist: "New Artist \(index)"
+            )
+        }
+        let snapshot = HomeSnapshot(
+            starredSongs: known,
+            randomSongs: discoveries
+        )
+        var familiarWeights = weights()
+        familiarWeights.discoveryRatio = 0
+        var discoveryWeights = familiarWeights
+        discoveryWeights.discoveryRatio = 1
+
+        let familiarResult = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: familiarWeights,
+            purpose: .discovery,
+            limit: 4,
+            date: date
+        )
+        let discoveryResult = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: discoveryWeights,
+            purpose: .discovery,
+            limit: 4,
+            date: date
+        )
+
+        XCTAssertTrue(familiarResult.allSatisfy { $0.id.hasPrefix("known-") })
+        XCTAssertTrue(discoveryResult.allSatisfy {
+            $0.id.hasPrefix("discovery-")
+        })
+    }
+
+    func testBehaviorDictionaryInsertionOrderDoesNotChangeRanking() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let candidates = (0..<20).map { index in
+            song(
+                id: "candidate-\(index)",
+                title: "Candidate \(index)",
+                artist: index.isMultiple(of: 2) ? "Artist A" : "Artist B",
+                genre: index.isMultiple(of: 3) ? "Pop" : "Rock"
+            )
+        }
+        let behaviors = candidates.enumerated().map { index, candidate in
+            behavior(
+                song: candidate,
+                playCount: index + 1,
+                lastPlayed: date.addingTimeInterval(Double(-index * 3_600))
+            )
+        }
+        let ascending = Dictionary(uniqueKeysWithValues: behaviors.map {
+            ($0.song.id, $0)
+        })
+        let descending = Dictionary(uniqueKeysWithValues: behaviors.reversed().map {
+            ($0.song.id, $0)
+        })
+        let snapshot = HomeSnapshot(randomSongs: candidates)
+
+        RecommendationMixer.invalidateCache()
+        let first = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: weights(),
+            behavior: RecommendationBehaviorSnapshot(
+                songs: ascending,
+                recentSongs: Array(candidates.prefix(5)),
+                revision: 7
+            ),
+            limit: 12,
+            date: date
+        )
+        RecommendationMixer.invalidateCache()
+        let second = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: weights(),
+            behavior: RecommendationBehaviorSnapshot(
+                songs: descending,
+                recentSongs: Array(candidates.prefix(5)),
+                revision: 7
+            ),
+            limit: 12,
+            date: date
+        )
+
+        XCTAssertEqual(first.map(\.id), second.map(\.id))
+    }
+
+    func testDiscoveryPurposeUsesItsFullDayTemporalLifetime() {
+        RecommendationMixer.invalidateCache()
+        let songs = (0..<40).map { index in
+            song(
+                id: "lifetime-\(index)",
+                title: "Lifetime \(index)",
+                artist: "Artist \(index)"
+            )
+        }
+        let snapshot = HomeSnapshot(randomSongs: songs)
+        let firstDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let secondDate = firstDate.addingTimeInterval(2 * 3_600)
+
+        let first = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: weights(),
+            purpose: .discovery,
+            limit: 20,
+            date: firstDate
+        )
+        let second = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: weights(),
+            purpose: .discovery,
+            limit: 20,
+            date: secondDate
+        )
+
+        XCTAssertEqual(first.map(\.id), second.map(\.id))
+    }
+
+    func testCancelledRecommendationDoesNotPublishPartialResults() async {
+        RecommendationMixer.invalidateCache()
+        let songs = (0..<10_000).map { index in
+            song(
+                id: "cancel-\(index)",
+                title: "Cancel \(index)",
+                artist: "Artist \(index % 100)",
+                genre: "Genre \(index % 20)"
+            )
+        }
+        let snapshot = HomeSnapshot(randomSongs: songs)
+        let recommendationWeights = weights()
+        let task = Task.detached {
+            RecommendationMixer.mix(
+                snapshot: snapshot,
+                weights: recommendationWeights,
+                limit: 30,
+                date: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+        }
+        task.cancel()
+
+        let result = await task.value
+
+        XCTAssertTrue(result.isEmpty)
+    }
+
     func testPersonalizedMixesProvideSixDefaultAndFourSelectedArtists() {
         let songs = (0..<12).map { index in
             song(
@@ -200,6 +433,34 @@ final class RecommendationEngineTests: XCTestCase {
         XCTAssertTrue(second.allSatisfy { $0.songs.map(\.id) == [secondSong.id] })
     }
 
+    func testPersonalizedMixPrefersServerMetadataOverPersistedHistory() {
+        var staleHistory = song(
+            id: "same-id",
+            title: "Old Title",
+            artist: "Artist"
+        )
+        staleHistory.coverArt = "old-cover"
+        var serverSong = staleHistory
+        serverSong.title = "Current Title"
+        serverSong.coverArt = "current-cover"
+
+        let mixes = PersonalizedMixBuilder.make(
+            snapshot: HomeSnapshot(
+                serverRecommendedSongs: [serverSong],
+                mostPlayedSongs: [staleHistory]
+            ),
+            date: Date(timeIntervalSince1970: 1_800_000_000),
+            songLimit: 1
+        )
+
+        XCTAssertFalse(mixes.isEmpty)
+        XCTAssertTrue(mixes.allSatisfy { mix in
+            mix.songs.allSatisfy {
+                $0.title == "Current Title" && $0.artworkID == "current-cover"
+            }
+        })
+    }
+
     func testArtistMixPreferencesDeduplicateAndKeepFourRecentArtists() {
         var encoded = "[]"
         for artist in ["A", "B", "C", "D", "E", "B"] {
@@ -217,6 +478,29 @@ final class RecommendationEngineTests: XCTestCase {
             suiteName: "RecommendationEngineTests.\(UUID().uuidString)"
         )!
         return RecommendationWeights.current(defaults)
+    }
+
+    private func isolatedWeights() -> RecommendationWeights {
+        var value = weights()
+        value.history = 0
+        value.favorites = 0
+        value.serverSimilarity = 0
+        value.discovery = 0
+        value.lastFM = 0
+        value.listenBrainz = 0
+        value.behavior = 0
+        value.completion = 0
+        value.repeatListening = 0
+        value.recency = 0
+        value.context = 0
+        value.localMetadata = 0
+        value.playlistAffinity = 0
+        value.albumCompletion = 0
+        value.forgottenFavorites = 0
+        value.artistRotation = 0
+        value.timeAwareness = 0
+        value.discoveryRatio = 0.35
+        return value
     }
 
     private func song(
@@ -241,5 +525,19 @@ final class RecommendationEngineTests: XCTestCase {
             starred: starred,
             genre: genre
         )
+    }
+
+    private func behavior(
+        song: Song,
+        playCount: Int,
+        lastPlayed: Date
+    ) -> SongBehavior {
+        var value = SongBehavior(song: song, at: lastPlayed)
+        value.playCount = playCount
+        value.manualPlayCount = playCount
+        value.completedCount = playCount
+        value.completionSamples = playCount
+        value.totalCompletion = Double(playCount) * 0.9
+        return value
     }
 }

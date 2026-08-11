@@ -21,6 +21,7 @@ struct MusicDetailView: View {
     @State private var palette = ArtworkPalette.fallback
     @State private var artistBiography = ""
     @State private var artistAlbumCount = 0
+    @State private var discography = ArtistDiscographyPresentation.empty
 
     var body: some View {
         let _ = favoriteOverrides.values
@@ -53,6 +54,12 @@ struct MusicDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .onChange(of: route) { _, _ in
+            resetRoutePresentation()
+        }
+        .onChange(of: coverArt) { _, _ in
+            palette = .fallback
+        }
         .task(id: route) { await load() }
         .sheet(item: $selectedSong) { song in
             SongActionsSheet(song: song)
@@ -71,13 +78,13 @@ struct MusicDetailView: View {
     }
 
     private var artistHero: some View {
-        ZStack(alignment: .bottomLeading) {
+        let identity = MusicDetailArtworkIdentity(route: route, coverArtID: coverArt)
+        return ZStack(alignment: .bottomLeading) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
+                cacheRevision: identity.cacheRevision,
                 onPalette: { nextPalette in
-                    withAnimation(allowsMotion ? BuFiMotion.color : .none) {
-                        palette = nextPalette
-                    }
+                    receivePalette(nextPalette, for: identity)
                 }
             )
 
@@ -119,15 +126,15 @@ struct MusicDetailView: View {
     }
 
     private var collectionHero: some View {
-        VStack(spacing: 19) {
+        let identity = MusicDetailArtworkIdentity(route: route, coverArtID: coverArt)
+        return VStack(spacing: 19) {
             ArtworkView(
                 coverArt: coverArt,
                 size: 270,
                 cornerRadius: 18,
+                cacheRevision: identity.cacheRevision,
                 onPalette: { nextPalette in
-                    withAnimation(allowsMotion ? BuFiMotion.color : .none) {
-                        palette = nextPalette
-                    }
+                    receivePalette(nextPalette, for: identity)
                 }
             )
             .frame(width: 270, height: 270)
@@ -350,14 +357,14 @@ struct MusicDetailView: View {
     @ViewBuilder
     private var artistDiscography: some View {
         VStack(alignment: .leading, spacing: 24) {
-            if !fullAlbums.isEmpty {
-                albumRail("앨범", albums: fullAlbums)
+            if !discography.fullAlbums.isEmpty {
+                albumRail("앨범", albums: discography.fullAlbums)
             }
-            if !epAlbums.isEmpty {
-                albumRail("EP", albums: epAlbums)
+            if !discography.epAlbums.isEmpty {
+                albumRail("EP", albums: discography.epAlbums)
             }
-            if !singleAlbums.isEmpty {
-                albumRail("싱글", albums: singleAlbums)
+            if !discography.singleAlbums.isEmpty {
+                albumRail("싱글", albums: discography.singleAlbums)
             }
         }
         .padding(.top, 28)
@@ -382,62 +389,6 @@ struct MusicDetailView: View {
         }
     }
 
-    private var fullAlbums: [Album] {
-        sortedAlbums(releaseGroup: .album)
-    }
-
-    private var epAlbums: [Album] {
-        sortedAlbums(releaseGroup: .ep)
-    }
-
-    private var singleAlbums: [Album] {
-        sortedAlbums(releaseGroup: .single)
-    }
-
-    private func sortedAlbums(releaseGroup group: ArtistReleaseGroup) -> [Album] {
-        albums
-            .filter { releaseGroup(for: $0) == group }
-            .sorted {
-                if $0.year != $1.year { return ($0.year ?? 0) > ($1.year ?? 0) }
-                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-            }
-    }
-
-    private func releaseGroup(for album: Album) -> ArtistReleaseGroup {
-        let types = (album.releaseTypes ?? []).map {
-            $0.folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: .current
-            )
-        }
-        if types.contains(where: { $0 == "single" || $0.contains("single") }) {
-            return .single
-        }
-        if types.contains(where: {
-            $0 == "ep" || $0.contains("extended play")
-        }) {
-            return .ep
-        }
-
-        let normalizedName = album.name
-            .folding(
-                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-                locale: .current
-            )
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalizedName.hasSuffix(" - single") ||
-            normalizedName.hasSuffix(" (single)") ||
-            normalizedName.hasSuffix(" [single]") {
-            return .single
-        }
-        if normalizedName.hasSuffix(" - ep") ||
-            normalizedName.hasSuffix(" (ep)") ||
-            normalizedName.hasSuffix(" [ep]") {
-            return .ep
-        }
-        return .album
-    }
-
     @ViewBuilder
     private var songList: some View {
         if songs.isEmpty {
@@ -458,6 +409,7 @@ struct MusicDetailView: View {
                         SongRow(
                             song: song,
                             queue: songs,
+                            queueIndex: index,
                             playbackOrigin: isArtist ? .manual : .album,
                             artworkSize: isArtist ? 54 : 44,
                             layout: rowLayout,
@@ -639,6 +591,20 @@ struct MusicDetailView: View {
         }
     }
 
+    @MainActor
+    private func resetRoutePresentation() {
+        isLoading = true
+        title = ""
+        subtitle = ""
+        coverArt = nil
+        songs = []
+        albums = []
+        artistBiography = ""
+        artistAlbumCount = 0
+        discography = .empty
+        palette = .fallback
+    }
+
     /// `.task(id: route)`는 라우트가 바뀌면 이전 로드 작업을 자동으로 취소한다.
     /// 취소된 작업이 뒤늦게 catch 블록까지 도달하면 "정상적인 실패"처럼
     /// `model.errorMessage`를 띄우거나, 새 라우트가 이미 로딩을 시작한 뒤에
@@ -646,11 +612,17 @@ struct MusicDetailView: View {
     /// 그래서 취소된 경우에는 상태를 건드리지 않고 바로 리턴한다.
     @MainActor
     private func load() async {
+        let loadingRoute = route
         isLoading = true
+        palette = .fallback
+        title = ""
+        subtitle = ""
+        coverArt = nil
         albums = []
         songs = []
         artistBiography = ""
         artistAlbumCount = 0
+        discography = .empty
         do {
             switch route {
             case .album(let album):
@@ -665,6 +637,19 @@ struct MusicDetailView: View {
                     .joined(separator: " · ")
                 coverArt = album.coverArt
                 let detail = try await model.album(id: album.id)
+                guard !Task.isCancelled, route == loadingRoute else { return }
+                if let canonical = detail.album, canonical.id == album.id {
+                    title = canonical.name
+                    subtitle = [
+                        String(localized: "앨범"),
+                        canonical.artist,
+                        canonical.year.map(String.init)
+                    ]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · ")
+                    coverArt = canonical.coverArt
+                }
                 songs = detail.songs
             case .playlist(let playlist):
                 title = playlist.name
@@ -680,6 +665,22 @@ struct MusicDetailView: View {
                 .joined(separator: " · ")
                 coverArt = playlist.coverArt
                 let detail = try await model.playlist(id: playlist.id)
+                guard !Task.isCancelled, route == loadingRoute else { return }
+                if let canonical = detail.playlist,
+                   canonical.id == playlist.id {
+                    title = canonical.name
+                    subtitle = [
+                        String(localized: "플레이리스트"),
+                        canonical.owner,
+                        canonical.songCount.map {
+                            String(format: String(localized: "%d곡"), $0)
+                        }
+                    ]
+                        .compactMap { $0 }
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · ")
+                    coverArt = canonical.coverArt
+                }
                 songs = detail.songs
             case .artist(let artist):
                 title = artist.name
@@ -687,32 +688,140 @@ struct MusicDetailView: View {
                 coverArt = artist.coverArt
                 artistAlbumCount = artist.albumCount ?? 0
                 let detail = try await model.artist(id: artist.id, name: artist.name)
+                guard !Task.isCancelled, route == loadingRoute else { return }
                 coverArt = detail.artist.coverArt ?? coverArt
                 songs = detail.topSongs
                 albums = detail.albums
                 artistAlbumCount = detail.artist.albumCount ?? detail.albums.count
-                artistBiography = (detail.info?.biography ?? "")
-                    .replacingOccurrences(
-                        of: "<[^>]+>",
-                        with: " ",
-                        options: .regularExpression
+                let rawBiography = detail.info?.biography ?? ""
+                let artistAlbums = detail.albums
+                let work = Task.detached(priority: .utility) {
+                    (
+                        ArtistBiographySanitizer.sanitize(rawBiography),
+                        ArtistDiscographyPresentation.make(artistAlbums)
                     )
-                    .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                let preparedArtistContent = await withTaskCancellationHandler {
+                    await work.value
+                } onCancel: {
+                    work.cancel()
+                }
+                guard !Task.isCancelled, route == loadingRoute else { return }
+                artistBiography = preparedArtistContent.0
+                discography = preparedArtistContent.1
             }
         } catch {
             guard !Task.isCancelled else { return }
             model.errorMessage = error.localizedDescription
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, route == loadingRoute else { return }
         isLoading = false
+    }
+
+    private func receivePalette(
+        _ nextPalette: ArtworkPalette,
+        for identity: MusicDetailArtworkIdentity
+    ) {
+        guard identity.route == route,
+              identity.coverArtID == coverArt else { return }
+        withAnimation(allowsMotion ? BuFiMotion.color : .none) {
+            palette = nextPalette
+        }
     }
 }
 
-private enum ArtistReleaseGroup {
+struct MusicDetailArtworkIdentity: Hashable, Sendable {
+    let route: MusicRoute
+    let coverArtID: String?
+
+    var cacheRevision: String {
+        switch route {
+        case .album(let album):
+            "album-\(album.id)-\(coverArtID ?? "")"
+        case .artist(let artist):
+            "artist-\(artist.id)-\(coverArtID ?? "")"
+        case .playlist(let playlist):
+            "playlist-\(playlist.id)-\(coverArtID ?? "")"
+        }
+    }
+}
+
+enum ArtistBiographySanitizer {
+    static func sanitize(_ biography: String) -> String {
+        biography
+            .replacingOccurrences(
+                of: "<[^>]+>",
+                with: " ",
+                options: .regularExpression
+            )
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private enum ArtistReleaseGroup: Hashable {
     case album
     case ep
     case single
+}
+
+private struct ArtistDiscographyPresentation: Sendable {
+    let fullAlbums: [Album]
+    let epAlbums: [Album]
+    let singleAlbums: [Album]
+
+    static let empty = ArtistDiscographyPresentation(
+        fullAlbums: [],
+        epAlbums: [],
+        singleAlbums: []
+    )
+
+    static func make(_ albums: [Album]) -> ArtistDiscographyPresentation {
+        var grouped: [ArtistReleaseGroup: [Album]] = [:]
+        for album in albums {
+            grouped[releaseGroup(for: album), default: []].append(album)
+        }
+        for key in [ArtistReleaseGroup.album, .ep, .single] {
+            grouped[key]?.sort {
+                if $0.year != $1.year { return ($0.year ?? 0) > ($1.year ?? 0) }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        }
+        return ArtistDiscographyPresentation(
+            fullAlbums: grouped[.album] ?? [],
+            epAlbums: grouped[.ep] ?? [],
+            singleAlbums: grouped[.single] ?? []
+        )
+    }
+
+    private static func releaseGroup(for album: Album) -> ArtistReleaseGroup {
+        let types = (album.releaseTypes ?? []).map {
+            $0.folding(
+                options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                locale: .current
+            )
+        }
+        if types.contains(where: { $0 == "single" || $0.contains("single") }) {
+            return .single
+        }
+        if types.contains(where: { $0 == "ep" || $0.contains("extended play") }) {
+            return .ep
+        }
+        let name = album.name.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: .current
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.hasSuffix(" - single") || name.hasSuffix(" (single)")
+            || name.hasSuffix(" [single]") {
+            return .single
+        }
+        if name.hasSuffix(" - ep") || name.hasSuffix(" (ep)")
+            || name.hasSuffix(" [ep]") {
+            return .ep
+        }
+        return .album
+    }
 }
 
 private struct SongActionsSheet: View {

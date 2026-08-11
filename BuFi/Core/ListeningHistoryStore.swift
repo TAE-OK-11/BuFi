@@ -231,6 +231,7 @@ actor ListeningHistoryStore {
     private let storagePrefix = "listening-history-v2"
     private let legacyStoragePrefix = "listening-history-v1"
     private var activeScope: String?
+    private var scopeGeneration: UInt64 = 0
     private var entries: [String: SongBehavior] = [:]
     private var revision: UInt64 = 0
     private var lastStartedSongID: String?
@@ -242,17 +243,39 @@ actor ListeningHistoryStore {
 
     func activate(accountScope: String) async {
         guard activeScope != accountScope else { return }
-        activeScope = accountScope
-        entries = await AppDatabase.shared.loadListeningHistory(scope: accountScope)
-        if entries.isEmpty, let legacyEntries = loadLegacyEntries() {
-            entries = legacyEntries
+        let previousScope = activeScope
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        scopeGeneration &+= 1
+        let generation = scopeGeneration
+        activeScope = nil
+        lastStartedSongID = nil
+
+        if let previousScope {
+            await persist(
+                scope: previousScope,
+                generation: generation,
+                permitsInactiveScope: true
+            )
+            guard generation == scopeGeneration, activeScope == nil else { return }
+        }
+
+        var loaded = await AppDatabase.shared.loadListeningHistory(scope: accountScope)
+        guard generation == scopeGeneration, activeScope == nil else { return }
+        if loaded.isEmpty,
+           let legacyEntries = loadLegacyEntries(accountScope: accountScope) {
+            loaded = legacyEntries
             if await AppDatabase.shared.replaceListeningHistory(
                 legacyEntries,
                 scope: accountScope
             ) {
-                removeLegacyStorage()
+                guard generation == scopeGeneration, activeScope == nil else { return }
+                removeLegacyStorage(accountScope: accountScope)
             }
         }
+        guard generation == scopeGeneration, activeScope == nil else { return }
+        activeScope = accountScope
+        entries = loaded
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
         revision &+= 1
@@ -261,8 +284,17 @@ actor ListeningHistoryStore {
 
     func deactivate(accountScope: String) async {
         guard activeScope == accountScope else { return }
-        await flushPendingWrites()
+        persistenceTask?.cancel()
+        persistenceTask = nil
+        scopeGeneration &+= 1
+        let generation = scopeGeneration
         activeScope = nil
+        await persist(
+            scope: accountScope,
+            generation: generation,
+            permitsInactiveScope: true
+        )
+        guard generation == scopeGeneration, activeScope == nil else { return }
         entries.removeAll(keepingCapacity: false)
         dirtySongIDs.removeAll(keepingCapacity: false)
         deletedSongIDs.removeAll(keepingCapacity: false)
@@ -277,7 +309,12 @@ actor ListeningHistoryStore {
     ) {
         guard activeScope != nil, song.externalStreamURL == nil else { return }
         var value = entries[song.id] ?? SongBehavior(song: song, at: date)
-        value.song = song
+        // A list/recommendation row is provisional until playback's getSong
+        // resolver calls refreshMetadata. Never let a later stale row
+        // downgrade metadata that was already canonicalized in history.
+        if value.song.isStarred != song.isStarred {
+            value.song.starred = song.starred
+        }
         value.playCount += 1
         value.lastPlayed = date
         if lastStartedSongID == song.id {
@@ -303,6 +340,22 @@ actor ListeningHistoryStore {
         entries[song.id] = value
         markDirty(song.id)
         lastStartedSongID = song.id
+        didMutate()
+    }
+
+    /// Refreshes persisted display metadata without changing listening counts.
+    /// Playback calls this after resolving a cached list item through getSong,
+    /// so an old cover-art ID cannot re-enter future mixes through local history.
+    func refreshMetadata(_ song: Song) {
+        guard activeScope != nil,
+              song.externalStreamURL == nil,
+              var value = entries[song.id],
+              value.song != song else {
+            return
+        }
+        value.song = song
+        entries[song.id] = value
+        markDirty(song.id)
         didMutate()
     }
 
@@ -359,7 +412,9 @@ actor ListeningHistoryStore {
             return
         }
         var value = entries[song.id] ?? SongBehavior(song: song, at: Date())
-        value.song = song
+        if value.song.isStarred != song.isStarred {
+            value.song.starred = song.starred
+        }
         value.queueRemovalCount += 1
         entries[song.id] = value
         markDirty(song.id)
@@ -372,7 +427,11 @@ actor ListeningHistoryStore {
             return
         }
         var value = entries[song.id] ?? SongBehavior(song: song, at: Date())
-        value.song = song
+        var storedSong = value.song
+        storedSong.starred = enabled
+            ? (song.starred ?? storedSong.starred ?? Date().ISO8601Format())
+            : nil
+        value.song = storedSong
         value.favoriteCount = max(0, value.favoriteCount + (enabled ? 1 : -1))
         entries[song.id] = value
         markDirty(song.id)
@@ -419,17 +478,10 @@ actor ListeningHistoryStore {
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
         await AppDatabase.shared.clearListeningHistory(scope: scope)
-        removeLegacyStorage()
+        guard activeScope == scope else { return }
+        removeLegacyStorage(accountScope: scope)
         revision &+= 1
         RecommendationMixer.invalidateCache()
-    }
-
-    private var storageKey: String {
-        "\(storagePrefix).\(activeScope ?? "inactive")"
-    }
-
-    private var legacyStorageKey: String {
-        "\(legacyStoragePrefix).\(activeScope ?? "inactive")"
     }
 
     private func didMutate() {
@@ -442,8 +494,23 @@ actor ListeningHistoryStore {
     func flushPendingWrites() async {
         persistenceTask?.cancel()
         persistenceTask = nil
-        guard activeScope != nil else { return }
-        await persist()
+        guard let scope = activeScope else { return }
+        let generation = scopeGeneration
+        while AccountSessionToken(
+            accountScope: scope,
+            generation: generation
+        ).matches(accountScope: activeScope, generation: scopeGeneration),
+              !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty {
+            let beforeDirty = dirtySongIDs
+            let beforeDeleted = deletedSongIDs
+            let beforeRevision = revision
+            await persist(scope: scope, generation: generation)
+            guard dirtySongIDs != beforeDirty
+                    || deletedSongIDs != beforeDeleted
+                    || revision != beforeRevision else {
+                break
+            }
+        }
     }
 
     private func trimEntriesIfNeeded() {
@@ -451,9 +518,16 @@ actor ListeningHistoryStore {
             let retained = entries.values
                 .sorted { $0.lastPlayed > $1.lastPlayed }
                 .prefix(600)
-            let retainedEntries = Dictionary(uniqueKeysWithValues: retained.map {
-                ($0.song.id, $0)
-            })
+            var retainedEntries: [String: SongBehavior] = [:]
+            for value in retained {
+                let id = value.song.id
+                guard !id.isEmpty else { continue }
+                if let existing = retainedEntries[id],
+                   existing.lastPlayed >= value.lastPlayed {
+                    continue
+                }
+                retainedEntries[id] = value
+            }
             deletedSongIDs.formUnion(entries.keys.filter { retainedEntries[$0] == nil })
             dirtySongIDs.subtract(deletedSongIDs)
             entries = retainedEntries
@@ -473,11 +547,25 @@ actor ListeningHistoryStore {
     private func flushScheduledPersistence(scope: String?) async {
         guard activeScope == scope else { return }
         persistenceTask = nil
-        await persist()
+        guard let scope else { return }
+        await persist(scope: scope, generation: scopeGeneration)
     }
 
-    private func persist() async {
-        guard let scope = activeScope,
+    private func persist(
+        scope: String,
+        generation: UInt64,
+        permitsInactiveScope: Bool = false
+    ) async {
+        let token = AccountSessionToken(
+            accountScope: scope,
+            generation: generation
+        )
+        guard (permitsInactiveScope
+                ? activeScope == nil && scopeGeneration == generation
+                : token.matches(
+                    accountScope: activeScope,
+                    generation: scopeGeneration
+                )),
               !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty else { return }
         let dirty = Dictionary(uniqueKeysWithValues: dirtySongIDs.compactMap { id in
             entries[id].map { (id, $0) }
@@ -488,6 +576,12 @@ actor ListeningHistoryStore {
             deletedIDs: deleted,
             scope: scope
         ) else { return }
+        guard permitsInactiveScope
+                ? activeScope == nil && scopeGeneration == generation
+                : token.matches(
+                    accountScope: activeScope,
+                    generation: scopeGeneration
+                ) else { return }
         // The actor can accept a newer playback event while the database write
         // is suspended. Only acknowledge the exact values that were written;
         // otherwise the newer mutation must remain dirty for the next flush.
@@ -504,8 +598,13 @@ actor ListeningHistoryStore {
         deletedSongIDs.remove(songID)
     }
 
-    private func loadLegacyEntries() -> [String: SongBehavior]? {
-        for key in [storageKey, legacyStorageKey] {
+    private func loadLegacyEntries(
+        accountScope: String
+    ) -> [String: SongBehavior]? {
+        for key in [
+            "\(storagePrefix).\(accountScope)",
+            "\(legacyStoragePrefix).\(accountScope)"
+        ] {
             guard let data = UserDefaults.standard.data(forKey: key),
                   let values = try? JSONDecoder().decode(
                       [String: SongBehavior].self,
@@ -516,8 +615,12 @@ actor ListeningHistoryStore {
         return nil
     }
 
-    private func removeLegacyStorage() {
-        UserDefaults.standard.removeObject(forKey: storageKey)
-        UserDefaults.standard.removeObject(forKey: legacyStorageKey)
+    private func removeLegacyStorage(accountScope: String) {
+        UserDefaults.standard.removeObject(
+            forKey: "\(storagePrefix).\(accountScope)"
+        )
+        UserDefaults.standard.removeObject(
+            forKey: "\(legacyStoragePrefix).\(accountScope)"
+        )
     }
 }

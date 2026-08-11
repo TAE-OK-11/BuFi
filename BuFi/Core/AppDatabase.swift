@@ -62,33 +62,39 @@ actor AppDatabase {
                     """,
                     arguments: [scope]
                 )
-                return try Dictionary(uniqueKeysWithValues: rows.map { row in
-                    let songID: String = row["song_id"]
-                    let songData: Data = row["song_data"]
-                    let song = try Self.decode(Song.self, from: songData)
-                    let behavior = SongBehavior(
-                        song: song,
-                        playCount: row["play_count"],
-                        firstPlayed: Self.date(row["first_played"]),
-                        lastPlayed: Self.date(row["last_played"]),
-                        completedCount: row["completed_count"],
-                        skipCount: row["skip_count"],
-                        earlySkipCount: row["early_skip_count"],
-                        repeatedSkipCount: row["repeated_skip_count"],
-                        repeatCount: row["repeat_count"],
-                        manualPlayCount: row["manual_play_count"],
-                        searchPlayCount: row["search_play_count"],
-                        albumSelectionCount: row["album_selection_count"],
-                        playlistPlayCount: row["playlist_play_count"],
-                        autoplayCount: row["autoplay_count"],
-                        queueRemovalCount: row["queue_removal_count"],
-                        playlistAddCount: row["playlist_add_count"],
-                        favoriteCount: row["favorite_count"],
-                        totalCompletion: row["total_completion"],
-                        completionSamples: row["completion_samples"],
-                        consecutiveSkips: row["consecutive_skips"]
-                    )
-                    return (songID, behavior)
+                return Dictionary(uniqueKeysWithValues: rows.compactMap {
+                    row -> (String, SongBehavior)? in
+                    do {
+                        let songID: String = row["song_id"]
+                        let songData: Data = row["song_data"]
+                        let song = try Self.decode(Song.self, from: songData)
+                        guard song.id == songID else { return nil }
+                        let behavior = SongBehavior(
+                            song: song,
+                            playCount: row["play_count"],
+                            firstPlayed: Self.date(row["first_played"]),
+                            lastPlayed: Self.date(row["last_played"]),
+                            completedCount: row["completed_count"],
+                            skipCount: row["skip_count"],
+                            earlySkipCount: row["early_skip_count"],
+                            repeatedSkipCount: row["repeated_skip_count"],
+                            repeatCount: row["repeat_count"],
+                            manualPlayCount: row["manual_play_count"],
+                            searchPlayCount: row["search_play_count"],
+                            albumSelectionCount: row["album_selection_count"],
+                            playlistPlayCount: row["playlist_play_count"],
+                            autoplayCount: row["autoplay_count"],
+                            queueRemovalCount: row["queue_removal_count"],
+                            playlistAddCount: row["playlist_add_count"],
+                            favoriteCount: row["favorite_count"],
+                            totalCompletion: row["total_completion"],
+                            completionSamples: row["completion_samples"],
+                            consecutiveSkips: row["consecutive_skips"]
+                        )
+                        return (songID, behavior)
+                    } catch {
+                        return nil
+                    }
                 })
             }
         } catch {
@@ -112,6 +118,7 @@ actor AppDatabase {
                     )
                 }
                 for (id, value) in values {
+                    guard id == value.song.id else { continue }
                     let songData = try Self.encode(value.song)
                     try db.execute(
                         sql: Self.listeningUpsertSQL,
@@ -150,6 +157,7 @@ actor AppDatabase {
                     arguments: [scope]
                 )
                 for (id, value) in values {
+                    guard id == value.song.id else { continue }
                     let songData = try Self.encode(value.song)
                     try db.execute(
                         sql: Self.listeningUpsertSQL,
@@ -183,6 +191,31 @@ actor AppDatabase {
             )
         }
     }
+
+#if DEBUG
+    @discardableResult
+    func overwriteListeningHistoryPayloadForTesting(
+        _ data: Data,
+        songID: String,
+        scope: String
+    ) async -> Bool {
+        guard let pool else { return false }
+        do {
+            try await pool.write { db in
+                try db.execute(
+                    sql: """
+                    UPDATE listening_behavior SET song_data = ?
+                    WHERE account_scope = ? AND song_id = ?
+                    """,
+                    arguments: [data, scope, songID]
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+#endif
 
     func loadOfflineEntries(scope: String) async -> [String: OfflineDatabaseEntry] {
         guard let pool else { return [:] }
@@ -501,16 +534,24 @@ actor AppDatabase {
         }
     }
 
-    func loadQueue() async -> QueueSnapshot? {
+    func loadQueue(scope: String) async -> QueueSnapshot? {
         guard let pool else { return nil }
         do {
             return try await pool.read { db in
-                guard let state = try Row.fetchOne(db, sql: "SELECT * FROM queue_state WHERE id = 1") else {
+                guard let state = try Row.fetchOne(
+                    db,
+                    sql: "SELECT * FROM queue_state WHERE account_scope = ?",
+                    arguments: [scope]
+                ) else {
                     return nil
                 }
                 let itemRows = try Row.fetchAll(
                     db,
-                    sql: "SELECT song_data FROM queue_item ORDER BY position"
+                    sql: """
+                    SELECT song_data FROM queue_item
+                    WHERE account_scope = ? ORDER BY position
+                    """,
+                    arguments: [scope]
                 )
                 let songs = try itemRows.map { row in
                     try Self.decode(Song.self, from: row["song_data"] as Data)
@@ -533,34 +574,51 @@ actor AppDatabase {
     @discardableResult
     func saveQueue(
         _ snapshot: QueueSnapshot,
+        scope: String,
         replacingItems: Bool = true
     ) async -> Bool {
         guard let pool else { return false }
         do {
             try await pool.write { db in
                 guard !snapshot.queue.isEmpty else {
-                    try db.execute(sql: "DELETE FROM queue_item")
-                    try db.execute(sql: "DELETE FROM queue_state")
+                    try db.execute(
+                        sql: "DELETE FROM queue_state WHERE account_scope = ?",
+                        arguments: [scope]
+                    )
                     return
                 }
                 try db.execute(
                     sql: """
-                    INSERT OR REPLACE INTO queue_state
-                        (id, current_song_id, current_index, elapsed, shuffle, repeat_mode, updated_at)
-                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO queue_state
+                        (account_scope, current_song_id, current_index, elapsed,
+                         shuffle, repeat_mode, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_scope) DO UPDATE SET
+                        current_song_id = excluded.current_song_id,
+                        current_index = excluded.current_index,
+                        elapsed = excluded.elapsed,
+                        shuffle = excluded.shuffle,
+                        repeat_mode = excluded.repeat_mode,
+                        updated_at = excluded.updated_at
                     """,
                     arguments: [
-                        snapshot.currentID, snapshot.index, snapshot.elapsed,
+                        scope, snapshot.currentID, snapshot.index, snapshot.elapsed,
                         snapshot.shuffle, snapshot.repeatMode.rawValue,
                         Date().timeIntervalSince1970
                     ]
                 )
                 guard replacingItems else { return }
-                try db.execute(sql: "DELETE FROM queue_item")
+                try db.execute(
+                    sql: "DELETE FROM queue_item WHERE account_scope = ?",
+                    arguments: [scope]
+                )
                 for (position, song) in snapshot.queue.enumerated() {
                     try db.execute(
-                        sql: "INSERT INTO queue_item (position, song_data) VALUES (?, ?)",
-                        arguments: [position, try Self.encode(song)]
+                        sql: """
+                        INSERT INTO queue_item
+                            (account_scope, position, song_data) VALUES (?, ?, ?)
+                        """,
+                        arguments: [scope, position, try Self.encode(song)]
                     )
                 }
             }
@@ -570,10 +628,12 @@ actor AppDatabase {
         }
     }
 
-    func clearQueue() async {
+    func clearQueue(scope: String) async {
         try? await pool?.write { db in
-            try db.execute(sql: "DELETE FROM queue_item")
-            try db.execute(sql: "DELETE FROM queue_state")
+            try db.execute(
+                sql: "DELETE FROM queue_state WHERE account_scope = ?",
+                arguments: [scope]
+            )
         }
     }
 
@@ -800,6 +860,31 @@ actor AppDatabase {
                     );
                 CREATE INDEX artwork_palette_cache_global_lru
                     ON artwork_palette_cache(last_accessed_at DESC);
+                """)
+        }
+        migrator.registerMigration("scope-play-queue-v4") { db in
+            // The v1 queue had no account owner. It is safer to discard that
+            // one legacy snapshot than to expose it after a different login.
+            try db.execute(sql: """
+                DROP TABLE queue_item;
+                DROP TABLE queue_state;
+                CREATE TABLE queue_state (
+                    account_scope TEXT PRIMARY KEY NOT NULL,
+                    current_song_id TEXT,
+                    current_index INTEGER NOT NULL,
+                    elapsed DOUBLE NOT NULL,
+                    shuffle INTEGER NOT NULL,
+                    repeat_mode TEXT NOT NULL,
+                    updated_at DOUBLE NOT NULL
+                ) WITHOUT ROWID;
+                CREATE TABLE queue_item (
+                    account_scope TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    song_data BLOB NOT NULL,
+                    PRIMARY KEY (account_scope, position),
+                    FOREIGN KEY (account_scope) REFERENCES queue_state(account_scope)
+                        ON DELETE CASCADE
+                ) WITHOUT ROWID;
                 """)
         }
         return migrator

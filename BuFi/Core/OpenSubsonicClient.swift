@@ -29,6 +29,91 @@ enum OpenSubsonicError: LocalizedError, Equatable {
     }
 }
 
+enum PlaylistAffinityRanking {
+    private struct FirstPosition: Comparable {
+        let playlist: Int
+        let song: Int
+
+        static func < (lhs: FirstPosition, rhs: FirstPosition) -> Bool {
+            lhs.playlist == rhs.playlist
+                ? lhs.song < rhs.song
+                : lhs.playlist < rhs.playlist
+        }
+    }
+
+    static func rank(
+        _ values: [(playlistIndex: Int, songs: [Song])],
+        limit: Int
+    ) -> [Song] {
+        guard limit > 0 else { return [] }
+        var appearances: [String: Int] = [:]
+        var songsByID: [String: Song] = [:]
+        var firstPositions: [String: FirstPosition] = [:]
+        for (playlistIndex, playlistSongs) in values.sorted(by: {
+            $0.playlistIndex < $1.playlistIndex
+        }) {
+            var seenInPlaylist = Set<String>()
+            for (songIndex, song) in playlistSongs.enumerated()
+                where seenInPlaylist.insert(song.id).inserted {
+                appearances[song.id, default: 0] += 1
+                if songsByID[song.id] == nil {
+                    songsByID[song.id] = song
+                    firstPositions[song.id] = FirstPosition(
+                        playlist: playlistIndex,
+                        song: songIndex
+                    )
+                }
+            }
+        }
+        return Array(
+            songsByID.values.sorted { lhs, rhs in
+                let leftAppearances = appearances[lhs.id, default: 0]
+                let rightAppearances = appearances[rhs.id, default: 0]
+                if leftAppearances != rightAppearances {
+                    return leftAppearances > rightAppearances
+                }
+                let leftPlayCount = lhs.playCount ?? 0
+                let rightPlayCount = rhs.playCount ?? 0
+                if leftPlayCount != rightPlayCount {
+                    return leftPlayCount > rightPlayCount
+                }
+                let leftPosition = firstPositions[lhs.id]
+                    ?? FirstPosition(playlist: .max, song: .max)
+                let rightPosition = firstPositions[rhs.id]
+                    ?? FirstPosition(playlist: .max, song: .max)
+                if leftPosition != rightPosition {
+                    return leftPosition < rightPosition
+                }
+                return lhs.id < rhs.id
+            }
+            .prefix(limit)
+        )
+    }
+}
+
+enum AlbumSongMetadataResolver {
+    static func resolve(
+        songs: [Song],
+        albumID: String,
+        coverArt: String?
+    ) -> [Song] {
+        guard let coverArt = coverArt?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !coverArt.isEmpty else {
+            return songs
+        }
+        return songs.map { song in
+            guard song.artworkID == nil,
+                  song.albumId == nil || song.albumId == albumID else {
+                return song
+            }
+            var resolved = song
+            resolved.coverArt = coverArt
+            return resolved
+        }
+    }
+}
+
 actor OpenSubsonicClient {
     static let apiVersion = "1.16.1"
     static let clientName = "BuFi"
@@ -39,12 +124,15 @@ actor OpenSubsonicClient {
     )
 
     let credentials: ServerCredentials
+    let accountScope: String
     private let session: URLSession
     private let decoder: JSONDecoder
     private let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
     private var supportedExtensions: Set<String>?
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
+    private var mutationEpoch: UInt64 = 0
+    private var mutationsInFlight = 0
 
     private enum RequestSemantics {
         case readOnly
@@ -54,9 +142,15 @@ actor OpenSubsonicClient {
     private struct ReadRequestKey: Hashable, Sendable {
         let endpoint: String
         let queryItems: [String]
+        let mutationEpoch: UInt64
 
-        init(endpoint: String, queryItems: [URLQueryItem]) {
+        init(
+            endpoint: String,
+            queryItems: [URLQueryItem],
+            mutationEpoch: UInt64
+        ) {
             self.endpoint = endpoint
+            self.mutationEpoch = mutationEpoch
             self.queryItems = queryItems
                 .map { "\($0.name)=\($0.value ?? "")" }
                 .sorted()
@@ -105,11 +199,13 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.insecureServerURL
         }
         let username = credentials.username.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.credentials = ServerCredentials(
+        let normalizedCredentials = ServerCredentials(
             serverURL: normalized.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
             username: username,
             password: credentials.password
         )
+        self.credentials = normalizedCredentials
+        self.accountScope = AccountScope.identifier(for: normalizedCredentials)
         self.swiftSonic = SwiftSonicClient(
             configuration: ServerConfiguration(
                 serverURL: normalized,
@@ -253,9 +349,12 @@ actor OpenSubsonicClient {
         let cacheLifetime = Self.responseCacheLifetime(for: endpoint)
         do {
             let response: HTTPResponseData
+            let requestEpoch: UInt64
             switch semantics {
             case .readOnly:
-                if cacheLifetime > 0,
+                requestEpoch = mutationEpoch
+                if mutationsInFlight == 0,
+                   cacheLifetime > 0,
                    let cached = cachedResponse(
                     for: cacheKey,
                     lifetime: cacheLifetime
@@ -266,10 +365,15 @@ actor OpenSubsonicClient {
                     from: url,
                     key: ReadRequestKey(
                         endpoint: endpoint,
-                        queryItems: queryItems
+                        queryItems: queryItems,
+                        mutationEpoch: requestEpoch
                     )
                 )
             case .mutation:
+                mutationsInFlight += 1
+                mutationEpoch &+= 1
+                requestEpoch = mutationEpoch
+                clearResponseCache()
                 response = try await responseData(
                     from: url,
                     allowsRetry: false
@@ -277,17 +381,26 @@ actor OpenSubsonicClient {
             }
             let payload: Payload = try decodeResponse(response)
             switch semantics {
-            case .readOnly where cacheLifetime > 0:
+            case .readOnly where mutationsInFlight == 0
+                    && cacheLifetime > 0
+                    && mutationEpoch == requestEpoch:
                 // Store only a body that decoded into the endpoint's expected
                 // payload, never an HTTP or schema error response.
                 storeResponse(response.data, for: cacheKey)
             case .mutation:
+                mutationsInFlight = max(0, mutationsInFlight - 1)
+                mutationEpoch &+= 1
                 clearResponseCache()
             default:
                 break
             }
             return payload
         } catch {
+            if case .mutation = semantics {
+                mutationsInFlight = max(0, mutationsInFlight - 1)
+                mutationEpoch &+= 1
+                clearResponseCache()
+            }
             logFailure(error, endpoint: endpoint)
             throw error
         }
@@ -342,7 +455,11 @@ actor OpenSubsonicClient {
         do {
             let response = try await coalescedReadResponse(
                 from: url,
-                key: ReadRequestKey(endpoint: endpoint, queryItems: [])
+                key: ReadRequestKey(
+                    endpoint: endpoint,
+                    queryItems: [],
+                    mutationEpoch: mutationEpoch
+                )
             )
             guard (200..<300).contains(response.response.statusCode) else {
                 throw OpenSubsonicError.http(response.response.statusCode)
@@ -1021,18 +1138,18 @@ actor OpenSubsonicClient {
             let normalizedAlbum = candidate.album.map(Self.normalized)
             guard !normalizedTitle.isEmpty else { continue }
             let localMatch = library.first { song in
+                guard let recordingMBID = candidate.recordingMBID else {
+                    return false
+                }
+                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
+                    == .orderedSame
+            } ?? library.first { song in
                 Self.matchesExternalMetadata(
                     song,
                     title: normalizedTitle,
                     artist: normalizedArtist,
                     album: normalizedAlbum
                 )
-            } ?? library.first { song in
-                guard let recordingMBID = candidate.recordingMBID else {
-                    return false
-                }
-                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
-                    == .orderedSame
             } ?? library.first { song in
                 Self.matchesExternalMetadata(
                     song,
@@ -1048,13 +1165,6 @@ actor OpenSubsonicClient {
                 let query = "\(candidate.artist) \(candidate.title)"
                 guard let results = try? await search(query) else { continue }
                 match = results.songs.first { song in
-                    Self.matchesExternalMetadata(
-                        song,
-                        title: normalizedTitle,
-                        artist: normalizedArtist,
-                        album: normalizedAlbum
-                    )
-                } ?? results.songs.first { song in
                     guard let recordingMBID = candidate.recordingMBID else {
                         return false
                     }
@@ -1065,10 +1175,15 @@ actor OpenSubsonicClient {
                         song,
                         title: normalizedTitle,
                         artist: normalizedArtist,
-                        album: nil
+                        album: normalizedAlbum
                     )
                 } ?? results.songs.first { song in
-                    Self.normalized(song.title).contains(normalizedTitle)
+                    Self.matchesExternalMetadata(
+                        song,
+                        title: normalizedTitle,
+                        artist: normalizedArtist,
+                        album: nil
+                    )
                 }
             }
             if let match, ids.insert(match.id).inserted {
@@ -1297,36 +1412,22 @@ actor OpenSubsonicClient {
     ) async -> [Song] {
         guard !playlists.isEmpty else { return fallback }
         let values = await withTaskGroup(
-            of: [Song].self,
-            returning: [[Song]].self
+            of: (Int, [Song]).self,
+            returning: [(Int, [Song])].self
         ) { group in
-            for playlist in playlists.prefix(3) {
+            for (index, playlist) in playlists.prefix(3).enumerated() {
                 group.addTask { [self] in
-                    (try? await self.playlist(id: playlist.id))?.songs ?? []
+                    (
+                        index,
+                        (try? await self.playlist(id: playlist.id))?.songs ?? []
+                    )
                 }
             }
-            var result: [[Song]] = []
+            var result: [(Int, [Song])] = []
             for await value in group { result.append(value) }
             return result
         }
-        var appearances: [String: Int] = [:]
-        var songsByID: [String: Song] = [:]
-        for playlistSongs in values {
-            var seenInPlaylist = Set<String>()
-            for song in playlistSongs
-                where seenInPlaylist.insert(song.id).inserted {
-                appearances[song.id, default: 0] += 1
-                songsByID[song.id] = song
-            }
-        }
-        let songs = songsByID.values.sorted {
-            let left = appearances[$0.id, default: 0]
-            let right = appearances[$1.id, default: 0]
-            if left == right {
-                return ($0.playCount ?? 0) > ($1.playCount ?? 0)
-            }
-            return left > right
-        }
+        let songs = PlaylistAffinityRanking.rank(values, limit: count)
         return songs.isEmpty ? fallback : Array(songs.prefix(count))
     }
 
@@ -1420,7 +1521,7 @@ actor OpenSubsonicClient {
         var mbids = Set<String>()
         var metadata = Set<String>()
         return songs.filter { song in
-            guard ids.insert(song.id).inserted else { return false }
+            guard !song.id.isEmpty, !ids.contains(song.id) else { return false }
             let mbid = normalized(song.musicBrainzId ?? "")
             let identity = [
                 normalized(song.title),
@@ -1433,6 +1534,7 @@ actor OpenSubsonicClient {
             if metadata.contains(identity) {
                 return false
             }
+            ids.insert(song.id)
             if !mbid.isEmpty { mbids.insert(mbid) }
             metadata.insert(identity)
             return true
@@ -1520,30 +1622,102 @@ actor OpenSubsonicClient {
     func album(id: String) async throws -> AlbumDetail {
         let payload: AlbumPayload = try await readRequest("getAlbum", parameters: ["id": id])
         guard let value = payload.album else { throw OpenSubsonicError.invalidResponse }
-        return AlbumDetail(songs: value.song ?? [])
+        let albumID = value.id ?? id
+        let songs = AlbumSongMetadataResolver.resolve(
+            songs: value.song ?? [],
+            albumID: albumID,
+            coverArt: value.coverArt
+        )
+        let album = value.name.map {
+            Album(
+                id: albumID,
+                name: $0,
+                artist: value.artist ?? "",
+                coverArt: value.coverArt,
+                year: value.year,
+                starred: value.starred,
+                songCount: value.songCount ?? songs.count
+            )
+        }
+        return AlbumDetail(songs: songs, album: album)
+    }
+
+    /// Returns the server's current canonical metadata for one song. List and
+    /// recommendation responses can have different cache ages; resolving the
+    /// selected item through getSong gives playback one authoritative source
+    /// for song ID, cover-art ID, duration, and media format.
+    func song(id: String) async throws -> Song {
+        let payload: SongPayload = try await readRequest(
+            "getSong",
+            parameters: ["id": id]
+        )
+        guard let song = payload.song, song.id == id else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        return song
+    }
+
+    /// Canonical API boundary for an active playback occurrence. The caller's
+    /// UUID survives metadata refresh, while all server-owned media fields are
+    /// replaced together from one `getSong` response.
+    func playbackMedia(
+        for provisional: Song,
+        occurrenceID: UUID
+    ) async throws -> PlaybackMediaItem {
+        var canonical = try await song(id: provisional.id)
+        canonical.starred = provisional.starred
+        if canonical.artworkID == nil,
+           provisional.artworkID != nil,
+           let albumID = canonical.albumId,
+           albumID == provisional.albumId {
+            canonical.coverArt = provisional.artworkID
+        }
+        return PlaybackMediaItem(
+            song: canonical,
+            accountScope: accountScope,
+            occurrenceID: occurrenceID
+        )
     }
 
     func playlist(id: String) async throws -> PlaylistDetail {
         let payload: PlaylistPayload = try await readRequest("getPlaylist", parameters: ["id": id])
         guard let value = payload.playlist else { throw OpenSubsonicError.invalidResponse }
-        return PlaylistDetail(songs: value.entry ?? [])
+        let songs = value.entry ?? []
+        let playlist = value.name.map {
+            Playlist(
+                id: value.id ?? id,
+                name: $0,
+                owner: value.owner,
+                songCount: value.songCount ?? songs.count,
+                coverArt: value.coverArt
+            )
+        }
+        return PlaylistDetail(songs: songs, playlist: playlist)
     }
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
         let usesArtistID = await supportsExtension("topSongsByArtistId")
-        async let albumsPayload: ArtistAlbumsPayload = readRequest("getArtist", parameters: ["id": id])
-        async let topPayload: TopSongsPayload = readRequest(
-            "getTopSongs",
-            parameters: usesArtistID
-                ? ["id": id, "artist": name, "count": "20"]
-                : ["artist": name, "count": "20"]
+        async let albumsPayload: ArtistAlbumsPayload = readRequest(
+            "getArtist",
+            parameters: ["id": id]
         )
         async let infoPayload: ArtistInfoPayload? = bestEffortRequest(
             "getArtistInfo2",
             parameters: ["id": id, "count": "8", "includeNotPresent": "false"]
         )
-        let (albums, top, info) = try await (albumsPayload, topPayload, infoPayload)
-        guard let artist = albums.artist else { throw OpenSubsonicError.invalidResponse }
+        let albums = try await albumsPayload
+        guard let artist = albums.artist else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        // Servers without topSongsByArtistId use the artist name as identity.
+        // Use getArtist's authoritative name rather than a stale route label.
+        let top: TopSongsPayload = try await readRequest(
+            "getTopSongs",
+            parameters: usesArtistID
+                ? ["id": id, "artist": artist.name, "count": "20"]
+                : ["artist": artist.name, "count": "20"]
+        )
+        let info = try await infoPayload
         return ArtistDetail(
             artist: artist.artistValue,
             albums: artist.album ?? [],
@@ -1584,13 +1758,9 @@ actor OpenSubsonicClient {
     }
 
     func trimTransientNetworkCaches() {
-        for request in inFlightReadRequests.values {
-            request.task.cancel()
-            request.waiters.values.forEach {
-                $0.resume(throwing: CancellationError())
-            }
-        }
-        inFlightReadRequests.removeAll(keepingCapacity: false)
+        // Memory pressure should not turn a visible, awaited request into a
+        // user-facing cancellation. Shared transfers are released naturally
+        // when their last waiter goes away.
         clearResponseCache()
     }
 
@@ -1602,18 +1772,10 @@ actor OpenSubsonicClient {
         let requestedFormat = compatibilityFormat ?? quality.parameters["format"]
         let requestedBitRate: Int?
         if let compatibilityFormat {
-            switch compatibilityFormat.lowercased() {
-            case "aac":
-                requestedBitRate = quality == .aac320 ? 320 : 256
-            case "opus":
-                requestedBitRate = 160
-            case "mp3":
-                requestedBitRate = 256
-            case "raw":
-                requestedBitRate = nil
-            default:
-                requestedBitRate = 256
-            }
+            requestedBitRate = Self.compatibilityBitRate(
+                for: quality,
+                format: compatibilityFormat
+            )
         } else if let value = quality.parameters["maxBitRate"], let bitRate = Int(value), bitRate > 0 {
             requestedBitRate = bitRate
         } else {
@@ -1628,6 +1790,20 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.insecureServerURL
         }
         return url
+    }
+
+    static func compatibilityBitRate(
+        for quality: StreamQuality,
+        format: String
+    ) -> Int? {
+        let constrainedFallbackBitRate = quality == .opus160 ? 160 : 256
+        return switch format.lowercased() {
+        case "aac": quality == .aac320 ? 320 : constrainedFallbackBitRate
+        case "opus": 160
+        case "mp3": constrainedFallbackBitRate
+        case "raw": nil
+        default: constrainedFallbackBitRate
+        }
     }
 
     func coverURL(id: String, size: Int = 600) throws -> URL {

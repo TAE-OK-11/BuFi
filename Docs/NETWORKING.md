@@ -11,6 +11,9 @@ radio scheduling, and background behavior integrated with iOS.
   discovery. HTTP/2 remains the automatic fallback.
 - Last.fm and ListenBrainz recommendation requests use the same HTTP/3-first,
   HTTPS-only redirect, connection-reuse, and cache policy as first-party JSON.
+  They advertise zstd for JSON responses, decode it through the same bounded
+  decoder, and retry once without zstd when an origin or intermediary returns
+  an invalid zstd body.
 - TLS 1.3 is negotiated automatically when the origin supports it. App Transport
   Security and the HTTPS-only redirect delegate keep cleartext and downgrade
   redirects out of authenticated traffic.
@@ -25,6 +28,12 @@ radio scheduling, and background behavior integrated with iOS.
 - Offline media downloads use HTTP/3 racing but explicitly request `identity`
   content coding. Audio is already compressed, and preserving byte identity is
   necessary for reliable range requests, seeking, and resume offsets.
+- Active AVPlayer streams continue to request byte-identical compressed audio;
+  applying HTTP content compression to AAC, MP3, Opus, or FLAC would add CPU
+  cost while breaking reliable range/seek semantics. BuFi instead reacts to
+  path loss and restoration, gives the active stream priority over prefetch,
+  and moves to a bandwidth-bounded compatibility format after bounded
+  same-format transport retries.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's own scoped image
   and offline caches remain in control.
