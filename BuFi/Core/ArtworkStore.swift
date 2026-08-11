@@ -394,6 +394,10 @@ actor ArtworkStore {
         // policy reapplication, and transport metrics also cover artwork CDNs.
         dataLoader.delegate = HTTPSOnlyURLSessionDelegate()
         configuration.dataLoader = dataLoader
+        // Nuke defaults to ImageCache.shared. A pipeline can outlive an account
+        // switch while finishing a request, so each account-scoped pipeline
+        // must own its decoded-memory cache just as it owns its disk cache.
+        configuration.imageCache = ImageCache()
         configuration.maximumResponseDataSize = 32 * 1_024 * 1_024
         configuration.isTaskCoalescingEnabled = true
         configuration.isProgressiveDecodingEnabled = false

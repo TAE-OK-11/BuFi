@@ -433,6 +433,34 @@ final class RecommendationEngineTests: XCTestCase {
         XCTAssertTrue(second.allSatisfy { $0.songs.map(\.id) == [secondSong.id] })
     }
 
+    func testPersonalizedMixPrefersServerMetadataOverPersistedHistory() {
+        var staleHistory = song(
+            id: "same-id",
+            title: "Old Title",
+            artist: "Artist"
+        )
+        staleHistory.coverArt = "old-cover"
+        var serverSong = staleHistory
+        serverSong.title = "Current Title"
+        serverSong.coverArt = "current-cover"
+
+        let mixes = PersonalizedMixBuilder.make(
+            snapshot: HomeSnapshot(
+                serverRecommendedSongs: [serverSong],
+                mostPlayedSongs: [staleHistory]
+            ),
+            date: Date(timeIntervalSince1970: 1_800_000_000),
+            songLimit: 1
+        )
+
+        XCTAssertFalse(mixes.isEmpty)
+        XCTAssertTrue(mixes.allSatisfy { mix in
+            mix.songs.allSatisfy {
+                $0.title == "Current Title" && $0.artworkID == "current-cover"
+            }
+        })
+    }
+
     func testArtistMixPreferencesDeduplicateAndKeepFourRecentArtists() {
         var encoded = "[]"
         for artist in ["A", "B", "C", "D", "E", "B"] {

@@ -442,7 +442,7 @@ struct HomePresentation: Sendable {
             taylor = Artist(
                 id: artistID,
                 name: "Taylor Swift",
-                coverArt: album.coverArt,
+                coverArt: nil,
                 albumCount: nil,
                 starred: nil
             )
@@ -456,7 +456,7 @@ struct HomePresentation: Sendable {
             taylor = Artist(
                 id: artistID,
                 name: "Taylor Swift",
-                coverArt: song.coverArt,
+                coverArt: nil,
                 albumCount: nil,
                 starred: nil
             )

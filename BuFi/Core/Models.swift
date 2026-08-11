@@ -79,6 +79,60 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
 
     var isStarred: Bool { starred != nil }
     var safeDuration: Double { max(0, duration ?? 0) }
+
+    /// OpenSubsonic identifiers are opaque, but an empty or whitespace-only
+    /// `coverArt` value is equivalent to no artwork. Keeping one normalized
+    /// identity prevents visually identical missing values from producing
+    /// different cache and SwiftUI task identities.
+    var artworkID: String? {
+        guard let value = coverArt?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+}
+
+extension Song {
+    private enum CodingKeys: String, CodingKey {
+        case id, title, artist, album, artistId, albumId, coverArt, duration
+        case track, suffix, contentType, starred, playCount, played, genre
+        case genres, musicBrainzId, isrc, bpm, moods, created
+        case externalStreamURL
+    }
+
+    /// OpenSubsonic Child allows artist and album to be omitted. Decoding them
+    /// as empty display values keeps one incomplete child from invalidating an
+    /// otherwise usable search, playlist, or home response.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        title = try values.decodeIfPresent(String.self, forKey: .title) ?? ""
+        artist = try values.decodeIfPresent(String.self, forKey: .artist) ?? ""
+        album = try values.decodeIfPresent(String.self, forKey: .album) ?? ""
+        artistId = try values.decodeIfPresent(String.self, forKey: .artistId)
+        albumId = try values.decodeIfPresent(String.self, forKey: .albumId)
+        coverArt = try values.decodeIfPresent(String.self, forKey: .coverArt)
+        duration = try values.decodeIfPresent(Double.self, forKey: .duration)
+        track = try values.decodeIfPresent(Int.self, forKey: .track)
+        suffix = try values.decodeIfPresent(String.self, forKey: .suffix)
+        contentType = try values.decodeIfPresent(String.self, forKey: .contentType)
+        starred = try values.decodeIfPresent(String.self, forKey: .starred)
+        playCount = try values.decodeIfPresent(Int.self, forKey: .playCount)
+        played = try values.decodeIfPresent(String.self, forKey: .played)
+        genre = try values.decodeIfPresent(String.self, forKey: .genre)
+        genres = try values.decodeIfPresent([SongGenre].self, forKey: .genres)
+        musicBrainzId = try values.decodeIfPresent(String.self, forKey: .musicBrainzId)
+        isrc = try values.decodeIfPresent([String].self, forKey: .isrc)
+        bpm = try values.decodeIfPresent(Int.self, forKey: .bpm)
+        moods = try values.decodeIfPresent([String].self, forKey: .moods)
+        created = try values.decodeIfPresent(String.self, forKey: .created)
+        externalStreamURL = try values.decodeIfPresent(
+            String.self,
+            forKey: .externalStreamURL
+        )
+    }
 }
 
 struct SongGenre: Codable, Hashable, Sendable {
@@ -268,6 +322,10 @@ struct RandomSongsPayload: Decodable {
     let randomSongs: SongContainer?
 }
 
+struct SongPayload: Decodable {
+    let song: Song?
+}
+
 struct SongsByGenrePayload: Decodable {
     let songsByGenre: SongContainer?
 }
@@ -344,6 +402,8 @@ struct AlbumPayload: Decodable {
 }
 
 struct AlbumWithSongs: Decodable {
+    let id: String?
+    let coverArt: String?
     let song: [Song]?
 }
 

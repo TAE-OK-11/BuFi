@@ -393,6 +393,7 @@ final class AppModel: ObservableObject {
             } catch {
                 guard let self, generation == self.searchGeneration, self.client === client else { return }
                 self.isSearching = false
+                self.searchResults = .empty
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -420,6 +421,7 @@ final class AppModel: ObservableObject {
         } catch {
             guard generation == searchGeneration, self.client === client else { return }
             isSearching = false
+            searchResults = .empty
             errorMessage = error.localizedDescription
         }
     }
@@ -441,7 +443,14 @@ final class AppModel: ObservableObject {
 
     func playRadio(from seed: Song) async {
         guard let client else { return }
+        let generation = sessionGeneration
+        let accountScope = client.accountScope
         let radioSongs = await client.radioQueue(seed: seed)
+        guard generation == sessionGeneration,
+              self.client === client,
+              client.accountScope == accountScope else {
+            return
+        }
         let values = radioSongs.map(applyingFavoriteOverride)
         guard !values.isEmpty else {
             errorMessage = String(localized: "이 곡과 비슷한 음악을 서버에서 찾지 못했습니다.")
@@ -809,8 +818,21 @@ final class AppModel: ObservableObject {
     }
 
     func artworkURL(id: String?, size: Int = 600) async -> URL? {
-        guard let id, !id.isEmpty, let client else { return nil }
-        return try? await client.coverURL(id: id, size: size)
+        guard let id = id?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !id.isEmpty,
+              let client else {
+            return nil
+        }
+        let generation = sessionGeneration
+        let url = try? await client.coverURL(id: id, size: size)
+        guard generation == sessionGeneration, self.client === client else {
+            return nil
+        }
+        return url
+    }
+
+    var artworkContextID: String {
+        "\(sessionGeneration):\(client?.accountScope ?? "signed-out")"
     }
 
     func isStarred(_ song: Song) -> Bool {
@@ -1383,65 +1405,78 @@ final class AppModel: ObservableObject {
 
     private func updateStarredSong(_ song: Song, enabled: Bool) {
         favoriteOverrides[starKey(id: song.id, target: .song)] = enabled
-        var updated = song
-        updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
+        let starredValue = enabled
+            ? Self.starDateFormatter.string(from: Date())
+            : nil
+        func updatingFavorite(_ value: Song) -> Song {
+            guard value.id == song.id else { return value }
+            var result = value
+            result.starred = starredValue
+            return result
+        }
         var snapshot = home
+        let freshestKnownSong = searchResults.songs.first { $0.id == song.id }
+            ?? snapshot.randomSongs.first { $0.id == song.id }
+            ?? snapshot.serverRecommendedSongs.first { $0.id == song.id }
+            ?? snapshot.starredSongs.first { $0.id == song.id }
+            ?? song
+        let updated = updatingFavorite(freshestKnownSong)
         snapshot.starredSongs.removeAll { $0.id == song.id }
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
-        snapshot.randomSongs = snapshot.randomSongs.map { $0.id == song.id ? updated : $0 }
+        snapshot.randomSongs = snapshot.randomSongs.map(updatingFavorite)
         snapshot.sonicRecommendedSongs = snapshot.sonicRecommendedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.similarArtistSongs = snapshot.similarArtistSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.genreRecommendedSongs = snapshot.genreRecommendedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.topArtistSongs = snapshot.topArtistSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.recentlyAddedSongs = snapshot.recentlyAddedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.popularSongs = snapshot.popularSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.playlistAffinitySongs = snapshot.playlistAffinitySongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.recommendedSongs = snapshot.recommendedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.serverRecommendedSongs = snapshot.serverRecommendedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.lastFMRecommendedSongs = snapshot.lastFMRecommendedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.listenBrainzRecommendedSongs = snapshot.listenBrainzRecommendedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.daylistSongs = snapshot.daylistSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.offlineBackupSongs = snapshot.offlineBackupSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
-            $0.id == song.id ? updated : $0
+            updatingFavorite($0)
         }
         publishHome(snapshot)
 
         if searchResults.songs.contains(where: { $0.id == song.id }) {
             var results = searchResults
-            results.songs = results.songs.map { $0.id == song.id ? updated : $0 }
+            results.songs = results.songs.map(updatingFavorite)
             searchResults = results
         }
 
         for key in Array(albumDetailCache.keys) {
             guard let cached = albumDetailCache[key] else { continue }
-            let songs = cached.value.songs.map { $0.id == song.id ? updated : $0 }
+            let songs = cached.value.songs.map(updatingFavorite)
             albumDetailCache[key] = CachedValue(
                 value: AlbumDetail(songs: songs),
                 expiresAt: cached.expiresAt
@@ -1449,7 +1484,7 @@ final class AppModel: ObservableObject {
         }
         for key in Array(playlistDetailCache.keys) {
             guard let cached = playlistDetailCache[key] else { continue }
-            let songs = cached.value.songs.map { $0.id == song.id ? updated : $0 }
+            let songs = cached.value.songs.map(updatingFavorite)
             playlistDetailCache[key] = CachedValue(
                 value: PlaylistDetail(songs: songs),
                 expiresAt: cached.expiresAt
@@ -1458,7 +1493,7 @@ final class AppModel: ObservableObject {
         for key in Array(artistDetailCache.keys) {
             guard let cached = artistDetailCache[key] else { continue }
             var detail = cached.value
-            detail.topSongs = detail.topSongs.map { $0.id == song.id ? updated : $0 }
+            detail.topSongs = detail.topSongs.map(updatingFavorite)
             artistDetailCache[key] = CachedValue(
                 value: detail,
                 expiresAt: cached.expiresAt
@@ -1468,30 +1503,43 @@ final class AppModel: ObservableObject {
 
     private func updateStarredAlbum(_ album: Album, enabled: Bool) {
         favoriteOverrides[starKey(id: album.id, target: .album)] = enabled
-        var updated = album
-        updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
+        let starredValue = enabled
+            ? Self.starDateFormatter.string(from: Date())
+            : nil
+        func updatingFavorite(_ value: Album) -> Album {
+            guard value.id == album.id else { return value }
+            var result = value
+            result.starred = starredValue
+            return result
+        }
         var snapshot = home
+        let freshestKnownAlbum = searchResults.albums.first { $0.id == album.id }
+            ?? snapshot.recentAlbums.first { $0.id == album.id }
+            ?? snapshot.randomAlbums.first { $0.id == album.id }
+            ?? snapshot.starredAlbums.first { $0.id == album.id }
+            ?? album
+        let updated = updatingFavorite(freshestKnownAlbum)
         snapshot.starredAlbums.removeAll { $0.id == album.id }
         if enabled { snapshot.starredAlbums.insert(updated, at: 0) }
-        snapshot.recentAlbums = snapshot.recentAlbums.map { $0.id == album.id ? updated : $0 }
+        snapshot.recentAlbums = snapshot.recentAlbums.map(updatingFavorite)
         snapshot.recentlyPlayedAlbums = snapshot.recentlyPlayedAlbums.map {
-            $0.id == album.id ? updated : $0
+            updatingFavorite($0)
         }
         snapshot.frequentAlbums = snapshot.frequentAlbums.map {
-            $0.id == album.id ? updated : $0
+            updatingFavorite($0)
         }
-        snapshot.randomAlbums = snapshot.randomAlbums.map { $0.id == album.id ? updated : $0 }
+        snapshot.randomAlbums = snapshot.randomAlbums.map(updatingFavorite)
         publishHome(snapshot)
 
         if searchResults.albums.contains(where: { $0.id == album.id }) {
             var results = searchResults
-            results.albums = results.albums.map { $0.id == album.id ? updated : $0 }
+            results.albums = results.albums.map(updatingFavorite)
             searchResults = results
         }
         for key in Array(artistDetailCache.keys) {
             guard let cached = artistDetailCache[key] else { continue }
             var detail = cached.value
-            detail.albums = detail.albums.map { $0.id == album.id ? updated : $0 }
+            detail.albums = detail.albums.map(updatingFavorite)
             artistDetailCache[key] = CachedValue(
                 value: detail,
                 expiresAt: cached.expiresAt
@@ -1501,25 +1549,37 @@ final class AppModel: ObservableObject {
 
     private func updateStarredArtist(_ artist: Artist, enabled: Bool) {
         favoriteOverrides[starKey(id: artist.id, target: .artist)] = enabled
-        var updated = artist
-        updated.starred = enabled ? Self.starDateFormatter.string(from: Date()) : nil
+        let starredValue = enabled
+            ? Self.starDateFormatter.string(from: Date())
+            : nil
+        func updatingFavorite(_ value: Artist) -> Artist {
+            guard value.id == artist.id else { return value }
+            var result = value
+            result.starred = starredValue
+            return result
+        }
         var snapshot = home
+        let freshestKnownArtist = searchResults.artists.first { $0.id == artist.id }
+            ?? snapshot.artists.first { $0.id == artist.id }
+            ?? snapshot.starredArtists.first { $0.id == artist.id }
+            ?? artist
+        let updated = updatingFavorite(freshestKnownArtist)
         snapshot.starredArtists.removeAll { $0.id == artist.id }
         if enabled { snapshot.starredArtists.insert(updated, at: 0) }
-        snapshot.artists = snapshot.artists.map { $0.id == artist.id ? updated : $0 }
+        snapshot.artists = snapshot.artists.map(updatingFavorite)
         snapshot.recommendedArtists = snapshot.recommendedArtists.map {
-            $0.id == artist.id ? updated : $0
+            updatingFavorite($0)
         }
         publishHome(snapshot)
 
         if searchResults.artists.contains(where: { $0.id == artist.id }) {
             var results = searchResults
-            results.artists = results.artists.map { $0.id == artist.id ? updated : $0 }
+            results.artists = results.artists.map(updatingFavorite)
             searchResults = results
         }
         if let cached = artistDetailCache[artist.id] {
             var detail = cached.value
-            detail.artist = updated
+            detail.artist = updatingFavorite(detail.artist)
             artistDetailCache[artist.id] = CachedValue(
                 value: detail,
                 expiresAt: cached.expiresAt
@@ -1782,11 +1842,11 @@ final class AppModel: ObservableObject {
 
         let candidates = await (lastFMCandidates, listenBrainzCandidates)
         let knownSongs = Self.uniqueSongs(
-            snapshot.starredSongs +
-            snapshot.mostPlayedSongs +
-            snapshot.randomSongs +
             snapshot.serverRecommendedSongs +
-            snapshot.recommendedSongs
+            snapshot.recommendedSongs +
+            snapshot.randomSongs +
+            snapshot.starredSongs +
+            snapshot.mostPlayedSongs
         )
         async let lastFMSongs = client.matchExternalRecommendations(
             candidates.0,

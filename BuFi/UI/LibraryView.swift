@@ -107,10 +107,15 @@ struct LibraryView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(library.snapshot.starredSongs) { song in
-                            SongRow(song: song, queue: library.snapshot.starredSongs)
+                        ForEach(library.snapshot.starredSongs.indices, id: \.self) { index in
+                            let song = library.snapshot.starredSongs[index]
+                            SongRow(
+                                song: song,
+                                queue: library.snapshot.starredSongs,
+                                queueIndex: index
+                            )
                                 .padding(.horizontal, 14)
-                            if song.id != library.snapshot.starredSongs.last?.id {
+                            if index < library.snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
                         }

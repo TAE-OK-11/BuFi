@@ -338,6 +338,22 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
+    /// Refreshes persisted display metadata without changing listening counts.
+    /// Playback calls this after resolving a cached list item through getSong,
+    /// so an old cover-art ID cannot re-enter future mixes through local history.
+    func refreshMetadata(_ song: Song) {
+        guard activeScope != nil,
+              song.externalStreamURL == nil,
+              var value = entries[song.id],
+              value.song != song else {
+            return
+        }
+        value.song = song
+        entries[song.id] = value
+        markDirty(song.id)
+        didMutate()
+    }
+
     func recordEnd(
         _ song: Song,
         playedSeconds: TimeInterval,
@@ -404,7 +420,11 @@ actor ListeningHistoryStore {
             return
         }
         var value = entries[song.id] ?? SongBehavior(song: song, at: Date())
-        value.song = song
+        var storedSong = value.song
+        storedSong.starred = enabled
+            ? (song.starred ?? storedSong.starred ?? Date().ISO8601Format())
+            : nil
+        value.song = storedSong
         value.favoriteCount = max(0, value.favoriteCount + (enabled ? 1 : -1))
         entries[song.id] = value
         markDirty(song.id)
@@ -491,9 +511,16 @@ actor ListeningHistoryStore {
             let retained = entries.values
                 .sorted { $0.lastPlayed > $1.lastPlayed }
                 .prefix(600)
-            let retainedEntries = Dictionary(uniqueKeysWithValues: retained.map {
-                ($0.song.id, $0)
-            })
+            var retainedEntries: [String: SongBehavior] = [:]
+            for value in retained {
+                let id = value.song.id
+                guard !id.isEmpty else { continue }
+                if let existing = retainedEntries[id],
+                   existing.lastPlayed >= value.lastPlayed {
+                    continue
+                }
+                retainedEntries[id] = value
+            }
             deletedSongIDs.formUnion(entries.keys.filter { retainedEntries[$0] == nil })
             dirtySongIDs.subtract(deletedSongIDs)
             entries = retainedEntries

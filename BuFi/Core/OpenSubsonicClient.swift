@@ -29,6 +29,91 @@ enum OpenSubsonicError: LocalizedError, Equatable {
     }
 }
 
+enum PlaylistAffinityRanking {
+    private struct FirstPosition: Comparable {
+        let playlist: Int
+        let song: Int
+
+        static func < (lhs: FirstPosition, rhs: FirstPosition) -> Bool {
+            lhs.playlist == rhs.playlist
+                ? lhs.song < rhs.song
+                : lhs.playlist < rhs.playlist
+        }
+    }
+
+    static func rank(
+        _ values: [(playlistIndex: Int, songs: [Song])],
+        limit: Int
+    ) -> [Song] {
+        guard limit > 0 else { return [] }
+        var appearances: [String: Int] = [:]
+        var songsByID: [String: Song] = [:]
+        var firstPositions: [String: FirstPosition] = [:]
+        for (playlistIndex, playlistSongs) in values.sorted(by: {
+            $0.playlistIndex < $1.playlistIndex
+        }) {
+            var seenInPlaylist = Set<String>()
+            for (songIndex, song) in playlistSongs.enumerated()
+                where seenInPlaylist.insert(song.id).inserted {
+                appearances[song.id, default: 0] += 1
+                if songsByID[song.id] == nil {
+                    songsByID[song.id] = song
+                    firstPositions[song.id] = FirstPosition(
+                        playlist: playlistIndex,
+                        song: songIndex
+                    )
+                }
+            }
+        }
+        return Array(
+            songsByID.values.sorted { lhs, rhs in
+                let leftAppearances = appearances[lhs.id, default: 0]
+                let rightAppearances = appearances[rhs.id, default: 0]
+                if leftAppearances != rightAppearances {
+                    return leftAppearances > rightAppearances
+                }
+                let leftPlayCount = lhs.playCount ?? 0
+                let rightPlayCount = rhs.playCount ?? 0
+                if leftPlayCount != rightPlayCount {
+                    return leftPlayCount > rightPlayCount
+                }
+                let leftPosition = firstPositions[lhs.id]
+                    ?? FirstPosition(playlist: .max, song: .max)
+                let rightPosition = firstPositions[rhs.id]
+                    ?? FirstPosition(playlist: .max, song: .max)
+                if leftPosition != rightPosition {
+                    return leftPosition < rightPosition
+                }
+                return lhs.id < rhs.id
+            }
+            .prefix(limit)
+        )
+    }
+}
+
+enum AlbumSongMetadataResolver {
+    static func resolve(
+        songs: [Song],
+        albumID: String,
+        coverArt: String?
+    ) -> [Song] {
+        guard let coverArt = coverArt?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !coverArt.isEmpty else {
+            return songs
+        }
+        return songs.map { song in
+            guard song.artworkID == nil,
+                  song.albumId == nil || song.albumId == albumID else {
+                return song
+            }
+            var resolved = song
+            resolved.coverArt = coverArt
+            return resolved
+        }
+    }
+}
+
 actor OpenSubsonicClient {
     static let apiVersion = "1.16.1"
     static let clientName = "BuFi"
@@ -1053,18 +1138,18 @@ actor OpenSubsonicClient {
             let normalizedAlbum = candidate.album.map(Self.normalized)
             guard !normalizedTitle.isEmpty else { continue }
             let localMatch = library.first { song in
+                guard let recordingMBID = candidate.recordingMBID else {
+                    return false
+                }
+                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
+                    == .orderedSame
+            } ?? library.first { song in
                 Self.matchesExternalMetadata(
                     song,
                     title: normalizedTitle,
                     artist: normalizedArtist,
                     album: normalizedAlbum
                 )
-            } ?? library.first { song in
-                guard let recordingMBID = candidate.recordingMBID else {
-                    return false
-                }
-                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
-                    == .orderedSame
             } ?? library.first { song in
                 Self.matchesExternalMetadata(
                     song,
@@ -1080,13 +1165,6 @@ actor OpenSubsonicClient {
                 let query = "\(candidate.artist) \(candidate.title)"
                 guard let results = try? await search(query) else { continue }
                 match = results.songs.first { song in
-                    Self.matchesExternalMetadata(
-                        song,
-                        title: normalizedTitle,
-                        artist: normalizedArtist,
-                        album: normalizedAlbum
-                    )
-                } ?? results.songs.first { song in
                     guard let recordingMBID = candidate.recordingMBID else {
                         return false
                     }
@@ -1097,10 +1175,15 @@ actor OpenSubsonicClient {
                         song,
                         title: normalizedTitle,
                         artist: normalizedArtist,
-                        album: nil
+                        album: normalizedAlbum
                     )
                 } ?? results.songs.first { song in
-                    Self.normalized(song.title).contains(normalizedTitle)
+                    Self.matchesExternalMetadata(
+                        song,
+                        title: normalizedTitle,
+                        artist: normalizedArtist,
+                        album: nil
+                    )
                 }
             }
             if let match, ids.insert(match.id).inserted {
@@ -1329,36 +1412,22 @@ actor OpenSubsonicClient {
     ) async -> [Song] {
         guard !playlists.isEmpty else { return fallback }
         let values = await withTaskGroup(
-            of: [Song].self,
-            returning: [[Song]].self
+            of: (Int, [Song]).self,
+            returning: [(Int, [Song])].self
         ) { group in
-            for playlist in playlists.prefix(3) {
+            for (index, playlist) in playlists.prefix(3).enumerated() {
                 group.addTask { [self] in
-                    (try? await self.playlist(id: playlist.id))?.songs ?? []
+                    (
+                        index,
+                        (try? await self.playlist(id: playlist.id))?.songs ?? []
+                    )
                 }
             }
-            var result: [[Song]] = []
+            var result: [(Int, [Song])] = []
             for await value in group { result.append(value) }
             return result
         }
-        var appearances: [String: Int] = [:]
-        var songsByID: [String: Song] = [:]
-        for playlistSongs in values {
-            var seenInPlaylist = Set<String>()
-            for song in playlistSongs
-                where seenInPlaylist.insert(song.id).inserted {
-                appearances[song.id, default: 0] += 1
-                songsByID[song.id] = song
-            }
-        }
-        let songs = songsByID.values.sorted {
-            let left = appearances[$0.id, default: 0]
-            let right = appearances[$1.id, default: 0]
-            if left == right {
-                return ($0.playCount ?? 0) > ($1.playCount ?? 0)
-            }
-            return left > right
-        }
+        let songs = PlaylistAffinityRanking.rank(values, limit: count)
         return songs.isEmpty ? fallback : Array(songs.prefix(count))
     }
 
@@ -1452,7 +1521,7 @@ actor OpenSubsonicClient {
         var mbids = Set<String>()
         var metadata = Set<String>()
         return songs.filter { song in
-            guard ids.insert(song.id).inserted else { return false }
+            guard !song.id.isEmpty, !ids.contains(song.id) else { return false }
             let mbid = normalized(song.musicBrainzId ?? "")
             let identity = [
                 normalized(song.title),
@@ -1465,6 +1534,7 @@ actor OpenSubsonicClient {
             if metadata.contains(identity) {
                 return false
             }
+            ids.insert(song.id)
             if !mbid.isEmpty { mbids.insert(mbid) }
             metadata.insert(identity)
             return true
@@ -1552,7 +1622,28 @@ actor OpenSubsonicClient {
     func album(id: String) async throws -> AlbumDetail {
         let payload: AlbumPayload = try await readRequest("getAlbum", parameters: ["id": id])
         guard let value = payload.album else { throw OpenSubsonicError.invalidResponse }
-        return AlbumDetail(songs: value.song ?? [])
+        let albumID = value.id ?? id
+        let songs = AlbumSongMetadataResolver.resolve(
+            songs: value.song ?? [],
+            albumID: albumID,
+            coverArt: value.coverArt
+        )
+        return AlbumDetail(songs: songs)
+    }
+
+    /// Returns the server's current canonical metadata for one song. List and
+    /// recommendation responses can have different cache ages; resolving the
+    /// selected item through getSong gives playback one authoritative source
+    /// for song ID, cover-art ID, duration, and media format.
+    func song(id: String) async throws -> Song {
+        let payload: SongPayload = try await readRequest(
+            "getSong",
+            parameters: ["id": id]
+        )
+        guard let song = payload.song, song.id == id else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        return song
     }
 
     func playlist(id: String) async throws -> PlaylistDetail {
@@ -1563,19 +1654,27 @@ actor OpenSubsonicClient {
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
         let usesArtistID = await supportsExtension("topSongsByArtistId")
-        async let albumsPayload: ArtistAlbumsPayload = readRequest("getArtist", parameters: ["id": id])
-        async let topPayload: TopSongsPayload = readRequest(
-            "getTopSongs",
-            parameters: usesArtistID
-                ? ["id": id, "artist": name, "count": "20"]
-                : ["artist": name, "count": "20"]
+        async let albumsPayload: ArtistAlbumsPayload = readRequest(
+            "getArtist",
+            parameters: ["id": id]
         )
         async let infoPayload: ArtistInfoPayload? = bestEffortRequest(
             "getArtistInfo2",
             parameters: ["id": id, "count": "8", "includeNotPresent": "false"]
         )
-        let (albums, top, info) = try await (albumsPayload, topPayload, infoPayload)
-        guard let artist = albums.artist else { throw OpenSubsonicError.invalidResponse }
+        let albums = try await albumsPayload
+        guard let artist = albums.artist else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        // Servers without topSongsByArtistId use the artist name as identity.
+        // Use getArtist's authoritative name rather than a stale route label.
+        let top: TopSongsPayload = try await readRequest(
+            "getTopSongs",
+            parameters: usesArtistID
+                ? ["id": id, "artist": artist.name, "count": "20"]
+                : ["artist": artist.name, "count": "20"]
+        )
+        let info = await infoPayload
         return ArtistDetail(
             artist: artist.artistValue,
             albums: artist.album ?? [],

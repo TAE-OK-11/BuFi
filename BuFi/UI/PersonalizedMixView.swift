@@ -264,7 +264,7 @@ struct PersonalizedMixDetailView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(mix.songs.enumerated()), id: \.element.id) {
+                    ForEach(Array(mix.songs.enumerated()), id: \.offset) {
                         index, song in
                         HStack(spacing: mix.showsRanking ? 10 : 2) {
                             if mix.showsRanking {
@@ -287,13 +287,14 @@ struct PersonalizedMixDetailView: View {
                             SongRow(
                                 song: song,
                                 queue: mix.songs,
+                                queueIndex: index,
                                 artworkSize: 52,
                                 textLineLimit: 2
                             )
                         }
                         .padding(.horizontal, 12)
 
-                        if song.id != mix.songs.last?.id {
+                        if index < mix.songs.count - 1 {
                             Divider()
                                 .padding(.leading, mix.showsRanking ? 112 : 78)
                                 .opacity(0.50)

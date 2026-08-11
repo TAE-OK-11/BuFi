@@ -15,7 +15,7 @@ struct MiniPlayerView: View {
         if let song = playbackItem.currentSong {
             let artworkIdentity = MiniPlayerArtworkIdentity(
                 songID: song.id,
-                coverArtID: song.coverArt
+                coverArtID: song.artworkID
             )
             ZStack {
                 Button {
@@ -35,12 +35,12 @@ struct MiniPlayerView: View {
                 VStack(spacing: 0) {
                     HStack(spacing: 9) {
                         ArtworkView(
-                            coverArt: song.coverArt,
+                            coverArt: song.artworkID,
                             size: 50,
                             cornerRadius: 5,
                             onPalette: { nextPalette in
                                 guard playbackItem.currentSong?.id == artworkIdentity.songID,
-                                      playbackItem.currentSong?.coverArt == artworkIdentity.coverArtID else {
+                                      playbackItem.currentSong?.artworkID == artworkIdentity.coverArtID else {
                                     return
                                 }
                                 if nextPalette == .fallback {
@@ -142,7 +142,7 @@ struct MiniPlayerView: View {
         guard let song = playbackItem.currentSong else { return nil }
         return MiniPlayerArtworkIdentity(
             songID: song.id,
-            coverArtID: song.coverArt
+            coverArtID: song.artworkID
         )
     }
 

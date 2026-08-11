@@ -482,6 +482,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var queueClearTask: Task<Void, Never>?
     private var itemLoadTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
+    private var songMetadataTask: Task<Void, Never>?
     private var serverQueueTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
@@ -517,6 +518,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var recoveryAttempt = 0
     private var itemLoadGeneration: UInt64 = 0
     private var lyricsLoadGeneration: UInt64 = 0
+    private var songMetadataGeneration: UInt64 = 0
     private var seekGeneration: UInt64 = 0
     private var itemObserverGeneration: UInt64 = 0
     private var timelineObserverGeneration: UInt64 = 0
@@ -568,6 +570,9 @@ final class AudioEngine: NSObject, ObservableObject {
         let previousAccountScope = currentAccountScope
         serverQueueTask?.cancel()
         serverQueueTask = nil
+        songMetadataTask?.cancel()
+        songMetadataTask = nil
+        songMetadataGeneration &+= 1
         autoplayTask?.cancel()
         autoplayTask = nil
         autoplayGeneration &+= 1
@@ -632,6 +637,7 @@ final class AudioEngine: NSObject, ObservableObject {
         if let song = currentSong {
             restartPlaybackPlan(resumeFrom: elapsed)
             loadLyrics(for: song)
+            refreshCanonicalMetadata(for: song)
         }
 
         guard queueRestorationEnabled,
@@ -664,11 +670,12 @@ final class AudioEngine: NSObject, ObservableObject {
                   !self.wantsPlayback else {
                 return
             }
-            self.queue = serverQueue.songs
-            self.queueIndex = serverQueue.songs.firstIndex {
+            let restoredIndex = serverQueue.songs.firstIndex {
                 $0.id == serverQueue.currentID
             } ?? 0
-            self.currentSong = serverQueue.songs[self.queueIndex]
+            self.currentSong = serverQueue.songs[restoredIndex]
+            self.queue = serverQueue.songs
+            self.queueIndex = restoredIndex
             self.queueMutationGeneration &+= 1
             self.behaviorStartRecordedForSongID = nil
             self.duration = self.currentSong?.safeDuration ?? 0
@@ -703,6 +710,7 @@ final class AudioEngine: NSObject, ObservableObject {
     func play(
         _ song: Song,
         in sourceQueue: [Song],
+        queueIndex: Int? = nil,
         autoplay: Bool = true,
         origin: PlaybackOrigin = .manual
     ) {
@@ -713,7 +721,7 @@ final class AudioEngine: NSObject, ObservableObject {
         startPlayback(
             song,
             in: sourceQueue,
-            preferredIndex: nil,
+            preferredIndex: queueIndex,
             autoplay: autoplay,
             origin: origin,
             transitionReason: .replaced
@@ -748,7 +756,7 @@ final class AudioEngine: NSObject, ObservableObject {
         if let preferredIndex, normalizedQueue.indices.contains(preferredIndex) {
             resolvedIndex = preferredIndex
         } else if let visualMatch = normalizedQueue.firstIndex(where: {
-            $0.id == song.id && $0.coverArt == song.coverArt
+            $0.id == song.id && $0.artworkID == song.artworkID
         }) {
             resolvedIndex = visualMatch
         } else {
@@ -761,6 +769,10 @@ final class AudioEngine: NSObject, ObservableObject {
             normalizedQueue[resolvedIndex] = song
         }
         let selectedSong = normalizedQueue[resolvedIndex]
+        // Publish the selected item before queue/index. Player artwork derives
+        // from currentSong and can safely fall back while the queue catches up;
+        // the reverse order exposes the previous currentSong at the new index.
+        currentSong = selectedSong
         queue = normalizedQueue
         queueIndex = resolvedIndex
         queueMutationGeneration &+= 1
@@ -772,7 +784,6 @@ final class AudioEngine: NSObject, ObservableObject {
         removeCurrentItemObservers()
         invalidateStagedSuccessor(removeFromPlayer: true)
         player.replaceCurrentItem(with: nil)
-        currentSong = selectedSong
         recordPlaybackStart(selectedSong, origin: origin)
         rememberShuffleSelection(selectedSong.id)
         elapsed = 0
@@ -801,6 +812,7 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: activeCompatibilityFormat,
             resumeFrom: 0
         )
+        refreshCanonicalMetadata(for: selectedSong)
         // Starting the selected stream owns the critical network path. Any
         // previous speculative transfers are discarded now; the new queue is
         // warmed only after AVPlayer confirms that playback is established.
@@ -975,20 +987,21 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
 
+        let nextIndex: Int
         if isShuffleEnabled, queue.count > 1 {
-            queueIndex = nextShuffleIndex()
+            nextIndex = nextShuffleIndex()
         } else if queueIndex < queue.count - 1 {
-            queueIndex += 1
+            nextIndex = queueIndex + 1
         } else if repeatMode == .all || (isAutoAdvance && repeatMode == .one) {
-            queueIndex = 0
+            nextIndex = 0
         } else {
             requestAutoplayContinuation(advanceWhenReady: true)
             return
         }
         startPlayback(
-            queue[queueIndex],
+            queue[nextIndex],
             in: queue,
-            preferredIndex: queueIndex,
+            preferredIndex: nextIndex,
             origin: isAutoAdvance ? .autoplay : .manual,
             transitionReason: isAutoAdvance ? .completed : .skipped
         )
@@ -1071,11 +1084,13 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         guard !queue.isEmpty else { return }
-        queueIndex = queueIndex > 0 ? queueIndex - 1 : (repeatMode == .all ? queue.count - 1 : 0)
+        let previousIndex = queueIndex > 0
+            ? queueIndex - 1
+            : (repeatMode == .all ? queue.count - 1 : 0)
         startPlayback(
-            queue[queueIndex],
+            queue[previousIndex],
             in: queue,
-            preferredIndex: queueIndex,
+            preferredIndex: previousIndex,
             origin: .manual,
             transitionReason: .skipped
         )
@@ -1084,7 +1099,6 @@ final class AudioEngine: NSObject, ObservableObject {
     func playQueueItem(at index: Int) {
         reconcilePendingTransportTransition()
         guard queue.indices.contains(index) else { return }
-        queueIndex = index
         startPlayback(
             queue[index],
             in: queue,
@@ -1206,19 +1220,24 @@ final class AudioEngine: NSObject, ObservableObject {
         guard queue.indices.contains(queueIndex) else { return }
         finalizeCurrentPlayback(reason: .queueRemoved)
         let removedIndex = queueIndex
-        queue.remove(at: removedIndex)
-        guard !queue.isEmpty else {
+        var remainingQueue = queue
+        remainingQueue.remove(at: removedIndex)
+        guard !remainingQueue.isEmpty else {
             queueMutationGeneration &+= 1
             pause()
             itemLoadTask?.cancel()
             cancelPlaybackRecovery()
             lyricsTask?.cancel()
+            songMetadataTask?.cancel()
+            songMetadataTask = nil
+            songMetadataGeneration &+= 1
             itemLoadGeneration &+= 1
             lyricsLoadGeneration &+= 1
             seekGeneration &+= 1
             isSeekInFlight = false
             pendingSeekPosition = nil
             currentSong = nil
+            queue = []
             queueIndex = -1
             elapsed = 0
             duration = 0
@@ -1232,11 +1251,11 @@ final class AudioEngine: NSObject, ObservableObject {
             scheduleQueueSave(immediate: true)
             return
         }
-        queueIndex = min(removedIndex, queue.count - 1)
+        let nextIndex = min(removedIndex, remainingQueue.count - 1)
         startPlayback(
-            queue[queueIndex],
-            in: queue,
-            preferredIndex: queueIndex,
+            remainingQueue[nextIndex],
+            in: remainingQueue,
+            preferredIndex: nextIndex,
             origin: .queue,
             transitionReason: .queueRemoved
         )
@@ -1874,7 +1893,7 @@ final class AudioEngine: NSObject, ObservableObject {
             var seenCoverIDs = Set<String>()
             for song in plan.upcomingSongs {
                 guard !Task.isCancelled else { return }
-                guard let coverID = song.coverArt,
+                guard let coverID = song.artworkID,
                       seenCoverIDs.insert(coverID).inserted,
                       let url = try? await client.coverURL(id: coverID, size: 360) else {
                     continue
@@ -2114,8 +2133,8 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorSong = nil
         stagedSuccessorQueueIndex = nil
         stagedSuccessorObservation = nil
-        queueIndex = successorIndex
         currentSong = song
+        queueIndex = successorIndex
         recordPlaybackStart(song, origin: .autoplay)
         rememberShuffleSelection(song.id)
         elapsed = 0
@@ -2135,6 +2154,7 @@ final class AudioEngine: NSObject, ObservableObject {
         lastMaintenanceSecond = -1
         handledFailedItem = nil
         observeActiveItem(item, resumePosition: 0)
+        refreshCanonicalMetadata(for: song)
         loadLyrics(for: song)
         scheduleQueueSave(immediate: true)
         updateNowPlaying()
@@ -3166,6 +3186,70 @@ final class AudioEngine: NSObject, ObservableObject {
         commands.likeCommand.isActive = currentSong?.isStarred ?? false
     }
 
+    private func refreshCanonicalMetadata(for selectedSong: Song) {
+        songMetadataTask?.cancel()
+        songMetadataTask = nil
+        songMetadataGeneration &+= 1
+        guard selectedSong.externalStreamURL == nil, let client else { return }
+
+        let generation = songMetadataGeneration
+        let sessionGeneration = playbackSessionGeneration
+        let accountScope = currentAccountScope
+        songMetadataTask = Task(priority: .utility) { [weak self] in
+            let canonical: Song
+            do {
+                canonical = try await client.song(id: selectedSong.id)
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  generation == self.songMetadataGeneration,
+                  sessionGeneration == self.playbackSessionGeneration,
+                  accountScope == self.currentAccountScope,
+                  let current = self.currentSong,
+                  current.id == selectedSong.id else {
+                return
+            }
+            self.songMetadataTask = nil
+
+            // Favorite state may be an optimistic local mutation newer than
+            // the read response, while all media metadata comes from getSong.
+            var resolved = canonical
+            resolved.starred = current.starred
+            guard resolved != current else { return }
+
+            self.currentSong = resolved
+            var updatedQueue = self.queue
+            var queueChanged = false
+            for index in updatedQueue.indices
+                where updatedQueue[index].id == resolved.id {
+                var queueSong = resolved
+                queueSong.starred = current.starred
+                if updatedQueue[index] != queueSong {
+                    updatedQueue[index] = queueSong
+                    queueChanged = true
+                }
+            }
+            if queueChanged { self.queue = updatedQueue }
+            if self.duration <= 0 || self.duration == current.safeDuration {
+                self.duration = resolved.safeDuration
+            }
+            self.fallbackFormats = Self.fallbackFormats(
+                for: self.quality,
+                song: resolved
+            )
+            self.updateNowPlaying()
+            self.scheduleQueueSave()
+
+            let previousMutation = self.historyMutationTask
+            self.historyMutationTask = Task {
+                _ = await previousMutation?.value
+                await ListeningHistoryStore.shared.refreshMetadata(resolved)
+            }
+        }
+    }
+
     private func updateNowPlaying() {
         guard let song = currentSong else {
             nowPlayingArtworkTask?.cancel()
@@ -3175,7 +3259,7 @@ final class AudioEngine: NSObject, ObservableObject {
             updateRemoteCommands()
             return
         }
-        let visualKey = "\(song.id)|\(song.coverArt ?? "")"
+        let visualKey = "\(song.id)|\(song.artworkID ?? "")"
         let visualChanged = nowPlayingVisualKey != visualKey
         if visualChanged {
             nowPlayingArtworkTask?.cancel()
@@ -3203,7 +3287,7 @@ final class AudioEngine: NSObject, ObservableObject {
         activateNowPlayingSession()
         updateRemoteCommands()
 
-        guard let coverID = song.coverArt,
+        guard let coverID = song.artworkID,
               let client else {
             return
         }
@@ -3216,7 +3300,7 @@ final class AudioEngine: NSObject, ObservableObject {
                   let image = try? await ArtworkStore.shared.image(for: url, pixelSize: 600),
                   !Task.isCancelled,
                   self.currentSong?.id == song.id,
-                  self.currentSong?.coverArt == coverID,
+                  self.currentSong?.artworkID == coverID,
                   self.nowPlayingArtworkKey == artworkKey else {
                 return
             }
@@ -3452,11 +3536,21 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func applyRestoredQueue(_ snapshot: QueueSnapshot) {
         lastPersistedQueue = snapshot.queue
+        let restoredIndex: Int
+        if snapshot.queue.indices.contains(snapshot.index),
+           (snapshot.currentID == nil
+                || snapshot.queue[snapshot.index].id == snapshot.currentID) {
+            // The saved occurrence is authoritative when duplicate song IDs
+            // exist. currentID alone would always collapse to the first row.
+            restoredIndex = snapshot.index
+        } else {
+            restoredIndex = snapshot.currentID.flatMap { currentID in
+                snapshot.queue.firstIndex(where: { $0.id == currentID })
+            } ?? 0
+        }
+        currentSong = snapshot.queue[restoredIndex]
         queue = snapshot.queue
-        queueIndex = snapshot.currentID.flatMap { currentID in
-            snapshot.queue.firstIndex(where: { $0.id == currentID })
-        } ?? (snapshot.queue.indices.contains(snapshot.index) ? snapshot.index : 0)
-        currentSong = snapshot.queue[queueIndex]
+        queueIndex = restoredIndex
         let restoredElapsed = snapshot.elapsed.isFinite ? max(0, snapshot.elapsed) : 0
         let restoredDuration = currentSong?.safeDuration ?? 0
         elapsed = restoredDuration > 0
@@ -3466,6 +3560,7 @@ final class AudioEngine: NSObject, ObservableObject {
         isShuffleEnabled = snapshot.shuffle
         repeatMode = snapshot.repeatMode
         queueMutationGeneration &+= 1
+        refreshCanonicalMetadata(for: snapshot.queue[restoredIndex])
     }
 }
 

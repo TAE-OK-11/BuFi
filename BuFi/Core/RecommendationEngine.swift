@@ -1502,6 +1502,7 @@ private final class PersonalizedMixResultCache: @unchecked Sendable {
 
 private struct PersonalizedSongCorpus {
     let pool: [Song]
+    let canonicalSongs: [String: Song]
     let searchableTexts: [String: String]
     let normalizedArtists: [String: String]
     let normalizedGenres: [String: String]
@@ -1510,15 +1511,19 @@ private struct PersonalizedSongCorpus {
     let songsWithoutGenre: [Song]
 
     init(snapshot: HomeSnapshot) {
-        pool = PersonalizedMixBuilder.unique(
-            snapshot.mostPlayedSongs
-                + snapshot.starredSongs
-                + snapshot.daylistSongs
-                + snapshot.recommendedSongs
-                + snapshot.serverRecommendedSongs
+        let resolvedPool = PersonalizedMixBuilder.unique(
+            snapshot.serverRecommendedSongs
                 + snapshot.lastFMRecommendedSongs
                 + snapshot.listenBrainzRecommendedSongs
                 + snapshot.randomSongs
+                + snapshot.recommendedSongs
+                + snapshot.daylistSongs
+                + snapshot.starredSongs
+                + snapshot.mostPlayedSongs
+        )
+        pool = resolvedPool
+        canonicalSongs = Dictionary(
+            uniqueKeysWithValues: resolvedPool.map { ($0.id, $0) }
         )
         var searchableTexts: [String: String] = [:]
         var normalizedArtists: [String: String] = [:]
@@ -1591,14 +1596,19 @@ enum PersonalizedMixBuilder {
         let pool = corpus.pool
         guard !pool.isEmpty else { return [] }
         let searchableTexts = corpus.searchableTexts
+        func canonicalized(_ songs: [Song]) -> [Song] {
+            songs.map { corpus.canonicalSongs[$0.id] ?? $0 }
+        }
 
         let dailySeed = year * 1_000 + day
         let daylist = filled(
-            preferred: DaylistBuilder.make(
-                snapshot: snapshot,
-                date: date,
-                calendar: calendar,
-                limit: songLimit
+            preferred: canonicalized(
+                DaylistBuilder.make(
+                    snapshot: snapshot,
+                    date: date,
+                    calendar: calendar,
+                    limit: songLimit
+                )
             ),
             from: pool,
             seed: dailySeed,
@@ -1606,7 +1616,9 @@ enum PersonalizedMixBuilder {
         )
 
         let repeatSongs = filled(
-            preferred: snapshot.mostPlayedSongs + snapshot.starredSongs,
+            preferred: canonicalized(
+                snapshot.mostPlayedSongs + snapshot.starredSongs
+            ),
             from: pool,
             seed: dailySeed + 11,
             limit: songLimit
@@ -1615,7 +1627,9 @@ enum PersonalizedMixBuilder {
             ($0.played ?? "") > ($1.played ?? "")
         }
         let listenAgain = filled(
-            preferred: recentlyPlayed + snapshot.mostPlayedSongs,
+            preferred: canonicalized(
+                recentlyPlayed + snapshot.mostPlayedSongs
+            ),
             from: pool,
             seed: dailySeed + 23,
             limit: songLimit

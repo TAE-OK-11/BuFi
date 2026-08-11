@@ -407,6 +407,7 @@ struct MusicDetailView: View {
                         SongRow(
                             song: song,
                             queue: songs,
+                            queueIndex: index,
                             playbackOrigin: isArtist ? .manual : .album,
                             artworkSize: isArtist ? 54 : 44,
                             layout: rowLayout,

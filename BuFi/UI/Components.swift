@@ -405,12 +405,17 @@ struct ArtworkView: View {
             let requestID = artworkRequestIdentity
             image = nil
             imageIdentity = nil
-            if let coverURL = await model.artworkURL(id: coverArt, size: Int(size * 2)) {
+            if let coverURL = await model.artworkURL(
+                id: normalizedCoverArt,
+                size: Int(size * 2)
+            ) {
                 guard !Task.isCancelled else { return }
                 guard let loaded = try? await ArtworkStore.shared.image(
                     for: coverURL,
                     pixelSize: max(size * displayScale, 96)
                 ) else {
+                    guard !Task.isCancelled,
+                          artworkRequestIdentity == requestID else { return }
                     onPalette?(.fallback)
                     return
                 }
@@ -428,14 +433,24 @@ struct ArtworkView: View {
                 onPalette(palette)
                 return
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  artworkRequestIdentity == requestID else { return }
             onPalette?(.fallback)
         }
         .accessibilityHidden(true)
     }
 
     private var artworkRequestIdentity: String {
-        "\(coverArt ?? "")-\(Int(size * displayScale))"
+        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(Int(size * displayScale))"
+    }
+
+    private var normalizedCoverArt: String? {
+        guard let value = coverArt?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 
@@ -497,6 +512,7 @@ struct SongRow: View {
 
     let song: Song
     let queue: [Song]
+    var queueIndex: Int? = nil
     var playbackOrigin: PlaybackOrigin = .manual
     var artworkSize: CGFloat = 54
     var layout: SongRowLayout = .standard
@@ -549,7 +565,12 @@ struct SongRow: View {
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
-                audio.play(song, in: queue, origin: playbackOrigin)
+                audio.play(
+                    song,
+                    in: queue,
+                    queueIndex: queueIndex,
+                    origin: playbackOrigin
+                )
             } label: {
                 HStack(spacing: 12) {
                     Group {
@@ -621,11 +642,16 @@ struct SongRow: View {
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
-                audio.play(song, in: queue, origin: playbackOrigin)
+                audio.play(
+                    song,
+                    in: queue,
+                    queueIndex: queueIndex,
+                    origin: playbackOrigin
+                )
             } label: {
                 HStack(spacing: 12) {
                     ArtworkView(
-                        coverArt: song.coverArt,
+                        coverArt: song.artworkID,
                         size: artworkSize,
                         cornerRadius: max(5, artworkSize * 0.11)
                     )

@@ -35,7 +35,7 @@ struct PlayerArtworkPagerSnapshot {
             let fallback = PlayerArtworkPageID(
                 queueIndex: -1,
                 songID: currentSong.id,
-                coverArtID: currentSong.coverArt
+                coverArtID: currentSong.artworkID
             )
             return PlayerArtworkPagerSnapshot(
                 pages: [PlayerArtworkPagerPage(id: fallback, song: currentSong)],
@@ -48,7 +48,7 @@ struct PlayerArtworkPagerSnapshot {
                 id: PlayerArtworkPageID(
                     queueIndex: index,
                     songID: queue[index].id,
-                    coverArtID: queue[index].coverArt
+                    coverArtID: queue[index].artworkID
                 ),
                 song: queue[index]
             )
@@ -60,7 +60,7 @@ struct PlayerArtworkPagerSnapshot {
     }
 
     private static func visuallyMatches(_ lhs: Song, _ rhs: Song) -> Bool {
-        lhs.id == rhs.id && lhs.coverArt == rhs.coverArt
+        lhs.id == rhs.id && lhs.artworkID == rhs.artworkID
     }
 }
 
@@ -161,9 +161,8 @@ struct PlayerView: View {
         }
         .onChange(of: playbackQueue.index) { oldIndex, index in
             transitionDirection = index >= oldIndex ? 1 : -1
-            // A swipe publishes the queue index before the new current song.
-            // Keep the user's selected page visible until currentSong confirms
-            // that transition instead of snapping back to the previous cover.
+            // Keep a user's selected page visible until currentSong confirms
+            // the transition instead of snapping back during synchronization.
             if pendingUserArtworkPage?.queueIndex != index {
                 pendingUserArtworkPage = nil
                 applyCachedPalette(at: index)
@@ -171,21 +170,21 @@ struct PlayerView: View {
             }
             prefetchUpcomingArtwork(after: index)
         }
-        .onChange(of: playbackItem.currentSong.map { [$0.id, $0.coverArt ?? ""] }) { _, _ in
+        .onChange(of: playbackItem.currentSong.map { [$0.id, $0.artworkID ?? ""] }) { _, _ in
             // Queue and current-item state are published independently. Always
             // re-anchor the pager when the visual now-playing identity changes.
             pendingUserArtworkPage = nil
             syncArtworkPage(to: playbackQueue.index, animated: false)
             applyCachedPalette(at: playbackQueue.index)
         }
-        .onChange(of: playbackQueue.songs.map { [$0.id, $0.coverArt ?? ""] }) { _, _ in
+        .onChange(of: playbackQueue.songs.map { [$0.id, $0.artworkID ?? ""] }) { _, _ in
             pruneArtworkPalettes()
             let pendingPageIsStillValid: Bool
             if let pendingPage = pendingUserArtworkPage,
                playbackQueue.songs.indices.contains(pendingPage.queueIndex) {
                 let pendingSong = playbackQueue.songs[pendingPage.queueIndex]
                 pendingPageIsStillValid = pendingSong.id == pendingPage.songID
-                    && pendingSong.coverArt == pendingPage.coverArtID
+                    && pendingSong.artworkID == pendingPage.coverArtID
             } else {
                 pendingPageIsStillValid = false
             }
@@ -446,7 +445,7 @@ struct PlayerView: View {
                 LazyHStack(spacing: 18) {
                     ForEach(snapshot.pages) { page in
                         ArtworkView(
-                            coverArt: page.song.coverArt,
+                            coverArt: page.song.artworkID,
                             size: edge,
                             cornerRadius: 14,
                             onPalette: { nextPalette in
@@ -481,7 +480,7 @@ struct PlayerView: View {
             if artworkPage != snapshot.currentPage,
                artworkPage != pendingUserArtworkPage {
                 ArtworkView(
-                    coverArt: song.coverArt,
+                    coverArt: song.artworkID,
                     size: edge,
                     cornerRadius: 14,
                     onPalette: { nextPalette in
@@ -493,7 +492,7 @@ struct PlayerView: View {
                     }
                 )
                 .frame(width: edge, height: edge)
-                .id("active-\(song.id)-\(song.coverArt ?? "")")
+                .id("active-\(song.id)-\(song.artworkID ?? "")")
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
@@ -505,7 +504,7 @@ struct PlayerView: View {
             guard let page,
                   playbackQueue.songs.indices.contains(page.queueIndex),
                   playbackQueue.songs[page.queueIndex].id == page.songID,
-                  playbackQueue.songs[page.queueIndex].coverArt == page.coverArtID else {
+                  playbackQueue.songs[page.queueIndex].artworkID == page.coverArtID else {
                 return
             }
             let index = page.queueIndex
@@ -690,7 +689,7 @@ struct PlayerView: View {
             let artist = artists.first(where: { $0.id == artistID }) ?? Artist(
                 id: artistID,
                 name: song.artist,
-                coverArt: song.coverArt,
+                coverArt: nil,
                 albumCount: nil,
                 starred: nil
             )
@@ -759,7 +758,7 @@ struct PlayerView: View {
     ) {
         artworkPalettes[page] = nextPalette
         guard playbackItem.currentSong?.id == song.id,
-              playbackItem.currentSong?.coverArt == song.coverArt else {
+              playbackItem.currentSong?.artworkID == song.artworkID else {
             return
         }
         if palette != nextPalette {
@@ -790,7 +789,7 @@ struct PlayerView: View {
             PlayerArtworkPageID(
                 queueIndex: $0,
                 songID: playbackQueue.songs[$0].id,
-                coverArtID: playbackQueue.songs[$0].coverArt
+                coverArtID: playbackQueue.songs[$0].artworkID
             )
         })
         if let currentSong = playbackItem.currentSong {
@@ -830,7 +829,7 @@ struct PlayerView: View {
                 page: PlayerArtworkPageID(
                     queueIndex: index,
                     songID: playbackQueue.songs[index].id,
-                    coverArtID: playbackQueue.songs[index].coverArt
+                    coverArtID: playbackQueue.songs[index].artworkID
                 ),
                 song: playbackQueue.songs[index]
             )
@@ -839,7 +838,7 @@ struct PlayerView: View {
         artworkPrefetchTask = Task(priority: .utility) {
             for item in upcoming {
                 guard !Task.isCancelled,
-                      let url = await model.artworkURL(id: item.song.coverArt, size: 600) else {
+                      let url = await model.artworkURL(id: item.song.artworkID, size: 600) else {
                     continue
                 }
                 guard let image = try? await ArtworkStore.shared.image(
@@ -855,7 +854,7 @@ struct PlayerView: View {
                 guard !Task.isCancelled,
                       playbackQueue.songs.indices.contains(item.page.queueIndex),
                       playbackQueue.songs[item.page.queueIndex].id == item.page.songID,
-                      playbackQueue.songs[item.page.queueIndex].coverArt == item.page.coverArtID else {
+                      playbackQueue.songs[item.page.queueIndex].artworkID == item.page.coverArtID else {
                     return
                 }
                 artworkPalettes[item.page] = nextPalette
@@ -1771,9 +1770,9 @@ private struct QueueView: View {
                                 dismiss()
                             } label: {
                                 HStack(spacing: 12) {
-                                    ArtworkView(coverArt: song.coverArt, size: 48, cornerRadius: 5)
+                                    ArtworkView(coverArt: song.artworkID, size: 48, cornerRadius: 5)
                                         .frame(width: 48, height: 48)
-                                        .id("\(index)-\(song.id)-\(song.coverArt ?? "")")
+                                        .id("\(index)-\(song.id)-\(song.artworkID ?? "")")
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
                                             .foregroundStyle(index == playbackQueue.index ? BuFiTheme.accentSoft : Color.primary)

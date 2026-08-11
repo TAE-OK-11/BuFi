@@ -68,6 +68,7 @@ actor AppDatabase {
                         let songID: String = row["song_id"]
                         let songData: Data = row["song_data"]
                         let song = try Self.decode(Song.self, from: songData)
+                        guard song.id == songID else { return nil }
                         let behavior = SongBehavior(
                             song: song,
                             playCount: row["play_count"],
@@ -117,6 +118,7 @@ actor AppDatabase {
                     )
                 }
                 for (id, value) in values {
+                    guard id == value.song.id else { continue }
                     let songData = try Self.encode(value.song)
                     try db.execute(
                         sql: Self.listeningUpsertSQL,
@@ -155,6 +157,7 @@ actor AppDatabase {
                     arguments: [scope]
                 )
                 for (id, value) in values {
+                    guard id == value.song.id else { continue }
                     let songData = try Self.encode(value.song)
                     try db.execute(
                         sql: Self.listeningUpsertSQL,

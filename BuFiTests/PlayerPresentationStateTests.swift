@@ -75,6 +75,20 @@ final class PlayerPresentationStateTests: XCTestCase {
         XCTAssertEqual(snapshot.pages.first?.song, current)
     }
 
+    func testArtworkSnapshotNormalizesWhitespaceAroundCoverIdentifier() {
+        let queued = song(id: "song", coverArt: "cover")
+        let current = song(id: "song", coverArt: "  cover  ")
+
+        let snapshot = PlayerArtworkPagerSnapshot.make(
+            currentSong: current,
+            queue: [queued],
+            queueIndex: 0
+        )
+
+        XCTAssertEqual(snapshot.currentPage.queueIndex, 0)
+        XCTAssertEqual(snapshot.currentPage.coverArtID, "cover")
+    }
+
     private func song(id: String, coverArt: String?) -> Song {
         Song(
             id: id,
