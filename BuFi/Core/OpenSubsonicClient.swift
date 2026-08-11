@@ -157,9 +157,13 @@ actor OpenSubsonicClient {
         }
     }
 
-    private struct HTTPResponseData: @unchecked Sendable {
+    /// Sendable transport value used by coalesced requests. Foundation's
+    /// HTTPURLResponse is a reference type, so extract only the immutable
+    /// fields needed after the URLSession boundary.
+    private struct HTTPResponseData: Sendable {
         let data: Data
-        let response: HTTPURLResponse
+        let statusCode: Int
+        let retryAfter: String?
     }
 
     private struct ZstandardNegotiationError: Error, Sendable {}
@@ -170,17 +174,14 @@ actor OpenSubsonicClient {
         var waiters: [UUID: CheckedContinuation<HTTPResponseData, Error>]
     }
 
-    private struct CachedAPIResponse: Sendable {
-        let data: Data
-        let storedAt: Date
-    }
-
     private static let responseCacheLimit = 128
     private static let responseCacheByteLimit = 16 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
-    private var responseCache: [String: CachedAPIResponse] = [:]
-    private var responseCacheOrder: [String] = []
-    private var responseCacheBytes = 0
+    private var responseCache = ResponseBodyCache(
+        countLimit: OpenSubsonicClient.responseCacheLimit,
+        byteLimit: OpenSubsonicClient.responseCacheByteLimit,
+        maximumEntryBytes: OpenSubsonicClient.maximumCachedResponseBytes
+    )
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -298,7 +299,7 @@ actor OpenSubsonicClient {
         return url
     }
 
-    private func readRequest<Payload: Decodable>(
+    private func readRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         parameters: [String: String] = [:]
     ) async throws -> Payload {
@@ -312,7 +313,7 @@ actor OpenSubsonicClient {
         )
     }
 
-    private func mutationRequest<Payload: Decodable>(
+    private func mutationRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         parameters: [String: String]
     ) async throws -> Payload {
@@ -325,7 +326,7 @@ actor OpenSubsonicClient {
         )
     }
 
-    private func mutationRequest<Payload: Decodable>(
+    private func mutationRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         queryItems: [URLQueryItem]
     ) async throws -> Payload {
@@ -336,7 +337,7 @@ actor OpenSubsonicClient {
         )
     }
 
-    private func performRequest<Payload: Decodable>(
+    private func performRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         queryItems: [URLQueryItem],
         semantics: RequestSemantics
@@ -406,7 +407,7 @@ actor OpenSubsonicClient {
         }
     }
 
-    private func bestEffortRequest<Payload: Decodable>(
+    private func bestEffortRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         parameters: [String: String] = [:]
     ) async throws -> Payload? {
@@ -425,16 +426,16 @@ actor OpenSubsonicClient {
         }
     }
 
-    private func decodeResponse<Payload: Decodable>(
+    private func decodeResponse<Payload: Decodable & Sendable>(
         _ response: HTTPResponseData
     ) throws -> Payload {
-        guard (200..<300).contains(response.response.statusCode) else {
-            throw OpenSubsonicError.http(response.response.statusCode)
+        guard (200..<300).contains(response.statusCode) else {
+            throw OpenSubsonicError.http(response.statusCode)
         }
         return try decodeResponseData(response.data)
     }
 
-    private func decodeResponseData<Payload: Decodable>(
+    private func decodeResponseData<Payload: Decodable & Sendable>(
         _ data: Data
     ) throws -> Payload {
         let capture = try decoder.decode(DecoderCapture.self, from: data)
@@ -461,8 +462,8 @@ actor OpenSubsonicClient {
                     mutationEpoch: mutationEpoch
                 )
             )
-            guard (200..<300).contains(response.response.statusCode) else {
-                throw OpenSubsonicError.http(response.response.statusCode)
+            guard (200..<300).contains(response.statusCode) else {
+                throw OpenSubsonicError.http(response.statusCode)
             }
             let envelope = try decoder.decode(
                 StatusEnvelope.self,
@@ -607,7 +608,7 @@ actor OpenSubsonicClient {
                 guard allowsRetry,
                       retryCount < ReadRequestRetryPolicy.maximumRetryCount,
                       retryPolicy.shouldRetry(
-                        statusCode: result.response.statusCode
+                        statusCode: result.statusCode
                       ) else {
                     return result
                 }
@@ -615,15 +616,13 @@ actor OpenSubsonicClient {
                 retryCount += 1
                 guard let delay = retryPolicy.delay(
                     retryNumber: retryCount,
-                    retryAfterHeader: result.response.value(
-                        forHTTPHeaderField: "Retry-After"
-                    ),
+                    retryAfterHeader: result.retryAfter,
                     jitter: Double.random(in: 0.75...1.25)
                 ) else {
                     return result
                 }
                 Self.logger.notice(
-                    "Retrying read request after HTTP \(result.response.statusCode, privacy: .public); retry \(retryCount, privacy: .public)"
+                    "Retrying read request after HTTP \(result.statusCode, privacy: .public); retry \(retryCount, privacy: .public)"
                 )
                 try await sleepBeforeRetry(delay)
             } catch {
@@ -705,7 +704,11 @@ actor OpenSubsonicClient {
         // status first ensures 408/429/5xx retry decisions do not depend on a
         // server's optional error-body content encoding.
         guard (200..<300).contains(http.statusCode) else {
-            return HTTPResponseData(data: encodedData, response: http)
+            return HTTPResponseData(
+                data: encodedData,
+                statusCode: http.statusCode,
+                retryAfter: http.value(forHTTPHeaderField: "Retry-After")
+            )
         }
         let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
         do {
@@ -713,7 +716,11 @@ actor OpenSubsonicClient {
                 encodedData,
                 contentEncoding: contentEncoding
             )
-            return HTTPResponseData(data: data, response: http)
+            return HTTPResponseData(
+                data: data,
+                statusCode: http.statusCode,
+                retryAfter: http.value(forHTTPHeaderField: "Retry-After")
+            )
         } catch let error as URLError
             where acceptsZstandard
                 && error.code == .cannotDecodeContentData {
@@ -754,40 +761,15 @@ actor OpenSubsonicClient {
         for key: String,
         lifetime: TimeInterval
     ) -> Data? {
-        guard let value = responseCache[key] else { return nil }
-        guard Date().timeIntervalSince(value.storedAt) <= lifetime else {
-            responseCache[key] = nil
-            responseCacheBytes = max(0, responseCacheBytes - value.data.count)
-            responseCacheOrder.removeAll { $0 == key }
-            return nil
-        }
-        responseCacheOrder.removeAll { $0 == key }
-        responseCacheOrder.append(key)
-        return value.data
+        responseCache.value(for: key, maximumAge: lifetime)
     }
 
     private func storeResponse(_ data: Data, for key: String) {
-        guard data.count <= Self.maximumCachedResponseBytes else { return }
-        if let existing = responseCache[key] {
-            responseCacheBytes = max(0, responseCacheBytes - existing.data.count)
-        }
-        responseCache[key] = CachedAPIResponse(data: data, storedAt: Date())
-        responseCacheBytes += data.count
-        responseCacheOrder.removeAll { $0 == key }
-        responseCacheOrder.append(key)
-        while responseCacheOrder.count > Self.responseCacheLimit
-                || responseCacheBytes > Self.responseCacheByteLimit {
-            let evicted = responseCacheOrder.removeFirst()
-            if let removed = responseCache.removeValue(forKey: evicted) {
-                responseCacheBytes = max(0, responseCacheBytes - removed.data.count)
-            }
-        }
+        responseCache.insert(data, for: key)
     }
 
     private func clearResponseCache() {
         responseCache.removeAll(keepingCapacity: false)
-        responseCacheOrder.removeAll(keepingCapacity: false)
-        responseCacheBytes = 0
     }
 
     private static func responseCacheKey(

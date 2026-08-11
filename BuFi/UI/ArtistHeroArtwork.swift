@@ -100,7 +100,7 @@ struct ArtistHeroArtwork: View {
         }
 
         imageIdentity = requestID
-        image = loaded
+        image = loaded.value
         guard let onPalette else { return }
         let palette = await ArtworkStore.shared.palette(
             for: coverURL,

@@ -105,6 +105,21 @@ final class PlayerPresentationStateTests: XCTestCase {
         XCTAssertEqual(snapshot.currentPage.coverArtID, "cover")
     }
 
+    func testQueueSnapshotPublishesAValidSelectionWithItsSongs() {
+        let songs = [
+            song(id: "first", coverArt: "cover-a"),
+            song(id: "second", coverArt: "cover-b")
+        ]
+
+        let selected = PlaybackQueueSnapshot(songs: songs, index: 1)
+        XCTAssertEqual(selected.index, 1)
+        XCTAssertEqual(selected.songs[selected.index].id, "second")
+
+        let clamped = PlaybackQueueSnapshot(songs: songs, index: 8)
+        XCTAssertEqual(clamped.index, 1)
+        XCTAssertEqual(PlaybackQueueSnapshot.empty.index, -1)
+    }
+
     private func song(id: String, coverArt: String?) -> Song {
         Song(
             id: id,

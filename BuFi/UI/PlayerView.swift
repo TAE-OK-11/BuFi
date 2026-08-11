@@ -168,16 +168,8 @@ struct PlayerView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-        .onChange(of: playbackQueue.index) { oldIndex, index in
-            transitionDirection = index >= oldIndex ? 1 : -1
-            // Keep a user's selected page visible until currentSong confirms
-            // the transition instead of snapping back during synchronization.
-            if pendingUserArtworkPage?.queueIndex != index {
-                pendingUserArtworkPage = nil
-                applyCachedPalette(at: index)
-                syncArtworkPage(to: index, animated: true)
-            }
-            prefetchUpcomingArtwork(after: index)
+        .onChange(of: playbackQueue.snapshot) { previous, next in
+            handleQueueSnapshotChange(from: previous, to: next)
         }
         .onChange(of: playbackItem.currentItem.map {
             [$0.id.uuidString, $0.metadataRevision]
@@ -188,28 +180,6 @@ struct PlayerView: View {
             syncArtworkPage(to: playbackQueue.index, animated: false)
             applyCachedPalette(at: playbackQueue.index)
         }
-        .onChange(of: playbackQueue.songs.map {
-            [$0.id, $0.artworkID ?? "", $0.artworkRevision]
-        }) { _, _ in
-            pruneArtworkPalettes()
-            let pendingPageIsStillValid: Bool
-            if let pendingPage = pendingUserArtworkPage,
-               playbackQueue.songs.indices.contains(pendingPage.queueIndex) {
-                let pendingSong = playbackQueue.songs[pendingPage.queueIndex]
-                pendingPageIsStillValid = pendingSong.id == pendingPage.songID
-                    && pendingSong.artworkID == pendingPage.coverArtID
-                    && pendingSong.artworkRevision == pendingPage.artworkRevision
-            } else {
-                pendingPageIsStillValid = false
-            }
-            if !pendingPageIsStillValid {
-                // Preserve a valid in-flight swipe until currentSong is
-                // published, but discard it after a real queue replacement.
-                pendingUserArtworkPage = nil
-                syncArtworkPage(to: playbackQueue.index, animated: false)
-            }
-            prefetchUpcomingArtwork(after: playbackQueue.index)
-        }
         .onAppear {
             applyCachedPalette(at: playbackQueue.index)
             syncArtworkPage(to: playbackQueue.index, animated: false)
@@ -219,6 +189,44 @@ struct PlayerView: View {
             artworkPrefetchTask?.cancel()
             artworkPrefetchTask = nil
         }
+    }
+
+    private func handleQueueSnapshotChange(
+        from previous: PlaybackQueueSnapshot,
+        to next: PlaybackQueueSnapshot
+    ) {
+        let indexChanged = previous.index != next.index
+        let songsChanged = previous.songs != next.songs
+        if indexChanged {
+            transitionDirection = next.index >= previous.index ? 1 : -1
+        }
+        if songsChanged {
+            pruneArtworkPalettes()
+        }
+
+        let pendingPageIsStillValid: Bool
+        if let pendingPage = pendingUserArtworkPage,
+           pendingPage.queueIndex == next.index,
+           next.songs.indices.contains(pendingPage.queueIndex) {
+            let pendingSong = next.songs[pendingPage.queueIndex]
+            pendingPageIsStillValid = pendingSong.id == pendingPage.songID
+                && pendingSong.artworkID == pendingPage.coverArtID
+                && pendingSong.artworkRevision == pendingPage.artworkRevision
+        } else {
+            pendingPageIsStillValid = false
+        }
+
+        // Keep an intentional swipe visible only while the atomic queue
+        // snapshot still confirms its exact song and artwork identity.
+        if !pendingPageIsStillValid, indexChanged || songsChanged {
+            pendingUserArtworkPage = nil
+            applyCachedPalette(at: next.index)
+            syncArtworkPage(
+                to: next.index,
+                animated: indexChanged && !songsChanged
+            )
+        }
+        prefetchUpcomingArtwork(after: next.index)
     }
 
     private var background: some View {
@@ -333,10 +341,11 @@ struct PlayerView: View {
         HStack(spacing: 14) {
             ZStack(alignment: .leading) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(song.title)
-                        .font(.system(size: 25, weight: .bold))
-                        .tracking(-0.7)
-                        .lineLimit(1)
+                    OverflowMarqueeText(
+                        text: song.title,
+                        font: .system(size: 25, weight: .bold),
+                        tracking: -0.7
+                    )
                     if let route = artistRoute(for: song) {
                         NavigationLink(value: route) {
                             HStack(spacing: 5) {
@@ -538,10 +547,12 @@ struct PlayerView: View {
     private func dynamicMetadataContent(_ song: Song) -> some View {
         ZStack {
             VStack(spacing: 4) {
-                Text(song.title)
-                    .font(.system(size: 22, weight: .bold))
-                    .tracking(-0.55)
-                    .lineLimit(1)
+                OverflowMarqueeText(
+                    text: song.title,
+                    font: .system(size: 22, weight: .bold),
+                    tracking: -0.55,
+                    restingAlignment: .center
+                )
                 Text(song.artist)
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(playerSecondary)
@@ -1252,9 +1263,11 @@ private struct FullLyricsView: View {
             }
             Spacer()
             VStack(spacing: 3) {
-                Text(playbackItem.currentSong?.title ?? "가사")
-                    .font(.system(size: 15, weight: .bold))
-                    .lineLimit(1)
+                OverflowMarqueeText(
+                    text: playbackItem.currentSong?.title ?? "가사",
+                    font: .system(size: 15, weight: .bold),
+                    restingAlignment: .center
+                )
                 Text(playbackItem.currentSong?.artist ?? "")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(lyricsSecondary)

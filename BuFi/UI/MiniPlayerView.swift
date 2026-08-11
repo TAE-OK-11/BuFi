@@ -62,10 +62,10 @@ struct MiniPlayerView: View {
 
                         ZStack(alignment: .leading) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(song.title)
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.82)
+                                OverflowMarqueeText(
+                                    text: song.title,
+                                    font: .system(size: 15, weight: .semibold)
+                                )
                                 Text(song.artist)
                                     .font(.system(size: 13))
                                     .foregroundStyle(miniPlayerForeground.opacity(0.72))

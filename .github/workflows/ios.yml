@@ -43,6 +43,8 @@ jobs:
         run: |
           plutil -lint BuFi/Resources/PrivacyInfo.xcprivacy
           xcodegen generate
+      - name: Verify Swift 6 language mode
+        run: Scripts/verify-swift6-language-mode.sh
 
       - name: Boot an available iPhone simulator
         run: |
@@ -162,6 +164,8 @@ jobs:
 
       - name: Generate project
         run: xcodegen generate
+      - name: Verify Swift 6 language mode
+        run: Scripts/verify-swift6-language-mode.sh
 
       - name: Build with iOS 27 SDK
         run: |

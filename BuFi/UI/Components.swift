@@ -427,7 +427,7 @@ struct ArtworkView: View {
                 guard !Task.isCancelled,
                       artworkRequestIdentity == requestID else { return }
                 imageIdentity = requestID
-                image = loaded
+                image = loaded.value
                 guard let onPalette else { return }
                 let palette = await ArtworkStore.shared.palette(
                     for: coverURL,

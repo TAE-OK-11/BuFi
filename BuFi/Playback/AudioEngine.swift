@@ -157,19 +157,43 @@ final class PlaybackControlState: ObservableObject {
     }
 }
 
+struct PlaybackQueueSnapshot: Equatable, Sendable {
+    let songs: [Song]
+    let index: Int
+
+    static let empty = PlaybackQueueSnapshot(songs: [], index: -1)
+
+    init(songs: [Song], index: Int) {
+        self.songs = songs
+        if songs.isEmpty {
+            self.index = -1
+        } else {
+            self.index = min(max(index, 0), songs.count - 1)
+        }
+    }
+}
+
 @MainActor
 final class PlaybackQueueState: ObservableObject {
-    @Published fileprivate(set) var songs: [Song] = []
-    @Published fileprivate(set) var index = -1
+    /// Queue contents and selection are one published transaction. Views never
+    /// observe a new array with the previous index (or vice versa).
+    @Published fileprivate(set) var snapshot = PlaybackQueueSnapshot.empty
+
+    var songs: [Song] { snapshot.songs }
+    var index: Int { snapshot.index }
 
     fileprivate func setSongs(_ value: [Song]) {
-        guard songs != value else { return }
-        songs = value
+        replace(songs: value, index: snapshot.index)
     }
 
     fileprivate func setIndex(_ value: Int) {
-        guard index != value else { return }
-        index = value
+        replace(songs: snapshot.songs, index: value)
+    }
+
+    fileprivate func replace(songs: [Song], index: Int) {
+        let value = PlaybackQueueSnapshot(songs: songs, index: index)
+        guard snapshot != value else { return }
+        snapshot = value
     }
 }
 
@@ -379,6 +403,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private(set) var queueIndex: Int {
         get { queueState.index }
         set { queueState.setIndex(newValue) }
+    }
+
+    private func replaceQueue(_ songs: [Song], index: Int) {
+        queueState.replace(songs: songs, index: index)
     }
 
     private(set) var isPlaying: Bool {
@@ -655,8 +683,7 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             pausePlayback(persistsQueue: false)
             currentSong = nil
-            queue = []
-            queueIndex = -1
+            replaceQueue([], index: -1)
             queueMutationGeneration &+= 1
             elapsed = 0
             duration = 0
@@ -714,8 +741,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 $0.id == serverQueue.currentID
             } ?? 0
             self.beginCurrentSong(serverQueue.songs[restoredIndex])
-            self.queue = serverQueue.songs
-            self.queueIndex = restoredIndex
+            self.replaceQueue(serverQueue.songs, index: restoredIndex)
             self.queueMutationGeneration &+= 1
             self.behaviorStartRecordedForSongID = nil
             self.duration = self.currentSong?.safeDuration ?? 0
@@ -816,8 +842,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // from currentSong and can safely fall back while the queue catches up;
         // the reverse order exposes the previous currentSong at the new index.
         beginCurrentSong(selectedSong)
-        queue = normalizedQueue
-        queueIndex = resolvedIndex
+        replaceQueue(normalizedQueue, index: resolvedIndex)
         queueMutationGeneration &+= 1
         player.pause()
         isPlaying = false
@@ -1159,11 +1184,13 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let removedSong = queue[index]
-        queue.remove(at: index)
+        var updatedQueue = queue
+        updatedQueue.remove(at: index)
+        let updatedIndex = index < queueIndex ? queueIndex - 1 : queueIndex
+        replaceQueue(updatedQueue, index: updatedIndex)
         Task {
             await ListeningHistoryStore.shared.recordQueueRemoval(removedSong)
         }
-        if index < queueIndex { queueIndex -= 1 }
         queueDidChange()
     }
 
@@ -1208,11 +1235,13 @@ final class AudioEngine: NSObject, ObservableObject {
             remaining.count
         )
         remaining.insert(contentsOf: moved, at: insertionIndex)
-        queue = remaining.map { $0.1 }
+        let reorderedQueue = remaining.map { $0.1 }
         if let index = remaining.firstIndex(where: {
             $0.0 == currentOriginalIndex
         }) {
-            queueIndex = index
+            replaceQueue(reorderedQueue, index: index)
+        } else {
+            replaceQueue(reorderedQueue, index: queueIndex)
         }
         queueDidChange()
     }
@@ -1280,8 +1309,7 @@ final class AudioEngine: NSObject, ObservableObject {
             isSeekInFlight = false
             pendingSeekPosition = nil
             currentSong = nil
-            queue = []
-            queueIndex = -1
+            replaceQueue([], index: -1)
             elapsed = 0
             duration = 0
             isBuffering = false
@@ -3383,10 +3411,11 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.nowPlayingArtworkKey == artworkKey else {
                 return
             }
+            let artworkImage = image.value
             var refreshed = self.nowPlayingInfoCenter.nowPlayingInfo ?? [:]
             refreshed[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
-                boundsSize: image.size
-            ) { _ in image }
+                boundsSize: artworkImage.size
+            ) { _ in artworkImage }
             self.nowPlayingInfoCenter.nowPlayingInfo = refreshed
         }
     }
@@ -3628,8 +3657,7 @@ final class AudioEngine: NSObject, ObservableObject {
             } ?? 0
         }
         beginCurrentSong(snapshot.queue[restoredIndex])
-        queue = snapshot.queue
-        queueIndex = restoredIndex
+        replaceQueue(snapshot.queue, index: restoredIndex)
         let restoredElapsed = snapshot.elapsed.isFinite ? max(0, snapshot.elapsed) : 0
         let restoredDuration = currentSong?.safeDuration ?? 0
         elapsed = restoredDuration > 0

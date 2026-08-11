@@ -46,6 +46,8 @@ jobs:
         run: |
           plutil -lint BuFi/Resources/PrivacyInfo.xcprivacy
           xcodegen generate
+      - name: Verify Swift 6 language mode
+        run: Scripts/verify-swift6-language-mode.sh
       - name: Boot an available iPhone simulator
         run: |
           SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(device["udid"] for devices in reversed(list(data["devices"].values())) for device in devices if device.get("isAvailable") and device.get("name", "").startswith("iPhone")))')"
@@ -177,6 +179,8 @@ jobs:
         run: sh Scripts/prepare-assets.sh
       - name: Generate project
         run: xcodegen generate
+      - name: Verify Swift 6 language mode
+        run: Scripts/verify-swift6-language-mode.sh
       - name: Build with iOS 27 SDK
         run: |
           set -o pipefail

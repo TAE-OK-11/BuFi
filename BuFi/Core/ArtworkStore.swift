@@ -52,6 +52,18 @@ struct ArtworkPalette: Codable, Equatable, Sendable {
     )
 }
 
+/// UIImage is a UIKit reference type and cannot express immutable Sendable
+/// semantics itself. ArtworkStore publishes only images that are fully decoded
+/// and never mutated; this wrapper keeps that single audited assumption at the
+/// actor boundary instead of spreading unchecked crossings through UI code.
+struct ArtworkImage: @unchecked Sendable {
+    let value: UIImage
+
+    init(_ value: UIImage) {
+        self.value = value
+    }
+}
+
 actor ArtworkStore {
     static let shared = ArtworkStore()
 
@@ -134,7 +146,7 @@ actor ArtworkStore {
         activeScope = nil
     }
 
-    func image(for url: URL, pixelSize: CGFloat) async throws -> UIImage {
+    func image(for url: URL, pixelSize: CGFloat) async throws -> ArtworkImage {
         guard let scope = activeScope else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -151,7 +163,7 @@ actor ArtworkStore {
         guard activeScope == scope, pipeline === scopedPipeline else {
             throw CancellationError()
         }
-        return image
+        return ArtworkImage(image)
     }
 
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
@@ -164,7 +176,7 @@ actor ArtworkStore {
         }
     }
 
-    func palette(for url: URL, image: UIImage? = nil) async -> ArtworkPalette {
+    func palette(for url: URL, image: ArtworkImage? = nil) async -> ArtworkPalette {
         guard let scope = activeScope,
               !isClearingAll,
               !Task.isCancelled else {
@@ -225,7 +237,7 @@ actor ArtworkStore {
 
     private func resolvePalette(
         for url: URL,
-        providedImage: UIImage?,
+        providedImage: ArtworkImage?,
         scope: String,
         cacheKey: String,
         generation: UInt64
@@ -250,12 +262,12 @@ actor ArtworkStore {
 
         let source: UIImage
         if let providedImage {
-            source = providedImage
+            source = providedImage.value
         } else {
             guard let loaded = try? await image(for: url, pixelSize: 96) else {
                 return .fallback
             }
-            source = loaded
+            source = loaded.value
         }
         guard activeScope == scope,
               paletteGeneration == generation,
@@ -279,7 +291,7 @@ actor ArtworkStore {
 
     private func coalescedPalette(
         for url: URL,
-        providedImage: UIImage?,
+        providedImage: ArtworkImage?,
         scope: String,
         cacheKey: String,
         generation: UInt64
@@ -312,7 +324,7 @@ actor ArtworkStore {
         _ continuation: CheckedContinuation<ArtworkPalette, Never>,
         waiterID: UUID,
         url: URL,
-        providedImage: UIImage?,
+        providedImage: ArtworkImage?,
         scope: String,
         cacheKey: String,
         generation: UInt64

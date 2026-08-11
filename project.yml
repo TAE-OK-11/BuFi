@@ -14,7 +14,10 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.0"
+    # Swift 6 language mode makes the complete-concurrency diagnostics below
+    # enforceable instead of advisory. Keep this at the project level so the
+    # app and its tests cannot silently drift onto different language modes.
+    SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     TARGETED_DEVICE_FAMILY: "1"

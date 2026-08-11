@@ -9,7 +9,7 @@ enum AppTab: Hashable {
 }
 
 private struct MiniPlayerPlacementPreferenceKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
+    static let defaultValue: Anchor<CGRect>? = nil
 
     static func reduce(
         value: inout Anchor<CGRect>?,
