@@ -1674,7 +1674,7 @@ actor OpenSubsonicClient {
                 ? ["id": id, "artist": artist.name, "count": "20"]
                 : ["artist": artist.name, "count": "20"]
         )
-        let info = await infoPayload
+        let info = try await infoPayload
         return ArtistDetail(
             artist: artist.artistValue,
             albums: artist.album ?? [],
