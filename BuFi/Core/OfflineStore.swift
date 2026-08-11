@@ -85,7 +85,7 @@ actor OfflineStore {
             scope: accountScope
         )
         guard generation == scopeGeneration, activeScope == nil else { return }
-        var loadedEntries = databaseEntries.reduce(into: [:]) { result, pair in
+        var loadedEntries: [String: Entry] = databaseEntries.reduce(into: [:]) { result, pair in
             let entry = Entry(
                 fileName: pair.value.fileName,
                 byteCount: pair.value.byteCount,
@@ -97,7 +97,7 @@ actor OfflineStore {
                 result[pair.key] = entry
             }
         }
-        let missingDatabaseIDs = Set(databaseEntries.keys).subtracting(loadedEntries.keys)
+        let missingDatabaseIDs = Swift.Set<String>(databaseEntries.keys).subtracting(loadedEntries.keys)
         if !missingDatabaseIDs.isEmpty {
             _ = await AppDatabase.shared.applyOfflineEntries(
                 [:],

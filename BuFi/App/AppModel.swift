@@ -1684,7 +1684,7 @@ final class AppModel: ObservableObject {
         weights: RecommendationWeights,
         behavior: RecommendationBehaviorSnapshot
     ) async -> (recommended: [Song], daylist: [Song]) {
-        let task = Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) { () -> (recommended: [Song], daylist: [Song]) in
             let recommended = RecommendationMixer.mix(
                 snapshot: snapshot,
                 weights: weights,
