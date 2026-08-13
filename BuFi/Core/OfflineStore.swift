@@ -737,15 +737,18 @@ actor OfflineStore {
         at url: URL,
         expectedByteCount: Int64?
     ) -> Bool {
-        guard let values = try? url.resourceValues(
-            forKeys: [.isRegularFileKey, .fileSizeKey]
-        ), values.isRegularFile == true,
-           let fileSize = values.fileSize,
-           fileSize > 0 else {
+        guard let attributes = try? FileManager.default.attributesOfItem(
+            atPath: url.path
+        ),
+        let fileType = attributes[.type] as? FileAttributeType,
+        fileType == .typeRegular,
+        let fileSizeNumber = attributes[.size] as? NSNumber else {
             return false
         }
+        let fileSize = fileSizeNumber.int64Value
+        guard fileSize > 0 else { return false }
         guard let expectedByteCount else { return true }
-        return expectedByteCount > 0 && Int64(fileSize) == expectedByteCount
+        return expectedByteCount > 0 && fileSize == expectedByteCount
     }
 
     private func markDirty(_ songID: String) {

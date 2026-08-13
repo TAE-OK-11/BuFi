@@ -1017,8 +1017,10 @@ actor AppDatabase {
     ) throws {
         try db.execute(
             sql: """
-            DELETE FROM artwork_palette_cache WHERE rowid IN (
-                SELECT rowid FROM artwork_palette_cache
+            DELETE FROM artwork_palette_cache
+            WHERE (account_scope, artwork_key, engine_version) IN (
+                SELECT account_scope, artwork_key, engine_version
+                FROM artwork_palette_cache
                 WHERE account_scope = ?
                 ORDER BY last_accessed_at DESC, artwork_key ASC,
                          engine_version DESC
@@ -1035,8 +1037,10 @@ actor AppDatabase {
     ) throws {
         try db.execute(
             sql: """
-            DELETE FROM artwork_palette_cache WHERE rowid IN (
-                SELECT rowid FROM artwork_palette_cache
+            DELETE FROM artwork_palette_cache
+            WHERE (account_scope, artwork_key, engine_version) IN (
+                SELECT account_scope, artwork_key, engine_version
+                FROM artwork_palette_cache
                 ORDER BY last_accessed_at DESC, account_scope ASC,
                          artwork_key ASC, engine_version DESC
                 LIMIT -1 OFFSET ?
