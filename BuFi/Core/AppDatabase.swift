@@ -5,6 +5,7 @@ struct OfflineDatabaseEntry: Sendable, Equatable {
     var fileName: String
     var byteCount: Int64
     var lastAccessedAt: Date
+    var mediaRevision: String? = nil
 }
 
 actor AppDatabase {
@@ -307,7 +308,8 @@ actor AppDatabase {
                     return (id, OfflineDatabaseEntry(
                         fileName: row["file_name"],
                         byteCount: row["byte_count"],
-                        lastAccessedAt: Self.date(row["last_accessed_at"])
+                        lastAccessedAt: Self.date(row["last_accessed_at"]),
+                        mediaRevision: row["media_revision"]
                     ))
                 })
             }
@@ -335,16 +337,19 @@ actor AppDatabase {
                     try db.execute(
                         sql: """
                         INSERT INTO offline_entry
-                            (account_scope, song_id, file_name, byte_count, last_accessed_at)
-                        VALUES (?, ?, ?, ?, ?)
+                            (account_scope, song_id, file_name, byte_count,
+                             last_accessed_at, media_revision)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         ON CONFLICT(account_scope, song_id) DO UPDATE SET
                             file_name = excluded.file_name,
                             byte_count = excluded.byte_count,
-                            last_accessed_at = excluded.last_accessed_at
+                            last_accessed_at = excluded.last_accessed_at,
+                            media_revision = excluded.media_revision
                         """,
                         arguments: [
                             scope, id, value.fileName, value.byteCount,
-                            value.lastAccessedAt.timeIntervalSince1970
+                            value.lastAccessedAt.timeIntervalSince1970,
+                            value.mediaRevision
                         ]
                     )
                 }
@@ -371,12 +376,14 @@ actor AppDatabase {
                     try db.execute(
                         sql: """
                         INSERT INTO offline_entry
-                            (account_scope, song_id, file_name, byte_count, last_accessed_at)
-                        VALUES (?, ?, ?, ?, ?)
+                            (account_scope, song_id, file_name, byte_count,
+                             last_accessed_at, media_revision)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         arguments: [
                             scope, id, value.fileName, value.byteCount,
-                            value.lastAccessedAt.timeIntervalSince1970
+                            value.lastAccessedAt.timeIntervalSince1970,
+                            value.mediaRevision
                         ]
                     )
                 }
@@ -1232,6 +1239,11 @@ actor AppDatabase {
                     ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
                 ALTER TABLE queue_item
                     ADD COLUMN occurrence_id TEXT;
+                """)
+        }
+        migrator.registerMigration("offline-media-revision-v6") { db in
+            try db.execute(sql: """
+                ALTER TABLE offline_entry ADD COLUMN media_revision TEXT;
                 """)
         }
         return migrator

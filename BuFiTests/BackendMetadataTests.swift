@@ -121,6 +121,32 @@ final class BackendMetadataTests: XCTestCase {
             original.playbackMetadataRevision,
             changedCover.playbackMetadataRevision
         )
+        XCTAssertEqual(
+            original.audioResourceRevision,
+            changedCover.audioResourceRevision
+        )
+
+        var changedResource = original
+        changedResource.suffix = "aac"
+        XCTAssertNotEqual(
+            original.audioResourceRevision,
+            changedResource.audioResourceRevision
+        )
+
+        var datedResource = original
+        datedResource.created = "2026-08-11T00:00:00Z"
+        var renamedResource = datedResource
+        renamedResource.title = "Renamed"
+        var replacedResource = datedResource
+        replacedResource.created = "2026-08-12T00:00:00Z"
+        XCTAssertEqual(
+            datedResource.offlineMediaRevision,
+            renamedResource.offlineMediaRevision
+        )
+        XCTAssertNotEqual(
+            datedResource.offlineMediaRevision,
+            replacedResource.offlineMediaRevision
+        )
     }
 
     func testArtworkRevisionUsesFragmentWithoutChangingServerQuery() throws {

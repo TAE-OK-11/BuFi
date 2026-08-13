@@ -103,7 +103,8 @@ final class AppDatabaseTests: XCTestCase {
         let entry = OfflineDatabaseEntry(
             fileName: "one.m4a",
             byteCount: 1_024,
-            lastAccessedAt: Date(timeIntervalSince1970: 1_800_000_000)
+            lastAccessedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            mediaRevision: "audio-revision"
         )
 
         let inserted = await context.database.applyOfflineEntries(

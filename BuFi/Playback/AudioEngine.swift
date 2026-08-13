@@ -1854,7 +1854,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // system rejects it, later codec fallbacks bypass the local source.
         if allowLocalSource,
            compatibilityFormat?.lowercased() == "raw",
-           let local = await OfflineStore.shared.localURL(for: song.id) {
+           let local = await OfflineStore.shared.localURL(for: song) {
             return PlaybackResource(
                 url: local,
                 mimeType: Self.sourceMIMEType(for: song)
@@ -2054,7 +2054,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let key = Self.preparedPlaybackKey(
             accountScope: currentAccountScope,
             queueEntryID: entry.id,
-            streamRevision: song.playbackMetadataRevision,
+            streamRevision: song.audioResourceRevision,
             quality: preparedQuality,
             compatibilityFormat: compatibilityFormat
         )
@@ -2078,8 +2078,8 @@ final class AudioEngine: NSObject, ObservableObject {
                       self.quality == preparedQuality,
                       self.playbackState.entries.contains(where: {
                           $0.id == entry.id
-                              && $0.song.playbackMetadataRevision
-                                  == song.playbackMetadataRevision
+                              && $0.song.audioResourceRevision
+                                  == song.audioResourceRevision
                       }) else {
                     self.preparedPlaybackWarmupTasks[key] = nil
                     return
@@ -2099,7 +2099,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         key: key,
                         queueEntryID: entry.id,
                         songID: song.id,
-                        streamRevision: song.playbackMetadataRevision,
+                        streamRevision: song.audioResourceRevision,
                         compatibilityFormat: compatibilityFormat,
                         asset: asset
                     )
@@ -2153,7 +2153,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let successorEntry = playbackState.entries[successorIndex]
         guard successorEntry.id == prepared.queueEntryID,
               successor.id == prepared.songID,
-              successor.playbackMetadataRevision == prepared.streamRevision else {
+              successor.audioResourceRevision == prepared.streamRevision else {
             return
         }
 
@@ -2257,14 +2257,14 @@ final class AudioEngine: NSObject, ObservableObject {
         let key = Self.preparedPlaybackKey(
             accountScope: playbackItem.accountScope,
             queueEntryID: playbackItem.queueEntryID,
-            streamRevision: song.playbackMetadataRevision,
+            streamRevision: song.audioResourceRevision,
             quality: quality,
             compatibilityFormat: compatibilityFormat
         )
         guard let prepared = preparedPlaybackAssets.removeValue(forKey: key),
               prepared.queueEntryID == playbackItem.queueEntryID,
               prepared.songID == song.id,
-              prepared.streamRevision == song.playbackMetadataRevision,
+              prepared.streamRevision == song.audioResourceRevision,
               prepared.compatibilityFormat == compatibilityFormat else {
             return nil
         }
@@ -2437,7 +2437,7 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             for song in plan.upcomingSongs {
                 guard !Task.isCancelled else { return }
-                if await OfflineStore.shared.localURL(for: song.id) == nil {
+                if await OfflineStore.shared.localURL(for: song) == nil {
                     _ = try? await OfflineStore.shared.download(song: song, client: client)
                 }
             }

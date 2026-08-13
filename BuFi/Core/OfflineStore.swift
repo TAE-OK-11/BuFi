@@ -8,11 +8,13 @@ actor OfflineStore {
         var fileName: String
         var byteCount: Int64
         var lastAccessedAt: Date
+        var mediaRevision: String?
     }
 
     private struct InFlightDownload: Sendable {
         let token: UUID
         let scopeGeneration: UInt64
+        let mediaRevision: String?
         let task: Task<URL, Error>
         var waiters: Set<UUID>
     }
@@ -109,7 +111,8 @@ actor OfflineStore {
             let entry = Entry(
                 fileName: pair.value.fileName,
                 byteCount: pair.value.byteCount,
-                lastAccessedAt: pair.value.lastAccessedAt
+                lastAccessedAt: pair.value.lastAccessedAt,
+                mediaRevision: pair.value.mediaRevision
             )
             let fileURL = scopedDirectory.appendingPathComponent(entry.fileName)
             if Self.isValidOfflineFile(
@@ -191,11 +194,28 @@ actor OfflineStore {
         return true
     }
 
+    func localURL(for song: Song) -> URL? {
+        localURL(
+            for: song.id,
+            expectedMediaRevision: song.offlineMediaRevision
+        )
+    }
+
     func localURL(for songID: String) -> URL? {
+        localURL(for: songID, expectedMediaRevision: nil)
+    }
+
+    private func localURL(
+        for songID: String,
+        expectedMediaRevision: String?
+    ) -> URL? {
         guard activeScope != nil, let directory else { return nil }
         if var entry = entries[songID] {
             let url = directory.appendingPathComponent(entry.fileName)
-            guard Self.isValidOfflineFile(
+            guard expectedMediaRevision == nil
+                    || entry.mediaRevision == nil
+                    || entry.mediaRevision == expectedMediaRevision,
+                  Self.isValidOfflineFile(
                 at: url,
                 expectedByteCount: entry.byteCount
             ) else {
@@ -207,8 +227,20 @@ actor OfflineStore {
                 scheduleIndexPersistence()
                 return nil
             }
+            var entryChanged = false
+            if let expectedMediaRevision, entry.mediaRevision == nil {
+                // A pre-v6 cache has no revision evidence. Adopt the first
+                // canonical revision after validating its bytes so an app
+                // upgrade does not destroy usable offline playback; every
+                // later revision mismatch is rejected.
+                entry.mediaRevision = expectedMediaRevision
+                entryChanged = true
+            }
             if Date().timeIntervalSince(entry.lastAccessedAt) > 3_600 {
                 entry.lastAccessedAt = Date()
+                entryChanged = true
+            }
+            if entryChanged {
                 entries[songID] = entry
                 markDirty(songID)
                 scheduleIndexPersistence()
@@ -216,6 +248,7 @@ actor OfflineStore {
             return url
         }
 
+        guard expectedMediaRevision == nil else { return nil }
         let legacy = legacyFileURL(songID: songID, directory: directory)
         if Self.isValidOfflineFile(at: legacy, expectedByteCount: nil) {
             return legacy
@@ -233,20 +266,25 @@ actor OfflineStore {
               let directory else {
             throw OpenSubsonicError.invalidResponse
         }
-        if let existing = localURL(for: song.id) { return existing }
+        let mediaRevision = song.offlineMediaRevision
+        if let existing = localURL(for: song) { return existing }
 
         let generation = scopeGeneration
         let taskKey = scope + ":" + song.id
         if var existing = inFlight[taskKey] {
-            let waiter = UUID()
-            existing.waiters.insert(waiter)
-            inFlight[taskKey] = existing
-            return try await awaitDownload(
-                existing,
-                taskKey: taskKey,
-                waiter: waiter,
-                scope: scope
-            )
+            if existing.mediaRevision == mediaRevision {
+                let waiter = UUID()
+                existing.waiters.insert(waiter)
+                inFlight[taskKey] = existing
+                return try await awaitDownload(
+                    existing,
+                    taskKey: taskKey,
+                    waiter: waiter,
+                    scope: scope
+                )
+            }
+            existing.task.cancel()
+            inFlight[taskKey] = nil
         }
 
         let fileName = Self.fileName(for: song)
@@ -298,6 +336,7 @@ actor OfflineStore {
                 destination: destination,
                 byteCount: bytes,
                 songID: song.id,
+                mediaRevision: mediaRevision,
                 scope: scope,
                 scopeGeneration: generation
             )
@@ -305,6 +344,7 @@ actor OfflineStore {
         let download = InFlightDownload(
             token: token,
             scopeGeneration: generation,
+            mediaRevision: mediaRevision,
             task: task,
             waiters: [waiter]
         )
@@ -368,6 +408,7 @@ actor OfflineStore {
         destination: URL,
         byteCount: Int64,
         songID: String,
+        mediaRevision: String?,
         scope: String,
         scopeGeneration generation: UInt64
     ) throws -> URL {
@@ -394,7 +435,8 @@ actor OfflineStore {
             entries[songID] = Entry(
                 fileName: destination.lastPathComponent,
                 byteCount: byteCount,
-                lastAccessedAt: Date()
+                lastAccessedAt: Date(),
+                mediaRevision: mediaRevision
             )
             markDirty(songID)
             try enforceStorageLimit(keeping: songID)
@@ -722,7 +764,8 @@ actor OfflineStore {
         OfflineDatabaseEntry(
             fileName: entry.fileName,
             byteCount: entry.byteCount,
-            lastAccessedAt: entry.lastAccessedAt
+            lastAccessedAt: entry.lastAccessedAt,
+            mediaRevision: entry.mediaRevision
         )
     }
 

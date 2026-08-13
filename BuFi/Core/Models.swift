@@ -114,6 +114,28 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
         ])
     }
 
+    /// Identifies the playable bytes without coupling transport caches to
+    /// mutable display metadata such as title, artist, or cover art.
+    var audioResourceRevision: String {
+        stableMediaRevision([
+            id,
+            duration.map { String($0) } ?? "",
+            suffix ?? "",
+            contentType ?? "",
+            created ?? ""
+        ])
+    }
+
+    /// Server creation metadata is the only stable signal available for a
+    /// durable downloaded resource. Missing hints remain compatible with a
+    /// legacy cache instead of treating an incomplete search row as a change.
+    var offlineMediaRevision: String? {
+        guard let created = created?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !created.isEmpty else { return nil }
+        return stableMediaRevision([id, created])
+    }
+
     /// Artwork deliberately excludes mutable social state such as `starred`
     /// so liking a song never invalidates an otherwise identical image.
     var artworkRevision: String {
