@@ -449,9 +449,27 @@ final class AppModel: ObservableObject {
     }
 
     func search(_ rawQuery: String) {
+        startSearch(rawQuery, debounce: .milliseconds(260))
+    }
+
+    func searchImmediately(_ rawQuery: String) async {
+        guard let task = startSearch(rawQuery, debounce: nil) else { return }
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    @discardableResult
+    private func startSearch(
+        _ rawQuery: String,
+        debounce: Duration?
+    ) -> Task<Void, Never>? {
         searchGeneration += 1
         let generation = searchGeneration
         searchTask?.cancel()
+        searchTask = nil
         let query = Self.normalizedSearchQuery(rawQuery)
         guard !query.isEmpty, let client else {
             searchContent.publish(
@@ -459,7 +477,7 @@ final class AppModel: ObservableObject {
                 results: .empty,
                 isSearching: false
             )
-            return
+            return nil
         }
         searchContent.publish(
             query: query,
@@ -467,9 +485,11 @@ final class AppModel: ObservableObject {
             isSearching: true
         )
 
-        searchTask = Task { [weak self] in
+        let task = Task { [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(260))
+                if let debounce {
+                    try await Task.sleep(for: debounce)
+                }
                 try Task.checkCancellation()
                 guard let self, generation == self.searchGeneration, self.client === client else { return }
                 let value = try await client.search(query)
@@ -481,8 +501,17 @@ final class AppModel: ObservableObject {
                     results: self.applyingFavoriteOverrides(to: value),
                     isSearching: false
                 )
+                self.searchTask = nil
             } catch is CancellationError {
-                return
+                guard let self,
+                      generation == self.searchGeneration,
+                      self.client === client else { return }
+                self.searchContent.publish(
+                    query: query,
+                    results: .empty,
+                    isSearching: false
+                )
+                self.searchTask = nil
             } catch {
                 guard let self, generation == self.searchGeneration, self.client === client else { return }
                 self.searchContent.publish(
@@ -491,48 +520,11 @@ final class AppModel: ObservableObject {
                     isSearching: false
                 )
                 self.errorMessage = error.localizedDescription
+                self.searchTask = nil
             }
         }
-    }
-
-    func searchImmediately(_ rawQuery: String) async {
-        searchGeneration += 1
-        let generation = searchGeneration
-        searchTask?.cancel()
-        let query = Self.normalizedSearchQuery(rawQuery)
-        guard !query.isEmpty, let client else {
-            searchContent.publish(
-                query: query,
-                results: .empty,
-                isSearching: false
-            )
-            return
-        }
-        searchContent.publish(
-            query: query,
-            results: .empty,
-            isSearching: true
-        )
-        do {
-            let value = try await client.search(query)
-            guard generation == searchGeneration, self.client === client else { return }
-            reconcileFavoriteStates(in: value)
-            searchContent.publish(
-                query: query,
-                results: applyingFavoriteOverrides(to: value),
-                isSearching: false
-            )
-        } catch is CancellationError {
-            return
-        } catch {
-            guard generation == searchGeneration, self.client === client else { return }
-            searchContent.publish(
-                query: query,
-                results: .empty,
-                isSearching: false
-            )
-            errorMessage = error.localizedDescription
-        }
+        searchTask = task
+        return task
     }
 
     private static func normalizedSearchQuery(_ value: String) -> String {
@@ -546,6 +538,7 @@ final class AppModel: ObservableObject {
     func clearSearch() {
         searchGeneration += 1
         searchTask?.cancel()
+        searchTask = nil
         searchContent.presentation = .empty
     }
 
