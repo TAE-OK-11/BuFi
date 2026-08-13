@@ -759,6 +759,34 @@ actor OpenSubsonicClient {
         return url
     }
 
+    private func formRequest(
+        _ endpoint: String,
+        queryItems: [URLQueryItem],
+        json: Bool = true
+    ) throws -> URLRequest {
+        guard let url = URL(
+            string: credentials.serverURL + "/rest/\(endpoint).view"
+        ), url.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.invalidServerURL
+        }
+        var items = authenticationItems()
+        if json { items.append(URLQueryItem(name: "f", value: "json")) }
+        items.append(contentsOf: queryItems)
+        var bodyComponents = URLComponents()
+        bodyComponents.queryItems = items
+        guard let body = bodyComponents.percentEncodedQuery?.data(using: .utf8) else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue(
+            "application/x-www-form-urlencoded; charset=utf-8",
+            forHTTPHeaderField: "Content-Type"
+        )
+        return request
+    }
+
     private func readRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         parameters: [String: String] = [:],
@@ -808,6 +836,31 @@ actor OpenSubsonicClient {
                 )
             )
         )
+    }
+
+    private func formMutationRequest<Payload: Decodable & Sendable>(
+        _ endpoint: String,
+        queryItems: [URLQueryItem]
+    ) async throws -> Payload {
+        let impact = OpenSubsonicRequestPolicy.mutationImpact(
+            for: endpoint,
+            queryItems: queryItems
+        )
+        cacheRevisionState.begin(impact)
+        do {
+            let request = try formRequest(endpoint, queryItems: queryItems)
+            let response = try await responseData(
+                from: request,
+                allowsRetry: false
+            )
+            let payload: Payload = try await decodeResponse(response)
+            cacheRevisionState.finish(impact)
+            return payload
+        } catch {
+            cacheRevisionState.finish(impact)
+            logFailure(error, endpoint: endpoint)
+            throw error
+        }
     }
 
     private func performRequest<Payload: Decodable & Sendable>(
@@ -1125,6 +1178,16 @@ actor OpenSubsonicClient {
         from url: URL,
         allowsRetry: Bool
     ) async throws -> HTTPResponseData {
+        try await responseData(
+            from: URLRequest(url: url),
+            allowsRetry: allowsRetry
+        )
+    }
+
+    private func responseData(
+        from originalRequest: URLRequest,
+        allowsRetry: Bool
+    ) async throws -> HTTPResponseData {
         // Mutations avoid the zstd negotiation fallback because reissuing a
         // state-changing endpoint would itself be an unsafe retry.
         var acceptsZstandard = allowsRetry
@@ -1134,7 +1197,7 @@ actor OpenSubsonicClient {
             try Task.checkCancellation()
             do {
                 let result = try await responseDataAttempt(
-                    from: url,
+                    from: originalRequest,
                     acceptsZstandard: acceptsZstandard
                 )
                 guard allowsRetry,
@@ -1202,13 +1265,16 @@ actor OpenSubsonicClient {
     }
 
     private func responseDataAttempt(
-        from url: URL,
+        from originalRequest: URLRequest,
         acceptsZstandard: Bool
     ) async throws -> HTTPResponseData {
+        guard let url = originalRequest.url else {
+            throw OpenSubsonicError.invalidServerURL
+        }
         guard url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
-        var request = URLRequest(url: url)
+        var request = originalRequest
         ModernNetworkPolicy.prepareAPIRequest(
             &request,
             acceptsZstandard: acceptsZstandard
@@ -2472,7 +2538,7 @@ actor OpenSubsonicClient {
             URLQueryItem(name: "current", value: current),
             URLQueryItem(name: "position", value: String(Int(position * 1_000)))
         ]
-        let _: EmptyPayload = try await mutationRequest(
+        let _: EmptyPayload = try await formMutationRequest(
             "savePlayQueue",
             queryItems: queryItems
         )
