@@ -294,9 +294,15 @@ actor ArtworkStore {
         // Palette clustering is CPU-heavy. Keep it off the store actor so an
         // account switch, cache clear, or visible image request is not blocked
         // behind color analysis.
-        let value = await Task.detached(priority: .utility) {
-            Self.analyzedPalette(from: source.value)
-        }.value
+        let analysisTask = Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return nil }
+            return Self.analyzedPalette(from: source.value)
+        }
+        let value = await withTaskCancellationHandler {
+            await analysisTask.value
+        } onCancel: {
+            analysisTask.cancel()
+        }
         guard activeScope == scope,
               paletteGeneration == generation,
               !Task.isCancelled,

@@ -3883,6 +3883,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
 struct QueueSnapshot: Sendable {
     let entries: [PlaybackQueueEntry]
+    let queue: [Song]
     let currentID: String?
     let currentQueueEntryID: UUID?
     let index: Int
@@ -3890,8 +3891,6 @@ struct QueueSnapshot: Sendable {
     let shuffle: Bool
     let repeatMode: RepeatMode
     let revision: UInt64
-
-    var queue: [Song] { entries.map(\.song) }
 
     init(
         queue: [Song],
@@ -3928,6 +3927,7 @@ struct QueueSnapshot: Sendable {
         revision: UInt64
     ) {
         self.entries = entries
+        queue = entries.map(\.song)
         self.currentID = currentID
         self.currentQueueEntryID = currentQueueEntryID
         self.index = index

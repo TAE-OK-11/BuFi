@@ -126,7 +126,6 @@ actor OpenSubsonicClient {
     let credentials: ServerCredentials
     let accountScope: String
     private let session: URLSession
-    private let decoder: JSONDecoder
     private let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
     private var supportedExtensions: Set<String>?
@@ -232,7 +231,6 @@ actor OpenSubsonicClient {
             delegate: HTTPSOnlyURLSessionDelegate(),
             delegateQueue: nil
         )
-        self.decoder = JSONDecoder()
     }
 
     private static func normalizedBaseURL(_ value: String) -> URL? {
@@ -361,7 +359,7 @@ actor OpenSubsonicClient {
                     for: cacheKey,
                     lifetime: cacheLifetime
                    ) {
-                    return try decodeResponseData(cached)
+                    return try await decodeResponseData(cached)
                 }
                 response = try await coalescedReadResponse(
                     from: url,
@@ -381,7 +379,7 @@ actor OpenSubsonicClient {
                     allowsRetry: false
                 )
             }
-            let payload: Payload = try decodeResponse(response)
+            let payload: Payload = try await decodeResponse(response)
             switch semantics {
             case .readOnly where mutationsInFlight == 0
                     && cacheLifetime > 0
@@ -449,16 +447,31 @@ actor OpenSubsonicClient {
 
     private func decodeResponse<Payload: Decodable & Sendable>(
         _ response: HTTPResponseData
-    ) throws -> Payload {
+    ) async throws -> Payload {
         guard (200..<300).contains(response.statusCode) else {
             throw OpenSubsonicError.http(response.statusCode)
         }
-        return try decodeResponseData(response.data)
+        return try await decodeResponseData(response.data)
     }
 
     private func decodeResponseData<Payload: Decodable & Sendable>(
         _ data: Data
+    ) async throws -> Payload {
+        let task = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            return try Self.decodePayload(data)
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private nonisolated static func decodePayload<Payload: Decodable & Sendable>(
+        _ data: Data
     ) throws -> Payload {
+        let decoder = JSONDecoder()
         let capture = try decoder.decode(DecoderCapture.self, from: data)
         let statusEnvelope = try StatusEnvelope(from: capture.decoder)
         guard statusEnvelope.response.status == "ok" else {
@@ -486,10 +499,19 @@ actor OpenSubsonicClient {
             guard (200..<300).contains(response.statusCode) else {
                 throw OpenSubsonicError.http(response.statusCode)
             }
-            let envelope = try decoder.decode(
-                StatusEnvelope.self,
-                from: response.data
-            )
+            let responseData = response.data
+            let decodeTask = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+                return try JSONDecoder().decode(
+                    StatusEnvelope.self,
+                    from: responseData
+                )
+            }
+            let envelope = try await withTaskCancellationHandler {
+                try await decodeTask.value
+            } onCancel: {
+                decodeTask.cancel()
+            }
             guard envelope.response.status == "ok" else {
                 throw OpenSubsonicError.server(
                     code: envelope.response.error?.code,
@@ -733,10 +755,18 @@ actor OpenSubsonicClient {
         }
         let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
         do {
-            let data = try HTTPContentDecoder.decode(
-                encodedData,
-                contentEncoding: contentEncoding
-            )
+            let decodeTask = Task.detached(priority: .utility) {
+                try Task.checkCancellation()
+                return try HTTPContentDecoder.decode(
+                    encodedData,
+                    contentEncoding: contentEncoding
+                )
+            }
+            let data = try await withTaskCancellationHandler {
+                try await decodeTask.value
+            } onCancel: {
+                decodeTask.cancel()
+            }
             return HTTPResponseData(
                 data: data,
                 statusCode: http.statusCode,
