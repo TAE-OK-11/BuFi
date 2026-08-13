@@ -5,6 +5,24 @@ import Network
 import OSLog
 import UIKit
 
+/// MediaPlayer retains the request handler and invokes it on its private
+/// `*/accessQueue`, not on the actor that creates the artwork. Keeping the
+/// immutable image in an explicitly Sendable provider prevents Swift 6 from
+/// inferring MainActor isolation for that callback.
+struct NowPlayingArtworkProvider: Sendable {
+    private let image: ArtworkImage
+
+    init(image: ArtworkImage) {
+        self.image = image
+    }
+
+    func makeArtwork() -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.value.size) { @Sendable [self] _ in
+            image.value
+        }
+    }
+}
+
 /// Owns AVPlayer and NotificationCenter tokens as one lifecycle unit. All
 /// mutations are performed by AudioEngine on the main actor.
 @MainActor
@@ -3616,11 +3634,9 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.nowPlayingArtworkKey == artworkKey else {
                 return
             }
-            let artworkImage = image.value
+            let artworkProvider = NowPlayingArtworkProvider(image: image)
             var refreshed = self.nowPlayingInfoCenter.nowPlayingInfo ?? [:]
-            refreshed[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
-                boundsSize: artworkImage.size
-            ) { _ in artworkImage }
+            refreshed[MPMediaItemPropertyArtwork] = artworkProvider.makeArtwork()
             self.nowPlayingInfoCenter.nowPlayingInfo = refreshed
         }
     }

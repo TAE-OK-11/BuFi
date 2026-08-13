@@ -60,7 +60,7 @@ struct ArtworkImage: @unchecked Sendable {
     let value: UIImage
     fileprivate let cacheKey: String
 
-    fileprivate init(_ value: UIImage, cacheKey: String) {
+    init(_ value: UIImage, cacheKey: String) {
         self.value = value
         self.cacheKey = cacheKey
     }
