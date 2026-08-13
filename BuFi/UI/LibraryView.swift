@@ -32,13 +32,15 @@ struct LibraryView: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .onAppear { updateArtistPresentationIfNeeded() }
-        .onChange(of: library.snapshot) { _, _ in
+        .onChange(of: library.revision) { _, _ in
             updateArtistPresentationIfNeeded()
         }
         .onDisappear {
+            if artistPresentationTask != nil {
+                artistPresentationInput = nil
+            }
             artistPresentationTask?.cancel()
             artistPresentationTask = nil
-            artistPresentationInput = nil
         }
     }
 
@@ -145,7 +147,7 @@ struct LibraryView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 librarySectionTitle("모든 아티스트")
                 ForEach(artistPresentation.sections) { section in
                     VStack(alignment: .leading, spacing: 8) {
@@ -156,7 +158,7 @@ struct LibraryView: View {
                             .padding(.horizontal, 20)
 
                         BuFiGroupedSurface {
-                            VStack(spacing: 0) {
+                            LazyVStack(spacing: 0) {
                                 ForEach(section.artists) { artist in
                                     artistRow(artist)
                                     if artist.id != section.artists.last?.id {
@@ -354,12 +356,6 @@ struct LibraryView: View {
             starredArtists: library.snapshot.starredArtists
         )
         guard input != artistPresentationInput else { return }
-        if artistPresentationInput == nil {
-            artistPresentationInput = input
-            artistPresentation = LibraryArtistPresentation.make(input: input)
-            return
-        }
-
         artistPresentationInput = input
         artistPresentationGeneration &+= 1
         let generation = artistPresentationGeneration

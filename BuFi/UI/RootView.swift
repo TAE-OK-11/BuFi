@@ -284,7 +284,7 @@ struct RootView: View {
     }
 
     private var syncTaskID: String {
-        "\(session.phase)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)-\(playbackActivity.isPlaying)"
+        "\(session.phase)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)"
     }
 
     private var thermalKey: String {

@@ -47,9 +47,11 @@ struct HomeView: View {
             updatePresentationIfNeeded()
         }
         .onDisappear {
+            if presentationTask != nil {
+                presentationInput = nil
+            }
             presentationTask?.cancel()
             presentationTask = nil
-            presentationInput = nil
         }
     }
 
