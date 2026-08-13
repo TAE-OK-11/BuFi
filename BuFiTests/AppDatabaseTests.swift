@@ -3,6 +3,49 @@ import XCTest
 @testable import BuFi
 
 final class AppDatabaseTests: XCTestCase {
+    func testLazyDatabaseRetriesAfterTransientOpenFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let blockedDirectory = root.appendingPathComponent("Database")
+        try Data().write(to: blockedDirectory)
+        let database = AppDatabase(
+            lazyDatabaseURL: blockedDirectory.appendingPathComponent("BuFi.sqlite")
+        )
+
+        let unavailableHistory = await database.loadListeningHistory(scope: "account")
+        XCTAssertTrue(unavailableHistory.isEmpty)
+
+        try FileManager.default.removeItem(at: blockedDirectory)
+        try FileManager.default.createDirectory(
+            at: blockedDirectory,
+            withIntermediateDirectories: true
+        )
+        let behavior = SongBehavior(
+            song: song(id: "retry"),
+            at: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        let saved = await database.applyListeningHistory(
+            ["retry": behavior],
+            deletedIDs: [],
+            scope: "account"
+        )
+        XCTAssertTrue(saved)
+        let recoveredHistory = await database.loadListeningHistory(scope: "account")
+        XCTAssertEqual(
+            recoveredHistory["retry"]?.song.id,
+            "retry"
+        )
+    }
+
     func testAccountScopeCanonicalizationMatchesClientScope() async throws {
         let credentials = ServerCredentials(
             serverURL: " HTTPS://Music.Example.test/?ignored=true#fragment ",

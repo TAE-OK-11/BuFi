@@ -33,43 +33,23 @@ actor AppDatabase {
         let songData: Data
     }
 
-    private let poolTask: Task<DatabasePool?, Never>
+    private let databasePath: String
     private let currentDate: @Sendable () -> Date
+    private var pool: DatabasePool?
+    private var poolTask: Task<DatabasePool?, Never>?
 
     private init() {
         currentDate = { Date() }
-        poolTask = Task.detached(priority: .utility) { () -> DatabasePool? in
-            do {
-                let support = FileManager.default.urls(
-                    for: .applicationSupportDirectory,
-                    in: .userDomainMask
-                )[0]
-                let directory = support.appendingPathComponent(
-                    "Database",
-                    isDirectory: true
-                )
-                try FileManager.default.createDirectory(
-                    at: directory,
-                    withIntermediateDirectories: true,
-                    attributes: [
-                        .protectionKey:
-                            FileProtectionType.completeUntilFirstUserAuthentication
-                    ]
-                )
-                try FileManager.default.setAttributes(
-                    [
-                        .protectionKey:
-                            FileProtectionType.completeUntilFirstUserAuthentication
-                    ],
-                    ofItemAtPath: directory.path
-                )
-                return try Self.makePool(
-                    path: directory.appendingPathComponent("BuFi.sqlite").path
-                )
-            } catch {
-                return nil
-            }
-        }
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        databasePath = support
+            .appendingPathComponent("Database", isDirectory: true)
+            .appendingPathComponent("BuFi.sqlite")
+            .path
+        pool = nil
+        poolTask = nil
     }
 
     init(
@@ -77,12 +57,42 @@ actor AppDatabase {
         currentDate: @escaping @Sendable () -> Date = { Date() }
     ) throws {
         self.currentDate = currentDate
-        let pool = try Self.makePool(path: databaseURL.path)
-        poolTask = Task.detached { () -> DatabasePool? in pool }
+        databasePath = databaseURL.path
+        pool = try Self.makePool(path: databaseURL.path)
+        poolTask = nil
+    }
+
+    init(
+        lazyDatabaseURL databaseURL: URL,
+        currentDate: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.currentDate = currentDate
+        databasePath = databaseURL.path
+        pool = nil
+        poolTask = nil
+    }
+
+    private func databasePool() async -> DatabasePool? {
+        if let pool {
+            return pool
+        }
+        if let poolTask {
+            return await poolTask.value
+        }
+
+        let path = databasePath
+        let task = Task.detached(priority: .utility) { () -> DatabasePool? in
+            Self.openPool(path: path)
+        }
+        poolTask = task
+        let openedPool = await task.value
+        poolTask = nil
+        pool = openedPool
+        return openedPool
     }
 
     func loadListeningHistory(scope: String) async -> [String: SongBehavior] {
-        guard let pool = await poolTask.value else { return [:] }
+        guard let pool = await databasePool() else { return [:] }
         do {
             return try await pool.read { db in
                 let rows = try Row.fetchAll(
@@ -139,7 +149,7 @@ actor AppDatabase {
         deletedIDs: Set<String>,
         scope: String
     ) async -> Bool {
-        guard let pool = await poolTask.value else { return false }
+        guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
                 for id in deletedIDs {
@@ -180,7 +190,7 @@ actor AppDatabase {
         _ values: [String: SongBehavior],
         scope: String
     ) async -> Bool {
-        guard let pool = await poolTask.value else { return false }
+        guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -215,7 +225,7 @@ actor AppDatabase {
     }
 
     func clearListeningHistory(scope: String) async {
-        guard let pool = await poolTask.value else { return }
+        guard let pool = await databasePool() else { return }
         try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM listening_behavior WHERE account_scope = ?",
@@ -231,7 +241,7 @@ actor AppDatabase {
         position: Int,
         scope: String
     ) async -> Bool {
-        guard let pool = await poolTask.value else { return false }
+        guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -254,7 +264,7 @@ actor AppDatabase {
         songID: String,
         scope: String
     ) async -> Bool {
-        guard let pool = await poolTask.value else { return false }
+        guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -273,7 +283,7 @@ actor AppDatabase {
 #endif
 
     func loadOfflineEntries(scope: String) async -> [String: OfflineDatabaseEntry] {
-        guard let pool = await poolTask.value else { return [:] }
+        guard let pool = await databasePool() else { return [:] }
         do {
             return try await pool.read { db in
                 let rows = try Row.fetchAll(
@@ -301,7 +311,7 @@ actor AppDatabase {
         deletedIDs: Set<String>,
         scope: String
     ) async -> Bool {
-        guard let pool = await poolTask.value else { return false }
+        guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
                 for id in deletedIDs {
@@ -339,7 +349,7 @@ actor AppDatabase {
         _ values: [String: OfflineDatabaseEntry],
         scope: String
     ) async -> Bool {
-        guard let pool = await poolTask.value else { return false }
+        guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -367,7 +377,7 @@ actor AppDatabase {
     }
 
     func clearOfflineEntries(scope: String) async {
-        guard let pool = await poolTask.value else { return }
+        guard let pool = await databasePool() else { return }
         try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM offline_entry WHERE account_scope = ?",
@@ -380,7 +390,7 @@ actor AppDatabase {
         scope: String,
         maximumAge: TimeInterval
     ) async -> HomeSnapshot? {
-        guard let pool = await poolTask.value else { return nil }
+        guard let pool = await databasePool() else { return nil }
         do {
             return try await pool.read { db in
                 guard let row = try Row.fetchOne(
@@ -409,7 +419,7 @@ actor AppDatabase {
         scope: String,
         maximumBytes: Int
     ) async -> Bool {
-        guard let pool = await poolTask.value,
+        guard let pool = await databasePool(),
               let data = try? Self.encode(snapshot),
               data.count <= maximumBytes else { return false }
         do {
@@ -432,7 +442,7 @@ actor AppDatabase {
     }
 
     func removeHomeSnapshot(scope: String) async {
-        guard let pool = await poolTask.value else { return }
+        guard let pool = await databasePool() else { return }
         try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM home_snapshot WHERE account_scope = ?",
@@ -446,7 +456,7 @@ actor AppDatabase {
         artworkKey: String,
         engineVersion: Int
     ) async -> ArtworkPalette? {
-        guard let pool = await poolTask.value,
+        guard let pool = await databasePool(),
               !scope.isEmpty,
               scope.utf8.count <= 512,
               !artworkKey.isEmpty,
@@ -509,7 +519,7 @@ actor AppDatabase {
         maximumEntriesPerScope: Int = 384,
         maximumTotalEntries: Int = 1_024
     ) async -> Bool {
-        guard let pool = await poolTask.value,
+        guard let pool = await databasePool(),
               !scope.isEmpty,
               scope.utf8.count <= 512,
               !artworkKey.isEmpty,
@@ -577,7 +587,7 @@ actor AppDatabase {
     }
 
     func clearArtworkPalettes(scope: String) async {
-        guard let pool = await poolTask.value else { return }
+        guard let pool = await databasePool() else { return }
         try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM artwork_palette_cache WHERE account_scope = ?",
@@ -587,14 +597,14 @@ actor AppDatabase {
     }
 
     func clearAllArtworkPalettes() async {
-        guard let pool = await poolTask.value else { return }
+        guard let pool = await databasePool() else { return }
         try? await pool.write { db in
             try db.execute(sql: "DELETE FROM artwork_palette_cache")
         }
     }
 
     func loadQueue(scope: String) async -> QueueSnapshot? {
-        guard let pool = await poolTask.value else { return nil }
+        guard let pool = await databasePool() else { return nil }
         do {
             let stored = try await pool.read { db -> StoredQueueState? in
                 guard let state = try Row.fetchOne(
@@ -739,7 +749,7 @@ actor AppDatabase {
         scope: String,
         replacingItems: Bool = true
     ) async -> Bool {
-        guard let pool = await poolTask.value else { return false }
+        guard let pool = await databasePool() else { return false }
         let encodedItems: [EncodedQueueItem]
         do {
             if replacingItems {
@@ -834,7 +844,7 @@ actor AppDatabase {
         scope: String,
         minimumRevision: UInt64
     ) async -> UInt64? {
-        guard let pool = await poolTask.value else { return nil }
+        guard let pool = await databasePool() else { return nil }
         return try? await pool.write { db in
             try Self.writeQueueTombstone(
                 in: db,
@@ -976,6 +986,30 @@ actor AppDatabase {
                 """,
                 arguments: [scope, artworkKey, engineVersion]
             )
+        }
+    }
+
+    private static func openPool(path: String) -> DatabasePool? {
+        do {
+            let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [
+                    .protectionKey:
+                        FileProtectionType.completeUntilFirstUserAuthentication
+                ]
+            )
+            try FileManager.default.setAttributes(
+                [
+                    .protectionKey:
+                        FileProtectionType.completeUntilFirstUserAuthentication
+                ],
+                ofItemAtPath: directory.path
+            )
+            return try makePool(path: path)
+        } catch {
+            return nil
         }
     }
 
