@@ -22,6 +22,8 @@ struct MusicDetailView: View {
     @State private var artistBiography = ""
     @State private var artistAlbumCount = 0
     @State private var discography = ArtistDiscographyPresentation.empty
+    @State private var downloadAllTask: Task<Void, Never>?
+    @State private var isDownloadingAll = false
 
     var body: some View {
         let _ = favoriteOverrides.values
@@ -54,13 +56,15 @@ struct MusicDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .onChange(of: route) { _, _ in
-            resetRoutePresentation()
-        }
         .onChange(of: coverArt) { _, _ in
             palette = .fallback
         }
         .task(id: route) { await load() }
+        .onDisappear {
+            downloadAllTask?.cancel()
+            downloadAllTask = nil
+            isDownloadingAll = false
+        }
         .sheet(item: $selectedSong) { song in
             SongActionsSheet(song: song)
                 .presentationDetents([.height(335)])
@@ -190,13 +194,19 @@ struct MusicDetailView: View {
 
                 Button { downloadAll() } label: {
                     secondaryControl(
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: 19, weight: .semibold)),
+                        Group {
+                            if isDownloadingAll {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "arrow.down.circle")
+                                    .font(.system(size: 19, weight: .semibold))
+                            }
+                        },
                         diameter: 42
                     )
                 }
                 .buttonStyle(BuFiPressStyle())
-                .disabled(songs.isEmpty)
+                .disabled(songs.isEmpty || isDownloadingAll)
                 .accessibilityLabel("모두 오프라인 저장")
 
                 Menu {
@@ -227,6 +237,7 @@ struct MusicDetailView: View {
                     Button { downloadAll() } label: {
                         Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
                     }
+                    .disabled(songs.isEmpty || isDownloadingAll)
                 } label: {
                     secondaryControl(
                         Image(systemName: "ellipsis")
@@ -568,12 +579,14 @@ struct MusicDetailView: View {
     }
 
     private func downloadAll() {
-        guard !songs.isEmpty else { return }
+        guard !songs.isEmpty, downloadAllTask == nil else { return }
         let items = songs
-        // 순차 다운로드 → 동시 3개까지 병렬 다운로드로 변경.
-        // 곡이 많은 앨범/플레이리스트일수록 체감 속도 개선이 큼.
-        // 서버가 감당 가능한 수준에 맞춰 maxConcurrent 조절 가능.
-        Task {
+        isDownloadingAll = true
+        downloadAllTask = Task {
+            defer {
+                downloadAllTask = nil
+                isDownloadingAll = false
+            }
             let maxConcurrent = 3
             await withTaskGroup(of: Void.self) { group in
                 var iterator = items.makeIterator()
@@ -589,20 +602,6 @@ struct MusicDetailView: View {
                 }
             }
         }
-    }
-
-    @MainActor
-    private func resetRoutePresentation() {
-        isLoading = true
-        title = ""
-        subtitle = ""
-        coverArt = nil
-        songs = []
-        albums = []
-        artistBiography = ""
-        artistAlbumCount = 0
-        discography = .empty
-        palette = .fallback
     }
 
     /// `.task(id: route)`는 라우트가 바뀌면 이전 로드 작업을 자동으로 취소한다.
