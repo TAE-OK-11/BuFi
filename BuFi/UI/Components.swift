@@ -364,6 +364,11 @@ struct BuFiShortcutCard: View {
 }
 
 struct ArtworkView: View {
+    private struct LoadedArtwork {
+        let requestIdentity: String
+        let image: UIImage
+    }
+
     @EnvironmentObject private var model: AppModel
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.displayScale) private var displayScale
@@ -374,8 +379,7 @@ struct ArtworkView: View {
     var cacheRevision: String? = nil
     var onPalette: ((ArtworkPalette) -> Void)?
 
-    @State private var image: UIImage?
-    @State private var imageIdentity: String?
+    @State private var loadedArtwork: LoadedArtwork?
 
     var body: some View {
         ZStack {
@@ -388,8 +392,9 @@ struct ArtworkView: View {
                 .font(.system(size: size * 0.22, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.34))
 
-            if imageIdentity == artworkRequestIdentity, let image {
-                Image(uiImage: image)
+            if let loadedArtwork,
+               loadedArtwork.requestIdentity == artworkRequestIdentity {
+                Image(uiImage: loadedArtwork.image)
                     .resizable()
                     .scaledToFill()
                     .transition(
@@ -404,8 +409,7 @@ struct ArtworkView: View {
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: artworkRequestIdentity) {
             let requestID = artworkRequestIdentity
-            image = nil
-            imageIdentity = nil
+            loadedArtwork = nil
             if let sourceURL = await model.artworkURL(
                 id: normalizedCoverArt,
                 size: Int(size * 2)
@@ -426,8 +430,10 @@ struct ArtworkView: View {
                 }
                 guard !Task.isCancelled,
                       artworkRequestIdentity == requestID else { return }
-                imageIdentity = requestID
-                image = loaded.value
+                loadedArtwork = LoadedArtwork(
+                    requestIdentity: requestID,
+                    image: loaded.value
+                )
                 guard let onPalette else { return }
                 let palette = await ArtworkStore.shared.palette(
                     for: coverURL,

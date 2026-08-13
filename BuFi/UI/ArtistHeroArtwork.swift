@@ -2,6 +2,11 @@ import SwiftUI
 import UIKit
 
 struct ArtistHeroArtwork: View {
+    private struct LoadedArtwork {
+        let requestIdentity: String
+        let image: UIImage
+    }
+
     @EnvironmentObject private var model: AppModel
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.displayScale) private var displayScale
@@ -13,8 +18,7 @@ struct ArtistHeroArtwork: View {
     private let height: CGFloat = 360
     private let cornerRadius: CGFloat = 24
 
-    @State private var image: UIImage?
-    @State private var imageIdentity: String?
+    @State private var loadedArtwork: LoadedArtwork?
 
     var body: some View {
         ZStack {
@@ -31,8 +35,9 @@ struct ArtistHeroArtwork: View {
                 .font(.system(size: 72, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.25))
 
-            if imageIdentity == artworkRequestIdentity, let image {
-                Image(uiImage: image)
+            if let loadedArtwork,
+               loadedArtwork.requestIdentity == artworkRequestIdentity {
+                Image(uiImage: loadedArtwork.image)
                     .resizable()
                     .scaledToFill()
                     .scaleEffect(1.12)
@@ -43,7 +48,7 @@ struct ArtistHeroArtwork: View {
                 Rectangle()
                     .fill(.black.opacity(0.08))
 
-                Image(uiImage: image)
+                Image(uiImage: loadedArtwork.image)
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -65,8 +70,7 @@ struct ArtistHeroArtwork: View {
 
     @MainActor
     private func loadImage(requestID: String) async {
-        image = nil
-        imageIdentity = nil
+        loadedArtwork = nil
 
         // OpenSubsonic may include third-party artist-image URLs. Fetching those
         // directly would disclose the user's IP address and viewing time to an
@@ -99,8 +103,10 @@ struct ArtistHeroArtwork: View {
             return
         }
 
-        imageIdentity = requestID
-        image = loaded.value
+        loadedArtwork = LoadedArtwork(
+            requestIdentity: requestID,
+            image: loaded.value
+        )
         guard let onPalette else { return }
         let palette = await ArtworkStore.shared.palette(
             for: coverURL,

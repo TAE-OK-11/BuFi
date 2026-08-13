@@ -23,6 +23,7 @@ struct OverflowMarqueeText: View {
     @State private var textSize = CGSize.zero
     @State private var containerSize = CGSize.zero
     @State private var travel: CGFloat = 0
+    @State private var animationRunID: UUID?
 
     var body: some View {
         // The short hidden label establishes only the line height. Keeping the
@@ -63,7 +64,9 @@ struct OverflowMarqueeText: View {
                 containerSize = size
             }
             .task(id: animationIdentity) {
-                await runAnimation(distance: overflowDistance)
+                let runID = UUID()
+                animationRunID = runID
+                await runAnimation(distance: overflowDistance, runID: runID)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(text)
@@ -102,19 +105,21 @@ struct OverflowMarqueeText: View {
         )
     }
 
-    private func runAnimation(distance: CGFloat) async {
+    private func runAnimation(distance: CGFloat, runID: UUID) async {
         travel = 0
-        guard canAnimate else { return }
+        guard canAnimate, animationRunID == runID else { return }
 
         do {
             try await Task.sleep(for: .milliseconds(1_100))
             while !Task.isCancelled {
+                guard animationRunID == runID else { return }
                 let outwardDuration = max(2.8, Double(distance / 28))
                 withAnimation(.linear(duration: outwardDuration)) {
                     travel = distance
                 }
                 try await Task.sleep(for: .seconds(outwardDuration + 1.25))
 
+                guard animationRunID == runID else { return }
                 let returnDuration = max(1.6, Double(distance / 52))
                 withAnimation(.linear(duration: returnDuration)) {
                     travel = 0
@@ -122,6 +127,7 @@ struct OverflowMarqueeText: View {
                 try await Task.sleep(for: .seconds(returnDuration + 1.6))
             }
         } catch {
+            guard animationRunID == runID else { return }
             travel = 0
         }
     }
