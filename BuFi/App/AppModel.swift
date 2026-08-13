@@ -109,12 +109,71 @@ final class SearchContentState: ObservableObject {
 }
 
 @MainActor
+final class FavoriteOverrideValueState: ObservableObject {
+    @Published fileprivate(set) var value: Bool?
+
+    fileprivate init(value: Bool?) {
+        self.value = value
+    }
+
+    fileprivate func setValue(_ value: Bool?) {
+        guard self.value != value else { return }
+        self.value = value
+    }
+}
+
+@MainActor
+private final class WeakFavoriteOverrideValueState {
+    weak var value: FavoriteOverrideValueState?
+
+    init(_ value: FavoriteOverrideValueState) {
+        self.value = value
+    }
+}
+
+@MainActor
 final class FavoriteOverrideState: ObservableObject {
-    @Published fileprivate(set) var values: [String: Bool] = [:]
+    fileprivate(set) var values: [String: Bool] = [:]
+    private var valueStates: [String: WeakFavoriteOverrideValueState] = [:]
 
     fileprivate func setValues(_ value: [String: Bool]) {
         guard values != value else { return }
+        let previous = values
         values = value
+        let changedKeys = Set(previous.keys).union(value.keys).filter {
+            previous[$0] != value[$0]
+        }
+        for key in changedKeys {
+            valueStates[key]?.value?.setValue(value[key])
+        }
+    }
+
+    func setValue(_ value: Bool, for key: String) {
+        guard values[key] != value else { return }
+        values[key] = value
+        valueStates[key]?.value?.setValue(value)
+    }
+
+    fileprivate func removeAll() {
+        guard !values.isEmpty else { return }
+        let previousKeys = Array(values.keys)
+        values.removeAll(keepingCapacity: false)
+        for key in previousKeys {
+            valueStates[key]?.value?.setValue(nil)
+        }
+        valueStates = valueStates.filter { $0.value.value != nil }
+    }
+
+    func valueState(for key: String) -> FavoriteOverrideValueState {
+        if let state = valueStates[key]?.value {
+            return state
+        }
+        if valueStates.count >= 512 {
+            valueStates = valueStates.filter { $0.value.value != nil }
+        }
+        let state = FavoriteOverrideValueState(value: values[key])
+        valueStates[key] = WeakFavoriteOverrideValueState(state)
+        return state
     }
 }
 
@@ -1001,12 +1060,24 @@ final class AppModel: ObservableObject {
         favoriteOverrides[starKey(id: song.id, target: .song)] ?? song.isStarred
     }
 
+    func favoriteOverrideState(for song: Song) -> FavoriteOverrideValueState {
+        favorites.valueState(for: starKey(id: song.id, target: .song))
+    }
+
     func isStarred(_ album: Album) -> Bool {
         favoriteOverrides[starKey(id: album.id, target: .album)] ?? album.isStarred
     }
 
+    func favoriteOverrideState(for album: Album) -> FavoriteOverrideValueState {
+        favorites.valueState(for: starKey(id: album.id, target: .album))
+    }
+
     func isStarred(_ artist: Artist) -> Bool {
         favoriteOverrides[starKey(id: artist.id, target: .artist)] ?? artist.isStarred
+    }
+
+    func favoriteOverrideState(for artist: Artist) -> FavoriteOverrideValueState {
+        favorites.valueState(for: starKey(id: artist.id, target: .artist))
     }
 
     func toggleStar(song: Song) async {
@@ -1571,190 +1642,56 @@ final class AppModel: ObservableObject {
     }
 
     private func updateStarredSong(_ song: Song, enabled: Bool) {
-        favoriteOverrides[starKey(id: song.id, target: .song)] = enabled
+        favorites.setValue(enabled, for: starKey(id: song.id, target: .song))
         let starredValue = enabled
             ? Self.starDateFormatter.string(from: Date())
             : nil
-        func updatingFavorite(_ value: Song) -> Song {
-            guard value.id == song.id else { return value }
-            var result = value
-            result.starred = starredValue
-            return result
-        }
         var snapshot = home
         let freshestKnownSong = searchResults.songs.first { $0.id == song.id }
             ?? snapshot.randomSongs.first { $0.id == song.id }
             ?? snapshot.serverRecommendedSongs.first { $0.id == song.id }
             ?? snapshot.starredSongs.first { $0.id == song.id }
             ?? song
-        let updated = updatingFavorite(freshestKnownSong)
+        var updated = freshestKnownSong
+        updated.starred = starredValue
         snapshot.starredSongs.removeAll { $0.id == song.id }
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
-        snapshot.randomSongs = snapshot.randomSongs.map(updatingFavorite)
-        snapshot.sonicRecommendedSongs = snapshot.sonicRecommendedSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.similarArtistSongs = snapshot.similarArtistSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.genreRecommendedSongs = snapshot.genreRecommendedSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.topArtistSongs = snapshot.topArtistSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.recentlyAddedSongs = snapshot.recentlyAddedSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.popularSongs = snapshot.popularSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.playlistAffinitySongs = snapshot.playlistAffinitySongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.recommendedSongs = snapshot.recommendedSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.serverRecommendedSongs = snapshot.serverRecommendedSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.lastFMRecommendedSongs = snapshot.lastFMRecommendedSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.listenBrainzRecommendedSongs = snapshot.listenBrainzRecommendedSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.daylistSongs = snapshot.daylistSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.offlineBackupSongs = snapshot.offlineBackupSongs.map {
-            updatingFavorite($0)
-        }
-        snapshot.mostPlayedSongs = snapshot.mostPlayedSongs.map {
-            updatingFavorite($0)
-        }
         publishHome(snapshot)
-
-        if searchResults.songs.contains(where: { $0.id == song.id }) {
-            var results = searchResults
-            results.songs = results.songs.map(updatingFavorite)
-            searchResults = results
-        }
-
-        for key in Array(albumDetailCache.keys) {
-            guard let cached = albumDetailCache[key] else { continue }
-            let songs = cached.value.songs.map(updatingFavorite)
-            albumDetailCache[key] = CachedValue(
-                value: AlbumDetail(songs: songs, album: cached.value.album),
-                expiresAt: cached.expiresAt
-            )
-        }
-        for key in Array(playlistDetailCache.keys) {
-            guard let cached = playlistDetailCache[key] else { continue }
-            let songs = cached.value.songs.map(updatingFavorite)
-            playlistDetailCache[key] = CachedValue(
-                value: PlaylistDetail(
-                    songs: songs,
-                    playlist: cached.value.playlist
-                ),
-                expiresAt: cached.expiresAt
-            )
-        }
-        for key in Array(artistDetailCache.keys) {
-            guard let cached = artistDetailCache[key] else { continue }
-            var detail = cached.value
-            detail.topSongs = detail.topSongs.map(updatingFavorite)
-            artistDetailCache[key] = CachedValue(
-                value: detail,
-                expiresAt: cached.expiresAt
-            )
-        }
     }
 
     private func updateStarredAlbum(_ album: Album, enabled: Bool) {
-        favoriteOverrides[starKey(id: album.id, target: .album)] = enabled
+        favorites.setValue(enabled, for: starKey(id: album.id, target: .album))
         let starredValue = enabled
             ? Self.starDateFormatter.string(from: Date())
             : nil
-        func updatingFavorite(_ value: Album) -> Album {
-            guard value.id == album.id else { return value }
-            var result = value
-            result.starred = starredValue
-            return result
-        }
         var snapshot = home
         let freshestKnownAlbum = searchResults.albums.first { $0.id == album.id }
             ?? snapshot.recentAlbums.first { $0.id == album.id }
             ?? snapshot.randomAlbums.first { $0.id == album.id }
             ?? snapshot.starredAlbums.first { $0.id == album.id }
             ?? album
-        let updated = updatingFavorite(freshestKnownAlbum)
+        var updated = freshestKnownAlbum
+        updated.starred = starredValue
         snapshot.starredAlbums.removeAll { $0.id == album.id }
         if enabled { snapshot.starredAlbums.insert(updated, at: 0) }
-        snapshot.recentAlbums = snapshot.recentAlbums.map(updatingFavorite)
-        snapshot.recentlyPlayedAlbums = snapshot.recentlyPlayedAlbums.map {
-            updatingFavorite($0)
-        }
-        snapshot.frequentAlbums = snapshot.frequentAlbums.map {
-            updatingFavorite($0)
-        }
-        snapshot.randomAlbums = snapshot.randomAlbums.map(updatingFavorite)
         publishHome(snapshot)
-
-        if searchResults.albums.contains(where: { $0.id == album.id }) {
-            var results = searchResults
-            results.albums = results.albums.map(updatingFavorite)
-            searchResults = results
-        }
-        for key in Array(artistDetailCache.keys) {
-            guard let cached = artistDetailCache[key] else { continue }
-            var detail = cached.value
-            detail.albums = detail.albums.map(updatingFavorite)
-            artistDetailCache[key] = CachedValue(
-                value: detail,
-                expiresAt: cached.expiresAt
-            )
-        }
     }
 
     private func updateStarredArtist(_ artist: Artist, enabled: Bool) {
-        favoriteOverrides[starKey(id: artist.id, target: .artist)] = enabled
+        favorites.setValue(enabled, for: starKey(id: artist.id, target: .artist))
         let starredValue = enabled
             ? Self.starDateFormatter.string(from: Date())
             : nil
-        func updatingFavorite(_ value: Artist) -> Artist {
-            guard value.id == artist.id else { return value }
-            var result = value
-            result.starred = starredValue
-            return result
-        }
         var snapshot = home
         let freshestKnownArtist = searchResults.artists.first { $0.id == artist.id }
             ?? snapshot.artists.first { $0.id == artist.id }
             ?? snapshot.starredArtists.first { $0.id == artist.id }
             ?? artist
-        let updated = updatingFavorite(freshestKnownArtist)
+        var updated = freshestKnownArtist
+        updated.starred = starredValue
         snapshot.starredArtists.removeAll { $0.id == artist.id }
         if enabled { snapshot.starredArtists.insert(updated, at: 0) }
-        snapshot.artists = snapshot.artists.map(updatingFavorite)
-        snapshot.recommendedArtists = snapshot.recommendedArtists.map {
-            updatingFavorite($0)
-        }
         publishHome(snapshot)
-
-        if searchResults.artists.contains(where: { $0.id == artist.id }) {
-            var results = searchResults
-            results.artists = results.artists.map(updatingFavorite)
-            searchResults = results
-        }
-        if let cached = artistDetailCache[artist.id] {
-            var detail = cached.value
-            detail.artist = updatingFavorite(detail.artist)
-            artistDetailCache[artist.id] = CachedValue(
-                value: detail,
-                expiresAt: cached.expiresAt
-            )
-        }
     }
 
     private func clearFavoriteState() {
@@ -1762,7 +1699,7 @@ final class AppModel: ObservableObject {
         starRequests.removeAll(keepingCapacity: false)
         confirmedStarStates.removeAll(keepingCapacity: false)
         awaitingStarConfirmations.removeAll(keepingCapacity: false)
-        favoriteOverrides.removeAll(keepingCapacity: false)
+        favorites.removeAll()
     }
 
     private func clearDetailCaches() {

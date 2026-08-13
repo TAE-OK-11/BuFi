@@ -547,27 +547,14 @@ struct PlayerView: View {
 
 private struct PlayerOverflowMenu: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @EnvironmentObject private var audio: AudioEngine
 
     let song: Song
     let foreground: Color
 
     var body: some View {
-        let _ = favoriteOverrides.values
-        let isStarred = model.isStarred(song)
-
         Menu {
-            Button {
-                Task { await model.toggleStar(song: song) }
-            } label: {
-                Label(
-                    isStarred
-                        ? String(localized: "좋아요 취소")
-                        : String(localized: "좋아요 표시"),
-                    systemImage: "heart"
-                )
-            }
+            SongFavoriteMenuButton(song: song)
             Button {
                 Task { await model.download(song) }
             } label: {
@@ -602,28 +589,17 @@ private struct PlayerOverflowMenu: View {
 }
 
 private struct PlayerFavoriteButton: View {
-    @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
-
     let song: Song
     let iconSize: CGFloat
     let foreground: Color
 
     var body: some View {
-        let _ = favoriteOverrides.values
-        let isStarred = model.isStarred(song)
-
-        Button {
-            Task { await model.toggleStar(song: song) }
-        } label: {
-            Image(systemName: isStarred ? "heart.fill" : "heart")
-                .font(.system(size: iconSize, weight: .semibold))
-                .foregroundStyle(isStarred ? BuFiTheme.accent : foreground)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 44, height: 44)
-        }
-        .buttonStyle(BuFiPressStyle())
-        .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
+        SongFavoriteIconButton(
+            song: song,
+            iconSize: iconSize,
+            inactiveForeground: foreground,
+            hitTarget: 44
+        )
     }
 }
 

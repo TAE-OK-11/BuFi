@@ -1,8 +1,70 @@
 import SwiftUI
 
+private struct MusicDetailFavoriteButton: View {
+    @EnvironmentObject private var model: AppModel
+
+    let route: MusicRoute
+
+    @ViewBuilder
+    var body: some View {
+        switch route {
+        case .album(let album):
+            MusicDetailFavoriteButtonContent(
+                overrideState: model.favoriteOverrideState(for: album),
+                originalState: album.isStarred,
+                action: { await model.toggleStar(album: album) }
+            )
+        case .artist(let artist):
+            MusicDetailFavoriteButtonContent(
+                overrideState: model.favoriteOverrideState(for: artist),
+                originalState: artist.isStarred,
+                action: { await model.toggleStar(artist: artist) }
+            )
+        case .playlist:
+            EmptyView()
+        }
+    }
+}
+
+private struct MusicDetailFavoriteButtonContent: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var overrideState: FavoriteOverrideValueState
+    let originalState: Bool
+    let action: @MainActor @Sendable () async -> Void
+
+    private var isFavorite: Bool {
+        overrideState.value ?? originalState
+    }
+
+    var body: some View {
+        Button {
+            Task { await action() }
+        } label: {
+            Image(systemName: isFavorite ? "checkmark" : "plus")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(
+                    colorScheme == .dark
+                        ? Color.white.opacity(0.92)
+                        : Color.black.opacity(0.78)
+                )
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 42, height: 42)
+                .shadow(
+                    color: .black.opacity(colorScheme == .dark ? 0.12 : 0.045),
+                    radius: 8,
+                    y: 4
+                )
+                .buFiGlass(cornerRadius: 21, interactive: true)
+        }
+        .buttonStyle(BuFiPressStyle())
+        .accessibilityLabel(
+            isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가"
+        )
+    }
+}
+
 struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
@@ -26,7 +88,6 @@ struct MusicDetailView: View {
     @State private var isDownloadingAll = false
 
     var body: some View {
-        let _ = favoriteOverrides.values
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
@@ -181,15 +242,7 @@ struct MusicDetailView: View {
         HStack(spacing: 12) {
             HStack(spacing: 8) {
                 if canFavorite {
-                    Button(action: toggleFavorite) {
-                        secondaryControl(
-                            Image(systemName: isFavorite ? "checkmark" : "plus")
-                                .font(.system(size: 19, weight: .semibold)),
-                            diameter: 42
-                        )
-                    }
-                    .buttonStyle(BuFiPressStyle())
-                    .accessibilityLabel(isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가")
+                    MusicDetailFavoriteButton(route: route)
                 }
 
                 Button { downloadAll() } label: {
@@ -551,33 +604,6 @@ struct MusicDetailView: View {
         }
     }
 
-    private var isFavorite: Bool {
-        switch route {
-        case .album(let album):
-            model.isStarred(album)
-        case .artist(let artist):
-            model.isStarred(artist)
-        case .playlist:
-            false
-        }
-    }
-
-    private func toggleFavorite() {
-        guard canFavorite else { return }
-        switch route {
-        case .album(let album):
-            Task {
-                await model.toggleStar(album: album)
-            }
-        case .artist(let artist):
-            Task {
-                await model.toggleStar(artist: artist)
-            }
-        case .playlist:
-            break
-        }
-    }
-
     private func downloadAll() {
         guard !songs.isEmpty, downloadAllTask == nil else { return }
         let items = songs
@@ -825,14 +851,12 @@ private struct ArtistDiscographyPresentation: Sendable {
 
 private struct SongActionsSheet: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @Environment(\.dismiss) private var dismiss
 
     let song: Song
     private let audio = AudioEngine.shared
 
     var body: some View {
-        let _ = favoriteOverrides.values
         VStack(spacing: 4) {
             Capsule()
                 .fill(.secondary.opacity(0.45))

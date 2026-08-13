@@ -395,8 +395,15 @@ struct LibraryArtistPresentation: Sendable {
     )
 
     static func make(input: LibraryArtistPresentationInput) -> LibraryArtistPresentation {
+        let favoriteIDs = Set(input.starredArtists.map(\.id))
         var values: [String: Artist] = [:]
-        for artist in input.artists { values[artist.id] = artist }
+        for artist in input.artists {
+            var resolved = artist
+            if !favoriteIDs.contains(artist.id) {
+                resolved.starred = nil
+            }
+            values[artist.id] = resolved
+        }
         for artist in input.starredArtists {
             var starred = artist
             if starred.starred == nil {
@@ -405,8 +412,8 @@ struct LibraryArtistPresentation: Sendable {
             values[artist.id] = starred
         }
         let artists = values.values.sorted(by: artistSort)
-        let favorites = artists.filter(\.isStarred).sorted(by: artistSort)
-        let favoriteIDs = Set(favorites.map(\.id))
+        let favorites = artists.filter { favoriteIDs.contains($0.id) }
+            .sorted(by: artistSort)
         let sections = makeArtistSections(
             artists.filter { !favoriteIDs.contains($0.id) }
         )

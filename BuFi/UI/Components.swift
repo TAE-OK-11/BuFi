@@ -521,9 +521,92 @@ enum SongRowLayout: Equatable {
     case compactAlbum
 }
 
+struct SongFavoriteIconButton: View {
+    @EnvironmentObject private var model: AppModel
+
+    let song: Song
+    var iconSize: CGFloat = 16
+    var inactiveForeground: Color = .secondary
+    var hitTarget: CGFloat = 32
+
+    var body: some View {
+        SongFavoriteIconButtonContent(
+            model: model,
+            overrideState: model.favoriteOverrideState(for: song),
+            song: song,
+            iconSize: iconSize,
+            inactiveForeground: inactiveForeground,
+            hitTarget: hitTarget
+        )
+    }
+}
+
+private struct SongFavoriteIconButtonContent: View {
+    let model: AppModel
+    @ObservedObject var overrideState: FavoriteOverrideValueState
+    let song: Song
+    let iconSize: CGFloat
+    let inactiveForeground: Color
+    let hitTarget: CGFloat
+
+    private var isStarred: Bool {
+        overrideState.value ?? song.isStarred
+    }
+
+    var body: some View {
+        Button {
+            Task { await model.toggleStar(song: song) }
+        } label: {
+            Image(systemName: isStarred ? "heart.fill" : "heart")
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(
+                    isStarred ? BuFiTheme.accent : inactiveForeground
+                )
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: hitTarget, height: hitTarget)
+        }
+        .buttonStyle(BuFiPressStyle())
+        .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
+    }
+}
+
+struct SongFavoriteMenuButton: View {
+    @EnvironmentObject private var model: AppModel
+
+    let song: Song
+
+    var body: some View {
+        SongFavoriteMenuButtonContent(
+            model: model,
+            overrideState: model.favoriteOverrideState(for: song),
+            song: song
+        )
+    }
+}
+
+private struct SongFavoriteMenuButtonContent: View {
+    let model: AppModel
+    @ObservedObject var overrideState: FavoriteOverrideValueState
+    let song: Song
+
+    private var isStarred: Bool {
+        overrideState.value ?? song.isStarred
+    }
+
+    var body: some View {
+        Button {
+            Task { await model.toggleStar(song: song) }
+        } label: {
+            Label(
+                isStarred ? "좋아요 취소" : "좋아요 표시",
+                systemImage: isStarred ? "heart.slash" : "heart"
+            )
+        }
+    }
+}
+
 struct SongRow: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
 
     private let audio = AudioEngine.shared
@@ -540,7 +623,6 @@ struct SongRow: View {
 
     @ViewBuilder
     var body: some View {
-        let _ = favoriteOverrides.values
         Group {
             if layout == .compactAlbum {
                 compactAlbumRow
@@ -567,20 +649,12 @@ struct SongRow: View {
             } label: {
                 Label("오프라인 저장", systemImage: "arrow.down.circle")
             }
-            Button {
-                Task { await model.toggleStar(song: song) }
-            } label: {
-                Label(
-                    model.isStarred(song) ? "좋아요 취소" : "좋아요 표시",
-                    systemImage: model.isStarred(song) ? "heart.slash" : "heart"
-                )
-            }
+            SongFavoriteMenuButton(song: song)
         }
     }
 
     private var compactAlbumRow: some View {
         let isCurrentSong = currentPlayback.song?.id == song.id
-        let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
                 audio.play(
@@ -626,16 +700,7 @@ struct SongRow: View {
             .buttonStyle(.plain)
 
             HStack(spacing: 16) {
-                Button {
-                    Task { await model.toggleStar(song: song) }
-                } label: {
-                    Image(systemName: isStarred ? "heart.fill" : "heart")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(isStarred ? BuFiTheme.accent : Color.secondary)
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
+                SongFavoriteIconButton(song: song)
 
                 if let onMore {
                     Button(action: onMore) {
@@ -657,7 +722,6 @@ struct SongRow: View {
 
     private var standardRow: some View {
         let isCurrentSong = currentPlayback.song?.id == song.id
-        let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
                 audio.play(
@@ -698,16 +762,7 @@ struct SongRow: View {
             .buttonStyle(.plain)
 
             HStack(spacing: 14) {
-                Button {
-                    Task { await model.toggleStar(song: song) }
-                } label: {
-                    Image(systemName: isStarred ? "heart.fill" : "heart")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(isStarred ? BuFiTheme.accent : Color.secondary)
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
+                SongFavoriteIconButton(song: song)
 
                 if let onMore {
                     Button(action: onMore) {

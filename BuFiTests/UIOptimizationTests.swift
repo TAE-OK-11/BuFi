@@ -2,7 +2,19 @@ import XCTest
 import CoreGraphics
 @testable import BuFi
 
+@MainActor
 final class UIOptimizationTests: XCTestCase {
+    func testFavoriteOverridePublishesOnlyChangedIdentity() {
+        let state = FavoriteOverrideState()
+        let first = state.valueState(for: "song:first")
+        let second = state.valueState(for: "song:second")
+
+        state.setValue(true, for: "song:first")
+
+        XCTAssertEqual(first.value, true)
+        XCTAssertNil(second.value)
+    }
+
     func testArtworkRequestSizingUsesStableBoundedPixelBuckets() {
         XCTAssertEqual(
             ArtworkRequestSizing.pixelSize(pointSize: 50, displayScale: 3),
@@ -137,6 +149,24 @@ final class UIOptimizationTests: XCTestCase {
 
         XCTAssertEqual(first.favorites, second.favorites)
         XCTAssertTrue(first.favorites.first?.isStarred == true)
+    }
+
+    func testLibraryArtistPresentationClearsStaleFavoriteOutsideAuthoritativeList() {
+        let stale = Artist(
+            id: "stale",
+            name: "Stale",
+            coverArt: nil,
+            albumCount: nil,
+            starred: "old"
+        )
+
+        let presentation = LibraryArtistPresentation.make(input: .init(
+            artists: [stale],
+            starredArtists: []
+        ))
+
+        XCTAssertTrue(presentation.favorites.isEmpty)
+        XCTAssertFalse(presentation.allArtists[0].isStarred)
     }
 
     private func album(id: String, name: String) -> Album {
