@@ -3717,15 +3717,16 @@ final class AudioEngine: NSObject, ObservableObject {
             var resolvedItem = canonicalItem
             resolvedItem.song = resolved
             var updatedEntries = self.playbackState.entries
-            for index in updatedEntries.indices
-                where updatedEntries[index].song.id == resolved.id {
-                var queueSong = resolved
-                queueSong.starred = current.starred
-                updatedEntries[index] = PlaybackQueueEntry(
-                    song: queueSong,
-                    queueEntryID: updatedEntries[index].id
-                )
+            guard updatedEntries.indices.contains(self.queueIndex),
+                  updatedEntries[self.queueIndex].id == selectedQueueEntryID else {
+                return
             }
+            var queueSong = resolved
+            queueSong.starred = current.starred
+            updatedEntries[self.queueIndex] = PlaybackQueueEntry(
+                song: queueSong,
+                queueEntryID: selectedQueueEntryID
+            )
             self.playbackState.replace(
                 entries: updatedEntries,
                 index: self.queueIndex,

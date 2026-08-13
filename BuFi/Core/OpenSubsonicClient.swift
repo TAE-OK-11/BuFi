@@ -114,6 +114,21 @@ enum AlbumSongMetadataResolver {
     }
 }
 
+enum PlaybackMetadataResolver {
+    /// Transport fields come from a fresh getSong response, while a cover that
+    /// was already presented in the tapped row remains visually stable for the
+    /// active occurrence. This prevents an older or incomplete getSong
+    /// representation from replacing the artwork the user selected.
+    static func resolve(canonical: Song, provisional: Song) -> Song {
+        var resolved = canonical
+        resolved.starred = provisional.starred
+        if let provisionalArtwork = provisional.artworkID {
+            resolved.coverArt = provisionalArtwork
+        }
+        return resolved
+    }
+}
+
 enum OpenSubsonicCacheDependency: String, CaseIterable, Hashable, Sendable {
     case favorites
     case songDetails
@@ -746,7 +761,8 @@ actor OpenSubsonicClient {
 
     private func readRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
-        parameters: [String: String] = [:]
+        parameters: [String: String] = [:],
+        allowsCachedResponse: Bool = true
     ) async throws -> Payload {
         let queryItems = parameters
             .sorted { $0.key < $1.key }
@@ -754,7 +770,8 @@ actor OpenSubsonicClient {
         return try await performRequest(
             endpoint,
             queryItems: queryItems,
-            semantics: .readOnly
+            semantics: .readOnly,
+            allowsCachedResponse: allowsCachedResponse
         )
     }
 
@@ -797,6 +814,7 @@ actor OpenSubsonicClient {
         _ endpoint: String,
         queryItems: [URLQueryItem],
         semantics: RequestSemantics,
+        allowsCachedResponse: Bool = true,
         staleReadRetryCount: Int = 0
     ) async throws -> Payload {
         let url = try endpointURL(endpoint, queryItems: queryItems)
@@ -817,7 +835,8 @@ actor OpenSubsonicClient {
             let responseWasCached: Bool
             switch semantics {
             case .readOnly:
-                if !cacheRevisionState.hasMutation(
+                if allowsCachedResponse,
+                   !cacheRevisionState.hasMutation(
                     affecting: cachePolicy.dependencies
                 ),
                    cachePolicy.lifetime > 0,
@@ -880,6 +899,7 @@ actor OpenSubsonicClient {
                     endpoint,
                     queryItems: queryItems,
                     semantics: semantics,
+                    allowsCachedResponse: allowsCachedResponse,
                     staleReadRetryCount: staleReadRetryCount + 1
                 )
             case .mutation(let impact):
@@ -2206,10 +2226,11 @@ actor OpenSubsonicClient {
     /// recommendation responses can have different cache ages; resolving the
     /// selected item through getSong gives playback one authoritative source
     /// for song ID, cover-art ID, duration, and media format.
-    func song(id: String) async throws -> Song {
+    func song(id: String, forceRefresh: Bool = false) async throws -> Song {
         let payload: SongPayload = try await readRequest(
             "getSong",
-            parameters: ["id": id]
+            parameters: ["id": id],
+            allowsCachedResponse: !forceRefresh
         )
         guard let song = payload.song, song.id == id else {
             throw OpenSubsonicError.invalidResponse
@@ -2225,16 +2246,13 @@ actor OpenSubsonicClient {
         queueEntryID: UUID,
         playbackGenerationID: UUID
     ) async throws -> PlaybackMediaItem {
-        var canonical = try await song(id: provisional.id)
-        canonical.starred = provisional.starred
-        if canonical.artworkID == nil,
-           provisional.artworkID != nil,
-           let albumID = canonical.albumId,
-           albumID == provisional.albumId {
-            canonical.coverArt = provisional.artworkID
-        }
+        let canonical = try await song(id: provisional.id, forceRefresh: true)
+        let resolved = PlaybackMetadataResolver.resolve(
+            canonical: canonical,
+            provisional: provisional
+        )
         return PlaybackMediaItem(
-            song: canonical,
+            song: resolved,
             accountScope: accountScope,
             queueEntryID: queueEntryID,
             playbackGenerationID: playbackGenerationID
