@@ -30,6 +30,12 @@ struct PlayerArtworkSwipeNavigation {
     }
 }
 
+private struct PlayerBackgroundAnimationIdentity: Equatable {
+    let palette: ArtworkPalette
+    let playerAppearance: PlayerAppearance
+    let backgroundAppearance: PlayerBackgroundAppearance
+}
+
 struct PlayerView: View {
     @EnvironmentObject private var audio: AudioEngine
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
@@ -142,8 +148,14 @@ struct PlayerView: View {
         )
         .equatable()
         .ignoresSafeArea()
-        .animation(allowsMotion ? BuFiMotion.color : .none, value: palette)
-        .animation(allowsMotion ? BuFiMotion.color : .none, value: resolvedBackgroundAppearance)
+        .animation(
+            allowsMotion ? BuFiMotion.color : .none,
+            value: PlayerBackgroundAnimationIdentity(
+                palette: palette,
+                playerAppearance: resolvedPlayerAppearance,
+                backgroundAppearance: resolvedBackgroundAppearance
+            )
+        )
     }
 
     private func header(_ item: PlaybackMediaItem) -> some View {

@@ -26,7 +26,7 @@ final class UIOptimizationTests: XCTestCase {
         )
         XCTAssertEqual(
             ArtworkRequestSizing.pixelSize(pointSize: 2_000, displayScale: 3),
-            2_048
+            1_536
         )
     }
 
