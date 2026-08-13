@@ -550,6 +550,16 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
 
 @MainActor
 final class AudioEngine: NSObject, ObservableObject {
+    private struct ServerQueueSaveRequest: Sendable {
+        let client: OpenSubsonicClient
+        let accountScope: String
+        let sessionGeneration: UInt64
+        let revision: UInt64
+        let songIDs: [String]
+        let currentID: String
+        let position: TimeInterval
+    }
+
     static let shared = AudioEngine()
 
     let playbackState = PlaybackState()
@@ -747,6 +757,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lyricsTask: Task<Void, Never>?
     private var songMetadataTask: Task<Void, Never>?
     private var serverQueueTask: Task<Void, Never>?
+    private var serverQueueSaveTask: Task<Void, Never>?
+    private var pendingServerQueueSave: ServerQueueSaveRequest?
+    private var latestServerQueueSaveRevision: UInt64 = 0
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
     private var networkPrefetchTask: Task<Void, Never>?
@@ -874,6 +887,9 @@ final class AudioEngine: NSObject, ObservableObject {
         self.client = client
         currentAccountScope = client?.accountScope
         if previousAccountScope != currentAccountScope {
+            pendingServerQueueSave = nil
+            serverQueueSaveTask?.cancel()
+            latestServerQueueSaveRevision = 0
             lastServerQueueSaveRequest = .distantPast
             suspendSpeculativePrefetch()
         }
@@ -998,6 +1014,7 @@ final class AudioEngine: NSObject, ObservableObject {
         finalizeCurrentPlayback(reason: .stopped)
         let finalHistoryMutation = historyMutationTask
         let pendingQueueSave = queueSaveTask
+        let pendingServerQueueSave = serverQueueSaveTask
         let finalPlaybackReport = playbackReportTask
         configure(client: nil)
         let finalPlayerTaskDrain = playerTaskLifecycle.sessionTransitionTask
@@ -1006,6 +1023,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // started. Wait for the old save task before the final delete so a
         // late account-session snapshot can never recreate the queue.
         _ = await pendingQueueSave?.value
+        _ = await pendingServerQueueSave?.value
         _ = await finalQueueClear?.value
         _ = await finalHistoryMutation?.value
         _ = await finalPlaybackReport?.value
@@ -4082,17 +4100,62 @@ final class AudioEngine: NSObject, ObservableObject {
                   containsOnlyServerSongs else {
                 return
             }
-            do {
-                lastServerQueueSaveRequest = Date()
-                try await client.savePlayQueue(
+            enqueueServerQueueSave(
+                ServerQueueSaveRequest(
+                    client: client,
+                    accountScope: accountScope,
+                    sessionGeneration: sessionGeneration,
+                    revision: saveRevision,
                     songIDs: snapshot.queue.map(\.id),
-                    current: current,
+                    currentID: current,
                     position: snapshot.elapsed
                 )
-                guard !Task.isCancelled,
-                      sessionGeneration == playbackSessionGeneration,
-                      accountScope == currentAccountScope else { return }
-            } catch {}
+            )
+        }
+    }
+
+    /// Serializes mutable server queue writes and retains only the newest
+    /// snapshot that arrives while a request is in flight. This prevents a
+    /// slow, older response from overwriting a newer queue on the server.
+    private func enqueueServerQueueSave(_ request: ServerQueueSaveRequest) {
+        guard request.sessionGeneration == playbackSessionGeneration,
+              request.accountScope == currentAccountScope,
+              client === request.client,
+              request.revision > latestServerQueueSaveRevision else {
+            return
+        }
+        latestServerQueueSaveRevision = request.revision
+        pendingServerQueueSave = request
+        startServerQueueSaveDrainIfNeeded()
+    }
+
+    private func startServerQueueSaveDrainIfNeeded() {
+        guard serverQueueSaveTask == nil,
+              pendingServerQueueSave != nil else { return }
+        serverQueueSaveTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled,
+                  let request = self.pendingServerQueueSave {
+                self.pendingServerQueueSave = nil
+                do {
+                    try await request.client.savePlayQueue(
+                        songIDs: request.songIDs,
+                        current: request.currentID,
+                        position: request.position
+                    )
+                    guard !Task.isCancelled,
+                          request.sessionGeneration == self.playbackSessionGeneration,
+                          request.accountScope == self.currentAccountScope,
+                          self.client === request.client else {
+                        continue
+                    }
+                    self.lastServerQueueSaveRequest = Date()
+                } catch {
+                    if Task.isCancelled { break }
+                }
+            }
+            self.serverQueueSaveTask = nil
+            self.startServerQueueSaveDrainIfNeeded()
         }
     }
 
