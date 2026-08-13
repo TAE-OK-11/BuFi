@@ -58,6 +58,29 @@ final class LyricsReliabilityTests: XCTestCase {
         XCTAssertEqual(document.lines.map(\.start), [0, 0])
     }
 
+    func testLegacyParserCreatesUnsyncedLinesAndSkipsWhitespace() throws {
+        let payload = try JSONDecoder().decode(
+            LegacyLyricsPayload.self,
+            from: Data(
+                """
+                {
+                  "lyrics": {
+                    "artist": "Artist",
+                    "title": "Title",
+                    "value": " First line \\n  \\nSecond line "
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        let document = LyricsDocumentParser.parse(payload)
+
+        XCTAssertFalse(document.synced)
+        XCTAssertEqual(document.lines.map(\.text), ["First line", "Second line"])
+        XCTAssertEqual(document.lines.map(\.start), [0, 0])
+    }
+
     func testPositiveLyricsCacheNeverStoresEmptyDocument() {
         var cache = LyricsDocumentCache(countLimit: 2)
         let now = ContinuousClock().now

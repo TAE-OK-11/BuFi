@@ -199,7 +199,7 @@ enum OpenSubsonicRequestPolicy {
         switch endpoint {
         case "getOpenSubsonicExtensions":
             return OpenSubsonicResponseCachePolicy(lifetime: 60 * 60)
-        case "getLyricsBySongId":
+        case "getLyricsBySongId", "getLyrics":
             // Raw empty lyric payloads are not authoritative and must not
             // suppress a later successful response. Parsed, non-empty lyric
             // documents use a separate positive-only cache below.
@@ -573,6 +573,19 @@ enum LyricsDocumentParser {
             return LyricsDocument(synced: isSynced, lines: lines)
         }
         return .empty
+    }
+
+    static func parse(_ payload: LegacyLyricsPayload) -> LyricsDocument {
+        guard let value = payload.lyrics?.value else { return .empty }
+        let lines = value
+            .components(separatedBy: .newlines)
+            .enumerated()
+            .compactMap { index, value -> LyricLine? in
+                let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return nil }
+                return LyricLine(id: index, start: 0, text: text)
+            }
+        return LyricsDocument(synced: false, lines: lines)
     }
 }
 
@@ -2374,6 +2387,8 @@ actor OpenSubsonicClient {
 
     func lyrics(
         songID: String,
+        artist: String? = nil,
+        title: String? = nil,
         forceRefresh: Bool = false
     ) async throws -> LyricsDocument {
         if !forceRefresh,
@@ -2383,15 +2398,57 @@ actor OpenSubsonicClient {
            ) {
             return cached
         }
-        let payload: LyricsPayload = try await readRequest(
-            "getLyricsBySongId",
-            parameters: ["id": songID]
-        )
-        let document = LyricsDocumentParser.parse(payload)
+        let document: LyricsDocument
+        let structuredRequestSucceeded: Bool
+        do {
+            let payload: LyricsPayload = try await readRequest(
+                "getLyricsBySongId",
+                parameters: ["id": songID]
+            )
+            document = LyricsDocumentParser.parse(payload)
+            structuredRequestSucceeded = true
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            document = .empty
+            structuredRequestSucceeded = false
+        }
         if !document.lines.isEmpty {
             lyricsCache.insert(document, for: songID)
+            return document
         }
-        return document
+
+        let normalizedArtist = artist?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
+        let normalizedTitle = title?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
+        guard !normalizedArtist.isEmpty, !normalizedTitle.isEmpty else {
+            return .empty
+        }
+        let legacyPayload: LegacyLyricsPayload
+        do {
+            legacyPayload = try await readRequest(
+                "getLyrics",
+                parameters: [
+                    "artist": normalizedArtist,
+                    "title": normalizedTitle
+                ]
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // A successful structured response is authoritative even when the
+            // optional legacy endpoint is unavailable on this server.
+            if structuredRequestSucceeded { return .empty }
+            throw error
+        }
+        let legacyDocument = LyricsDocumentParser.parse(legacyPayload)
+        if !legacyDocument.lines.isEmpty {
+            lyricsCache.insert(legacyDocument, for: songID)
+        }
+        return legacyDocument
     }
 
     func prefetchLyrics(songIDs: [String]) async {

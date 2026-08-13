@@ -2992,10 +2992,12 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         applyLyricsDocument(.empty, status: .loading)
         lyricsTask = Task { [weak self] in
-            for attempt in 0...1 {
+            for attempt in 0...2 {
                 do {
                     let document = try await client.lyrics(
                         songID: song.id,
+                        artist: song.artist,
+                        title: song.title,
                         forceRefresh: forceRefresh || attempt > 0
                     )
                     guard let self,
@@ -3005,8 +3007,12 @@ final class AudioEngine: NSObject, ObservableObject {
                           self.currentSong?.id == song.id else {
                         return
                     }
-                    if document.lines.isEmpty, attempt == 0 {
-                        try await Task.sleep(for: .milliseconds(650))
+                    if document.lines.isEmpty, attempt < 2 {
+                        try await Task.sleep(
+                            for: attempt == 0
+                                ? .milliseconds(650)
+                                : .seconds(2)
+                        )
                         continue
                     }
                     self.lyricsTask = nil
@@ -3025,9 +3031,13 @@ final class AudioEngine: NSObject, ObservableObject {
                           self.currentSong?.id == song.id else {
                         return
                     }
-                    if attempt == 0 {
+                    if attempt < 2 {
                         do {
-                            try await Task.sleep(for: .milliseconds(650))
+                            try await Task.sleep(
+                                for: attempt == 0
+                                    ? .milliseconds(650)
+                                    : .seconds(2)
+                            )
                         } catch {
                             return
                         }

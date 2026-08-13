@@ -645,6 +645,16 @@ struct LyricsPayload: Decodable, Sendable {
     let lyricsList: LyricsList?
 }
 
+struct LegacyLyricsPayload: Decodable, Sendable {
+    let lyrics: LegacyLyrics?
+}
+
+struct LegacyLyrics: Decodable, Sendable {
+    let artist: String?
+    let title: String?
+    let value: String?
+}
+
 struct LyricsList: Decodable, Sendable {
     let structuredLyrics: [StructuredLyrics]?
 }
