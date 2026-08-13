@@ -1686,10 +1686,12 @@ actor OpenSubsonicClient {
         if let supportedExtensions {
             return supportedExtensions.contains(name)
         }
-        guard let payload: OpenSubsonicExtensionsPayload = try? await
-                withEnrichmentPermit(limiter) { [self] in
-                    try await readRequest("getOpenSubsonicExtensions")
-                } else {
+        let fetchedPayload: OpenSubsonicExtensionsPayload? = try? await withEnrichmentPermit(
+            limiter
+        ) { [self] in
+            try await readRequest("getOpenSubsonicExtensions")
+        }
+        guard let payload = fetchedPayload else {
             // Older Navidrome-compatible servers may implement the endpoint
             // without advertising extensions. Keep the existing best-effort
             // Sonic request in that compatibility case.
