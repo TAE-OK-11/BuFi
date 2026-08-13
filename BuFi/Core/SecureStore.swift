@@ -85,13 +85,13 @@ actor SecureStore {
         )
     }
 
-    func delete() {
+    func delete() throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        try deleteItem(query)
     }
 
     func saveSecret(_ value: String, account: String) throws {
@@ -106,13 +106,13 @@ actor SecureStore {
         return String(data: data, encoding: .utf8)
     }
 
-    func deleteSecret(account: String) {
+    func deleteSecret(account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        try deleteItem(query)
     }
 
     private func saveData(_ data: Data, account: String) throws {
@@ -151,5 +151,12 @@ actor SecureStore {
             return nil
         }
         return item as? Data
+    }
+
+    private func deleteItem(_ query: [String: Any]) throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw SecureStoreError.keychain(status)
+        }
     }
 }

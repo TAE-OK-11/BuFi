@@ -236,6 +236,7 @@ final class AppModel: ObservableObject {
     private var automaticRefreshToken: UUID?
     private var recommendationGeneration: UInt64 = 0
     private var lastFMKeyOperationGeneration: UInt64 = 0
+    private var listenBrainzOperationGeneration: UInt64 = 0
     private var bootstrapState = BootstrapState.idle
     private var loginInFlight = false
     private var refreshInFlight = false
@@ -316,6 +317,7 @@ final class AppModel: ObservableObject {
         sessionGeneration += 1
         let logoutGeneration = sessionGeneration
         lastFMKeyOperationGeneration &+= 1
+        listenBrainzOperationGeneration &+= 1
         let accountScope = client.map {
             AccountScope.identifier(for: $0.credentials)
         }
@@ -382,7 +384,12 @@ final class AppModel: ObservableObject {
             guard sessionGeneration == logoutGeneration else { return }
         }
 
-        await secureStore.delete()
+        do {
+            try await secureStore.delete()
+        } catch {
+            guard sessionGeneration == logoutGeneration else { return }
+            errorMessage = error.localizedDescription
+        }
         guard sessionGeneration == logoutGeneration else { return }
 
         sessionState = .signedOut
@@ -610,7 +617,7 @@ final class AppModel: ObservableObject {
         let generation = sessionGeneration
         do {
             if key.isEmpty {
-                await secureStore.deleteSecret(account: Self.lastFMKeyAccount)
+                try await secureStore.deleteSecret(account: Self.lastFMKeyAccount)
             } else {
                 try await secureStore.saveSecret(key, account: Self.lastFMKeyAccount)
             }
@@ -640,24 +647,36 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func saveListenBrainz(username: String, token: String) async {
+    func saveListenBrainz(username: String, token: String) async -> Bool {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let secret = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        UserDefaults.standard.set(name, forKey: Self.listenBrainzUsernameKey)
-        listenBrainzUsername = name
+        listenBrainzOperationGeneration &+= 1
+        let operationGeneration = listenBrainzOperationGeneration
+        let generation = sessionGeneration
+        let retainedTokenState = hasListenBrainzToken
         do {
             if secret.isEmpty {
                 if name.isEmpty {
-                    await secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
-                    hasListenBrainzToken = false
+                    try await secureStore.deleteSecret(
+                        account: Self.listenBrainzTokenAccount
+                    )
                 }
             } else {
                 try await secureStore.saveSecret(
                     secret,
                     account: Self.listenBrainzTokenAccount
                 )
-                hasListenBrainzToken = true
             }
+            guard !Task.isCancelled,
+                  generation == sessionGeneration,
+                  operationGeneration == listenBrainzOperationGeneration else {
+                return false
+            }
+            UserDefaults.standard.set(name, forKey: Self.listenBrainzUsernameKey)
+            listenBrainzUsername = name
+            hasListenBrainzToken = secret.isEmpty
+                ? (name.isEmpty ? false : retainedTokenState)
+                : true
             var snapshot = home
             snapshot.listenBrainzRecommendedSongs = []
             publishHome(snapshot)
@@ -669,27 +688,53 @@ final class AppModel: ObservableObject {
             } else {
                 rebuildRecommendations()
             }
+            return true
         } catch {
+            guard generation == sessionGeneration,
+                  operationGeneration == listenBrainzOperationGeneration else {
+                return false
+            }
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
-    func removeListenBrainz() async {
-        await secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
-        UserDefaults.standard.removeObject(forKey: Self.listenBrainzUsernameKey)
-        hasListenBrainzToken = false
-        listenBrainzUsername = ""
-        var snapshot = home
-        snapshot.listenBrainzRecommendedSongs = []
-        publishHome(snapshot)
-        if let client {
-            scheduleExternalRecommendationRefresh(
-                client: client,
-                generation: sessionGeneration
+    func removeListenBrainz() async -> Bool {
+        listenBrainzOperationGeneration &+= 1
+        let operationGeneration = listenBrainzOperationGeneration
+        let generation = sessionGeneration
+        do {
+            try await secureStore.deleteSecret(
+                account: Self.listenBrainzTokenAccount
             )
-        } else {
-            recommendationTask?.cancel()
-            rebuildRecommendations()
+            guard !Task.isCancelled,
+                  generation == sessionGeneration,
+                  operationGeneration == listenBrainzOperationGeneration else {
+                return false
+            }
+            UserDefaults.standard.removeObject(forKey: Self.listenBrainzUsernameKey)
+            hasListenBrainzToken = false
+            listenBrainzUsername = ""
+            var snapshot = home
+            snapshot.listenBrainzRecommendedSongs = []
+            publishHome(snapshot)
+            if let client {
+                scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: sessionGeneration
+                )
+            } else {
+                recommendationTask?.cancel()
+                rebuildRecommendations()
+            }
+            return true
+        } catch {
+            guard generation == sessionGeneration,
+                  operationGeneration == listenBrainzOperationGeneration else {
+                return false
+            }
+            errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -2132,6 +2177,7 @@ final class AppModel: ObservableObject {
         sessionGeneration += 1
         let generation = sessionGeneration
         lastFMKeyOperationGeneration &+= 1
+        listenBrainzOperationGeneration &+= 1
         searchGeneration += 1
         searchTask?.cancel()
         searchTask = nil

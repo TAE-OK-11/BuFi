@@ -674,11 +674,11 @@ private struct RecommendationSettingsView: View {
                             let username = listenBrainzUsername
                             let token = listenBrainzToken
                             Task { @MainActor in
-                                await model.saveListenBrainz(
+                                let saved = await model.saveListenBrainz(
                                     username: username,
                                     token: token
                                 )
-                                listenBrainzToken = ""
+                                if saved { listenBrainzToken = "" }
                             }
                         }
                         .buttonStyle(SettingsActionButtonStyle())
@@ -690,9 +690,10 @@ private struct RecommendationSettingsView: View {
                         if session.hasListenBrainzToken || !session.listenBrainzUsername.isEmpty {
                             Button("ListenBrainz 연동 해제", role: .destructive) {
                                 Task { @MainActor in
-                                    await model.removeListenBrainz()
-                                    listenBrainzUsername = ""
-                                    listenBrainzToken = ""
+                                    if await model.removeListenBrainz() {
+                                        listenBrainzUsername = ""
+                                        listenBrainzToken = ""
+                                    }
                                 }
                             }
                         }
