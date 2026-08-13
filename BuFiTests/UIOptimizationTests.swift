@@ -3,6 +3,21 @@ import CoreGraphics
 @testable import BuFi
 
 final class UIOptimizationTests: XCTestCase {
+    func testArtworkRequestSizingUsesStableBoundedPixelBuckets() {
+        XCTAssertEqual(
+            ArtworkRequestSizing.pixelSize(pointSize: 50, displayScale: 3),
+            192
+        )
+        XCTAssertEqual(
+            ArtworkRequestSizing.pixelSize(pointSize: 349, displayScale: 3),
+            1_200
+        )
+        XCTAssertEqual(
+            ArtworkRequestSizing.pixelSize(pointSize: 2_000, displayScale: 3),
+            2_048
+        )
+    }
+
     func testArtworkSwipeRequestsNextQueueOccurrence() {
         let destination = PlayerArtworkSwipeNavigation.destinationIndex(
             translation: CGSize(width: -70, height: 4),

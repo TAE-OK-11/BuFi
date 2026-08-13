@@ -78,7 +78,7 @@ struct ArtistHeroArtwork: View {
         // authenticated OpenSubsonic server.
         guard let sourceURL = await model.artworkURL(
                   id: normalizedCoverArt,
-                  size: 1200
+                  size: Int(requestedPixelSize)
               ),
               !Task.isCancelled,
               artworkRequestIdentity == requestID else {
@@ -93,7 +93,7 @@ struct ArtistHeroArtwork: View {
         )
         guard let loaded = try? await ArtworkStore.shared.image(
                   for: coverURL,
-                  pixelSize: max(height * displayScale, 480)
+                  pixelSize: requestedPixelSize
               ),
               !Task.isCancelled,
               artworkRequestIdentity == requestID else {
@@ -118,7 +118,14 @@ struct ArtistHeroArtwork: View {
     }
 
     private var artworkRequestIdentity: String {
-        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(cacheRevision ?? "base")-\(Int(height * displayScale))"
+        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(cacheRevision ?? "base")-\(Int(requestedPixelSize))"
+    }
+
+    private var requestedPixelSize: CGFloat {
+        ArtworkRequestSizing.pixelSize(
+            pointSize: height,
+            displayScale: displayScale
+        )
     }
 
     private var normalizedCoverArt: String? {

@@ -2361,20 +2361,39 @@ final class AudioEngine: NSObject, ObservableObject {
                 songIDs: plan.upcomingSongs.map(\.id)
             )
 
+            let screenSize = UIScreen.main.bounds.size
+            let artworkEdge = max(
+                220,
+                min(
+                    max(240, screenSize.width - 44),
+                    max(264, screenSize.height * 0.47)
+                )
+            )
+            let artworkPixelSize = ArtworkRequestSizing.pixelSize(
+                pointSize: artworkEdge,
+                displayScale: UIScreen.main.scale
+            )
             var coverURLs: [URL] = []
-            var seenCoverIDs = Set<String>()
+            var seenArtworkRevisions = Set<String>()
             for song in plan.upcomingSongs {
                 guard !Task.isCancelled else { return }
+                let revision = song.artworkRevision
                 guard let coverID = song.artworkID,
-                      seenCoverIDs.insert(coverID).inserted,
-                      let url = try? await client.coverURL(id: coverID, size: 360) else {
+                      seenArtworkRevisions.insert("\(coverID)|\(revision)").inserted,
+                      let sourceURL = try? await client.coverURL(
+                          id: coverID,
+                          size: Int(artworkPixelSize)
+                      ) else {
                     continue
                 }
-                coverURLs.append(url)
+                coverURLs.append(ArtworkStore.cacheURL(
+                    for: sourceURL,
+                    revision: revision
+                ))
             }
             await ArtworkStore.shared.prefetch(
                 urls: coverURLs,
-                pixelSize: 360
+                pixelSize: artworkPixelSize
             )
             await lyricsPrefetch
             guard !Task.isCancelled else { return }

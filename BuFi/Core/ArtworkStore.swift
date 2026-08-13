@@ -2,6 +2,17 @@ import Foundation
 import Nuke
 import UIKit
 
+enum ArtworkRequestSizing {
+    private static let pixelBuckets = [
+        128, 192, 256, 384, 512, 768, 1_024, 1_200, 1_600, 2_048
+    ]
+
+    static func pixelSize(pointSize: CGFloat, displayScale: CGFloat) -> CGFloat {
+        let requested = max(96, Int(ceil(pointSize * max(displayScale, 1))))
+        return CGFloat(pixelBuckets.first(where: { $0 >= requested }) ?? 2_048)
+    }
+}
+
 struct RGBAColor: Codable, Equatable, Sendable {
     let red: Double
     let green: Double
