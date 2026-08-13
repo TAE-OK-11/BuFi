@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -86,7 +87,11 @@ struct RootView: View {
                 await ListeningHistoryStore.shared.flushPendingWrites()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
+        .onReceive(
+            NotificationCenter.default
+                .publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)
+                .receive(on: DispatchQueue.main)
+        ) { _ in
             let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
             lowPowerMode = currentLowPowerMode
             model.handleEnergyConstraints(
@@ -98,7 +103,11 @@ struct RootView: View {
                 thermalState: thermalState
             )
         }
-        .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
+        .onReceive(
+            NotificationCenter.default
+                .publisher(for: ProcessInfo.thermalStateDidChangeNotification)
+                .receive(on: DispatchQueue.main)
+        ) { _ in
             let currentThermalState = ProcessInfo.processInfo.thermalState
             thermalState = currentThermalState
             model.handleEnergyConstraints(
@@ -110,7 +119,11 @@ struct RootView: View {
                 thermalState: currentThermalState
             )
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+        .onReceive(
+            NotificationCenter.default
+                .publisher(for: UIApplication.didReceiveMemoryWarningNotification)
+                .receive(on: DispatchQueue.main)
+        ) { _ in
             model.handleMemoryPressure()
             audio.handleMemoryPressure()
             Task(priority: .utility) {
