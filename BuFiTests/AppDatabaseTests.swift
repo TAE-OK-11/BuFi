@@ -82,6 +82,35 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertTrue(afterDelete.isEmpty)
     }
 
+    func testOfflineFileValidationRejectsTruncationAndZeroBytes() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            UUID().uuidString,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("track.audio")
+        try Data(repeating: 7, count: 32).write(to: file)
+
+        XCTAssertTrue(OfflineStore.isValidOfflineFile(
+            at: file,
+            expectedByteCount: 32
+        ))
+        XCTAssertFalse(OfflineStore.isValidOfflineFile(
+            at: file,
+            expectedByteCount: 64
+        ))
+
+        try Data().write(to: file)
+        XCTAssertFalse(OfflineStore.isValidOfflineFile(
+            at: file,
+            expectedByteCount: nil
+        ))
+    }
+
     func testListeningHistorySkipsOnlyCorruptRows() async throws {
         let context = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: context.directory) }

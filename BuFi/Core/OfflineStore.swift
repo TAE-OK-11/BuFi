@@ -111,10 +111,14 @@ actor OfflineStore {
                 byteCount: pair.value.byteCount,
                 lastAccessedAt: pair.value.lastAccessedAt
             )
-            if FileManager.default.fileExists(
-                atPath: scopedDirectory.appendingPathComponent(entry.fileName).path
+            let fileURL = scopedDirectory.appendingPathComponent(entry.fileName)
+            if Self.isValidOfflineFile(
+                at: fileURL,
+                expectedByteCount: entry.byteCount
             ) {
                 result[pair.key] = entry
+            } else if FileManager.default.fileExists(atPath: fileURL.path) {
+                try? FileManager.default.removeItem(at: fileURL)
             }
         }
         let missingDatabaseIDs = Swift.Set<String>(databaseEntries.keys).subtracting(loadedEntries.keys)
@@ -191,7 +195,13 @@ actor OfflineStore {
         guard activeScope != nil, let directory else { return nil }
         if var entry = entries[songID] {
             let url = directory.appendingPathComponent(entry.fileName)
-            guard FileManager.default.fileExists(atPath: url.path) else {
+            guard Self.isValidOfflineFile(
+                at: url,
+                expectedByteCount: entry.byteCount
+            ) else {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try? FileManager.default.removeItem(at: url)
+                }
                 entries[songID] = nil
                 markDeleted(songID)
                 scheduleIndexPersistence()
@@ -207,7 +217,13 @@ actor OfflineStore {
         }
 
         let legacy = legacyFileURL(songID: songID, directory: directory)
-        return FileManager.default.fileExists(atPath: legacy.path) ? legacy : nil
+        if Self.isValidOfflineFile(at: legacy, expectedByteCount: nil) {
+            return legacy
+        }
+        if FileManager.default.fileExists(atPath: legacy.path) {
+            try? FileManager.default.removeItem(at: legacy)
+        }
+        return nil
     }
 
     func download(song: Song, client: OpenSubsonicClient) async throws -> URL {
@@ -668,10 +684,26 @@ actor OfflineStore {
             return [:]
         }
         return decoded.filter { _, entry in
-            FileManager.default.fileExists(
-                atPath: directory.appendingPathComponent(entry.fileName).path
+            isValidOfflineFile(
+                at: directory.appendingPathComponent(entry.fileName),
+                expectedByteCount: entry.byteCount
             )
         }
+    }
+
+    nonisolated static func isValidOfflineFile(
+        at url: URL,
+        expectedByteCount: Int64?
+    ) -> Bool {
+        guard let values = try? url.resourceValues(
+            forKeys: [.isRegularFileKey, .fileSizeKey]
+        ), values.isRegularFile == true,
+           let fileSize = values.fileSize,
+           fileSize > 0 else {
+            return false
+        }
+        guard let expectedByteCount else { return true }
+        return expectedByteCount > 0 && Int64(fileSize) == expectedByteCount
     }
 
     private func markDirty(_ songID: String) {
