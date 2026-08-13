@@ -86,7 +86,7 @@ actor ArtworkStore {
     private let database: AppDatabase
     private var inFlightPalettes: [String: InFlightPalette] = [:]
     private var paletteGeneration: UInt64 = 0
-    private var isClearingAll = false
+    private var clearRequestID: UUID?
 
     init(database: AppDatabase = .shared) {
         pipeline = Self.makePipeline(name: Self.legacyCacheName)
@@ -120,6 +120,10 @@ actor ArtworkStore {
     func activate(accountScope: String) async {
         guard activeScope != accountScope else { return }
 
+        // A clear from the previous account may still be draining cancelled
+        // work. Its captured pipeline remains safe to clear, but it must not
+        // suppress palette work for this newly activated account.
+        clearRequestID = nil
         invalidateInFlightPalettes()
         if !didDiscardLegacyCache {
             pipeline.cache.removeAll(caches: [.all])
@@ -179,7 +183,7 @@ actor ArtworkStore {
 
     func palette(for url: URL, image: ArtworkImage? = nil) async -> ArtworkPalette {
         guard let scope = activeScope,
-              !isClearingAll,
+              clearRequestID == nil,
               !Task.isCancelled else {
             return .fallback
         }
@@ -199,7 +203,7 @@ actor ArtworkStore {
 
         guard activeScope == scope,
               paletteGeneration == generation,
-              !isClearingAll,
+              clearRequestID == nil,
               !Task.isCancelled else {
             return .fallback
         }
@@ -216,8 +220,9 @@ actor ArtworkStore {
     }
 
     func clearAll() async {
-        guard !isClearingAll else { return }
-        isClearingAll = true
+        guard clearRequestID == nil else { return }
+        let requestID = UUID()
+        clearRequestID = requestID
         let scope = activeScope
         let scopedPipeline = pipeline
         let staleTasks = invalidateInFlightPalettes()
@@ -237,7 +242,9 @@ actor ArtworkStore {
         if let scope {
             await database.clearArtworkPalettes(scope: scope)
         }
-        isClearingAll = false
+        if clearRequestID == requestID {
+            clearRequestID = nil
+        }
     }
 
     /// Synchronous testable entry point. Production calls execute this on the
@@ -352,7 +359,7 @@ actor ArtworkStore {
     ) {
         guard activeScope == scope,
               paletteGeneration == generation,
-              !isClearingAll,
+              clearRequestID == nil,
               !Task.isCancelled else {
             continuation.resume(returning: .fallback)
             return

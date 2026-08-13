@@ -145,6 +145,28 @@ final class PlayerPresentationStateTests: XCTestCase {
         XCTAssertEqual(snapshot.currentSong?.id, duplicate.id)
     }
 
+    func testQueueEntryIdentityIsIndependentFromPlaybackGeneration() {
+        let entry = PlaybackQueueEntry(
+            song: song(id: "replay", coverArt: "cover")
+        )
+        let first = PlaybackSnapshot(
+            entries: [entry],
+            index: 0,
+            accountScope: "account",
+            playbackGenerationID: UUID()
+        )
+        let replay = PlaybackSnapshot(
+            entries: [entry],
+            index: 0,
+            accountScope: "account",
+            playbackGenerationID: UUID()
+        )
+
+        XCTAssertEqual(first.currentItem?.queueEntryID, entry.id)
+        XCTAssertEqual(replay.currentItem?.queueEntryID, entry.id)
+        XCTAssertNotEqual(first.currentItem?.id, replay.currentItem?.id)
+    }
+
     private func song(id: String, coverArt: String?) -> Song {
         Song(
             id: id,

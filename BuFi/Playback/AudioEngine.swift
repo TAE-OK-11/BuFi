@@ -429,13 +429,13 @@ final class AudioEngine: NSObject, ObservableObject {
     let timeline = PlaybackTimeline()
     let lyricsState = LyricsPlaybackState()
 
-    private(set) var currentSong: Song? { playbackState.currentSong }
+    var currentSong: Song? { playbackState.currentSong }
 
     private var currentPlaybackItem: PlaybackMediaItem? {
         playbackState.currentItem
     }
 
-    private var queue: [Song] { playbackState.songs }
+    var queue: [Song] { playbackState.songs }
 
     private var queueIndex: Int { playbackState.index }
 
