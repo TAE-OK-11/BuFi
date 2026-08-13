@@ -33,10 +33,18 @@ actor AppDatabase {
         let songData: Data
     }
 
+    private struct PaletteTouch: Hashable, Sendable {
+        let scope: String
+        let artworkKey: String
+        let engineVersion: Int
+    }
+
     private let databasePath: String
     private let currentDate: @Sendable () -> Date
     private var pool: DatabasePool?
     private var poolTask: Task<DatabasePool?, Never>?
+    private var pendingPaletteTouches = Set<PaletteTouch>()
+    private var paletteTouchTask: Task<Void, Never>?
 
     private init() {
         currentDate = { Date() }
@@ -50,6 +58,7 @@ actor AppDatabase {
             .path
         pool = nil
         poolTask = nil
+        paletteTouchTask = nil
     }
 
     init(
@@ -60,6 +69,7 @@ actor AppDatabase {
         databasePath = databaseURL.path
         pool = try Self.makePool(path: databaseURL.path)
         poolTask = nil
+        paletteTouchTask = nil
     }
 
     init(
@@ -70,6 +80,7 @@ actor AppDatabase {
         databasePath = databaseURL.path
         pool = nil
         poolTask = nil
+        paletteTouchTask = nil
     }
 
     private func databasePool() async -> DatabasePool? {
@@ -462,9 +473,8 @@ actor AppDatabase {
               !artworkKey.isEmpty,
               artworkKey.utf8.count <= 4_096,
               engineVersion > 0 else { return nil }
-        let wallClock = currentDate().timeIntervalSince1970
         do {
-            return try await pool.write { db in
+            guard let data = try await pool.read({ db -> Data? in
                 guard let row = try Row.fetchOne(
                     db,
                     sql: """
@@ -472,12 +482,14 @@ actor AppDatabase {
                     WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
                     """,
                     arguments: [scope, artworkKey, engineVersion]
-                ) else {
-                    return nil
-                }
-
-                let data: Data = row["palette_data"]
-                guard let palette = try? Self.decode(ArtworkPalette.self, from: data) else {
+                ) else { return nil }
+                let value: Data = row["palette_data"]
+                return value
+            }) else {
+                return nil
+            }
+            guard let palette = try? Self.decode(ArtworkPalette.self, from: data) else {
+                try? await pool.write { db in
                     try db.execute(
                         sql: """
                         DELETE FROM artwork_palette_cache
@@ -485,26 +497,15 @@ actor AppDatabase {
                         """,
                         arguments: [scope, artworkKey, engineVersion]
                     )
-                    return nil
                 }
-                let accessedAt = try Self.nextPaletteAccessTimestamp(
-                    in: db,
-                    wallClock: wallClock
-                )
-                try db.execute(
-                    sql: """
-                    UPDATE artwork_palette_cache SET last_accessed_at = ?
-                    WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
-                    """,
-                    arguments: [
-                        accessedAt,
-                        scope,
-                        artworkKey,
-                        engineVersion
-                    ]
-                )
-                return palette
+                return nil
             }
+            schedulePaletteTouch(PaletteTouch(
+                scope: scope,
+                artworkKey: artworkKey,
+                engineVersion: engineVersion
+            ))
+            return palette
         } catch {
             return nil
         }
@@ -519,6 +520,7 @@ actor AppDatabase {
         maximumEntriesPerScope: Int = 384,
         maximumTotalEntries: Int = 1_024
     ) async -> Bool {
+        await flushPaletteTouchesNow()
         guard let pool = await databasePool(),
               !scope.isEmpty,
               scope.utf8.count <= 512,
@@ -587,6 +589,9 @@ actor AppDatabase {
     }
 
     func clearArtworkPalettes(scope: String) async {
+        let staleTouches = pendingPaletteTouches.filter { $0.scope == scope }
+        pendingPaletteTouches.subtract(staleTouches)
+        cancelPaletteTouchTaskIfIdle()
         guard let pool = await databasePool() else { return }
         try? await pool.write { db in
             try db.execute(
@@ -597,6 +602,9 @@ actor AppDatabase {
     }
 
     func clearAllArtworkPalettes() async {
+        pendingPaletteTouches.removeAll(keepingCapacity: true)
+        paletteTouchTask?.cancel()
+        paletteTouchTask = nil
         guard let pool = await databasePool() else { return }
         try? await pool.write { db in
             try db.execute(sql: "DELETE FROM artwork_palette_cache")
@@ -932,61 +940,103 @@ actor AppDatabase {
         try PropertyListDecoder().decode(type, from: data)
     }
 
+    private func schedulePaletteTouch(_ touch: PaletteTouch) {
+        pendingPaletteTouches.insert(touch)
+        guard paletteTouchTask == nil else { return }
+        paletteTouchTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.flushScheduledPaletteTouches()
+        }
+    }
+
+    private func cancelPaletteTouchTaskIfIdle() {
+        guard pendingPaletteTouches.isEmpty else { return }
+        paletteTouchTask?.cancel()
+        paletteTouchTask = nil
+    }
+
+    private func flushPaletteTouchesNow() async {
+        paletteTouchTask?.cancel()
+        paletteTouchTask = nil
+        await flushPaletteTouches()
+    }
+
+    private func flushScheduledPaletteTouches() async {
+        paletteTouchTask = nil
+        await flushPaletteTouches()
+    }
+
+    private func flushPaletteTouches() async {
+        guard !pendingPaletteTouches.isEmpty else { return }
+        let touches = pendingPaletteTouches.sorted {
+            ($0.scope, $0.artworkKey, $0.engineVersion)
+                < ($1.scope, $1.artworkKey, $1.engineVersion)
+        }
+        pendingPaletteTouches.removeAll(keepingCapacity: true)
+        guard let pool = await databasePool() else { return }
+        let wallClock = currentDate().timeIntervalSince1970
+        try? await pool.write { db in
+            var accessedAt = try Self.nextPaletteAccessTimestamp(
+                in: db,
+                wallClock: wallClock
+            )
+            for touch in touches {
+                try db.execute(
+                    sql: """
+                    UPDATE artwork_palette_cache SET last_accessed_at = ?
+                    WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
+                    """,
+                    arguments: [
+                        accessedAt,
+                        touch.scope,
+                        touch.artworkKey,
+                        touch.engineVersion
+                    ]
+                )
+                accessedAt = accessedAt.nextUp
+            }
+        }
+    }
+
     private static func pruneArtworkPalettes(
         in db: Database,
         scope: String,
         maximumEntries: Int
     ) throws {
-        let rows = try Row.fetchAll(
-            db,
+        try db.execute(
             sql: """
-            SELECT artwork_key, engine_version FROM artwork_palette_cache
-            WHERE account_scope = ?
-            ORDER BY last_accessed_at DESC, artwork_key ASC, engine_version DESC
-            LIMIT -1 OFFSET ?
+            DELETE FROM artwork_palette_cache WHERE rowid IN (
+                SELECT rowid FROM artwork_palette_cache
+                WHERE account_scope = ?
+                ORDER BY last_accessed_at DESC, artwork_key ASC,
+                         engine_version DESC
+                LIMIT -1 OFFSET ?
+            )
             """,
             arguments: [scope, maximumEntries]
         )
-        for row in rows {
-            let artworkKey: String = row["artwork_key"]
-            let engineVersion: Int = row["engine_version"]
-            try db.execute(
-                sql: """
-                DELETE FROM artwork_palette_cache
-                WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
-                """,
-                arguments: [scope, artworkKey, engineVersion]
-            )
-        }
     }
 
     private static func pruneArtworkPalettes(
         in db: Database,
         maximumEntries: Int
     ) throws {
-        let rows = try Row.fetchAll(
-            db,
+        try db.execute(
             sql: """
-            SELECT account_scope, artwork_key, engine_version
-            FROM artwork_palette_cache
-            ORDER BY last_accessed_at DESC, account_scope ASC,
-                     artwork_key ASC, engine_version DESC
-            LIMIT -1 OFFSET ?
+            DELETE FROM artwork_palette_cache WHERE rowid IN (
+                SELECT rowid FROM artwork_palette_cache
+                ORDER BY last_accessed_at DESC, account_scope ASC,
+                         artwork_key ASC, engine_version DESC
+                LIMIT -1 OFFSET ?
+            )
             """,
             arguments: [maximumEntries]
         )
-        for row in rows {
-            let scope: String = row["account_scope"]
-            let artworkKey: String = row["artwork_key"]
-            let engineVersion: Int = row["engine_version"]
-            try db.execute(
-                sql: """
-                DELETE FROM artwork_palette_cache
-                WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
-                """,
-                arguments: [scope, artworkKey, engineVersion]
-            )
-        }
     }
 
     private static func openPool(path: String) -> DatabasePool? {
