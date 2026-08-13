@@ -31,9 +31,6 @@ struct PlayerArtworkSwipeNavigation {
 }
 
 struct PlayerView: View {
-    @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var library: HomeLibraryState
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @EnvironmentObject private var audio: AudioEngine
     @EnvironmentObject private var playback: PlaybackState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
@@ -50,7 +47,6 @@ struct PlayerView: View {
     private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
 
     var body: some View {
-        let _ = favoriteOverrides.values
         GeometryReader { proxy in
             ZStack {
                 background
@@ -181,46 +177,7 @@ struct PlayerView: View {
             .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer()
 
-            Menu {
-                Button {
-                    Task { await model.toggleStar(song: song) }
-                } label: {
-                    Label(
-                        model.isStarred(song)
-                            ? String(localized: "좋아요 취소")
-                            : String(localized: "좋아요 표시"),
-                        systemImage: "heart"
-                    )
-                }
-                Button {
-                    Task { await model.download(song) }
-                } label: {
-                    Label("오프라인 저장", systemImage: "arrow.down.circle")
-                }
-                Button {
-                    audio.enqueueNext(song)
-                } label: {
-                    Label(
-                        "다음에 재생",
-                        systemImage: "text.line.first.and.arrowtriangle.forward"
-                    )
-                }
-                Button {
-                    audio.enqueue(song)
-                } label: {
-                    Label("대기목록에 추가", systemImage: "text.badge.plus")
-                }
-                Button {
-                    Task { await model.playRadio(from: song) }
-                } label: {
-                    Label("곡으로 라디오 시작", systemImage: "dot.radiowaves.left.and.right")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 22, weight: .semibold))
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("더 보기")
+            PlayerOverflowMenu(song: song, foreground: playerPrimary)
         }
         .buttonStyle(.plain)
         .foregroundStyle(playerPrimary)
@@ -264,24 +221,7 @@ struct PlayerView: View {
                         font: .system(size: 25, weight: .bold),
                         tracking: -0.7
                     )
-                    if let route = artistRoute(for: song) {
-                        NavigationLink(value: route) {
-                            HStack(spacing: 5) {
-                                Text(song.artist).lineLimit(1)
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 11, weight: .bold))
-                            }
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(playerSecondary)
-                        }
-                        .buttonStyle(BuFiPressStyle())
-                        .accessibilityLabel(String(format: String(localized: "%@ 아티스트 페이지 열기"), song.artist))
-                    } else {
-                        Text(song.artist)
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(playerSecondary)
-                            .lineLimit(1)
-                    }
+                    PlayerArtistLink(song: song, foreground: playerSecondary)
                 }
                 .id(item.id)
                 .transition(trackTextTransition)
@@ -289,16 +229,11 @@ struct PlayerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer(minLength: 4)
-            Button {
-                Task { await model.toggleStar(song: song) }
-            } label: {
-                Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
-                    .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : playerPrimary)
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .buttonStyle(BuFiPressStyle())
-            .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+            PlayerFavoriteButton(
+                song: song,
+                iconSize: 27,
+                foreground: playerPrimary
+            )
         }
         .frame(width: availableWidth)
     }
@@ -401,17 +336,11 @@ struct PlayerView: View {
 
             HStack {
                 Spacer()
-                Button {
-                    Task { await model.toggleStar(song: song) }
-                } label: {
-                    Image(systemName: model.isStarred(song) ? "heart.fill" : "heart")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(model.isStarred(song) ? BuFiTheme.accent : playerPrimary)
-                        .contentTransition(.symbolEffect(.replace))
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
+                PlayerFavoriteButton(
+                    song: song,
+                    iconSize: 24,
+                    foreground: playerPrimary
+                )
             }
         }
         .frame(width: availableWidth)
@@ -549,26 +478,6 @@ struct PlayerView: View {
         .accessibilityLabel(label)
     }
 
-    private func artistRoute(for song: Song) -> MusicRoute? {
-        let artists = library.snapshot.starredArtists + library.snapshot.artists
-        if let artistID = song.artistId {
-            let artist = artists.first(where: { $0.id == artistID }) ?? Artist(
-                id: artistID,
-                name: song.artist,
-                coverArt: nil,
-                albumCount: nil,
-                starred: nil
-            )
-            return .artist(artist)
-        }
-        guard let artist = artists.first(where: {
-            $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
-        }) else {
-            return nil
-        }
-        return .artist(artist)
-    }
-
     private var artworkSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 18)
             .onEnded { value in
@@ -633,6 +542,139 @@ struct PlayerView: View {
 
     private var playerButtonForeground: Color {
         usesDarkForeground ? .white : Color(palette.bottom)
+    }
+}
+
+private struct PlayerOverflowMenu: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
+    @EnvironmentObject private var audio: AudioEngine
+
+    let song: Song
+    let foreground: Color
+
+    var body: some View {
+        let _ = favoriteOverrides.values
+        let isStarred = model.isStarred(song)
+
+        Menu {
+            Button {
+                Task { await model.toggleStar(song: song) }
+            } label: {
+                Label(
+                    isStarred
+                        ? String(localized: "좋아요 취소")
+                        : String(localized: "좋아요 표시"),
+                    systemImage: "heart"
+                )
+            }
+            Button {
+                Task { await model.download(song) }
+            } label: {
+                Label("오프라인 저장", systemImage: "arrow.down.circle")
+            }
+            Button {
+                audio.enqueueNext(song)
+            } label: {
+                Label(
+                    "다음에 재생",
+                    systemImage: "text.line.first.and.arrowtriangle.forward"
+                )
+            }
+            Button {
+                audio.enqueue(song)
+            } label: {
+                Label("대기목록에 추가", systemImage: "text.badge.plus")
+            }
+            Button {
+                Task { await model.playRadio(from: song) }
+            } label: {
+                Label("곡으로 라디오 시작", systemImage: "dot.radiowaves.left.and.right")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(foreground)
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("더 보기")
+    }
+}
+
+private struct PlayerFavoriteButton: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
+
+    let song: Song
+    let iconSize: CGFloat
+    let foreground: Color
+
+    var body: some View {
+        let _ = favoriteOverrides.values
+        let isStarred = model.isStarred(song)
+
+        Button {
+            Task { await model.toggleStar(song: song) }
+        } label: {
+            Image(systemName: isStarred ? "heart.fill" : "heart")
+                .font(.system(size: iconSize, weight: .semibold))
+                .foregroundStyle(isStarred ? BuFiTheme.accent : foreground)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(BuFiPressStyle())
+        .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
+    }
+}
+
+private struct PlayerArtistLink: View {
+    @EnvironmentObject private var library: HomeLibraryState
+
+    let song: Song
+    let foreground: Color
+
+    @ViewBuilder
+    var body: some View {
+        if let route = artistRoute {
+            NavigationLink(value: route) {
+                HStack(spacing: 5) {
+                    Text(song.artist).lineLimit(1)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                }
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(foreground)
+            }
+            .buttonStyle(BuFiPressStyle())
+            .accessibilityLabel(
+                String(format: String(localized: "%@ 아티스트 페이지 열기"), song.artist)
+            )
+        } else {
+            Text(song.artist)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(foreground)
+                .lineLimit(1)
+        }
+    }
+
+    private var artistRoute: MusicRoute? {
+        let artists = library.snapshot.starredArtists + library.snapshot.artists
+        if let artistID = song.artistId {
+            let artist = artists.first(where: { $0.id == artistID }) ?? Artist(
+                id: artistID,
+                name: song.artist,
+                coverArt: nil,
+                albumCount: nil,
+                starred: nil
+            )
+            return .artist(artist)
+        }
+        guard let artist = artists.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+        }) else {
+            return nil
+        }
+        return .artist(artist)
     }
 }
 
