@@ -49,159 +49,34 @@ final class PlayerPresentationStateTests: XCTestCase {
         XCTAssertNotEqual(state.presentationID, firstPresentationID)
     }
 
-    func testArtworkPageIdentityIncludesSongAndQueuePosition() {
-        let original = PlayerArtworkPageID(
-            queueIndex: 2,
-            songID: "song-a",
-            coverArtID: "cover-a"
-        )
-
-        XCTAssertNotEqual(
-            original,
-            PlayerArtworkPageID(queueIndex: 2, songID: "song-b", coverArtID: "cover-b")
-        )
-        XCTAssertNotEqual(
-            original,
-            PlayerArtworkPageID(queueIndex: 3, songID: "song-a", coverArtID: "cover-a")
-        )
-        XCTAssertNotEqual(
-            original,
-            PlayerArtworkPageID(queueIndex: 2, songID: "song-a", coverArtID: "cover-b")
-        )
-        XCTAssertNotEqual(
-            PlayerArtworkPageID(
-                queueIndex: 2,
-                songID: "song-a",
-                coverArtID: "cover-a",
-                artworkRevision: "revision-a",
-                accountScope: "account"
-            ),
-            PlayerArtworkPageID(
-                queueIndex: 2,
-                songID: "song-a",
-                coverArtID: "cover-a",
-                artworkRevision: "revision-b",
-                accountScope: "account"
-            )
-        )
-    }
-
-    func testArtworkSnapshotUsesExactCoverWhenQueueIndexStillPointsAtOldMetadata() {
-        let old = song(id: "song", coverArt: "old-cover")
+    func testArtworkIdentityComesFromOneAtomicPlaybackItem() {
         let current = song(id: "song", coverArt: "current-cover")
-
-        let snapshot = PlayerArtworkPagerSnapshot.make(
-            currentSong: current,
-            queue: [old, current],
-            queueIndex: 0
-        )
-
-        XCTAssertEqual(snapshot.currentPage.queueIndex, 1)
-        XCTAssertEqual(snapshot.currentPage.coverArtID, "current-cover")
-        XCTAssertEqual(
-            snapshot.pages.first(where: { $0.id == snapshot.currentPage })?.song,
-            current
-        )
-    }
-
-    func testArtworkSnapshotFallsBackToCurrentSongInsteadOfPreviousQueueCover() {
-        let queued = song(id: "song", coverArt: "old-cover")
-        let current = song(id: "song", coverArt: "current-cover")
-
-        let snapshot = PlayerArtworkPagerSnapshot.make(
-            currentSong: current,
-            queue: [queued],
-            queueIndex: 0
-        )
-
-        XCTAssertEqual(snapshot.pages.count, 1)
-        XCTAssertEqual(snapshot.currentPage.queueIndex, -1)
-        XCTAssertEqual(snapshot.currentPage.coverArtID, "current-cover")
-        XCTAssertEqual(snapshot.pages.first?.song, current)
-    }
-
-    func testArtworkSnapshotNormalizesWhitespaceAroundCoverIdentifier() {
-        let queued = song(id: "song", coverArt: "cover")
-        let current = song(id: "song", coverArt: "  cover  ")
-
-        let snapshot = PlayerArtworkPagerSnapshot.make(
-            currentSong: current,
-            queue: [queued],
-            queueIndex: 0
-        )
-
-        XCTAssertEqual(snapshot.currentPage.queueIndex, 0)
-        XCTAssertEqual(snapshot.currentPage.coverArtID, "cover")
-    }
-
-    func testArtworkSnapshotBuildsOnlyCurrentCenteredWindowForLargeQueue() {
-        let songs = (0..<1_000).map {
-            song(id: "song-\($0)", coverArt: "cover-\($0)")
-        }
-
-        let snapshot = PlayerArtworkPagerSnapshot.make(
-            currentSong: songs[500],
-            queue: songs,
-            queueIndex: 500
-        )
-
-        XCTAssertEqual(snapshot.pages.count, 5)
-        XCTAssertEqual(snapshot.pages.map(\.id.queueIndex), [498, 499, 500, 501, 502])
-        XCTAssertEqual(snapshot.currentPage.queueIndex, 500)
-    }
-
-    func testArtworkSnapshotResolvesFreshCurrentMetadataOutsideStaleIndex() {
-        let current = song(id: "target", coverArt: "fresh-cover")
-        var songs = (0..<1_000).map {
-            song(id: "song-\($0)", coverArt: "cover-\($0)")
-        }
-        songs[10] = song(id: "target", coverArt: "stale-cover")
-        songs[800] = current
-
-        let snapshot = PlayerArtworkPagerSnapshot.make(
-            currentSong: current,
-            queue: songs,
-            queueIndex: 10
-        )
-
-        XCTAssertEqual(snapshot.currentPage.queueIndex, 800)
-        XCTAssertEqual(snapshot.currentPage.coverArtID, "fresh-cover")
-        XCTAssertEqual(snapshot.pages.map(\.id.queueIndex), [798, 799, 800, 801, 802])
-    }
-
-    func testArtworkSnapshotClampsWindowAtQueueBoundary() {
-        let songs = (0..<10).map {
-            song(id: "song-\($0)", coverArt: "cover-\($0)")
-        }
-
-        let snapshot = PlayerArtworkPagerSnapshot.make(
-            currentSong: songs[0],
-            queue: songs,
-            queueIndex: 0
-        )
-
-        XCTAssertEqual(snapshot.pages.map(\.id.queueIndex), [0, 1, 2])
-        XCTAssertEqual(snapshot.currentPage.queueIndex, 0)
-    }
-
-    func testArtworkSnapshotKeepsDuplicateSongOccurrencesDistinct() {
-        let duplicate = song(id: "same-song", coverArt: "same-cover")
-        let first = PlaybackQueueEntry(song: duplicate)
-        let second = PlaybackQueueEntry(song: duplicate)
-
-        let snapshot = PlayerArtworkPagerSnapshot.make(
-            currentSong: duplicate,
-            queue: [duplicate, duplicate],
-            queueEntries: [first, second],
-            queueIndex: 1,
-            currentQueueEntryID: second.id,
+        let item = PlaybackMediaItem(
+            song: current,
             accountScope: "account"
         )
 
-        XCTAssertEqual(snapshot.currentPage.queueIndex, 1)
-        XCTAssertEqual(snapshot.currentPage.queueEntryID, second.id)
-        XCTAssertEqual(snapshot.pages.map(\.id.queueEntryID), [first.id, second.id])
-        XCTAssertNotEqual(snapshot.pages[0].id, snapshot.pages[1].id)
+        XCTAssertEqual(item.artworkIdentity.playbackGenerationID, item.id)
+        XCTAssertEqual(item.artworkIdentity.queueEntryID, item.queueEntryID)
+        XCTAssertEqual(item.artworkIdentity.songID, current.id)
+        XCTAssertEqual(item.artworkIdentity.coverArtID, "current-cover")
+        XCTAssertEqual(item.artworkIdentity.artworkRevision, current.artworkRevision)
+        XCTAssertEqual(item.artworkIdentity.accountScope, "account")
+    }
+
+    func testArtworkIdentityRejectsPreviousPlaybackGenerationAndQueueOccurrence() {
+        let current = song(id: "same-song", coverArt: "same-cover")
+        let first = PlaybackMediaItem(song: current, accountScope: "account")
+        let replay = PlaybackMediaItem(
+            song: current,
+            accountScope: "account",
+            queueEntryID: first.queueEntryID
+        )
+        let duplicate = PlaybackMediaItem(song: current, accountScope: "account")
+
+        XCTAssertNotEqual(first.artworkIdentity, replay.artworkIdentity)
+        XCTAssertNotEqual(first.artworkIdentity, duplicate.artworkIdentity)
+        XCTAssertNotEqual(replay.artworkIdentity, duplicate.artworkIdentity)
     }
 
     func testSessionTransitionDrainsObsoleteScrobbleBeforeReplacement() async {

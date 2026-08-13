@@ -5,21 +5,16 @@ struct MiniPlayerView: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
-    @State private var paletteArtworkIdentity: MiniPlayerArtworkIdentity?
+    @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
     private let audio = AudioEngine.shared
 
     var body: some View {
-        if let song = playback.currentSong {
-            let artworkIdentity = MiniPlayerArtworkIdentity(
-                occurrenceID: playback.currentItem?.id,
-                songID: song.id,
-                coverArtID: song.artworkID,
-                artworkRevision: song.artworkRevision,
-                accountScope: playback.currentItem?.accountScope
-            )
+        if let item = playback.currentItem {
+            let song = item.song
+            let artworkIdentity = item.artworkIdentity
             ZStack {
                 Button {
                     audio.showPlayer = true
@@ -43,9 +38,7 @@ struct MiniPlayerView: View {
                             cornerRadius: 5,
                             cacheRevision: artworkIdentity.artworkRevision,
                             onPalette: { nextPalette in
-                                guard playback.currentSong?.id == artworkIdentity.songID,
-                                      playback.currentSong?.artworkID == artworkIdentity.coverArtID,
-                                      playback.currentItem?.id == artworkIdentity.occurrenceID else {
+                                guard playback.currentItem?.artworkIdentity == artworkIdentity else {
                                     return
                                 }
                                 if nextPalette == .fallback {
@@ -72,7 +65,7 @@ struct MiniPlayerView: View {
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.76)
                             }
-                            .id(playback.currentItem?.id)
+                            .id(item.id)
                             .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -80,7 +73,7 @@ struct MiniPlayerView: View {
                         .allowsHitTesting(false)
                         .animation(
                             motionEnabled ? BuFiMotion.trackText : .none,
-                            value: song.id
+                            value: item.id
                         )
 
                         AirPlayButton(lightContent: !usesDarkForeground)
@@ -144,15 +137,8 @@ struct MiniPlayerView: View {
         return palette
     }
 
-    private var currentArtworkIdentity: MiniPlayerArtworkIdentity? {
-        guard let song = playback.currentSong else { return nil }
-        return MiniPlayerArtworkIdentity(
-            occurrenceID: playback.currentItem?.id,
-            songID: song.id,
-            coverArtID: song.artworkID,
-            artworkRevision: song.artworkRevision,
-            accountScope: playback.currentItem?.accountScope
-        )
+    private var currentArtworkIdentity: PlayerArtworkIdentity? {
+        playback.currentItem?.artworkIdentity
     }
 
     private func relativeLuminance(_ color: RGBAColor) -> Double {
@@ -190,14 +176,6 @@ private struct MiniPlayerPlaybackButton: View {
         .buttonStyle(BuFiPressStyle())
         .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
-}
-
-private struct MiniPlayerArtworkIdentity: Hashable {
-    let occurrenceID: UUID?
-    let songID: String
-    let coverArtID: String?
-    let artworkRevision: String
-    let accountScope: String?
 }
 
 private struct MiniPlayerProgressView: View {

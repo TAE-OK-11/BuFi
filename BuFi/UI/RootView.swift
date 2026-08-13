@@ -22,7 +22,6 @@ private struct MiniPlayerPlacementPreferenceKey: PreferenceKey {
 
 private struct PlayerPresentationSession: Identifiable {
     let id: UUID
-    let initialArtworkPage: PlayerArtworkPageID?
 }
 
 struct RootView: View {
@@ -154,9 +153,7 @@ struct RootView: View {
         }
         .fullScreenCover(item: playerPresentationSession) { presentation in
             NavigationStack {
-                PlayerView(
-                    initialArtworkPage: presentation.initialArtworkPage
-                )
+                PlayerView()
                     .navigationDestination(for: MusicRoute.self) { route in
                         MusicDetailView(route: route)
                     }
@@ -173,8 +170,7 @@ struct RootView: View {
             get: {
                 guard playerPresentation.showPlayer else { return nil }
                 return PlayerPresentationSession(
-                    id: playerPresentation.presentationID,
-                    initialArtworkPage: currentArtworkPageID
+                    id: playerPresentation.presentationID
                 )
             },
             set: { presentation in
@@ -182,18 +178,6 @@ struct RootView: View {
                     audio.showPlayer = false
                 }
             }
-        )
-    }
-
-    private var currentArtworkPageID: PlayerArtworkPageID? {
-        guard let song = playback.currentSong else { return nil }
-        return PlayerArtworkPagerSnapshot.resolveCurrentPage(
-            currentSong: song,
-            queue: playback.songs,
-            queueEntries: playback.entries,
-            queueIndex: playback.index,
-            currentQueueEntryID: playback.currentItem?.queueEntryID,
-            accountScope: playback.currentItem?.accountScope
         )
     }
 

@@ -143,6 +143,18 @@ struct PlaybackArtworkReference: Equatable, Hashable, Sendable {
     let revision: String
 }
 
+/// Exact visual identity for one committed now-playing occurrence. Views use
+/// this value as both their async-result gate and SwiftUI identity so artwork
+/// from another play attempt can never be reused as the current cover.
+struct PlayerArtworkIdentity: Equatable, Hashable, Sendable {
+    let playbackGenerationID: UUID
+    let queueEntryID: UUID
+    let songID: String
+    let coverArtID: String?
+    let artworkRevision: String
+    let accountScope: String?
+}
+
 struct PlaybackStreamReference: Equatable, Hashable, Sendable {
     let songID: String
     let externalURL: String?
@@ -195,6 +207,17 @@ struct PlaybackMediaItem: Identifiable, Equatable, Sendable {
         PlaybackArtworkReference(
             id: song.artworkID,
             revision: song.artworkRevision
+        )
+    }
+
+    var artworkIdentity: PlayerArtworkIdentity {
+        PlayerArtworkIdentity(
+            playbackGenerationID: id,
+            queueEntryID: queueEntryID,
+            songID: song.id,
+            coverArtID: artwork.id,
+            artworkRevision: artwork.revision,
+            accountScope: accountScope
         )
     }
 

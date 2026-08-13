@@ -1,79 +1,58 @@
 import XCTest
+import CoreGraphics
 @testable import BuFi
 
 final class UIOptimizationTests: XCTestCase {
-    func testProgrammaticPagerSelectionDoesNotRequestPlayback() {
-        let current = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: "cover-a"
+    func testArtworkSwipeRequestsNextQueueOccurrence() {
+        let destination = PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -70, height: 4),
+            predictedEndTranslation: CGSize(width: -130, height: 8),
+            currentIndex: 1,
+            queueCount: 4
         )
-        let destination = PlayerArtworkPageID(
-            queueIndex: 1,
-            songID: "song-b",
-            coverArtID: "cover-b"
-        )
-        var gate = PlayerPagerSelectionGate()
 
-        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
-        XCTAssertFalse(gate.prepareProgrammaticChange(from: destination, to: destination))
-        XCTAssertFalse(gate.shouldStartPlayback(for: destination))
-        XCTAssertTrue(gate.shouldStartPlayback(for: current))
+        XCTAssertEqual(destination, 2)
     }
 
-    func testProgrammaticPagerAnimationIgnoresIntermediatePages() {
-        let current = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: "cover-a"
+    func testArtworkSwipeRequestsPreviousQueueOccurrence() {
+        let destination = PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: 72, height: 3),
+            predictedEndTranslation: CGSize(width: 120, height: 5),
+            currentIndex: 2,
+            queueCount: 4
         )
-        let intermediate = PlayerArtworkPageID(
-            queueIndex: 1,
-            songID: "song-b",
-            coverArtID: "cover-b"
-        )
-        let destination = PlayerArtworkPageID(
-            queueIndex: 2,
-            songID: "song-c",
-            coverArtID: "cover-c"
-        )
-        var gate = PlayerPagerSelectionGate()
 
-        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
-        XCTAssertFalse(gate.shouldStartPlayback(for: intermediate))
-        XCTAssertEqual(gate.programmaticDestination, destination)
-        XCTAssertFalse(gate.shouldStartPlayback(for: destination))
-        XCTAssertNil(gate.programmaticDestination)
+        XCTAssertEqual(destination, 1)
     }
 
-    func testUserGestureInterruptsProgrammaticPagerGate() {
-        let current = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: nil
-        )
-        let destination = PlayerArtworkPageID(
-            queueIndex: 1,
-            songID: "song-b",
-            coverArtID: nil
-        )
-        var gate = PlayerPagerSelectionGate()
-
-        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
-        gate.beginUserInteraction()
-        XCTAssertTrue(gate.shouldStartPlayback(for: destination))
+    func testArtworkSwipeIgnoresShortAndVerticalGestures() {
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -20, height: 2),
+            predictedEndTranslation: CGSize(width: -30, height: 3),
+            currentIndex: 1,
+            queueCount: 3
+        ))
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -80, height: 100),
+            predictedEndTranslation: CGSize(width: -110, height: 150),
+            currentIndex: 1,
+            queueCount: 3
+        ))
     }
 
-    func testPagerDoesNotArmWhenAlreadyAtDestination() {
-        let page = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: nil
-        )
-        var gate = PlayerPagerSelectionGate()
-
-        XCTAssertFalse(gate.prepareProgrammaticChange(from: page, to: page))
-        XCTAssertNil(gate.programmaticDestination)
+    func testArtworkSwipeDoesNotLeaveQueueBoundaries() {
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: 90, height: 0),
+            predictedEndTranslation: CGSize(width: 120, height: 0),
+            currentIndex: 0,
+            queueCount: 2
+        ))
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -90, height: 0),
+            predictedEndTranslation: CGSize(width: -120, height: 0),
+            currentIndex: 1,
+            queueCount: 2
+        ))
     }
 
     func testBiographySanitizationRemovesMarkupAndCollapsesWhitespace() {
