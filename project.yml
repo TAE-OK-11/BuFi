@@ -38,9 +38,13 @@ settings:
       SWIFT_OPTIMIZATION_LEVEL: "-O"
       SWIFT_COMPILATION_MODE: wholemodule
       SWIFT_SERIALIZE_DEBUGGING_OPTIONS: NO
-      LLVM_LTO: YES
+      # iOS 27 beta 4 has device-only launch failures when some Xcode 26/27
+      # Release binaries are post-linked or stripped. Keep normal Swift
+      # optimization and dead-code stripping, but avoid LTO and post-build
+      # Mach-O mutation until the iOS 27 toolchain/runtime pair is stable.
+      LLVM_LTO: NO
       DEAD_CODE_STRIPPING: YES
-      DEPLOYMENT_POSTPROCESSING: YES
+      DEPLOYMENT_POSTPROCESSING: NO
       ENABLE_NS_ASSERTIONS: NO
       ENABLE_TESTABILITY: NO
       ENABLE_PREVIEWS: NO
@@ -48,12 +52,12 @@ settings:
       ONLY_ACTIVE_ARCH: NO
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
       ASSETCATALOG_COMPILER_OPTIMIZATION: space
-      COPY_PHASE_STRIP: YES
+      COPY_PHASE_STRIP: NO
       # Xcode 26.3-27 beta strip -S -T can corrupt dyld chained fixups in
       # Swift 6 binaries (FB23528109). Keep safe non-global stripping until
       # the affected toolchains are retired.
       STRIP_STYLE: non-global
-      STRIP_INSTALLED_PRODUCT: YES
+      STRIP_INSTALLED_PRODUCT: NO
       STRIP_SWIFT_SYMBOLS: NO
       VALIDATE_PRODUCT: YES
 packages:
@@ -96,8 +100,8 @@ targets:
       path: BuFi/Resources/Info.plist
       properties:
         CFBundleDisplayName: BuFi
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleLocalizations:
           - ko
           - en
