@@ -1749,11 +1749,22 @@ final class AppModel: ObservableObject {
         cache: inout [String: CachedValue<Value>]
     ) {
         let now = Date()
-        cache = cache.filter { $0.value.expiresAt > now }
         cache[id] = CachedValue(
             value: value,
             expiresAt: now.addingTimeInterval(lifetime)
         )
+        guard limit > 0 else {
+            cache.removeAll(keepingCapacity: false)
+            return
+        }
+        guard cache.count > limit else { return }
+
+        let expiredKeys = cache.compactMap { key, cached in
+            cached.expiresAt <= now ? key : nil
+        }
+        for key in expiredKeys {
+            cache[key] = nil
+        }
         while cache.count > limit,
               let oldest = cache.min(by: {
                   $0.value.expiresAt < $1.value.expiresAt
