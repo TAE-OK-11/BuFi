@@ -457,7 +457,7 @@ actor OpenSubsonicClient {
     private func decodeResponseData<Payload: Decodable & Sendable>(
         _ data: Data
     ) async throws -> Payload {
-        let task = Task.detached(priority: .userInitiated) {
+        let task: Task<Payload, Error> = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             return try Self.decodePayload(data)
         }
