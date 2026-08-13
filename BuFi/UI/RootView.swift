@@ -187,12 +187,12 @@ struct RootView: View {
 
     private var currentArtworkPageID: PlayerArtworkPageID? {
         guard let song = playback.currentSong else { return nil }
-        return PlayerArtworkPagerSnapshot.make(
+        return PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: song,
             queue: playback.songs,
             queueIndex: playback.index,
             accountScope: playback.currentItem?.accountScope
-        ).currentPage
+        )
     }
 
     private var isThermallyConstrained: Bool {

@@ -1,0 +1,41 @@
+{
+  "pins" : [
+    {
+      "identity" : "grdb.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/groue/GRDB.swift.git",
+      "state" : {
+        "revision" : "b83108d10f42680d78f23fe4d4d80fc88dab3212",
+        "version" : "7.11.1"
+      }
+    },
+    {
+      "identity" : "nuke",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kean/Nuke.git",
+      "state" : {
+        "revision" : "63a8fcbd6621340a2410bc3e9575ac97058615f4",
+        "version" : "13.0.6"
+      }
+    },
+    {
+      "identity" : "swiftsonic",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/CassetteLab/swiftsonic.git",
+      "state" : {
+        "revision" : "003352cda778ef894ce2eb434960d4fda699cbb3",
+        "version" : "0.9.0"
+      }
+    },
+    {
+      "identity" : "zstd",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/facebook/zstd.git",
+      "state" : {
+        "revision" : "ac66b19e6bd6b83238bf008eecc1298105298532",
+        "version" : "1.5.7"
+      }
+    }
+  ],
+  "version" : 2
+}

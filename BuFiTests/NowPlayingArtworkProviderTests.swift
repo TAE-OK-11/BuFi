@@ -13,13 +13,18 @@ final class NowPlayingArtworkProviderTests: XCTestCase {
         }
     }
 
-    func testMediaPlayerCanRequestArtworkOffMainActor() async {
+    func testMediaPlayerCanRequestArtworkOffMainActor() async throws {
         let sourceSize = CGSize(width: 12, height: 8)
         let source = UIGraphicsImageRenderer(size: sourceSize).image { context in
             UIColor.systemBlue.setFill()
             context.fill(CGRect(origin: .zero, size: sourceSize))
         }
-        let image = ArtworkImage(source, cacheKey: "now-playing-provider-test")
+        let image = try XCTUnwrap(
+            ArtworkImage(source, cacheKey: "now-playing-provider-test")
+        )
+        let firstLocalWrapper = image.value
+        let secondLocalWrapper = image.value
+        XCTAssertFalse(firstLocalWrapper === secondLocalWrapper)
         let artwork = NowPlayingArtworkProvider(image: image).makeArtwork()
         let box = ArtworkBox(artwork)
 

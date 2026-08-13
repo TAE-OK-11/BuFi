@@ -243,6 +243,7 @@ actor ListeningHistoryStore {
 
     func activate(accountScope: String) async -> AccountSessionToken? {
         if activeScope == accountScope {
+            scopeGeneration &+= 1
             return AccountSessionToken(
                 accountScope: accountScope,
                 generation: scopeGeneration
@@ -291,24 +292,29 @@ actor ListeningHistoryStore {
         )
     }
 
-    func deactivate(accountScope: String) async {
-        guard activeScope == accountScope else { return }
+    @discardableResult
+    func deactivate(session: AccountSessionToken) async -> Bool {
+        guard session.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ) else { return false }
         persistenceTask?.cancel()
         persistenceTask = nil
         scopeGeneration &+= 1
         let generation = scopeGeneration
         activeScope = nil
         await persist(
-            scope: accountScope,
+            scope: session.accountScope,
             generation: generation,
             permitsInactiveScope: true
         )
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return true }
         entries.removeAll(keepingCapacity: false)
         dirtySongIDs.removeAll(keepingCapacity: false)
         deletedSongIDs.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
         revision &+= 1
+        return true
     }
 
     func recordStart(
@@ -503,6 +509,13 @@ actor ListeningHistoryStore {
             recentSongs: Array(recent),
             revision: revision
         )
+    }
+
+    /// Lightweight validation for work that already captured the full
+    /// recommendation snapshot. Avoids sorting and copying all entries merely
+    /// to learn whether an awaited calculation became stale.
+    func recommendationRevision() -> UInt64 {
+        revision
     }
 
     func clear() async {

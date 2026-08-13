@@ -185,6 +185,7 @@ struct SearchView: View {
             algorithmPlaylists(
                 PersonalizedMixBuilder.make(
                     snapshot: library.snapshot,
+                    snapshotRevision: library.revision,
                     selectedArtists: ArtistMixPreferences.decode(
                         selectedArtistMixes
                     )

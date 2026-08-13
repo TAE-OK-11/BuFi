@@ -103,6 +103,28 @@ final class UIOptimizationTests: XCTestCase {
         XCTAssertEqual(presentation.recommendedAlbums.map(\.id), ["album-a", "album-b"])
     }
 
+    func testHomePresentationInputUsesRevisionInsteadOfSnapshotTraversal() {
+        let revision = HomeSnapshotRevision()
+        let first = HomePresentationInput(
+            snapshot: HomeSnapshot(randomSongs: [song(id: "first", albumID: "a")]),
+            revision: revision,
+            selectedArtists: ["artist"]
+        )
+        let sameRevision = HomePresentationInput(
+            snapshot: HomeSnapshot(randomSongs: [song(id: "second", albumID: "b")]),
+            revision: revision,
+            selectedArtists: ["artist"]
+        )
+        let nextRevision = HomePresentationInput(
+            snapshot: first.snapshot,
+            revision: revision.advanced(),
+            selectedArtists: ["artist"]
+        )
+
+        XCTAssertEqual(first, sameRevision)
+        XCTAssertNotEqual(first, nextRevision)
+    }
+
     func testLibraryArtistPresentationUsesStableFavoriteMarker() {
         let favorite = Artist(
             id: "favorite",

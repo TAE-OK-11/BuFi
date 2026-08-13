@@ -346,6 +346,23 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
     static let empty = HomeSnapshot()
 }
 
+/// Collision-safe identity for an in-memory home snapshot. The generation is
+/// monotonic within one HomeLibraryState, while the epoch prevents static
+/// presentation/recommendation caches from reusing a prior model instance.
+struct HomeSnapshotRevision: Hashable, Sendable {
+    let epoch: UUID
+    let generation: UInt64
+
+    init(epoch: UUID = UUID(), generation: UInt64 = 0) {
+        self.epoch = epoch
+        self.generation = generation
+    }
+
+    func advanced() -> HomeSnapshotRevision {
+        HomeSnapshotRevision(epoch: epoch, generation: generation &+ 1)
+    }
+}
+
 struct HomeLoadResult: Sendable {
     var snapshot: HomeSnapshot
     var hasAuthoritativeStarredState: Bool

@@ -335,6 +335,7 @@ enum RecommendationMixer {
 
     static func mix(
         snapshot: HomeSnapshot,
+        snapshotRevision: HomeSnapshotRevision? = nil,
         weights: RecommendationWeights,
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
@@ -344,6 +345,7 @@ enum RecommendationMixer {
         guard limit > 0, !Task.isCancelled else { return [] }
         guard let key = cacheKey(
             snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
             weights: weights,
             purpose: purpose,
             behavior: behavior,
@@ -1133,55 +1135,74 @@ enum RecommendationMixer {
 
     private static func cacheKey(
         snapshot: HomeSnapshot,
+        snapshotRevision: HomeSnapshotRevision?,
         weights: RecommendationWeights,
         purpose: RecommendationPurpose,
         behavior: RecommendationBehaviorSnapshot,
         limit: Int,
         date: Date
     ) -> String? {
-        let sources = [
-            snapshot.serverRecommendedSongs,
-            snapshot.sonicRecommendedSongs,
-            snapshot.similarArtistSongs,
-            snapshot.genreRecommendedSongs,
-            snapshot.topArtistSongs,
-            snapshot.recentlyAddedSongs,
-            snapshot.popularSongs,
-            snapshot.playlistAffinitySongs,
-            snapshot.lastFMRecommendedSongs,
-            snapshot.listenBrainzRecommendedSongs,
-            snapshot.randomSongs,
-            snapshot.mostPlayedSongs,
-            snapshot.starredSongs,
-            snapshot.daylistSongs,
-            snapshot.recommendedSongs
-        ]
-        var snapshotFingerprint = StableFingerprint()
-        for (sourceIndex, source) in sources.enumerated() {
-            if sourceIndex.isMultiple(of: 4), Task.isCancelled { return nil }
-            snapshotFingerprint.append(sourceIndex)
-            snapshotFingerprint.append(source.count)
-            for (songIndex, song) in source.enumerated() {
-                if songIndex.isMultiple(of: 64), Task.isCancelled { return nil }
-                append(song, to: &snapshotFingerprint)
+        let snapshotIdentity: String
+        if let snapshotRevision {
+            snapshotIdentity = [
+                snapshotRevision.epoch.uuidString,
+                String(snapshotRevision.generation)
+            ].joined(separator: ":")
+        } else {
+            let sources = [
+                snapshot.serverRecommendedSongs,
+                snapshot.sonicRecommendedSongs,
+                snapshot.similarArtistSongs,
+                snapshot.genreRecommendedSongs,
+                snapshot.topArtistSongs,
+                snapshot.recentlyAddedSongs,
+                snapshot.popularSongs,
+                snapshot.playlistAffinitySongs,
+                snapshot.lastFMRecommendedSongs,
+                snapshot.listenBrainzRecommendedSongs,
+                snapshot.randomSongs,
+                snapshot.mostPlayedSongs,
+                snapshot.starredSongs,
+                snapshot.daylistSongs,
+                snapshot.recommendedSongs
+            ]
+            var snapshotFingerprint = StableFingerprint()
+            for (sourceIndex, source) in sources.enumerated() {
+                if sourceIndex.isMultiple(of: 4), Task.isCancelled { return nil }
+                snapshotFingerprint.append(sourceIndex)
+                snapshotFingerprint.append(source.count)
+                for (songIndex, song) in source.enumerated() {
+                    if songIndex.isMultiple(of: 64), Task.isCancelled { return nil }
+                    append(song, to: &snapshotFingerprint)
+                }
             }
+            snapshotIdentity = String(snapshotFingerprint.value)
         }
 
-        var behaviorFingerprint = StableFingerprint()
-        behaviorFingerprint.append(behavior.revision)
-        let behaviorKeys = behavior.songs.keys.sorted()
-        behaviorFingerprint.append(behaviorKeys.count)
-        for (index, key) in behaviorKeys.enumerated() {
-            if index.isMultiple(of: 32), Task.isCancelled { return nil }
-            behaviorFingerprint.append(key)
-            if let value = behavior.songs[key] {
-                append(value, to: &behaviorFingerprint)
+        let behaviorIdentity: String
+        if snapshotRevision != nil {
+            // ListeningHistoryStore owns a process-monotonic revision. Calls
+            // that also carry a HomeSnapshotRevision therefore need no second
+            // O(n) traversal of the captured behavior dictionary.
+            behaviorIdentity = String(behavior.revision)
+        } else {
+            var behaviorFingerprint = StableFingerprint()
+            behaviorFingerprint.append(behavior.revision)
+            let behaviorKeys = behavior.songs.keys.sorted()
+            behaviorFingerprint.append(behaviorKeys.count)
+            for (index, key) in behaviorKeys.enumerated() {
+                if index.isMultiple(of: 32), Task.isCancelled { return nil }
+                behaviorFingerprint.append(key)
+                if let value = behavior.songs[key] {
+                    append(value, to: &behaviorFingerprint)
+                }
             }
-        }
-        behaviorFingerprint.append(behavior.recentSongs.count)
-        for (index, song) in behavior.recentSongs.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { return nil }
-            append(song, to: &behaviorFingerprint)
+            behaviorFingerprint.append(behavior.recentSongs.count)
+            for (index, song) in behavior.recentSongs.enumerated() {
+                if index.isMultiple(of: 64), Task.isCancelled { return nil }
+                append(song, to: &behaviorFingerprint)
+            }
+            behaviorIdentity = String(behaviorFingerprint.value)
         }
 
         var weightsFingerprint = StableFingerprint()
@@ -1199,8 +1220,8 @@ enum RecommendationMixer {
         return [
             purpose.rawValue,
             String(limit),
-            String(snapshotFingerprint.value),
-            String(behaviorFingerprint.value),
+            snapshotIdentity,
+            behaviorIdentity,
             String(weightsFingerprint.value),
             String(temporalBucket(for: purpose, date: date)),
             String(describing: calendar.identifier),
@@ -1469,8 +1490,13 @@ enum ArtistMixPreferences {
     }
 }
 
+private enum PersonalizedSnapshotCacheKey: Equatable {
+    case revision(HomeSnapshotRevision)
+    case snapshot(HomeSnapshot)
+}
+
 private struct PersonalizedMixCacheKey: Equatable {
-    let snapshot: HomeSnapshot
+    let snapshot: PersonalizedSnapshotCacheKey
     let year: Int
     let day: Int
     let period: String
@@ -1485,6 +1511,8 @@ private final class PersonalizedMixResultCache: @unchecked Sendable {
     private let lock = NSLock()
     private var key: PersonalizedMixCacheKey?
     private var mixes: [PersonalizedMix] = []
+    private var corpusKey: PersonalizedSnapshotCacheKey?
+    private var corpus: PersonalizedSongCorpus?
 
     func value(for requestedKey: PersonalizedMixCacheKey) -> [PersonalizedMix]? {
         lock.lock()
@@ -1496,6 +1524,19 @@ private final class PersonalizedMixResultCache: @unchecked Sendable {
         lock.lock()
         key = newKey
         mixes = value
+        lock.unlock()
+    }
+
+    func corpus(for requestedKey: PersonalizedSnapshotCacheKey) -> PersonalizedSongCorpus? {
+        lock.lock()
+        defer { lock.unlock() }
+        return corpusKey == requestedKey ? corpus : nil
+    }
+
+    func insert(_ value: PersonalizedSongCorpus, for newKey: PersonalizedSnapshotCacheKey) {
+        lock.lock()
+        corpusKey = newKey
+        corpus = value
         lock.unlock()
     }
 }
@@ -1568,6 +1609,7 @@ enum PersonalizedMixBuilder {
 
     static func make(
         snapshot: HomeSnapshot,
+        snapshotRevision: HomeSnapshotRevision? = nil,
         date: Date = Date(),
         calendar: Calendar = .current,
         songLimit: Int = 24,
@@ -1577,8 +1619,10 @@ enum PersonalizedMixBuilder {
         let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
         let year = calendar.component(.year, from: date)
         let period = dayPeriod(date, calendar: calendar)
+        let snapshotKey = snapshotRevision.map(PersonalizedSnapshotCacheKey.revision)
+            ?? .snapshot(snapshot)
         let cacheKey = PersonalizedMixCacheKey(
-            snapshot: snapshot,
+            snapshot: snapshotKey,
             year: year,
             day: day,
             period: period.id,
@@ -1591,7 +1635,15 @@ enum PersonalizedMixBuilder {
         if let cached = cache.value(for: cacheKey) { return cached }
 
         guard !Task.isCancelled else { return [] }
-        let corpus = PersonalizedSongCorpus(snapshot: snapshot)
+        let corpus: PersonalizedSongCorpus
+        if let cached = cache.corpus(for: snapshotKey) {
+            corpus = cached
+        } else {
+            let built = PersonalizedSongCorpus(snapshot: snapshot)
+            guard !Task.isCancelled else { return [] }
+            cache.insert(built, for: snapshotKey)
+            corpus = built
+        }
         guard !Task.isCancelled else { return [] }
         let pool = corpus.pool
         guard !pool.isEmpty else { return [] }

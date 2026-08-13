@@ -120,7 +120,8 @@ final class AppDatabaseTests: XCTestCase {
             password: "secret"
         ))
         let scope = AccountScope.identifier(for: activeCredentials)
-        await store.activate(accountScope: scope)
+        let activation = await store.activate(accountScope: scope)
+        let session = try XCTUnwrap(activation)
 
         do {
             _ = try await store.download(song: song(id: "one"), client: otherClient)
@@ -130,7 +131,50 @@ final class AppDatabaseTests: XCTestCase {
         }
 
         try await store.removeAll()
-        await store.deactivate(accountScope: scope)
+        await store.deactivate(session: session)
+    }
+
+    func testOfflineStoreStaleLeaseCannotDeactivateNewSameAccountActivation() async throws {
+        let store = OfflineStore()
+        let scope = "offline-lease-\(UUID().uuidString)"
+        let firstActivation = await store.activate(accountScope: scope)
+        let first = try XCTUnwrap(firstActivation)
+        let secondActivation = await store.activate(accountScope: scope)
+        let second = try XCTUnwrap(secondActivation)
+
+        XCTAssertNotEqual(first, second)
+        let staleDeactivated = await store.deactivate(session: first)
+        XCTAssertFalse(staleDeactivated)
+        let currentDeactivated = await store.deactivate(session: second)
+        XCTAssertTrue(currentDeactivated)
+    }
+
+    func testArtworkStoreStaleLeaseCannotDeactivateNewSameAccountActivation() async {
+        let store = ArtworkStore()
+        let scope = "artwork-lease-\(UUID().uuidString)"
+        let first = await store.activate(accountScope: scope)
+        let second = await store.activate(accountScope: scope)
+
+        XCTAssertNotEqual(first, second)
+        let staleDeactivated = await store.deactivate(session: first)
+        XCTAssertFalse(staleDeactivated)
+        let currentDeactivated = await store.deactivate(session: second)
+        XCTAssertTrue(currentDeactivated)
+    }
+
+    func testListeningHistoryStoreStaleLeaseCannotDeactivateNewSameAccountActivation() async throws {
+        let store = ListeningHistoryStore.shared
+        let scope = "history-lease-\(UUID().uuidString)"
+        let firstActivation = await store.activate(accountScope: scope)
+        let first = try XCTUnwrap(firstActivation)
+        let secondActivation = await store.activate(accountScope: scope)
+        let second = try XCTUnwrap(secondActivation)
+
+        XCTAssertNotEqual(first, second)
+        let staleDeactivated = await store.deactivate(session: first)
+        XCTAssertFalse(staleDeactivated)
+        let currentDeactivated = await store.deactivate(session: second)
+        XCTAssertTrue(currentDeactivated)
     }
 
     func testQueueAndHomeSnapshotRoundTripBinaryPayloads() async throws {

@@ -53,9 +53,22 @@ actor OfflineStore {
         }
     }
 
-    func activate(accountScope: String) async {
+    func activate(accountScope: String) async -> AccountSessionToken? {
         _ = await bootstrapTask.value
-        guard activeScope != accountScope else { return }
+        if activeScope == accountScope {
+            indexSaveTask?.cancel()
+            indexSaveTask = nil
+            scopeGeneration &+= 1
+            inFlight.values.forEach { $0.task.cancel() }
+            inFlight.removeAll()
+            if indexIsDirty {
+                scheduleIndexPersistence(immediate: true)
+            }
+            return AccountSessionToken(
+                accountScope: accountScope,
+                generation: scopeGeneration
+            )
+        }
         let previousScope = activeScope
         indexSaveTask?.cancel()
         indexSaveTask = nil
@@ -73,7 +86,7 @@ actor OfflineStore {
                 generation: generation,
                 permitsInactiveScope: true
             )
-            guard generation == scopeGeneration, activeScope == nil else { return }
+            guard generation == scopeGeneration, activeScope == nil else { return nil }
         }
 
         let scopedDirectory = rootDirectory.appendingPathComponent(accountScope, isDirectory: true)
@@ -91,7 +104,7 @@ actor OfflineStore {
         let databaseEntries = await AppDatabase.shared.loadOfflineEntries(
             scope: accountScope
         )
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         var loadedEntries: [String: Entry] = databaseEntries.reduce(into: [:]) { result, pair in
             let entry = Entry(
                 fileName: pair.value.fileName,
@@ -111,7 +124,7 @@ actor OfflineStore {
                 deletedIDs: missingDatabaseIDs,
                 scope: accountScope
             )
-            guard generation == scopeGeneration, activeScope == nil else { return }
+            guard generation == scopeGeneration, activeScope == nil else { return nil }
         }
         if loadedEntries.isEmpty {
             let legacyEntries = Self.loadEntries(
@@ -125,12 +138,12 @@ actor OfflineStore {
                     migrated,
                     scope: accountScope
                 ) {
-                    guard generation == scopeGeneration, activeScope == nil else { return }
+                    guard generation == scopeGeneration, activeScope == nil else { return nil }
                     try? FileManager.default.removeItem(at: scopedIndexURL)
                 }
             }
         }
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         activeScope = accountScope
         directory = scopedDirectory
         indexURL = scopedIndexURL
@@ -138,10 +151,18 @@ actor OfflineStore {
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
         indexIsDirty = false
+        return AccountSessionToken(
+            accountScope: accountScope,
+            generation: generation
+        )
     }
 
-    func deactivate(accountScope: String) async {
-        guard activeScope == accountScope else { return }
+    @discardableResult
+    func deactivate(session: AccountSessionToken) async -> Bool {
+        guard session.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ) else { return false }
         indexSaveTask?.cancel()
         indexSaveTask = nil
         scopeGeneration &+= 1
@@ -151,11 +172,11 @@ actor OfflineStore {
         activeScope = nil
         await persistIndexIfNeeded(
             retryOnFailure: false,
-            scope: accountScope,
+            scope: session.accountScope,
             generation: generation,
             permitsInactiveScope: true
         )
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return true }
         directory = nil
         indexURL = nil
         entries.removeAll(keepingCapacity: false)
@@ -163,6 +184,7 @@ actor OfflineStore {
         indexRetryCount = 0
         dirtySongIDs.removeAll(keepingCapacity: false)
         deletedSongIDs.removeAll(keepingCapacity: false)
+        return true
     }
 
     func localURL(for songID: String) -> URL? {

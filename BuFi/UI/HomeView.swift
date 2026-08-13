@@ -40,7 +40,7 @@ struct HomeView: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .onAppear { updatePresentationIfNeeded() }
-        .onChange(of: library.snapshot) { _, _ in
+        .onChange(of: library.revision) { _, _ in
             updatePresentationIfNeeded()
         }
         .onChange(of: selectedArtistMixes) { _, _ in
@@ -346,24 +346,22 @@ struct HomeView: View {
     private func updatePresentationIfNeeded() {
         let input = HomePresentationInput(
             snapshot: library.snapshot,
+            revision: library.revision,
             selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
         )
         guard input != presentationInput else { return }
-        if presentationInput == nil {
-            presentationInput = input
-            presentation = HomePresentation.make(input: input)
-            return
-        }
-
+        let isInitialPresentation = presentationInput == nil
         presentationInput = input
         presentationGeneration &+= 1
         let generation = presentationGeneration
         presentationTask?.cancel()
         presentationTask = Task {
-            do {
-                try await Task.sleep(nanoseconds: 120_000_000)
-            } catch {
-                return
+            if !isInitialPresentation {
+                do {
+                    try await Task.sleep(for: .milliseconds(120))
+                } catch {
+                    return
+                }
             }
             let work = Task.detached(priority: .userInitiated) {
                 HomePresentation.make(input: input)
@@ -388,7 +386,23 @@ struct HomeView: View {
 
 struct HomePresentationInput: Equatable, Sendable {
     let snapshot: HomeSnapshot
+    let revision: HomeSnapshotRevision
     let selectedArtists: [String]
+
+    init(
+        snapshot: HomeSnapshot,
+        revision: HomeSnapshotRevision = HomeSnapshotRevision(),
+        selectedArtists: [String]
+    ) {
+        self.snapshot = snapshot
+        self.revision = revision
+        self.selectedArtists = selectedArtists
+    }
+
+    static func == (lhs: HomePresentationInput, rhs: HomePresentationInput) -> Bool {
+        lhs.revision == rhs.revision
+            && lhs.selectedArtists == rhs.selectedArtists
+    }
 }
 
 struct HomePresentation: Sendable {
@@ -413,6 +427,7 @@ struct HomePresentation: Sendable {
         return HomePresentation(
             personalizedMixes: PersonalizedMixBuilder.make(
                 snapshot: snapshot,
+                snapshotRevision: input.revision,
                 selectedArtists: input.selectedArtists
             ),
             favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),

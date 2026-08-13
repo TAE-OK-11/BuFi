@@ -114,6 +114,332 @@ enum AlbumSongMetadataResolver {
     }
 }
 
+enum OpenSubsonicCacheDependency: String, CaseIterable, Hashable, Sendable {
+    case favorites
+    case songDetails
+    case albumDetails
+    case artistDetails
+    case libraryLists
+    case recommendations
+    case playQueue
+}
+
+struct OpenSubsonicMutationImpact: Equatable, Sendable {
+    let invalidatedDependencies: Set<OpenSubsonicCacheDependency>
+
+    static let none = OpenSubsonicMutationImpact(invalidatedDependencies: [])
+
+    static func invalidating(
+        _ dependencies: Set<OpenSubsonicCacheDependency>
+    ) -> OpenSubsonicMutationImpact {
+        OpenSubsonicMutationImpact(invalidatedDependencies: dependencies)
+    }
+
+    var participatesInStaleReadBarrier: Bool {
+        !invalidatedDependencies.isEmpty
+    }
+}
+
+struct OpenSubsonicResponseCachePolicy: Equatable, Sendable {
+    enum RevalidationStrategy: Equatable, Sendable {
+        // ResponseBodyCache currently stores only decoded bodies. This policy
+        // keeps the validator seam explicit so ETag/Last-Modified can be added
+        // without changing endpoint classification once headers are retained.
+        case timeToLive
+        case conditionalValidators
+    }
+
+    let lifetime: TimeInterval
+    let dependencies: Set<OpenSubsonicCacheDependency>
+    let revalidation: RevalidationStrategy
+
+    init(
+        lifetime: TimeInterval,
+        dependencies: Set<OpenSubsonicCacheDependency> = [],
+        revalidation: RevalidationStrategy = .timeToLive
+    ) {
+        self.lifetime = lifetime
+        self.dependencies = dependencies
+        self.revalidation = revalidation
+    }
+}
+
+enum OpenSubsonicRequestPolicy {
+    static let homeEnrichmentConcurrencyLimit = 5
+
+    private static let favoriteRepresentations: Set<OpenSubsonicCacheDependency> = [
+        .favorites,
+        .songDetails,
+        .albumDetails,
+        .artistDetails,
+        .libraryLists,
+        .recommendations,
+        .playQueue
+    ]
+
+    static func responseCachePolicy(
+        for endpoint: String,
+        queryItems: [URLQueryItem] = []
+    ) -> OpenSubsonicResponseCachePolicy {
+        switch endpoint {
+        case "getOpenSubsonicExtensions":
+            return OpenSubsonicResponseCachePolicy(lifetime: 60 * 60)
+        case "getLyricsBySongId":
+            return OpenSubsonicResponseCachePolicy(lifetime: 6 * 60 * 60)
+        case "getGenres", "getInternetRadioStations":
+            return OpenSubsonicResponseCachePolicy(lifetime: 30 * 60)
+        case "getArtistInfo2":
+            return OpenSubsonicResponseCachePolicy(lifetime: 15 * 60)
+        case "getPlaylists":
+            return OpenSubsonicResponseCachePolicy(lifetime: 5 * 60)
+        case "getStarred2":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 60,
+                dependencies: [.favorites]
+            )
+        case "getSong":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 5 * 60,
+                dependencies: [.songDetails]
+            )
+        case "getAlbum":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 5 * 60,
+                dependencies: [.albumDetails]
+            )
+        case "getArtist":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 5 * 60,
+                dependencies: [.artistDetails]
+            )
+        case "getPlaylist":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 2 * 60,
+                dependencies: [.libraryLists]
+            )
+        case "getPlayQueue":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 15,
+                dependencies: [.playQueue]
+            )
+        case "search2", "search3":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 60,
+                dependencies: [.libraryLists]
+            )
+        case "getArtists":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 5 * 60,
+                dependencies: [.libraryLists]
+            )
+        case "getAlbumList2":
+            let listType = queryItems.first { $0.name == "type" }?.value
+            let lifetime: TimeInterval = switch listType {
+            case "random", "recent", "frequent": 30
+            case "newest", "highest": 2 * 60
+            default: 60
+            }
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: lifetime,
+                dependencies: [.libraryLists]
+            )
+        case "getRandomSongs":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 30,
+                dependencies: [.libraryLists, .recommendations]
+            )
+        case "getSongsByGenre", "getTopSongs":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 2 * 60,
+                dependencies: [.libraryLists, .recommendations]
+            )
+        case "getSonicSimilarTracks", "getSimilarSongs2":
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 2 * 60,
+                dependencies: [.recommendations]
+            )
+        default:
+            // Unknown endpoints are deliberately opt-in. This avoids keeping
+            // an unclassified mutable representation alive under a generic
+            // fallback TTL, while still protecting its live response across
+            // a conservatively classified mutation boundary.
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 0,
+                dependencies: favoriteRepresentations
+            )
+        }
+    }
+
+    static func mutationImpact(
+        for endpoint: String,
+        queryItems: [URLQueryItem] = []
+    ) -> OpenSubsonicMutationImpact {
+        switch endpoint {
+        case "reportPlayback", "scrobble":
+            return .none
+        case "savePlayQueue":
+            return .invalidating([.playQueue])
+        case "star", "unstar":
+            let names = Set(queryItems.map(\.name))
+            if names.contains("id") {
+                return .invalidating([
+                    .favorites,
+                    .songDetails,
+                    .albumDetails,
+                    .libraryLists,
+                    .recommendations,
+                    .playQueue
+                ])
+            }
+            if names.contains("albumId") {
+                return .invalidating([
+                    .favorites,
+                    .albumDetails,
+                    .artistDetails,
+                    .libraryLists,
+                    .recommendations
+                ])
+            }
+            if names.contains("artistId") {
+                return .invalidating([
+                    .favorites,
+                    .artistDetails,
+                    .libraryLists,
+                    .recommendations
+                ])
+            }
+            return .invalidating(favoriteRepresentations)
+        default:
+            // New mutation endpoints must be classified before they can keep
+            // any favorite-bearing representation alive.
+            return .invalidating(favoriteRepresentations)
+        }
+    }
+}
+
+struct OpenSubsonicCacheRevision: Hashable, Sendable {
+    struct Entry: Hashable, Sendable {
+        let dependency: OpenSubsonicCacheDependency
+        let value: UInt64
+    }
+
+    let entries: [Entry]
+}
+
+struct OpenSubsonicCacheRevisionState: Sendable {
+    private var revisions: [OpenSubsonicCacheDependency: UInt64] = [:]
+    private var mutationsInFlight: [OpenSubsonicCacheDependency: Int] = [:]
+
+    func revision(
+        for dependencies: Set<OpenSubsonicCacheDependency>
+    ) -> OpenSubsonicCacheRevision {
+        OpenSubsonicCacheRevision(
+            entries: dependencies
+                .sorted { $0.rawValue < $1.rawValue }
+                .map {
+                    OpenSubsonicCacheRevision.Entry(
+                        dependency: $0,
+                        value: revisions[$0, default: 0]
+                    )
+                }
+        )
+    }
+
+    func hasMutation(
+        affecting dependencies: Set<OpenSubsonicCacheDependency>
+    ) -> Bool {
+        dependencies.contains {
+            mutationsInFlight[$0, default: 0] > 0
+        }
+    }
+
+    mutating func begin(_ impact: OpenSubsonicMutationImpact) {
+        for dependency in impact.invalidatedDependencies {
+            revisions[dependency, default: 0] &+= 1
+            mutationsInFlight[dependency, default: 0] += 1
+        }
+    }
+
+    mutating func finish(_ impact: OpenSubsonicMutationImpact) {
+        for dependency in impact.invalidatedDependencies {
+            revisions[dependency, default: 0] &+= 1
+            let remaining = max(
+                0,
+                mutationsInFlight[dependency, default: 0] - 1
+            )
+            if remaining == 0 {
+                mutationsInFlight[dependency] = nil
+            } else {
+                mutationsInFlight[dependency] = remaining
+            }
+        }
+    }
+}
+
+actor HomeEnrichmentRequestLimiter {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    let limit: Int
+    private var activeCount = 0
+    private var waiters: [Waiter] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func withPermit<Value: Sendable>(
+        _ operation: @Sendable () async throws -> Value
+    ) async throws -> Value {
+        try await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    private func acquire() async throws {
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                guard activeCount >= limit else {
+                    activeCount += 1
+                    continuation.resume()
+                    return
+                }
+                waiters.append(Waiter(
+                    id: waiterID,
+                    continuation: continuation
+                ))
+            }
+        } onCancel: {
+            Task { await self.cancel(waiterID) }
+        }
+    }
+
+    private func release() {
+        guard !waiters.isEmpty else {
+            activeCount = max(0, activeCount - 1)
+            return
+        }
+        let waiter = waiters.removeFirst()
+        waiter.continuation.resume()
+    }
+
+    private func cancel(_ waiterID: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == waiterID }) else {
+            return
+        }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+}
+
 actor OpenSubsonicClient {
     static let apiVersion = "1.16.1"
     static let clientName = "BuFi"
@@ -130,26 +456,25 @@ actor OpenSubsonicClient {
     private let retryPolicy = ReadRequestRetryPolicy()
     private var supportedExtensions: Set<String>?
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
-    private var mutationEpoch: UInt64 = 0
-    private var mutationsInFlight = 0
+    private var cacheRevisionState = OpenSubsonicCacheRevisionState()
 
     private enum RequestSemantics {
         case readOnly
-        case mutation
+        case mutation(OpenSubsonicMutationImpact)
     }
 
     private struct ReadRequestKey: Hashable, Sendable {
         let endpoint: String
         let queryItems: [String]
-        let mutationEpoch: UInt64
+        let cacheRevision: OpenSubsonicCacheRevision
 
         init(
             endpoint: String,
             queryItems: [URLQueryItem],
-            mutationEpoch: UInt64
+            cacheRevision: OpenSubsonicCacheRevision
         ) {
             self.endpoint = endpoint
-            self.mutationEpoch = mutationEpoch
+            self.cacheRevision = cacheRevision
             self.queryItems = queryItems
                 .map { "\($0.name)=\($0.value ?? "")" }
                 .sorted()
@@ -315,12 +640,18 @@ actor OpenSubsonicClient {
         _ endpoint: String,
         parameters: [String: String]
     ) async throws -> Payload {
-        try await performRequest(
+        let queryItems = parameters
+            .sorted { $0.key < $1.key }
+            .map { URLQueryItem(name: $0.key, value: $0.value) }
+        return try await performRequest(
             endpoint,
-            queryItems: parameters
-                .sorted { $0.key < $1.key }
-                .map { URLQueryItem(name: $0.key, value: $0.value) },
-            semantics: .mutation
+            queryItems: queryItems,
+            semantics: .mutation(
+                OpenSubsonicRequestPolicy.mutationImpact(
+                    for: endpoint,
+                    queryItems: queryItems
+                )
+            )
         )
     }
 
@@ -331,7 +662,12 @@ actor OpenSubsonicClient {
         try await performRequest(
             endpoint,
             queryItems: queryItems,
-            semantics: .mutation
+            semantics: .mutation(
+                OpenSubsonicRequestPolicy.mutationImpact(
+                    for: endpoint,
+                    queryItems: queryItems
+                )
+            )
         )
     }
 
@@ -342,62 +678,79 @@ actor OpenSubsonicClient {
         staleReadRetryCount: Int = 0
     ) async throws -> Payload {
         let url = try endpointURL(endpoint, queryItems: queryItems)
-        let cacheKey = Self.responseCacheKey(
-            endpoint: endpoint,
+        let cachePolicy = OpenSubsonicRequestPolicy.responseCachePolicy(
+            for: endpoint,
             queryItems: queryItems
         )
-        let cacheLifetime = Self.responseCacheLifetime(for: endpoint)
+        let requestRevision = cacheRevisionState.revision(
+            for: cachePolicy.dependencies
+        )
+        let cacheKey = Self.responseCacheKey(
+            endpoint: endpoint,
+            queryItems: queryItems,
+            revision: requestRevision
+        )
         do {
             let response: HTTPResponseData
-            let requestEpoch: UInt64
+            let responseWasCached: Bool
             switch semantics {
             case .readOnly:
-                requestEpoch = mutationEpoch
-                if mutationsInFlight == 0,
-                   cacheLifetime > 0,
+                if !cacheRevisionState.hasMutation(
+                    affecting: cachePolicy.dependencies
+                ),
+                   cachePolicy.lifetime > 0,
                    let cached = cachedResponse(
                     for: cacheKey,
-                    lifetime: cacheLifetime
+                    lifetime: cachePolicy.lifetime
                    ) {
-                    return try await decodeResponseData(cached)
-                }
-                response = try await coalescedReadResponse(
-                    from: url,
-                    key: ReadRequestKey(
-                        endpoint: endpoint,
-                        queryItems: queryItems,
-                        mutationEpoch: requestEpoch
+                    response = HTTPResponseData(
+                        data: cached,
+                        statusCode: 200,
+                        retryAfter: nil
                     )
-                )
-            case .mutation:
-                mutationsInFlight += 1
-                mutationEpoch &+= 1
-                requestEpoch = mutationEpoch
-                clearResponseCache()
+                    responseWasCached = true
+                } else {
+                    response = try await coalescedReadResponse(
+                        from: url,
+                        key: ReadRequestKey(
+                            endpoint: endpoint,
+                            queryItems: queryItems,
+                            cacheRevision: requestRevision
+                        )
+                    )
+                    responseWasCached = false
+                }
+            case .mutation(let impact):
+                cacheRevisionState.begin(impact)
                 response = try await responseData(
                     from: url,
                     allowsRetry: false
                 )
+                responseWasCached = false
             }
             let payload: Payload = try await decodeResponse(response)
             switch semantics {
-            case .readOnly where mutationsInFlight == 0
-                    && cacheLifetime > 0
-                    && mutationEpoch == requestEpoch:
-                // Store only a body that decoded into the endpoint's expected
-                // payload, never an HTTP or schema error response.
-                storeResponse(response.data, for: cacheKey)
-            case .readOnly where mutationsInFlight == 0
-                    && mutationEpoch == requestEpoch:
-                break
+            case .readOnly where !cacheRevisionState.hasMutation(
+                    affecting: cachePolicy.dependencies
+                )
+                    && cacheRevisionState.revision(
+                        for: cachePolicy.dependencies
+                    ) == requestRevision:
+                if cachePolicy.lifetime > 0, !responseWasCached {
+                    // Store only a body that decoded into the endpoint's
+                    // expected payload, never an HTTP or schema error body.
+                    storeResponse(response.data, for: cacheKey)
+                }
             case .readOnly:
                 // Never hand a caller a representation that completed across
-                // a star/unstar or other mutation boundary. Wait for the
-                // mutation to settle and retry once from the new epoch.
+                // a relevant mutation boundary. Unrelated telemetry and queue
+                // writes do not delay metadata reads.
                 guard staleReadRetryCount < 2 else {
                     throw CancellationError()
                 }
-                while mutationsInFlight > 0 {
+                while cacheRevisionState.hasMutation(
+                    affecting: cachePolicy.dependencies
+                ) {
                     try Task.checkCancellation()
                     try await Task.sleep(for: .milliseconds(20))
                 }
@@ -407,19 +760,13 @@ actor OpenSubsonicClient {
                     semantics: semantics,
                     staleReadRetryCount: staleReadRetryCount + 1
                 )
-            case .mutation:
-                mutationsInFlight = max(0, mutationsInFlight - 1)
-                mutationEpoch &+= 1
-                clearResponseCache()
-            default:
-                break
+            case .mutation(let impact):
+                cacheRevisionState.finish(impact)
             }
             return payload
         } catch {
-            if case .mutation = semantics {
-                mutationsInFlight = max(0, mutationsInFlight - 1)
-                mutationEpoch &+= 1
-                clearResponseCache()
+            if case .mutation(let impact) = semantics {
+                cacheRevisionState.finish(impact)
             }
             logFailure(error, endpoint: endpoint)
             throw error
@@ -493,7 +840,7 @@ actor OpenSubsonicClient {
                 key: ReadRequestKey(
                     endpoint: endpoint,
                     queryItems: [],
-                    mutationEpoch: mutationEpoch
+                    cacheRevision: OpenSubsonicCacheRevision(entries: [])
                 )
             )
             guard (200..<300).contains(response.statusCode) else {
@@ -825,38 +1172,21 @@ actor OpenSubsonicClient {
 
     private static func responseCacheKey(
         endpoint: String,
-        queryItems: [URLQueryItem]
+        queryItems: [URLQueryItem],
+        revision: OpenSubsonicCacheRevision
     ) -> String {
         var parameters: [String] = []
-        parameters.reserveCapacity(queryItems.count)
+        parameters.reserveCapacity(queryItems.count + revision.entries.count)
         for item in queryItems {
             parameters.append(item.name + "=" + (item.value ?? ""))
         }
+        for entry in revision.entries {
+            parameters.append(
+                "revision.\(entry.dependency.rawValue)=\(entry.value)"
+            )
+        }
         parameters.sort()
         return endpoint + "?" + parameters.joined(separator: "&")
-    }
-
-    private static func responseCacheLifetime(for endpoint: String) -> TimeInterval {
-        switch endpoint {
-        case "ping", "star", "unstar", "scrobble",
-             "reportPlayback", "savePlayQueue":
-            return 0
-        case "getOpenSubsonicExtensions":
-            return 60 * 60
-        case "getLyricsBySongId":
-            return 6 * 60 * 60
-        case "getGenres":
-            return 10 * 60
-        case "getArtistInfo2":
-            return 5 * 60
-        default:
-            // Coalesce bursts from overlapping views and recommendation
-            // providers without making library state visibly stale. Unknown
-            // mutation endpoints remain uncached by default.
-            return endpoint.hasPrefix("get") || endpoint.hasPrefix("search")
-                ? 2
-                : 0
-        }
     }
 
     func home(from previous: HomeSnapshot? = nil) async throws -> HomeLoadResult {
@@ -969,37 +1299,48 @@ actor OpenSubsonicClient {
                 }
                 .map(\.value)
         )
+        let enrichmentLimiter = HomeEnrichmentRequestLimiter(
+            limit: OpenSubsonicRequestPolicy.homeEnrichmentConcurrencyLimit
+        )
 
         async let recommendationsRequest = recommendationSources(
-            seeds: starredSongs + randomSongValues
+            seeds: starredSongs + randomSongValues,
+            limiter: enrichmentLimiter
         )
         async let rankedSongsRequest = mostPlayedSongs(
             from: frequentAlbums,
-            fallback: fallback.mostPlayedSongs
+            fallback: fallback.mostPlayedSongs,
+            limiter: enrichmentLimiter
         )
         async let artistRecommendationsRequest = similarArtists(
             to: starredArtists,
-            fallback: fallback.recommendedArtists
+            fallback: fallback.recommendedArtists,
+            limiter: enrichmentLimiter
         )
         async let genreSongsRequest = songsByGenres(
             Array(preferredGenres.prefix(2)),
-            fallback: fallback.genreRecommendedSongs
+            fallback: fallback.genreRecommendedSongs,
+            limiter: enrichmentLimiter
         )
         async let topArtistSongsRequest = topSongs(
             for: Array(starredArtists.prefix(2)),
-            fallback: fallback.topArtistSongs
+            fallback: fallback.topArtistSongs,
+            limiter: enrichmentLimiter
         )
         async let recentlyAddedSongsRequest = songs(
             from: Array(recentAlbums.prefix(3)),
-            fallback: fallback.recentlyAddedSongs
+            fallback: fallback.recentlyAddedSongs,
+            limiter: enrichmentLimiter
         )
         async let popularSongsRequest = songs(
             from: Array(popularAlbumValues.prefix(3)),
-            fallback: fallback.popularSongs
+            fallback: fallback.popularSongs,
+            limiter: enrichmentLimiter
         )
         async let playlistAffinityRequest = playlistAffinitySongs(
             from: Array(playlistValues.prefix(3)),
-            fallback: fallback.playlistAffinitySongs
+            fallback: fallback.playlistAffinitySongs,
+            limiter: enrichmentLimiter
         )
         let (
             recommendationSources,
@@ -1242,7 +1583,8 @@ actor OpenSubsonicClient {
 
     private func recommendationSources(
         seeds: [Song],
-        count: Int = 24
+        count: Int = 24,
+        limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> ServerRecommendationSources {
         let distinctSeeds = Self.uniqueSongs(seeds)
         guard !distinctSeeds.isEmpty else {
@@ -1250,19 +1592,24 @@ actor OpenSubsonicClient {
         }
         var sonicSongs: [Song] = []
         var similarArtistSongs: [Song] = []
-        let supportsSonic = await supportsExtension("sonicSimilarity")
+        let supportsSonic = await supportsExtension(
+            "sonicSimilarity",
+            limiter: limiter
+        )
 
         for seed in distinctSeeds.prefix(3) {
             guard !Task.isCancelled else { break }
             async let sonicResult = sonicRecommendations(
                 for: seed,
                 count: count,
-                enabled: supportsSonic
+                enabled: supportsSonic,
+                limiter: limiter
             )
             async let similarResult = similarArtistRecommendations(
                 for: seed,
                 count: count,
-                enabled: similarArtistSongs.count < count
+                enabled: similarArtistSongs.count < count,
+                limiter: limiter
             )
             let (sonic, similar) = await (sonicResult, similarResult)
             sonicSongs.append(contentsOf: sonic)
@@ -1291,13 +1638,18 @@ actor OpenSubsonicClient {
     private func sonicRecommendations(
         for seed: Song,
         count: Int,
-        enabled: Bool
+        enabled: Bool,
+        limiter: HomeEnrichmentRequestLimiter?
     ) async -> [Song] {
         guard enabled, !Task.isCancelled else { return [] }
-        let payload: SonicSimilarPayload? = try? await readRequest(
-            "getSonicSimilarTracks",
-            parameters: ["id": seed.id, "count": "\(max(8, count))"]
-        )
+        let payload: SonicSimilarPayload? = try? await withEnrichmentPermit(
+            limiter
+        ) { [self] in
+            try await readRequest(
+                "getSonicSimilarTracks",
+                parameters: ["id": seed.id, "count": "\(max(8, count))"]
+            )
+        }
         return (payload?.sonicMatch ?? [])
             .sorted { ($0.similarity ?? 0) > ($1.similarity ?? 0) }
             .map(\.entry)
@@ -1306,28 +1658,38 @@ actor OpenSubsonicClient {
     private func similarArtistRecommendations(
         for seed: Song,
         count: Int,
-        enabled: Bool
+        enabled: Bool,
+        limiter: HomeEnrichmentRequestLimiter?
     ) async -> [Song] {
         guard enabled,
               !Task.isCancelled,
               let artistID = seed.artistId else {
             return []
         }
-        let payload: SimilarSongsPayload? = try? await readRequest(
-            "getSimilarSongs2",
-            parameters: ["id": artistID, "count": "\(max(8, count))"]
-        )
+        let payload: SimilarSongsPayload? = try? await withEnrichmentPermit(
+            limiter
+        ) { [self] in
+            try await readRequest(
+                "getSimilarSongs2",
+                parameters: ["id": artistID, "count": "\(max(8, count))"]
+            )
+        }
         return payload?.similarSongs2?.song
             ?? payload?.similarSongs?.song
             ?? []
     }
 
-    private func supportsExtension(_ name: String) async -> Bool {
+    private func supportsExtension(
+        _ name: String,
+        limiter: HomeEnrichmentRequestLimiter? = nil
+    ) async -> Bool {
         if let supportedExtensions {
             return supportedExtensions.contains(name)
         }
-        guard let payload: OpenSubsonicExtensionsPayload =
-                try? await readRequest("getOpenSubsonicExtensions") else {
+        guard let payload: OpenSubsonicExtensionsPayload = try? await
+                withEnrichmentPermit(limiter) { [self] in
+                    try await readRequest("getOpenSubsonicExtensions")
+                } else {
             // Older Navidrome-compatible servers may implement the endpoint
             // without advertising extensions. Keep the existing best-effort
             // Sonic request in that compatibility case.
@@ -1342,10 +1704,21 @@ actor OpenSubsonicClient {
         return names.contains(name)
     }
 
+    private func withEnrichmentPermit<Value: Sendable>(
+        _ limiter: HomeEnrichmentRequestLimiter?,
+        operation: @Sendable () async throws -> Value
+    ) async throws -> Value {
+        guard let limiter else {
+            return try await operation()
+        }
+        return try await limiter.withPermit(operation)
+    }
+
     private func songsByGenres(
         _ genres: [String],
         fallback: [Song],
-        count: Int = 24
+        count: Int = 24,
+        limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Song] {
         guard !genres.isEmpty else { return fallback }
         let values = await withTaskGroup(
@@ -1354,14 +1727,17 @@ actor OpenSubsonicClient {
         ) { group in
             for (index, genre) in genres.prefix(2).enumerated() {
                 group.addTask { [self] in
-                    let payload: SongsByGenrePayload? = try? await readRequest(
-                        "getSongsByGenre",
-                        parameters: [
-                            "genre": genre,
-                            "count": "\(count)",
-                            "offset": "0"
-                        ]
-                    )
+                    let payload: SongsByGenrePayload? = try? await
+                        withEnrichmentPermit(limiter) { [self] in
+                            try await readRequest(
+                                "getSongsByGenre",
+                                parameters: [
+                                    "genre": genre,
+                                    "count": "\(count)",
+                                    "offset": "0"
+                                ]
+                            )
+                        }
                     return (index, payload?.songsByGenre?.song ?? [])
                 }
             }
@@ -1378,10 +1754,14 @@ actor OpenSubsonicClient {
     private func topSongs(
         for artists: [Artist],
         fallback: [Song],
-        count: Int = 24
+        count: Int = 24,
+        limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Song] {
         guard !artists.isEmpty else { return fallback }
-        let usesArtistID = await supportsExtension("topSongsByArtistId")
+        let usesArtistID = await supportsExtension(
+            "topSongsByArtistId",
+            limiter: limiter
+        )
         let values = await withTaskGroup(
             of: (Int, [Song]).self,
             returning: [(Int, [Song])].self
@@ -1395,10 +1775,14 @@ actor OpenSubsonicClient {
                     if usesArtistID {
                         parameters["id"] = artist.id
                     }
-                    let payload: TopSongsPayload? = try? await readRequest(
-                        "getTopSongs",
-                        parameters: parameters
-                    )
+                    let requestParameters = parameters
+                    let payload: TopSongsPayload? = try? await
+                        withEnrichmentPermit(limiter) { [self] in
+                            try await readRequest(
+                                "getTopSongs",
+                                parameters: requestParameters
+                            )
+                        }
                     return (index, payload?.topSongs?.song ?? [])
                 }
             }
@@ -1415,7 +1799,8 @@ actor OpenSubsonicClient {
     private func songs(
         from albums: [Album],
         fallback: [Song],
-        count: Int = 30
+        count: Int = 30,
+        limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Song] {
         guard !albums.isEmpty else { return fallback }
         let values = await withTaskGroup(
@@ -1424,7 +1809,11 @@ actor OpenSubsonicClient {
         ) { group in
             for (index, album) in albums.prefix(3).enumerated() {
                 group.addTask { [self] in
-                    let detail = try? await self.album(id: album.id)
+                    let detail = try? await withEnrichmentPermit(
+                        limiter
+                    ) { [self] in
+                        try await self.album(id: album.id)
+                    }
                     return (index, detail?.songs ?? [])
                 }
             }
@@ -1441,7 +1830,8 @@ actor OpenSubsonicClient {
     private func playlistAffinitySongs(
         from playlists: [Playlist],
         fallback: [Song],
-        count: Int = 30
+        count: Int = 30,
+        limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Song] {
         guard !playlists.isEmpty else { return fallback }
         let values = await withTaskGroup(
@@ -1452,7 +1842,11 @@ actor OpenSubsonicClient {
                 group.addTask { [self] in
                     (
                         index,
-                        (try? await self.playlist(id: playlist.id))?.songs ?? []
+                        (try? await withEnrichmentPermit(
+                            limiter
+                        ) { [self] in
+                            try await self.playlist(id: playlist.id)
+                        })?.songs ?? []
                     )
                 }
             }
@@ -1466,7 +1860,8 @@ actor OpenSubsonicClient {
 
     private func mostPlayedSongs(
         from albums: [Album],
-        fallback: [Song]
+        fallback: [Song],
+        limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Song] {
         let candidates = Array(albums.prefix(8))
         guard !candidates.isEmpty else { return fallback }
@@ -1476,7 +1871,11 @@ actor OpenSubsonicClient {
         ) { group in
             for (index, album) in candidates.enumerated() {
                 group.addTask { [self] in
-                    let detail = try? await self.album(id: album.id)
+                    let detail = try? await withEnrichmentPermit(
+                        limiter
+                    ) { [self] in
+                        try await self.album(id: album.id)
+                    }
                     return (index, detail?.songs ?? [])
                 }
             }
@@ -1503,7 +1902,8 @@ actor OpenSubsonicClient {
 
     private func similarArtists(
         to seeds: [Artist],
-        fallback: [Artist]
+        fallback: [Artist],
+        limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Artist] {
         let candidates = Array(seeds.prefix(3))
         guard !candidates.isEmpty else { return fallback }
@@ -1513,14 +1913,17 @@ actor OpenSubsonicClient {
         ) { group in
             for artist in candidates {
                 group.addTask { [self] in
-                    let payload: ArtistInfoPayload? = try? await self.readRequest(
-                        "getArtistInfo2",
-                        parameters: [
-                            "id": artist.id,
-                            "count": "8",
-                            "includeNotPresent": "false"
-                        ]
-                    )
+                    let payload: ArtistInfoPayload? = try? await
+                        withEnrichmentPermit(limiter) { [self] in
+                            try await readRequest(
+                                "getArtistInfo2",
+                                parameters: [
+                                    "id": artist.id,
+                                    "count": "8",
+                                    "includeNotPresent": "false"
+                                ]
+                            )
+                        }
                     return payload?.artistInfo2?.similarArtist ?? []
                 }
             }

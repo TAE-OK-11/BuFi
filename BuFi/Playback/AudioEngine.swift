@@ -7,8 +7,9 @@ import UIKit
 
 /// MediaPlayer retains the request handler and invokes it on its private
 /// `*/accessQueue`, not on the actor that creates the artwork. Keeping the
-/// immutable image in an explicitly Sendable provider prevents Swift 6 from
-/// inferring MainActor isolation for that callback.
+/// immutable CGImage-backed value in an explicitly Sendable provider prevents
+/// Swift 6 from inferring MainActor isolation for that callback. The UIImage
+/// wrapper is created on MediaPlayer's executor instead of crossing into it.
 struct NowPlayingArtworkProvider: Sendable {
     private let image: ArtworkImage
 
@@ -17,9 +18,111 @@ struct NowPlayingArtworkProvider: Sendable {
     }
 
     func makeArtwork() -> MPMediaItemArtwork {
-        MPMediaItemArtwork(boundsSize: image.value.size) { @Sendable [self] _ in
+        MPMediaItemArtwork(boundsSize: image.size) { @Sendable [self] _ in
             image.value
         }
+    }
+}
+
+/// Serializes the two delayed/network tasks that must not escape an account
+/// session. A synchronous `configure` can invalidate work immediately while
+/// the drain task provides an awaitable barrier for shutdown and any work
+/// scheduled by the replacement session.
+@MainActor
+final class PlayerTaskLifecycle {
+    private(set) var scrobbleTask: Task<Void, Never>?
+    private(set) var backgroundRecoveryTask: Task<Void, Never>?
+    private(set) var sessionTransitionTask: Task<Void, Never>?
+
+    private var scrobbleToken: UUID?
+    private var backgroundRecoveryToken: UUID?
+    private var sessionTransitionToken: UUID?
+
+    func scheduleScrobble(
+        _ operation: @escaping @MainActor @Sendable () async -> Void
+    ) {
+        let previousTask = scrobbleTask
+        let transitionTask = sessionTransitionTask
+        previousTask?.cancel()
+
+        let token = UUID()
+        scrobbleToken = token
+        scrobbleTask = Task { [weak self] in
+            _ = await transitionTask?.value
+            _ = await previousTask?.value
+            guard !Task.isCancelled else { return }
+            await operation()
+            guard let self, self.scrobbleToken == token else { return }
+            self.scrobbleTask = nil
+            self.scrobbleToken = nil
+        }
+    }
+
+    func scheduleBackgroundRecovery(
+        after delay: Duration,
+        _ operation: @escaping @MainActor @Sendable () async -> Void
+    ) {
+        let previousTask = backgroundRecoveryTask
+        previousTask?.cancel()
+
+        let token = UUID()
+        backgroundRecoveryToken = token
+        backgroundRecoveryTask = Task { [weak self] in
+            _ = await previousTask?.value
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await operation()
+            guard let self, self.backgroundRecoveryToken == token else { return }
+            self.backgroundRecoveryTask = nil
+            self.backgroundRecoveryToken = nil
+        }
+    }
+
+    func cancelBackgroundRecovery() {
+        backgroundRecoveryToken = nil
+        backgroundRecoveryTask?.cancel()
+        backgroundRecoveryTask = nil
+    }
+
+    /// Cancels session-bound work and returns one task that completes only
+    /// after every task owned by the old session has exited.
+    @discardableResult
+    func beginSessionTransition() -> Task<Void, Never>? {
+        let previousTransition = sessionTransitionTask
+        let pendingScrobble = scrobbleTask
+        let pendingBackgroundRecovery = backgroundRecoveryTask
+
+        scrobbleToken = nil
+        backgroundRecoveryToken = nil
+        pendingScrobble?.cancel()
+        pendingBackgroundRecovery?.cancel()
+        scrobbleTask = nil
+        backgroundRecoveryTask = nil
+
+        guard previousTransition != nil
+                || pendingScrobble != nil
+                || pendingBackgroundRecovery != nil else {
+            sessionTransitionTask = nil
+            sessionTransitionToken = nil
+            return nil
+        }
+
+        let token = UUID()
+        sessionTransitionToken = token
+        let transition = Task { [weak self] in
+            _ = await previousTransition?.value
+            _ = await pendingScrobble?.value
+            _ = await pendingBackgroundRecovery?.value
+            guard let self, self.sessionTransitionToken == token else { return }
+            self.sessionTransitionTask = nil
+            self.sessionTransitionToken = nil
+        }
+        sessionTransitionTask = transition
+        return transition
     }
 }
 
@@ -628,6 +731,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var fallbackIndex = 0
     private var fallbackFormats: [String] = []
     private var scrobbled = false
+    private let playerTaskLifecycle = PlayerTaskLifecycle()
     private var queueSaveTask: Task<Void, Never>?
     private var queueClearTask: Task<Void, Never>?
     private var itemLoadTask: Task<Void, Never>?
@@ -746,6 +850,7 @@ final class AudioEngine: NSObject, ObservableObject {
     ) {
         playbackSessionGeneration &+= 1
         let sessionGeneration = playbackSessionGeneration
+        playerTaskLifecycle.beginSessionTransition()
         let previousAccountScope = currentAccountScope
         serverQueueTask?.cancel()
         serverQueueTask = nil
@@ -883,6 +988,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let pendingQueueSave = queueSaveTask
         let finalPlaybackReport = playbackReportTask
         configure(client: nil)
+        let finalPlayerTaskDrain = playerTaskLifecycle.sessionTransitionTask
         let finalQueueClear = queueClearTask
         // Cancellation cannot interrupt a GRDB transaction that has already
         // started. Wait for the old save task before the final delete so a
@@ -891,6 +997,7 @@ final class AudioEngine: NSObject, ObservableObject {
         _ = await finalQueueClear?.value
         _ = await finalHistoryMutation?.value
         _ = await finalPlaybackReport?.value
+        _ = await finalPlayerTaskDrain?.value
         historyMutationTask = nil
         playbackReportTask = nil
     }
@@ -2669,6 +2776,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func cancelPlaybackRecovery() {
+        playerTaskLifecycle.cancelBackgroundRecovery()
         recoveryToken = nil
         recoveryTask?.cancel()
         recoveryTask = nil
@@ -3262,16 +3370,33 @@ final class AudioEngine: NSObject, ObservableObject {
     private func handleDidEnterBackground() {
         scheduleQueueSave(immediate: true)
         guard wantsPlayback else {
+            playerTaskLifecycle.cancelBackgroundRecovery()
             scheduleAudioSessionDeactivation(immediate: true)
             return
         }
         beginBackgroundBridge()
         preserveActivePlayback()
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            guard let self else { return }
-            guard self.wantsPlayback,
-                  self.player.timeControlStatus != .playing else {
+        guard let playbackItem = currentPlaybackItem else {
+            playerTaskLifecycle.cancelBackgroundRecovery()
+            endBackgroundBridge()
+            return
+        }
+        let sessionGeneration = playbackSessionGeneration
+        let accountScope = currentAccountScope
+        let playbackGenerationID = playbackItem.id
+        let queueEntryID = playbackItem.queueEntryID
+        playerTaskLifecycle.scheduleBackgroundRecovery(
+            after: .seconds(4)
+        ) { [weak self] in
+            guard let self,
+                  sessionGeneration == self.playbackSessionGeneration,
+                  accountScope == self.currentAccountScope,
+                  self.currentPlaybackItem?.id == playbackGenerationID,
+                  self.currentPlaybackItem?.queueEntryID == queueEntryID,
+                  self.wantsPlayback else {
+                return
+            }
+            guard self.player.timeControlStatus != .playing else {
                 self.endBackgroundBridge()
                 return
             }
@@ -3785,7 +3910,16 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         scrobbled = true
-        Task {
+        let sessionGeneration = playbackSessionGeneration
+        let accountScope = currentAccountScope
+        playerTaskLifecycle.scheduleScrobble { [weak self] in
+            guard let self,
+                  !Task.isCancelled,
+                  sessionGeneration == self.playbackSessionGeneration,
+                  accountScope == self.currentAccountScope,
+                  self.client === client else {
+                return
+            }
             try? await client.scrobble(id: song.id, submission: true)
         }
     }

@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/BuFiSourcePackages
-          key: ${{ runner.os }}-xcode26.6-spm-${{ hashFiles('project.yml') }}
+          key: ${{ runner.os }}-xcode26.6-spm-${{ hashFiles('project.yml', 'Package.resolved') }}
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -44,6 +44,7 @@ jobs:
         run: |
           plutil -lint BuFi/Resources/PrivacyInfo.xcprivacy
           xcodegen generate
+          sh Scripts/apply-package-lock.sh
       - name: Verify Swift 6 language mode
         run: Scripts/verify-swift6-language-mode.sh
 
@@ -59,6 +60,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
+            -disableAutomaticPackageResolution \
             -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
@@ -87,6 +89,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
+            -disableAutomaticPackageResolution \
             -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
@@ -157,7 +160,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/BuFi27SourcePackages
-          key: ${{ runner.os }}-xcode27-spm-${{ hashFiles('project.yml') }}
+          key: ${{ runner.os }}-xcode27-spm-${{ hashFiles('project.yml', 'Package.resolved') }}
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -166,7 +169,9 @@ jobs:
         run: sh Scripts/prepare-assets.sh
 
       - name: Generate project
-        run: xcodegen generate
+        run: |
+          xcodegen generate
+          sh Scripts/apply-package-lock.sh
       - name: Verify Swift 6 language mode
         run: Scripts/verify-swift6-language-mode.sh
       - name: Boot an iOS 27 simulator
@@ -182,6 +187,7 @@ jobs:
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/BuFi27Logs"
           xcodebuild \
+            -disableAutomaticPackageResolution \
             -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \
@@ -205,6 +211,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
+            -disableAutomaticPackageResolution \
             -quiet \
             -project BuFi.xcodeproj \
             -scheme BuFi \

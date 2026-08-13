@@ -52,17 +52,31 @@ struct ArtworkPalette: Codable, Equatable, Sendable {
     )
 }
 
-/// UIImage is a UIKit reference type and cannot express immutable Sendable
-/// semantics itself. ArtworkStore publishes only images that are fully decoded
-/// and never mutated; this wrapper keeps that single audited assumption at the
-/// actor boundary instead of spreading unchecked crossings through UI code.
-struct ArtworkImage: @unchecked Sendable {
-    let value: UIImage
+/// Immutable Core Graphics pixels can safely cross executors. Each consumer
+/// constructs its own UIImage wrapper locally, so UIKit references never leave
+/// the executor that created them.
+struct ArtworkImage: Sendable {
+    let cgImage: CGImage
+    let scale: CGFloat
+    let orientationRawValue: Int
+    let size: CGSize
     fileprivate let cacheKey: String
 
-    init(_ value: UIImage, cacheKey: String) {
-        self.value = value
+    init?(_ value: UIImage, cacheKey: String) {
+        guard let cgImage = value.cgImage else { return nil }
+        self.cgImage = cgImage
+        scale = value.scale
+        orientationRawValue = value.imageOrientation.rawValue
+        size = value.size
         self.cacheKey = cacheKey
+    }
+
+    var value: UIImage {
+        UIImage(
+            cgImage: cgImage,
+            scale: scale,
+            orientation: UIImage.Orientation(rawValue: orientationRawValue) ?? .up
+        )
     }
 }
 
@@ -81,6 +95,7 @@ actor ArtworkStore {
     private var pipeline: ImagePipeline
     private var pipelineScope: String?
     private var activeScope: String?
+    private var scopeGeneration: UInt64 = 0
     private var didDiscardLegacyCache = false
     private let paletteMemory = NSCache<NSString, PaletteBox>()
     private let database: AppDatabase
@@ -117,8 +132,8 @@ actor ArtworkStore {
         return components.url ?? url
     }
 
-    func activate(accountScope: String) async {
-        guard activeScope != accountScope else { return }
+    func activate(accountScope: String) async -> AccountSessionToken {
+        scopeGeneration &+= 1
 
         // A clear from the previous account may still be draining cancelled
         // work. Its captured pipeline remains safe to clear, but it must not
@@ -138,20 +153,34 @@ actor ArtworkStore {
         }
         activeScope = accountScope
         paletteMemory.removeAllObjects()
+        return AccountSessionToken(
+            accountScope: accountScope,
+            generation: scopeGeneration
+        )
     }
 
-    func deactivate(accountScope: String) {
-        guard activeScope == accountScope else { return }
+    @discardableResult
+    func deactivate(session: AccountSessionToken) -> Bool {
+        guard session.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ) else { return false }
+        scopeGeneration &+= 1
         invalidateInFlightPalettes()
         pipeline.cache.removeAll(caches: [.memory])
         paletteMemory.removeAllObjects()
         activeScope = nil
+        return true
     }
 
     func image(for url: URL, pixelSize: CGFloat) async throws -> ArtworkImage {
         guard let scope = activeScope else {
             throw URLError(.userAuthenticationRequired)
         }
+        let session = AccountSessionToken(
+            accountScope: scope,
+            generation: scopeGeneration
+        )
         let requestedPixelSize = min(max(pixelSize, 64), 1_536)
         var urlRequest = URLRequest(url: url)
         ModernNetworkPolicy.prepareImageRequest(&urlRequest)
@@ -162,13 +191,19 @@ actor ArtworkStore {
         let scopedPipeline = pipeline
         let image = try await scopedPipeline.image(for: request)
         try Task.checkCancellation()
-        guard activeScope == scope, pipeline === scopedPipeline else {
+        guard session.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ), pipeline === scopedPipeline else {
             throw CancellationError()
         }
-        return ArtworkImage(
+        guard let result = ArtworkImage(
             image,
             cacheKey: ArtworkPipelineDelegate.normalizedCacheKey(for: url)
-        )
+        ) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        return result
     }
 
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
@@ -219,8 +254,15 @@ actor ArtworkStore {
         paletteMemory.removeAllObjects()
     }
 
-    func clearAll() async {
+    func clearAll(session expectedSession: AccountSessionToken? = nil) async {
         guard clearRequestID == nil else { return }
+        let session = activeScope.map {
+            AccountSessionToken(
+                accountScope: $0,
+                generation: scopeGeneration
+            )
+        }
+        if let expectedSession, session != expectedSession { return }
         let requestID = UUID()
         clearRequestID = requestID
         let scope = activeScope
@@ -229,6 +271,15 @@ actor ArtworkStore {
         let generation = paletteGeneration
         for task in staleTasks {
             _ = await task.value
+        }
+        guard session?.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ) ?? (activeScope == nil) else {
+            if clearRequestID == requestID {
+                clearRequestID = nil
+            }
+            return
         }
         // Clear only the pipeline captured for this request. `activate` may
         // install another account's pipeline while the cancelled palette work
@@ -239,7 +290,11 @@ actor ArtworkStore {
            paletteGeneration == generation {
             paletteMemory.removeAllObjects()
         }
-        if let scope {
+        if let scope,
+           session?.matches(
+               accountScope: activeScope,
+               generation: scopeGeneration
+           ) == true {
             await database.clearArtworkPalettes(scope: scope)
         }
         if clearRequestID == requestID {

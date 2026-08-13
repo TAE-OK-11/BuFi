@@ -15,6 +15,8 @@ struct PlayerArtworkPagerPage: Identifiable {
 }
 
 struct PlayerArtworkPagerSnapshot {
+    static let defaultWindowRadius = 2
+
     let pages: [PlayerArtworkPagerPage]
     let currentPage: PlayerArtworkPageID
 
@@ -22,24 +24,18 @@ struct PlayerArtworkPagerSnapshot {
         currentSong: Song,
         queue: [Song],
         queueIndex: Int,
-        accountScope: String? = nil
+        accountScope: String? = nil,
+        windowRadius: Int = PlayerArtworkPagerSnapshot.defaultWindowRadius
     ) -> PlayerArtworkPagerSnapshot {
-        let resolvedIndex: Int?
-        if queue.indices.contains(queueIndex),
-           visuallyMatches(queue[queueIndex], currentSong) {
-            resolvedIndex = queueIndex
-        } else {
-            resolvedIndex = queue.firstIndex {
-                visuallyMatches($0, currentSong)
-            }
-        }
+        let resolvedIndex = resolvedQueueIndex(
+            currentSong: currentSong,
+            queue: queue,
+            queueIndex: queueIndex
+        )
 
         guard let resolvedIndex else {
-            let fallback = PlayerArtworkPageID(
-                queueIndex: -1,
-                songID: currentSong.id,
-                coverArtID: currentSong.artworkID,
-                artworkRevision: currentSong.artworkRevision,
+            let fallback = fallbackPageID(
+                currentSong: currentSong,
                 accountScope: accountScope
             )
             return PlayerArtworkPagerSnapshot(
@@ -48,13 +44,14 @@ struct PlayerArtworkPagerSnapshot {
             )
         }
 
-        let pages = queue.indices.map { index in
+        let radius = max(0, windowRadius)
+        let lowerBound = max(queue.startIndex, resolvedIndex - radius)
+        let upperBound = min(queue.endIndex, resolvedIndex + radius + 1)
+        let pages = (lowerBound..<upperBound).map { index in
             PlayerArtworkPagerPage(
-                id: PlayerArtworkPageID(
+                id: pageID(
+                    for: queue[index],
                     queueIndex: index,
-                    songID: queue[index].id,
-                    coverArtID: queue[index].artworkID,
-                    artworkRevision: queue[index].artworkRevision,
                     accountScope: accountScope
                 ),
                 song: queue[index]
@@ -62,7 +59,75 @@ struct PlayerArtworkPagerSnapshot {
         }
         return PlayerArtworkPagerSnapshot(
             pages: pages,
-            currentPage: pages[resolvedIndex].id
+            currentPage: pageID(
+                for: queue[resolvedIndex],
+                queueIndex: resolvedIndex,
+                accountScope: accountScope
+            )
+        )
+    }
+
+    /// Resolves the current identity without constructing pager pages. This is
+    /// used by palette and presentation helpers that only need the anchor.
+    static func resolveCurrentPage(
+        currentSong: Song,
+        queue: [Song],
+        queueIndex: Int,
+        accountScope: String? = nil
+    ) -> PlayerArtworkPageID {
+        guard let index = resolvedQueueIndex(
+            currentSong: currentSong,
+            queue: queue,
+            queueIndex: queueIndex
+        ) else {
+            return fallbackPageID(
+                currentSong: currentSong,
+                accountScope: accountScope
+            )
+        }
+        return pageID(
+            for: queue[index],
+            queueIndex: index,
+            accountScope: accountScope
+        )
+    }
+
+    private static func resolvedQueueIndex(
+        currentSong: Song,
+        queue: [Song],
+        queueIndex: Int
+    ) -> Int? {
+        if queue.indices.contains(queueIndex),
+           visuallyMatches(queue[queueIndex], currentSong) {
+            return queueIndex
+        }
+        return queue.firstIndex { visuallyMatches($0, currentSong) }
+    }
+
+    private static func pageID(
+        for song: Song,
+        queueIndex: Int,
+        accountScope: String?
+    ) -> PlayerArtworkPageID {
+        PlayerArtworkPageID(
+            queueIndex: queueIndex,
+            songID: song.id,
+            coverArtID: song.artworkID,
+            artworkRevision: song.artworkRevision,
+            accountScope: accountScope
+        )
+    }
+
+    private static func fallbackPageID(
+        currentSong: Song,
+        accountScope: String?
+    ) -> PlayerArtworkPageID {
+        PlayerArtworkPageID(
+            queueIndex: -1,
+            songID: currentSong.id,
+            coverArtID: currentSong.artworkID,
+            artworkRevision: currentSong.artworkRevision,
+            accountScope: accountScope
         )
     }
 
@@ -738,12 +803,12 @@ struct PlayerView: View {
             palette = .fallback
             return
         }
-        let page = PlayerArtworkPagerSnapshot.make(
+        let page = PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: currentSong,
             queue: playback.songs,
             queueIndex: index,
             accountScope: playback.currentItem?.accountScope
-        ).currentPage
+        )
         guard pagerSelectionGate.prepareProgrammaticChange(
             from: artworkPage,
             to: page
@@ -773,12 +838,12 @@ struct PlayerView: View {
 
     private var currentVisualArtworkPage: PlayerArtworkPageID? {
         guard let currentSong = playback.currentSong else { return nil }
-        return PlayerArtworkPagerSnapshot.make(
+        return PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: currentSong,
             queue: playback.songs,
             queueIndex: playback.index,
             accountScope: playback.currentItem?.accountScope
-        ).currentPage
+        )
     }
 
     private func receiveCurrentPalette(
@@ -803,12 +868,12 @@ struct PlayerView: View {
             return
         }
 
-        let page = PlayerArtworkPagerSnapshot.make(
+        let page = PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: currentSong,
             queue: playback.songs,
             queueIndex: index,
             accountScope: playback.currentItem?.accountScope
-        ).currentPage
+        )
         if let cached = artworkPalettes[page] {
             if palette != cached { palette = cached }
         } else if palette != .fallback {
@@ -817,26 +882,25 @@ struct PlayerView: View {
     }
 
     private func pruneArtworkPalettes() {
-        var activePages = Set(playback.songs.indices.map {
-            PlayerArtworkPageID(
-                queueIndex: $0,
-                songID: playback.songs[$0].id,
-                coverArtID: playback.songs[$0].artworkID,
-                artworkRevision: playback.songs[$0].artworkRevision,
-                accountScope: playback.currentItem?.accountScope
-            )
-        })
-        if let currentSong = playback.currentSong {
-            activePages.insert(
-                PlayerArtworkPagerSnapshot.make(
-                    currentSong: currentSong,
-                    queue: playback.songs,
-                    queueIndex: playback.index,
-                    accountScope: playback.currentItem?.accountScope
-                ).currentPage
-            )
+        let songs = playback.songs
+        let accountScope = playback.currentItem?.accountScope
+        artworkPalettes = artworkPalettes.filter { element in
+            let page = element.key
+            guard page.accountScope == accountScope else { return false }
+            if songs.indices.contains(page.queueIndex) {
+                let song = songs[page.queueIndex]
+                return song.id == page.songID
+                    && song.artworkID == page.coverArtID
+                    && song.artworkRevision == page.artworkRevision
+            }
+            guard page.queueIndex == -1,
+                  let currentSong = playback.currentSong else {
+                return false
+            }
+            return currentSong.id == page.songID
+                && currentSong.artworkID == page.coverArtID
+                && currentSong.artworkRevision == page.artworkRevision
         }
-        artworkPalettes = artworkPalettes.filter { activePages.contains($0.key) }
     }
 
     private func prefetchUpcomingArtwork(after index: Int) {
@@ -1810,18 +1874,20 @@ private struct QueueView: View {
                     ContentUnavailableView("재생목록이 비어 있습니다", systemImage: "list.bullet")
                 } else {
                     List {
-                        ForEach(Array(playback.songs.enumerated()), id: \.offset) { index, song in
+                        ForEach(playback.entries) { entry in
+                            let song = entry.song
+                            let isCurrent = entry.id == playback.currentItem?.queueEntryID
                             Button {
-                                audio.playQueueItem(at: index)
+                                playQueueEntry(entry)
                                 dismiss()
                             } label: {
                                 HStack(spacing: 12) {
                                     ArtworkView(coverArt: song.artworkID, size: 48, cornerRadius: 5)
                                         .frame(width: 48, height: 48)
-                                        .id("\(index)-\(song.id)-\(song.artworkID ?? "")")
+                                        .id("\(entry.id.uuidString)-\(song.artworkRevision)")
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
-                                            .foregroundStyle(index == playback.index ? BuFiTheme.accentSoft : Color.primary)
+                                            .foregroundStyle(isCurrent ? BuFiTheme.accentSoft : Color.primary)
                                             .lineLimit(1)
                                         Text(song.artist)
                                             .font(.caption)
@@ -1829,7 +1895,7 @@ private struct QueueView: View {
                                             .lineLimit(1)
                                     }
                                     Spacer()
-                                    if index == playback.index {
+                                    if isCurrent {
                                         Image(systemName: "speaker.wave.2.fill")
                                             .foregroundStyle(BuFiTheme.accent)
                                     }
@@ -1839,7 +1905,7 @@ private struct QueueView: View {
                             .listRowBackground(Color.clear)
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
-                                    audio.removeQueueItem(at: index)
+                                    removeQueueEntry(entry)
                                 } label: {
                                     Label("목록에서 제거", systemImage: "trash")
                                 }
@@ -1895,5 +1961,19 @@ private struct QueueView: View {
                 Button("취소", role: .cancel) {}
             }
         }
+    }
+
+    private func playQueueEntry(_ entry: PlaybackQueueEntry) {
+        guard let index = playback.entries.firstIndex(where: {
+            $0.id == entry.id
+        }) else { return }
+        audio.playQueueItem(at: index)
+    }
+
+    private func removeQueueEntry(_ entry: PlaybackQueueEntry) {
+        guard let index = playback.entries.firstIndex(where: {
+            $0.id == entry.id
+        }) else { return }
+        audio.removeQueueItem(at: index)
     }
 }

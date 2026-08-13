@@ -58,7 +58,8 @@ cancellable services.
 
 ## Compatibility and verification
 
-- iOS 17 minimum; Swift 5 language mode with complete concurrency checking.
+- iOS 17 minimum; Swift 6 language mode with complete concurrency checking for
+  the app and test targets.
 - Required clean Release build, unit tests, and simulator launch smoke test on
   Xcode 26.6; advisory Release build on the Xcode 27 preview runner.
 - Monolithic LLVM LTO, whole-module Swift optimization, dead-code stripping,
