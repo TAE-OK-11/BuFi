@@ -214,6 +214,54 @@ final class PlayerPresentationStateTests: XCTestCase {
         XCTAssertNotEqual(first.currentItem?.id, replay.currentItem?.id)
     }
 
+    func testCurrentPlaybackSnapshotKeepsOnlyPresentationCriticalQueueState() {
+        let entries = [
+            PlaybackQueueEntry(song: song(id: "first", coverArt: "cover-a")),
+            PlaybackQueueEntry(song: song(id: "second", coverArt: "cover-b"))
+        ]
+        let queue = PlaybackSnapshot(
+            entries: entries,
+            index: 1,
+            accountScope: "account"
+        )
+
+        let current = CurrentPlaybackSnapshot(snapshot: queue)
+
+        XCTAssertEqual(current.item?.queueEntryID, entries[1].id)
+        XCTAssertEqual(current.song?.id, "second")
+        XCTAssertEqual(current.index, 1)
+        XCTAssertEqual(current.queueCount, 2)
+    }
+
+    func testNonCurrentQueueMetadataDoesNotInvalidateCurrentPresentation() {
+        let generation = UUID()
+        let currentEntry = PlaybackQueueEntry(
+            song: song(id: "current", coverArt: "current-cover")
+        )
+        var upcoming = PlaybackQueueEntry(
+            song: song(id: "upcoming", coverArt: "old-cover")
+        )
+        let before = PlaybackSnapshot(
+            entries: [currentEntry, upcoming],
+            index: 0,
+            accountScope: "account",
+            playbackGenerationID: generation
+        )
+        upcoming.song.coverArt = "new-cover"
+        let after = PlaybackSnapshot(
+            entries: [currentEntry, upcoming],
+            index: 0,
+            accountScope: "account",
+            playbackGenerationID: generation
+        )
+
+        XCTAssertEqual(
+            CurrentPlaybackSnapshot(snapshot: before),
+            CurrentPlaybackSnapshot(snapshot: after)
+        )
+        XCTAssertNotEqual(before, after)
+    }
+
     private func song(id: String, coverArt: String?) -> Song {
         Song(
             id: id,

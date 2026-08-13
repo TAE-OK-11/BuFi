@@ -32,7 +32,7 @@ struct PlayerArtworkSwipeNavigation {
 
 struct PlayerView: View {
     @EnvironmentObject private var audio: AudioEngine
-    @EnvironmentObject private var playback: PlaybackState
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -51,7 +51,7 @@ struct PlayerView: View {
             ZStack {
                 background
 
-                if let item = playback.currentItem {
+                if let item = currentPlayback.item {
                     let song = item.song
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
@@ -113,19 +113,19 @@ struct PlayerView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-        .onChange(of: playback.snapshot) { previous, next in
-            handleQueueSnapshotChange(from: previous, to: next)
+        .onChange(of: currentPlayback.snapshot) { previous, next in
+            handleCurrentPlaybackChange(from: previous, to: next)
         }
-        .onChange(of: playback.currentItem?.artworkIdentity) { previous, next in
+        .onChange(of: currentPlayback.item?.artworkIdentity) { previous, next in
             if previous != next, palette != .fallback {
                 palette = .fallback
             }
         }
     }
 
-    private func handleQueueSnapshotChange(
-        from previous: PlaybackSnapshot,
-        to next: PlaybackSnapshot
+    private func handleCurrentPlaybackChange(
+        from previous: CurrentPlaybackSnapshot,
+        to next: CurrentPlaybackSnapshot
     ) {
         let indexChanged = previous.index != next.index
         if indexChanged {
@@ -296,7 +296,7 @@ struct PlayerView: View {
             cornerRadius: 14,
             cacheRevision: identity.artworkRevision,
             onPalette: { nextPalette in
-                guard playback.currentItem?.artworkIdentity == identity else {
+                guard currentPlayback.item?.artworkIdentity == identity else {
                     return
                 }
                 if palette != nextPalette {
@@ -484,12 +484,12 @@ struct PlayerView: View {
                 guard let destination = PlayerArtworkSwipeNavigation.destinationIndex(
                     translation: value.translation,
                     predictedEndTranslation: value.predictedEndTranslation,
-                    currentIndex: playback.index,
-                    queueCount: playback.entries.count
+                    currentIndex: currentPlayback.index,
+                    queueCount: currentPlayback.queueCount
                 ) else {
                     return
                 }
-                transitionDirection = destination > playback.index ? 1 : -1
+                transitionDirection = destination > currentPlayback.index ? 1 : -1
                 audio.playQueueItem(at: destination)
             }
     }
@@ -946,7 +946,7 @@ private struct PlayerLyricsCard: View {
 }
 
 private struct FullLyricsView: View {
-    @EnvironmentObject private var playback: PlaybackState
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
@@ -979,11 +979,11 @@ private struct FullLyricsView: View {
             Spacer()
             VStack(spacing: 3) {
                 OverflowMarqueeText(
-                    text: playback.currentSong?.title ?? "가사",
+                    text: currentPlayback.song?.title ?? "가사",
                     font: .system(size: 15, weight: .bold),
                     restingAlignment: .center
                 )
-                Text(playback.currentSong?.artist ?? "")
+                Text(currentPlayback.song?.artist ?? "")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(lyricsSecondary)
                     .lineLimit(1)

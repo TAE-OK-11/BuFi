@@ -300,12 +300,54 @@ struct PlaybackSnapshot: Equatable, Sendable {
     var currentSong: Song? { currentItem?.song }
 }
 
+struct CurrentPlaybackSnapshot: Equatable, Sendable {
+    let item: PlaybackMediaItem?
+    let index: Int
+    let queueCount: Int
+
+    static let empty = CurrentPlaybackSnapshot(
+        item: nil,
+        index: -1,
+        queueCount: 0
+    )
+
+    init(snapshot: PlaybackSnapshot) {
+        item = snapshot.currentItem
+        index = snapshot.index
+        queueCount = snapshot.entries.count
+    }
+
+    private init(item: PlaybackMediaItem?, index: Int, queueCount: Int) {
+        self.item = item
+        self.index = index
+        self.queueCount = queueCount
+    }
+
+    var song: Song? { item?.song }
+}
+
+@MainActor
+final class CurrentPlaybackState: ObservableObject {
+    @Published fileprivate(set) var snapshot = CurrentPlaybackSnapshot.empty
+
+    var item: PlaybackMediaItem? { snapshot.item }
+    var song: Song? { snapshot.song }
+    var index: Int { snapshot.index }
+    var queueCount: Int { snapshot.queueCount }
+
+    fileprivate func publish(_ value: CurrentPlaybackSnapshot) {
+        guard snapshot != value else { return }
+        snapshot = value
+    }
+}
+
 @MainActor
 final class PlaybackState: ObservableObject {
     /// Current media, queue contents, selection, and account scope are derived
     /// from one publication. No view can combine revisions from separate
     /// ObservableObjects during a track transition.
     @Published fileprivate(set) var snapshot = PlaybackSnapshot.empty
+    let current = CurrentPlaybackState()
     private(set) var entriesRevision: UInt64 = 0
 
     var entries: [PlaybackQueueEntry] { snapshot.entries }
@@ -376,6 +418,7 @@ final class PlaybackState: ObservableObject {
             entriesRevision &+= 1
         }
         snapshot = value
+        current.publish(CurrentPlaybackSnapshot(snapshot: value))
     }
 }
 

@@ -164,14 +164,14 @@ private struct BuFiSurfaceModifier: ViewModifier {
 }
 
 private struct BuFiMiniPlayerContentClearanceModifier: ViewModifier {
-    @EnvironmentObject private var playback: PlaybackState
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     let idle: CGFloat
     let playing: CGFloat
 
     func body(content: Content) -> some View {
         content.padding(
             .bottom,
-            playback.currentSong == nil ? idle : playing
+            currentPlayback.song == nil ? idle : playing
         )
     }
 }
@@ -511,7 +511,7 @@ enum SongRowLayout: Equatable {
 struct SongRow: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
-    @EnvironmentObject private var playback: PlaybackState
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
 
     private let audio = AudioEngine.shared
 
@@ -566,7 +566,7 @@ struct SongRow: View {
     }
 
     private var compactAlbumRow: some View {
-        let isCurrentSong = playback.currentSong?.id == song.id
+        let isCurrentSong = currentPlayback.song?.id == song.id
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {
@@ -643,7 +643,7 @@ struct SongRow: View {
     }
 
     private var standardRow: some View {
-        let isCurrentSong = playback.currentSong?.id == song.id
+        let isCurrentSong = currentPlayback.song?.id == song.id
         let isStarred = model.isStarred(song)
         return HStack(spacing: 0) {
             Button {

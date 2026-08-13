@@ -23,6 +23,7 @@ struct BuFiApp: App {
                 .environmentObject(model.favorites)
                 .environmentObject(audio)
                 .environmentObject(audio.playbackState)
+                .environmentObject(audio.playbackState.current)
                 .environmentObject(audio.activityState)
                 .environmentObject(audio.controlState)
                 .environmentObject(audio.presentation)

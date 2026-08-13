@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MiniPlayerView: View {
-    @EnvironmentObject private var playback: PlaybackState
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
@@ -12,7 +12,7 @@ struct MiniPlayerView: View {
     private let audio = AudioEngine.shared
 
     var body: some View {
-        if let item = playback.currentItem {
+        if let item = currentPlayback.item {
             let song = item.song
             let artworkIdentity = item.artworkIdentity
             ZStack {
@@ -38,7 +38,7 @@ struct MiniPlayerView: View {
                             cornerRadius: 5,
                             cacheRevision: artworkIdentity.artworkRevision,
                             onPalette: { nextPalette in
-                                guard playback.currentItem?.artworkIdentity == artworkIdentity else {
+                                guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
                                     return
                                 }
                                 if nextPalette == .fallback {
@@ -138,7 +138,7 @@ struct MiniPlayerView: View {
     }
 
     private var currentArtworkIdentity: PlayerArtworkIdentity? {
-        playback.currentItem?.artworkIdentity
+        currentPlayback.item?.artworkIdentity
     }
 
     private func relativeLuminance(_ color: RGBAColor) -> Double {
