@@ -2632,6 +2632,7 @@ final class AudioEngine: NSObject, ObservableObject {
             for: playbackItem,
             compatibilityFormat: compatibilityFormat
         ) {
+            itemLoadTask = nil
             replacePlayerItem(
                 asset: prepared.asset,
                 resumePosition: resumePosition
@@ -2641,6 +2642,11 @@ final class AudioEngine: NSObject, ObservableObject {
 
         itemLoadTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.itemLoadGeneration == generation {
+                    self.itemLoadTask = nil
+                }
+            }
             do {
                 let resource = try await self.playbackResource(
                     for: song,
@@ -3925,6 +3931,11 @@ final class AudioEngine: NSObject, ObservableObject {
         let sessionGeneration = playbackSessionGeneration
         let accountScope = currentAccountScope
         songMetadataTask = Task(priority: .utility) { [weak self] in
+            defer {
+                if let self, self.songMetadataGeneration == generation {
+                    self.songMetadataTask = nil
+                }
+            }
             let canonicalItem: PlaybackMediaItem
             do {
                 canonicalItem = try await client.playbackMedia(
@@ -3946,8 +3957,6 @@ final class AudioEngine: NSObject, ObservableObject {
                   current.id == selectedSong.id else {
                 return
             }
-            self.songMetadataTask = nil
-
             var resolved = canonicalItem.song
             // Favorite state may have changed again while getSong was in
             // flight. Preserve the latest optimistic value on the atomic item.
