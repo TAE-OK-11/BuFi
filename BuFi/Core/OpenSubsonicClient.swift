@@ -401,25 +401,37 @@ actor HomeEnrichmentRequestLimiter {
 
     private func acquire() async throws {
         let waiterID = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                guard !Task.isCancelled else {
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-                guard activeCount >= limit else {
-                    activeCount += 1
-                    continuation.resume()
-                    return
-                }
-                waiters.append(Waiter(
-                    id: waiterID,
-                    continuation: continuation
-                ))
+        let _: Void = try await withTaskCancellationHandler(
+            operation: { [self] in
+                try await waitForPermit(waiterID)
+            },
+            onCancel: { [self] in
+                requestCancellation(of: waiterID)
             }
-        } onCancel: {
-            Task { await self.cancel(waiterID) }
+        )
+    }
+
+    private func waitForPermit(_ waiterID: UUID) async throws {
+        try Task.checkCancellation()
+        guard activeCount >= limit else {
+            activeCount += 1
+            return
         }
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, any Error>) in
+            guard !Task.isCancelled else {
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            waiters.append(Waiter(
+                id: waiterID,
+                continuation: continuation
+            ))
+        }
+    }
+
+    nonisolated private func requestCancellation(of waiterID: UUID) {
+        Task { await self.cancel(waiterID) }
     }
 
     private func release() {
