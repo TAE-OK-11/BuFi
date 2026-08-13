@@ -55,13 +55,31 @@ final class AppSessionState: ObservableObject {
 
 @MainActor
 final class HomeLibraryState: ObservableObject {
-    @Published fileprivate(set) var snapshot = HomeSnapshot.empty
-    @Published fileprivate(set) var revision = HomeSnapshotRevision()
+    struct Presentation: Equatable, Sendable {
+        let snapshot: HomeSnapshot
+        let revision: HomeSnapshotRevision
+    }
 
-    fileprivate func setSnapshot(_ value: HomeSnapshot) {
-        guard snapshot != value else { return }
-        snapshot = value
-        revision = revision.advanced()
+    @Published private(set) var presentation: Presentation
+
+    var snapshot: HomeSnapshot { presentation.snapshot }
+    var revision: HomeSnapshotRevision { presentation.revision }
+
+    init() {
+        presentation = Presentation(
+            snapshot: .empty,
+            revision: HomeSnapshotRevision()
+        )
+    }
+
+    @discardableResult
+    func setSnapshot(_ value: HomeSnapshot) -> Bool {
+        guard snapshot != value else { return false }
+        presentation = Presentation(
+            snapshot: value,
+            revision: revision.advanced()
+        )
+        return true
     }
 }
 
@@ -229,10 +247,7 @@ final class AppModel: ObservableObject {
         set { session.setPhase(newValue) }
     }
 
-    private(set) var home: HomeSnapshot {
-        get { library.snapshot }
-        set { library.setSnapshot(newValue) }
-    }
+    var home: HomeSnapshot { library.snapshot }
 
     private(set) var searchResults: SearchResults {
         get { searchContent.results }
@@ -1750,9 +1765,8 @@ final class AppModel: ObservableObject {
     private var isHomeEmpty: Bool { home == .empty }
 
     private func publishHome(_ snapshot: HomeSnapshot) {
-        guard snapshot != home else { return }
+        guard library.setSnapshot(snapshot) else { return }
         homeRevision &+= 1
-        home = snapshot
     }
 
     private func mergingListeningHistory(

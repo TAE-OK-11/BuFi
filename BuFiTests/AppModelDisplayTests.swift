@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import BuFi
 
@@ -20,6 +21,31 @@ final class AppModelDisplayTests: XCTestCase {
         XCTAssertEqual(advanced.epoch, initial.epoch)
         XCTAssertEqual(advanced.generation, initial.generation + 1)
         XCTAssertNotEqual(advanced, initial)
+    }
+
+    @MainActor
+    func testHomeSnapshotAndRevisionPublishAtomicallyOnce() {
+        let state = HomeLibraryState()
+        var publications = 0
+        let observation = state.objectWillChange.sink {
+            publications += 1
+        }
+        var snapshot = HomeSnapshot.empty
+        snapshot.playlists = [Playlist(
+            id: "playlist",
+            name: "Playlist",
+            owner: nil,
+            songCount: 1,
+            coverArt: nil
+        )]
+
+        XCTAssertTrue(state.setSnapshot(snapshot))
+        XCTAssertEqual(publications, 1)
+        XCTAssertEqual(state.snapshot, snapshot)
+        XCTAssertEqual(state.revision.generation, 1)
+        XCTAssertFalse(state.setSnapshot(snapshot))
+        XCTAssertEqual(publications, 1)
+        _ = observation
     }
 
     func testServerDisplayAddressKeepsHostExplicitPortAndBasePath() {
