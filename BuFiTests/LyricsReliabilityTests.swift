@@ -118,6 +118,42 @@ final class LyricsReliabilityTests: XCTestCase {
         )
     }
 
+    func testCanonicalMetadataRestartsOnlyUnresolvedLegacyLookup() {
+        let provisional = Song(
+            id: "song",
+            title: "Provisional",
+            artist: "",
+            album: "Album",
+            artistId: nil,
+            albumId: nil,
+            coverArt: nil,
+            duration: 180,
+            track: nil,
+            suffix: nil,
+            contentType: nil,
+            starred: nil
+        )
+        var canonical = provisional
+        canonical.title = "Canonical"
+        canonical.artist = "Artist"
+
+        XCTAssertTrue(LyricsLookupIdentity.shouldReload(
+            from: provisional,
+            to: canonical,
+            lyricsAreAvailable: false
+        ))
+        XCTAssertFalse(LyricsLookupIdentity.shouldReload(
+            from: provisional,
+            to: canonical,
+            lyricsAreAvailable: true
+        ))
+        XCTAssertFalse(LyricsLookupIdentity.shouldReload(
+            from: canonical,
+            to: canonical,
+            lyricsAreAvailable: false
+        ))
+    }
+
     private func decodePayload(_ json: String) throws -> LyricsPayload {
         try JSONDecoder().decode(LyricsPayload.self, from: Data(json.utf8))
     }

@@ -156,6 +156,32 @@ enum PlaybackTelemetryRetryPolicy {
     }
 }
 
+struct LyricsLookupIdentity: Equatable, Sendable {
+    let artist: String
+    let title: String
+
+    init(song: Song) {
+        artist = song.artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        title = song.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var canUseLegacyEndpoint: Bool {
+        !artist.isEmpty && !title.isEmpty
+    }
+
+    static func shouldReload(
+        from previous: Song,
+        to canonical: Song,
+        lyricsAreAvailable: Bool
+    ) -> Bool {
+        guard !lyricsAreAvailable else { return false }
+        let previousIdentity = LyricsLookupIdentity(song: previous)
+        let canonicalIdentity = LyricsLookupIdentity(song: canonical)
+        return canonicalIdentity.canUseLegacyEndpoint
+            && canonicalIdentity != previousIdentity
+    }
+}
+
 /// A small latest-state transport buffer replaces the previous linked task
 /// chain. Telemetry can wait behind a slow network without retaining every
 /// historical transition or affecting player/UI state publication.
@@ -3927,6 +3953,11 @@ final class AudioEngine: NSObject, ObservableObject {
             // flight. Preserve the latest optimistic value on the atomic item.
             resolved.starred = current.starred
             guard resolved != current else { return }
+            let shouldReloadLyrics = LyricsLookupIdentity.shouldReload(
+                from: current,
+                to: resolved,
+                lyricsAreAvailable: self.lyricsState.status == .available
+            )
 
             let previousStream = self.currentPlaybackItem?.stream
             var resolvedItem = canonicalItem
@@ -3961,6 +3992,12 @@ final class AudioEngine: NSObject, ObservableObject {
                 // Before meaningful playback begins, rebuild the transport
                 // from the same canonical payload used by artwork/metadata.
                 self.restartPlaybackPlan(resumeFrom: self.elapsed)
+            }
+            if shouldReloadLyrics {
+                self.loadLyrics(
+                    for: resolved,
+                    forceRefresh: self.lyricsState.status != .loading
+                )
             }
             self.updateNowPlaying()
             self.scheduleQueueSave()
