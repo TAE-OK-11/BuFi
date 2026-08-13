@@ -986,26 +986,32 @@ enum RecommendationMixer {
         _ values: [RankedRecommendation],
         limit: Int
     ) -> [RankedRecommendation] {
-        var remaining = values
         var result: [RankedRecommendation] = []
         var artistCounts: [String: Int] = [:]
         var albumCounts: [String: Int] = [:]
-        while !remaining.isEmpty, result.count < limit {
+        var isRemaining = Array(repeating: true, count: values.count)
+        var remainingCount = values.count
+        result.reserveCapacity(min(values.count, limit))
+        while remainingCount > 0, result.count < limit {
             if Task.isCancelled { return [] }
-            var bestIndex = 0
+            var bestIndex: Int?
             var bestAdjustedScore = -Double.infinity
-            for (index, value) in remaining.enumerated() {
+            for index in values.indices where isRemaining[index] {
+                let value = values[index]
                 let artistCount = artistCounts[value.artistKey, default: 0]
                 let albumCount = albumCounts[value.albumKey, default: 0]
                 let adjusted = value.score
                     * diversityFactor(for: artistCount)
                     * diversityFactor(for: albumCount)
-                if adjusted > bestAdjustedScore {
+                if bestIndex == nil || adjusted > bestAdjustedScore {
                     bestAdjustedScore = adjusted
                     bestIndex = index
                 }
             }
-            let selected = remaining.remove(at: bestIndex)
+            guard let bestIndex else { break }
+            isRemaining[bestIndex] = false
+            remainingCount -= 1
+            let selected = values[bestIndex]
             result.append(selected)
             artistCounts[selected.artistKey, default: 0] += 1
             albumCounts[selected.albumKey, default: 0] += 1

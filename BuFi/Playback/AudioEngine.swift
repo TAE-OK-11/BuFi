@@ -1609,15 +1609,37 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func nextShuffleIndex() -> Int {
-        let candidates = queue.indices.filter { $0 != queueIndex }
+        guard queue.count > 1,
+              queue.indices.contains(queueIndex) else {
+            return queueIndex
+        }
         guard shuffleStyle == .fewerRepeats else {
-            return candidates.randomElement() ?? queueIndex
+            return randomNonCurrentQueueIndex()
         }
         let recent = Set(
             recentShuffleIDs.suffix(min(8, max(1, queue.count - 1)))
         )
-        let fresh = candidates.filter { !recent.contains(queue[$0].id) }
-        return (fresh.isEmpty ? candidates : fresh).randomElement() ?? queueIndex
+        var freshSelection: Int?
+        var freshCount = 0
+        for index in queue.indices
+            where index != queueIndex && !recent.contains(queue[index].id) {
+            freshCount += 1
+            if Int.random(in: 0..<freshCount) == 0 {
+                freshSelection = index
+            }
+        }
+        return freshSelection ?? randomNonCurrentQueueIndex()
+    }
+
+    private func randomNonCurrentQueueIndex() -> Int {
+        guard queue.count > 1,
+              queue.indices.contains(queueIndex) else {
+            return queueIndex
+        }
+        let compressedIndex = Int.random(in: 0..<(queue.count - 1))
+        return compressedIndex >= queueIndex
+            ? compressedIndex + 1
+            : compressedIndex
     }
 
     private func rememberShuffleSelection(_ songID: String) {
