@@ -1,0 +1,96 @@
+diff --git a/BuFi/Core/AppDatabase.swift b/BuFi/Core/AppDatabase.swift
+--- a/BuFi/Core/AppDatabase.swift
++++ b/BuFi/Core/AppDatabase.swift
+@@
+     private static func pruneArtworkPalettes(
+         in db: Database,
+         scope: String,
+         maximumEntries: Int
+     ) throws {
+         try db.execute(
+             sql: """
+-            DELETE FROM artwork_palette_cache WHERE rowid IN (
+-                SELECT rowid FROM artwork_palette_cache
++            DELETE FROM artwork_palette_cache
++            WHERE (account_scope, artwork_key, engine_version) IN (
++                SELECT account_scope, artwork_key, engine_version
++                FROM artwork_palette_cache
+                 WHERE account_scope = ?
+                 ORDER BY last_accessed_at DESC, artwork_key ASC,
+                          engine_version DESC
+                 LIMIT -1 OFFSET ?
+             )
+@@
+     private static func pruneArtworkPalettes(
+         in db: Database,
+         maximumEntries: Int
+     ) throws {
+         try db.execute(
+             sql: """
+-            DELETE FROM artwork_palette_cache WHERE rowid IN (
+-                SELECT rowid FROM artwork_palette_cache
++            DELETE FROM artwork_palette_cache
++            WHERE (account_scope, artwork_key, engine_version) IN (
++                SELECT account_scope, artwork_key, engine_version
++                FROM artwork_palette_cache
+                 ORDER BY last_accessed_at DESC, account_scope ASC,
+                          artwork_key ASC, engine_version DESC
+                 LIMIT -1 OFFSET ?
+             )
+diff --git a/BuFi/Core/OfflineStore.swift b/BuFi/Core/OfflineStore.swift
+--- a/BuFi/Core/OfflineStore.swift
++++ b/BuFi/Core/OfflineStore.swift
+@@
+     nonisolated static func isValidOfflineFile(
+         at url: URL,
+         expectedByteCount: Int64?
+     ) -> Bool {
+-        guard let values = try? url.resourceValues(
+-            forKeys: [.isRegularFileKey, .fileSizeKey]
+-        ), values.isRegularFile == true,
+-           let fileSize = values.fileSize,
+-           fileSize > 0 else {
++        guard let attributes = try? FileManager.default.attributesOfItem(
++            atPath: url.path
++        ),
++        let fileType = attributes[.type] as? FileAttributeType,
++        fileType == .typeRegular,
++        let fileSizeNumber = attributes[.size] as? NSNumber else {
+             return false
+         }
++        let fileSize = fileSizeNumber.int64Value
++        guard fileSize > 0 else { return false }
+         guard let expectedByteCount else { return true }
+-        return expectedByteCount > 0 && Int64(fileSize) == expectedByteCount
++        return expectedByteCount > 0 && fileSize == expectedByteCount
+     }
+diff --git a/.github/workflows/verify-bufi-pr.yml b/.github/workflows/verify-bufi-pr.yml
+--- a/.github/workflows/verify-bufi-pr.yml
++++ b/.github/workflows/verify-bufi-pr.yml
+@@
+           APP_PID="${LAUNCH_OUTPUT##*: }"
+           test -n "$APP_PID"
+           sleep 8
+-          xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID"
++          PROCINFO="$(xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID" 2>&1 || true)"
++          printf '%s\n' "$PROCINFO"
++          printf '%s\n' "$PROCINFO" | grep -q 'job state = running'
+           DATA_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" cloud.tae00217.BuFi data)"
+           PREFS="$DATA_CONTAINER/Library/Preferences/cloud.tae00217.BuFi.plist"
+           test -f "$PREFS"
+           test "$(/usr/libexec/PlistBuddy -c 'Print :launch-diagnostics-last-phase' "$PREFS")" = "application-bootstrap-ready"
+diff --git a/.github/workflows/ios.yml b/.github/workflows/ios.yml
+--- a/.github/workflows/ios.yml
++++ b/.github/workflows/ios.yml
+@@
+           APP_PID="${LAUNCH_OUTPUT##*: }"
+           test -n "$APP_PID"
+           sleep 8
+-          xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID"
++          PROCINFO="$(xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID" 2>&1 || true)"
++          printf '%s\n' "$PROCINFO"
++          printf '%s\n' "$PROCINFO" | grep -q 'job state = running'
+           DATA_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" cloud.tae00217.BuFi data)"
+           PREFS="$DATA_CONTAINER/Library/Preferences/cloud.tae00217.BuFi.plist"
+           test -f "$PREFS"
+           test "$(/usr/libexec/PlistBuddy -c 'Print :launch-diagnostics-last-phase' "$PREFS")" = "application-bootstrap-ready"
