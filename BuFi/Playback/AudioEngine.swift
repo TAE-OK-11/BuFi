@@ -557,7 +557,7 @@ final class AudioEngine: NSObject, ObservableObject {
     // The logical queue below remains the source of truth. AVQueuePlayer is
     // used as a two-item transport window so a validated successor can begin
     // without rebuilding the playback pipeline at the track boundary.
-    let player = AVQueuePlayer()
+    private(set) lazy var player = AVQueuePlayer()
 
     private static let iso8601Formatter = ISO8601DateFormatter()
     private static let logger = Logger(
@@ -593,12 +593,16 @@ final class AudioEngine: NSObject, ObservableObject {
     private weak var logicalCurrentItem: AVPlayerItem?
     private var currentItemTransitionObservation: NSKeyValueObservation?
     private var stagedSuccessorObservation: NSKeyValueObservation?
+    private var stagedSuccessorObservationID: UUID?
     private var itemBufferObservations: [NSKeyValueObservation] = []
     private var timeControlObservation: NSKeyValueObservation?
     private lazy var playbackObservers = PlaybackObserverCoordinator(
         player: player
     )
-    private let networkPathMonitor = NWPathMonitor()
+    // NWPathMonitor can synchronously connect to system networking services
+    // while it is created. Keep even its construction out of App/StateObject
+    // initialization and build it with the rest of the playback runtime.
+    private lazy var networkPathMonitor = NWPathMonitor()
     private let networkPathQueue = DispatchQueue(
         label: "cloud.tae00217.BuFi.prefetch-network-path",
         qos: .utility
@@ -670,6 +674,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lastPersistedEntriesRevision: UInt64?
     private var allowsSpeculativeNetworkPrefetch = false
     private var networkPathIsSatisfied = true
+    private var runtimeIsActive = false
 
     override private init() {
         quality = StreamQuality(
@@ -679,14 +684,39 @@ final class AudioEngine: NSObject, ObservableObject {
             rawValue: UserDefaults.standard.string(forKey: "shuffle-style") ?? ""
         ) ?? .fewerRepeats
         super.init()
+    }
+
+    /// Installs framework callbacks only after SwiftUI has mounted its first
+    /// scene. Besides reducing launch work, this prevents Objective-C media
+    /// services from participating in `App`/`StateObject` construction.
+    func activateRuntimeIfNeeded() {
+        guard !runtimeIsActive else { return }
+        runtimeIsActive = true
+        LaunchDiagnostics.mark("audio-runtime-starting")
+        LaunchDiagnostics.mark("audio-player-creating")
         player.automaticallyWaitsToMinimizeStalling = true
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
-        nowPlayingSession = MPNowPlayingSession(players: [player])
-        nowPlayingSession?.automaticallyPublishesNowPlayingInfo = false
+        if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
+            // iOS 27 beta devices have shown pre-framework and MediaPlayer
+            // launch instability. This app has one player, so the shared
+            // command/info centers preserve lock-screen controls without
+            // constructing the optional per-player session on that beta.
+            nowPlayingSession = nil
+            LaunchDiagnostics.mark("now-playing-session-shared-fallback")
+        } else {
+            LaunchDiagnostics.mark("now-playing-session-creating")
+            nowPlayingSession = MPNowPlayingSession(players: [player])
+            nowPlayingSession?.automaticallyPublishesNowPlayingInfo = false
+        }
+        LaunchDiagnostics.mark("player-observers-installing")
         installPlayerObservers()
+        LaunchDiagnostics.mark("system-observers-installing")
         installSystemObservers()
+        LaunchDiagnostics.mark("network-monitor-installing")
         installNetworkPathMonitor()
+        LaunchDiagnostics.mark("remote-commands-installing")
         installRemoteCommands()
+        LaunchDiagnostics.mark("audio-runtime-ready")
     }
 
     func configure(
@@ -895,6 +925,7 @@ final class AudioEngine: NSObject, ObservableObject {
         origin: PlaybackOrigin = .manual,
         transitionReason: PlaybackEndReason = .replaced
     ) {
+        activateRuntimeIfNeeded()
         reconcilePendingTransportTransition()
         // Every concrete track transition supersedes an in-flight autoplay
         // request. Keeping this invalidation here (rather than only in the
@@ -986,6 +1017,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func togglePlayback() {
         guard currentSong != nil else { return }
+        activateRuntimeIfNeeded()
         if wantsPlayback || isPlaying || player.timeControlStatus == .playing {
             pause()
         } else {
@@ -995,6 +1027,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func resumePlayback() {
         guard currentSong != nil else { return }
+        activateRuntimeIfNeeded()
         serverQueueTask?.cancel()
         configureAudioSession()
         wantsPlayback = true
@@ -1095,7 +1128,7 @@ final class AudioEngine: NSObject, ObservableObject {
         invalidateLyricBoundaryObserver()
         updateActiveLyric(at: target)
         updateNowPlaying()
-        guard let seekedItem = player.currentItem else {
+        guard player.currentItem != nil else {
             isSeekInFlight = false
             if persistsQueue { scheduleQueueSave() }
             return
@@ -1110,12 +1143,12 @@ final class AudioEngine: NSObject, ObservableObject {
             to: CMTime(seconds: target, preferredTimescale: 600),
             toleranceBefore: tolerance,
             toleranceAfter: tolerance
-        ) { [weak self] finished in
+        ) { @Sendable [weak self] finished in
             Task { @MainActor in
                 guard let self, self.seekGeneration == generation else { return }
                 self.isSeekInFlight = false
                 self.pendingSeekPosition = nil
-                guard self.player.currentItem === seekedItem else { return }
+                guard self.player.currentItem != nil else { return }
                 self.recomputeTimelineFromPlayer()
                 self.installNextLyricBoundary(after: self.elapsed)
                 self.updateNowPlaying()
@@ -1705,7 +1738,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func installNetworkPathMonitor() {
-        networkPathMonitor.pathUpdateHandler = { [weak self] path in
+        networkPathMonitor.pathUpdateHandler = { @Sendable [weak self] path in
             let isSatisfied = path.status == .satisfied
             let allowsPrefetch = path.status == .satisfied
                 && !path.isExpensive
@@ -1906,13 +1939,16 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorSong = successor
         stagedSuccessorQueueIndex = successorIndex
         stagedSuccessorOccurrenceID = successorEntry.id
+        let observationID = UUID()
+        stagedSuccessorObservationID = observationID
         stagedSuccessorObservation = item.observe(
             \.status,
             options: [.new]
-        ) { [weak self, weak item] _, _ in
+        ) { @Sendable [weak self] _, _ in
             Task { @MainActor in
                 guard let self,
-                      let item,
+                      self.stagedSuccessorObservationID == observationID,
+                      let item = self.stagedSuccessorItem,
                       self.stagedSuccessorItem === item,
                       item.status == .failed else { return }
                 if self.player.currentItem === item {
@@ -1947,6 +1983,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 stagedSuccessorQueueIndex = nil
                 stagedSuccessorOccurrenceID = nil
                 stagedSuccessorObservation = nil
+                stagedSuccessorObservationID = nil
                 restartPlaybackPlan(resumeFrom: elapsed)
             }
             return
@@ -1962,6 +1999,7 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorQueueIndex = nil
         stagedSuccessorOccurrenceID = nil
         stagedSuccessorObservation = nil
+        stagedSuccessorObservationID = nil
     }
 
     private func reconcilePendingTransportTransition() {
@@ -2281,10 +2319,14 @@ final class AudioEngine: NSObject, ObservableObject {
         installBufferObservers(for: item)
         let observerGeneration = itemObserverGeneration
 
-        itemObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+        itemObservation = item.observe(
+            \.status,
+            options: [.initial, .new]
+        ) { @Sendable [weak self] _, _ in
             Task { @MainActor in
                 guard let self,
                       self.itemObserverGeneration == observerGeneration,
+                      let item = self.logicalCurrentItem,
                       self.player.currentItem === item else {
                     return
                 }
@@ -2348,6 +2390,7 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorQueueIndex = nil
         stagedSuccessorOccurrenceID = nil
         stagedSuccessorObservation = nil
+        stagedSuccessorObservationID = nil
         playbackState.setIndex(successorIndex, renewsPlayback: true)
         recordPlaybackStart(song, origin: .autoplay)
         rememberShuffleSelection(song.id)
@@ -2419,11 +2462,11 @@ final class AudioEngine: NSObject, ObservableObject {
                     forName: .AVPlayerItemPlaybackStalled,
                     object: item,
                     queue: .main
-                ) { [weak self, weak item] _ in
+                ) { @Sendable [weak self] _ in
                     Task { @MainActor in
                         guard let self,
-                              let item,
                               self.itemObserverGeneration == generation,
+                              let item = self.logicalCurrentItem,
                               self.player.currentItem === item else {
                             return
                         }
@@ -2437,11 +2480,11 @@ final class AudioEngine: NSObject, ObservableObject {
                     forName: .AVPlayerItemFailedToPlayToEndTime,
                     object: item,
                     queue: .main
-                ) { [weak self, weak item] _ in
+                ) { @Sendable [weak self] _ in
                     Task { @MainActor in
                         guard let self,
-                              let item,
                               self.itemObserverGeneration == generation,
+                              let item = self.logicalCurrentItem,
                               self.player.currentItem === item else {
                             return
                         }
@@ -2452,11 +2495,11 @@ final class AudioEngine: NSObject, ObservableObject {
                     forName: .AVPlayerItemDidPlayToEndTime,
                     object: item,
                     queue: .main
-                ) { [weak self, weak item] _ in
+                ) { @Sendable [weak self] _ in
                     Task { @MainActor in
                         guard let self,
-                              let item,
                               self.itemObserverGeneration == generation,
+                              let item = self.logicalCurrentItem,
                               (self.player.currentItem === item
                                 || self.player.currentItem == nil) else {
                             return
@@ -2477,10 +2520,14 @@ final class AudioEngine: NSObject, ObservableObject {
         itemBufferObservations.removeAll()
         let generation = itemObserverGeneration
 
-        let empty = item.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] item, _ in
+        let empty = item.observe(
+            \.isPlaybackBufferEmpty,
+            options: [.new]
+        ) { @Sendable [weak self] _, _ in
             Task { @MainActor in
                 guard let self,
                       self.itemObserverGeneration == generation,
+                      let item = self.logicalCurrentItem,
                       self.player.currentItem === item else {
                     return
                 }
@@ -2489,10 +2536,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
             }
         }
-        let likelyToKeepUp = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] item, _ in
+        let likelyToKeepUp = item.observe(
+            \.isPlaybackLikelyToKeepUp,
+            options: [.new]
+        ) { @Sendable [weak self] _, _ in
             Task { @MainActor in
                 guard let self,
                       self.itemObserverGeneration == generation,
+                      let item = self.logicalCurrentItem,
                       self.player.currentItem === item else {
                     return
                 }
@@ -2779,18 +2830,19 @@ final class AudioEngine: NSObject, ObservableObject {
         currentItemTransitionObservation = player.observe(
             \.currentItem,
             options: [.new]
-        ) { [weak self] player, _ in
+        ) { @Sendable [weak self] _, _ in
             Task { @MainActor in
-                guard let self, let item = player.currentItem else { return }
+                guard let self, let item = self.player.currentItem else { return }
                 self.activateStagedSuccessor(item)
             }
         }
         timeControlObservation = player.observe(
             \.timeControlStatus,
             options: [.initial, .new]
-        ) { [weak self] player, _ in
+        ) { @Sendable [weak self] _, _ in
             Task { @MainActor in
                 guard let self else { return }
+                let player = self.player
                 let isPlaying = player.timeControlStatus == .playing
                 self.isPlaying = isPlaying
                 self.isBuffering =
@@ -3123,7 +3175,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 forName: AVAudioSession.interruptionNotification,
                 object: audioSession,
                 queue: .main
-            ) { [weak self] notification in
+            ) { @Sendable [weak self] notification in
                 let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
                 let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
                 Task { @MainActor in
@@ -3137,7 +3189,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 forName: AVAudioSession.routeChangeNotification,
                 object: audioSession,
                 queue: .main
-            ) { [weak self] notification in
+            ) { @Sendable [weak self] notification in
                 let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
                 Task { @MainActor in
                     self?.handleRouteChange(reasonRawValue: reason)
@@ -3147,7 +3199,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 forName: AVAudioSession.mediaServicesWereResetNotification,
                 object: audioSession,
                 queue: .main
-            ) { [weak self] _ in
+            ) { @Sendable [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     Self.logger.notice("Audio media services reset; rebuilding playback")
@@ -3165,21 +3217,21 @@ final class AudioEngine: NSObject, ObservableObject {
                 forName: UIApplication.didEnterBackgroundNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { @Sendable [weak self] _ in
                 Task { @MainActor in self?.handleDidEnterBackground() }
             })
             tokens.append(center.addObserver(
                 forName: UIApplication.willResignActiveNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { @Sendable [weak self] _ in
                 Task { @MainActor in self?.preserveActivePlayback() }
             })
             tokens.append(center.addObserver(
                 forName: UIApplication.didBecomeActiveNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { @Sendable [weak self] _ in
                 Task { @MainActor in
                     guard let self, self.wantsPlayback else { return }
                     self.preserveActivePlayback()
@@ -3229,7 +3281,7 @@ final class AudioEngine: NSObject, ObservableObject {
         endBackgroundBridge()
         backgroundTaskID = UIApplication.shared.beginBackgroundTask(
             withName: "BuFiPlaybackTransition"
-        ) { [weak self] in
+        ) { @Sendable [weak self] in
             Task { @MainActor in self?.endBackgroundBridge() }
         }
     }
@@ -3295,37 +3347,37 @@ final class AudioEngine: NSObject, ObservableObject {
     private func installRemoteCommands() {
         let commands = remoteCommandCenter
         commands.playCommand.isEnabled = true
-        commands.playCommand.addTarget { [weak self] _ in
+        commands.playCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor in
                 self?.resumePlayback()
             }
             return .success
         }
         commands.pauseCommand.isEnabled = true
-        commands.pauseCommand.addTarget { [weak self] _ in
+        commands.pauseCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor in self?.pause() }
             return .success
         }
         commands.togglePlayPauseCommand.isEnabled = true
-        commands.togglePlayPauseCommand.addTarget { [weak self] _ in
+        commands.togglePlayPauseCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor in self?.togglePlayback() }
             return .success
         }
         commands.stopCommand.isEnabled = false
 
         commands.nextTrackCommand.isEnabled = true
-        commands.nextTrackCommand.addTarget { [weak self] _ in
+        commands.nextTrackCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor in self?.next() }
             return .success
         }
         commands.previousTrackCommand.isEnabled = true
-        commands.previousTrackCommand.addTarget { [weak self] _ in
+        commands.previousTrackCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor in self?.previous() }
             return .success
         }
 
         commands.changeShuffleModeCommand.isEnabled = true
-        commands.changeShuffleModeCommand.addTarget { [weak self] event in
+        commands.changeShuffleModeCommand.addTarget { @Sendable [weak self] event in
             guard let event = event as? MPChangeShuffleModeCommandEvent else {
                 return .commandFailed
             }
@@ -3338,7 +3390,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         commands.changeRepeatModeCommand.isEnabled = true
-        commands.changeRepeatModeCommand.addTarget { [weak self] event in
+        commands.changeRepeatModeCommand.addTarget { @Sendable [weak self] event in
             guard let event = event as? MPChangeRepeatModeCommandEvent else {
                 return .commandFailed
             }
@@ -3357,7 +3409,7 @@ final class AudioEngine: NSObject, ObservableObject {
             return .success
         }
 
-        commands.changePlaybackPositionCommand.addTarget { [weak self] event in
+        commands.changePlaybackPositionCommand.addTarget { @Sendable [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
@@ -3369,7 +3421,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
         commands.likeCommand.localizedTitle = String(localized: "좋아요")
         commands.likeCommand.isEnabled = true
-        commands.likeCommand.addTarget { [weak self] _ in
+        commands.likeCommand.addTarget { @Sendable [weak self] _ in
             Task { @MainActor in await self?.toggleCurrentStar() }
             return .success
         }

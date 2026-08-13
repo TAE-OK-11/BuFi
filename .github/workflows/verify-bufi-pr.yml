@@ -238,6 +238,10 @@ jobs:
           test -n "$APP_PID"
           sleep 8
           xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID"
+          DATA_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" cloud.tae00217.BuFi data)"
+          PREFS="$DATA_CONTAINER/Library/Preferences/cloud.tae00217.BuFi.plist"
+          test -f "$PREFS"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :launch-diagnostics-last-phase' "$PREFS")" = "application-bootstrap-ready"
       - name: Package iOS 27 beta 4 unsigned IPA
         run: |
           APP_PATH="build/DerivedData-27/Build/Products/Release-iphoneos/BuFi.app"

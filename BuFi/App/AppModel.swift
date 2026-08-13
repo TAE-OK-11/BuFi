@@ -98,6 +98,12 @@ final class AppModel: ObservableObject {
         case ready
     }
 
+    private enum BootstrapState {
+        case idle
+        case running
+        case completed
+    }
+
     private struct CachedValue<Value> {
         let value: Value
         let expiresAt: Date
@@ -190,6 +196,7 @@ final class AppModel: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private var recommendationTask: Task<Void, Never>?
     private var recommendationGeneration: UInt64 = 0
+    private var bootstrapState = BootstrapState.idle
     private var loginInFlight = false
     private var refreshInFlight = false
     private var lastFullRefresh = Date.distantPast
@@ -215,26 +222,41 @@ final class AppModel: ObservableObject {
     private static let listenBrainzUsernameKey = "listenbrainz-username"
 
     init() {
-        let lastFMAccount = Self.lastFMKeyAccount
-        let listenBrainzAccount = Self.listenBrainzTokenAccount
         sessionState = .connecting
         listenBrainzUsername = UserDefaults.standard.string(
             forKey: Self.listenBrainzUsernameKey
         ) ?? ""
-        Task { [weak self] in
-            guard let self else { return }
-            let stored = await self.secureStore.loadBootstrapState(
-                lastFMAccount: lastFMAccount,
-                listenBrainzAccount: listenBrainzAccount
-            )
-            self.hasLastFMAPIKey = stored.hasLastFMKey
-            self.hasListenBrainzToken = stored.hasListenBrainzToken
-            if let credentials = stored.credentials {
-                await self.connect(credentials, persist: false)
-            } else {
-                self.sessionState = .signedOut
-            }
+    }
+
+    /// Starts credential and session restoration after the first scene has
+    /// mounted. Security.framework IPC and automatic-login networking are not
+    /// part of `StateObject` construction or the pre-first-frame launch path.
+    func bootstrapIfNeeded() async {
+        guard bootstrapState == .idle else { return }
+        bootstrapState = .running
+        LaunchDiagnostics.mark("credential-bootstrap-starting")
+        let stored = await secureStore.loadBootstrapState(
+            lastFMAccount: Self.lastFMKeyAccount,
+            listenBrainzAccount: Self.listenBrainzTokenAccount
+        )
+        guard !Task.isCancelled else {
+            bootstrapState = .idle
+            return
         }
+        hasLastFMAPIKey = stored.hasLastFMKey
+        hasListenBrainzToken = stored.hasListenBrainzToken
+        LaunchDiagnostics.mark("credential-bootstrap-loaded")
+        if let credentials = stored.credentials {
+            await connect(credentials, persist: false)
+        } else {
+            sessionState = .signedOut
+        }
+        guard !Task.isCancelled else {
+            bootstrapState = sessionState == .ready ? .completed : .idle
+            return
+        }
+        bootstrapState = .completed
+        LaunchDiagnostics.mark("application-bootstrap-ready")
     }
 
 

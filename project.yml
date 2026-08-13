@@ -32,6 +32,7 @@ settings:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
       SWIFT_COMPILATION_MODE: incremental
+      OTHER_SWIFT_FLAGS: "$(inherited) -enable-actor-data-race-checks"
       LLVM_LTO: NO
       ONLY_ACTIVE_ARCH: YES
     Release:

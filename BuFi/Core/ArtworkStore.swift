@@ -250,7 +250,8 @@ actor ArtworkStore {
     /// Synchronous testable entry point. Production calls execute this on the
     /// store actor's executor, never on a UI `MainActor` caller.
     static func extractPalette(from image: UIImage) -> ArtworkPalette {
-        analyzedPalette(from: image) ?? .fallback
+        guard let bytes = sampleBytes(from: image) else { return .fallback }
+        return analyzedPalette(from: bytes) ?? .fallback
     }
 
     private func resolvePalette(
@@ -291,6 +292,13 @@ actor ArtworkStore {
               paletteGeneration == generation,
               !Task.isCancelled else { return .fallback }
 
+        // UIKit objects do not cross into the detached clustering task. Create
+        // a fixed-size value buffer on the store actor, then transfer only the
+        // immutable bytes into the independent executor.
+        guard let sampleBytes = Self.sampleBytes(from: source.value) else {
+            return .fallback
+        }
+
         // Palette clustering is CPU-heavy. Keep it off the store actor so an
         // account switch, cache clear, or visible image request is not blocked
         // behind color analysis.
@@ -298,7 +306,7 @@ actor ArtworkStore {
             priority: .utility
         ) {
             guard !Task.isCancelled else { return nil }
-            return Self.analyzedPalette(from: source.value)
+            return Self.analyzedPalette(from: sampleBytes)
         }
         let value = await withTaskCancellationHandler {
             await analysisTask.value
@@ -521,9 +529,8 @@ actor ArtworkStore {
         let score: Double
     }
 
-    private static func analyzedPalette(from image: UIImage) -> ArtworkPalette? {
-        // There is deliberately one and only one rasterization per analysis.
-        guard let bytes = sampleBytes(from: image), !bytes.isEmpty else { return nil }
+    private static func analyzedPalette(from bytes: [UInt8]) -> ArtworkPalette? {
+        guard !bytes.isEmpty else { return nil }
         let samples = makeSamples(from: bytes)
         guard !samples.isEmpty else { return nil }
 
