@@ -42,7 +42,7 @@ final class ModernNetworkPolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(request.assumesHTTP3Capable)
-        XCTAssertEqual(request.cachePolicy, .returnCacheDataElseLoad)
+        XCTAssertEqual(request.cachePolicy, .useProtocolCachePolicy)
         XCTAssertEqual(request.networkServiceType, .responsiveData)
         XCTAssertEqual(
             request.value(forHTTPHeaderField: "Accept-Encoding"),
@@ -121,7 +121,7 @@ final class ModernNetworkPolicyTests: XCTestCase {
 
         XCTAssertTrue(configuration.waitsForConnectivity)
         XCTAssertTrue(configuration.httpShouldUsePipelining)
-        XCTAssertEqual(configuration.requestCachePolicy, .returnCacheDataElseLoad)
+        XCTAssertEqual(configuration.requestCachePolicy, .useProtocolCachePolicy)
         XCTAssertNotNil(configuration.urlCache)
         XCTAssertFalse(configuration.allowsConstrainedNetworkAccess)
         XCTAssertFalse(configuration.httpShouldSetCookies)

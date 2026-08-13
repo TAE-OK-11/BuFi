@@ -141,7 +141,11 @@ final class PlayerPresentationStateTests: XCTestCase {
         )
 
         XCTAssertNotEqual(first.id, second.id)
-        XCTAssertEqual(snapshot.currentItem?.id, second.id)
+        XCTAssertEqual(snapshot.currentItem?.queueEntryID, second.id)
+        XCTAssertEqual(
+            snapshot.currentItem?.id,
+            snapshot.playbackGenerationID
+        )
         XCTAssertEqual(snapshot.currentSong?.id, duplicate.id)
     }
 
