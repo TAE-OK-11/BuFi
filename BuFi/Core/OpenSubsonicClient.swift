@@ -340,7 +340,8 @@ actor OpenSubsonicClient {
     private func performRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         queryItems: [URLQueryItem],
-        semantics: RequestSemantics
+        semantics: RequestSemantics,
+        staleReadRetryCount: Int = 0
     ) async throws -> Payload {
         let url = try endpointURL(endpoint, queryItems: queryItems)
         let cacheKey = Self.responseCacheKey(
@@ -388,6 +389,26 @@ actor OpenSubsonicClient {
                 // Store only a body that decoded into the endpoint's expected
                 // payload, never an HTTP or schema error response.
                 storeResponse(response.data, for: cacheKey)
+            case .readOnly where mutationsInFlight == 0
+                    && mutationEpoch == requestEpoch:
+                break
+            case .readOnly:
+                // Never hand a caller a representation that completed across
+                // a star/unstar or other mutation boundary. Wait for the
+                // mutation to settle and retry once from the new epoch.
+                guard staleReadRetryCount < 2 else {
+                    throw CancellationError()
+                }
+                while mutationsInFlight > 0 {
+                    try Task.checkCancellation()
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+                return try await performRequest(
+                    endpoint,
+                    queryItems: queryItems,
+                    semantics: semantics,
+                    staleReadRetryCount: staleReadRetryCount + 1
+                )
             case .mutation:
                 mutationsInFlight = max(0, mutationsInFlight - 1)
                 mutationEpoch &+= 1
@@ -1644,7 +1665,8 @@ actor OpenSubsonicClient {
     /// replaced together from one `getSong` response.
     func playbackMedia(
         for provisional: Song,
-        occurrenceID: UUID
+        queueEntryID: UUID,
+        playbackGenerationID: UUID
     ) async throws -> PlaybackMediaItem {
         var canonical = try await song(id: provisional.id)
         canonical.starred = provisional.starred
@@ -1657,7 +1679,8 @@ actor OpenSubsonicClient {
         return PlaybackMediaItem(
             song: canonical,
             accountScope: accountScope,
-            occurrenceID: occurrenceID
+            queueEntryID: queueEntryID,
+            playbackGenerationID: playbackGenerationID
         )
     }
 

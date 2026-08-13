@@ -144,25 +144,29 @@ final class AppDatabaseTests: XCTestCase {
             index: 1,
             elapsed: 42,
             shuffle: true,
-            repeatMode: .all
+            repeatMode: .all,
+            revision: 1
         )
         let queueSaved = await context.database.saveQueue(queue, scope: "account-a")
         XCTAssertTrue(queueSaved)
         let restored = await context.database.loadQueue(scope: "account-a")
         XCTAssertEqual(restored?.queue, [first, second])
         XCTAssertEqual(restored?.currentID, second.id)
+        XCTAssertEqual(restored?.currentQueueEntryID, queue.currentQueueEntryID)
         XCTAssertEqual(restored?.elapsed, 42)
         XCTAssertEqual(restored?.repeatMode, .all)
         let missingOtherAccount = await context.database.loadQueue(scope: "account-b")
         XCTAssertNil(missingOtherAccount)
 
         let stateOnlyUpdate = QueueSnapshot(
-            queue: [first, second],
+            entries: queue.entries,
             currentID: first.id,
+            currentQueueEntryID: queue.entries[0].id,
             index: 0,
             elapsed: 84,
             shuffle: false,
-            repeatMode: .one
+            repeatMode: .one,
+            revision: 2
         )
         let stateSaved = await context.database.saveQueue(
             stateOnlyUpdate,
@@ -177,13 +181,57 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(stateRestored?.shuffle, false)
         XCTAssertEqual(stateRestored?.repeatMode, .one)
 
+        let staleSave = await context.database.saveQueue(
+            QueueSnapshot(
+                queue: [first, second],
+                currentID: second.id,
+                index: 1,
+                elapsed: 999,
+                shuffle: true,
+                repeatMode: .all,
+                revision: 1
+            ),
+            scope: "account-a"
+        )
+        XCTAssertFalse(staleSave)
+        let staleRestored = await context.database.loadQueue(scope: "account-a")
+        XCTAssertEqual(staleRestored?.elapsed, 84)
+
+        let tombstoneRevision = await context.database.clearQueue(
+            scope: "account-a",
+            minimumRevision: 2
+        )
+        XCTAssertEqual(tombstoneRevision, 3)
+        let tombstone = await context.database.loadQueue(scope: "account-a")
+        XCTAssertEqual(tombstone?.queue, [])
+        XCTAssertEqual(tombstone?.revision, 3)
+
+        let resurrectingSave = await context.database.saveQueue(
+            QueueSnapshot(
+                queue: [first],
+                currentID: first.id,
+                index: 0,
+                elapsed: 1,
+                shuffle: false,
+                repeatMode: .off,
+                revision: 3
+            ),
+            scope: "account-a"
+        )
+        XCTAssertFalse(resurrectingSave)
+        let afterResurrection = await context.database.loadQueue(
+            scope: "account-a"
+        )
+        XCTAssertEqual(afterResurrection?.queue, [])
+
         let secondAccountQueue = QueueSnapshot(
             queue: [second],
             currentID: second.id,
             index: 0,
             elapsed: 12,
             shuffle: false,
-            repeatMode: .off
+            repeatMode: .off,
+            revision: 1
         )
         let secondAccountSaved = await context.database.saveQueue(
             secondAccountQueue,
@@ -192,7 +240,7 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertTrue(secondAccountSaved)
         let firstAccountRestored = await context.database.loadQueue(scope: "account-a")
         let secondAccountRestored = await context.database.loadQueue(scope: "account-b")
-        XCTAssertEqual(firstAccountRestored?.queue, [first, second])
+        XCTAssertEqual(firstAccountRestored?.queue, [])
         XCTAssertEqual(secondAccountRestored?.queue, [second])
 
         let snapshot = HomeSnapshot(starredSongs: [first])
@@ -207,6 +255,33 @@ final class AppDatabaseTests: XCTestCase {
             maximumAge: 60
         )
         XCTAssertEqual(loadedSnapshot, snapshot)
+    }
+
+    func testQueueRestorePreservesSelectedDuplicateOccurrence() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        let duplicate = song(id: "duplicate")
+        let first = PlaybackQueueEntry(song: duplicate)
+        let second = PlaybackQueueEntry(song: duplicate)
+        let snapshot = QueueSnapshot(
+            entries: [first, second],
+            currentID: duplicate.id,
+            currentQueueEntryID: second.id,
+            index: 1,
+            elapsed: 12,
+            shuffle: false,
+            repeatMode: .off,
+            revision: 7
+        )
+
+        let saved = await context.database.saveQueue(snapshot, scope: "account")
+        XCTAssertTrue(saved)
+        let restored = await context.database.loadQueue(scope: "account")
+
+        XCTAssertEqual(restored?.entries.map(\.id), [first.id, second.id])
+        XCTAssertEqual(restored?.currentQueueEntryID, second.id)
+        XCTAssertEqual(restored?.index, 1)
+        XCTAssertEqual(restored?.revision, 7)
     }
 
     func testArtworkPaletteCacheIsAccountAndVersionIsolated() async throws {

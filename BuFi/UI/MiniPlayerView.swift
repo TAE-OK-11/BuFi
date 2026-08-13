@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MiniPlayerView: View {
-    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var playback: PlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
@@ -12,13 +12,13 @@ struct MiniPlayerView: View {
     private let audio = AudioEngine.shared
 
     var body: some View {
-        if let song = playbackItem.currentSong {
+        if let song = playback.currentSong {
             let artworkIdentity = MiniPlayerArtworkIdentity(
-                occurrenceID: playbackItem.currentItem?.id,
+                occurrenceID: playback.currentItem?.id,
                 songID: song.id,
                 coverArtID: song.artworkID,
                 artworkRevision: song.artworkRevision,
-                accountScope: playbackItem.currentItem?.accountScope
+                accountScope: playback.currentItem?.accountScope
             )
             ZStack {
                 Button {
@@ -43,9 +43,9 @@ struct MiniPlayerView: View {
                             cornerRadius: 5,
                             cacheRevision: artworkIdentity.artworkRevision,
                             onPalette: { nextPalette in
-                                guard playbackItem.currentSong?.id == artworkIdentity.songID,
-                                      playbackItem.currentSong?.artworkID == artworkIdentity.coverArtID,
-                                      playbackItem.currentItem?.id == artworkIdentity.occurrenceID else {
+                                guard playback.currentSong?.id == artworkIdentity.songID,
+                                      playback.currentSong?.artworkID == artworkIdentity.coverArtID,
+                                      playback.currentItem?.id == artworkIdentity.occurrenceID else {
                                     return
                                 }
                                 if nextPalette == .fallback {
@@ -72,7 +72,7 @@ struct MiniPlayerView: View {
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.76)
                             }
-                            .id(playbackItem.currentItem?.id)
+                            .id(playback.currentItem?.id)
                             .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -144,13 +144,13 @@ struct MiniPlayerView: View {
     }
 
     private var currentArtworkIdentity: MiniPlayerArtworkIdentity? {
-        guard let song = playbackItem.currentSong else { return nil }
+        guard let song = playback.currentSong else { return nil }
         return MiniPlayerArtworkIdentity(
-            occurrenceID: playbackItem.currentItem?.id,
+            occurrenceID: playback.currentItem?.id,
             songID: song.id,
             coverArtID: song.artworkID,
             artworkRevision: song.artworkRevision,
-            accountScope: playbackItem.currentItem?.accountScope
+            accountScope: playback.currentItem?.accountScope
         )
     }
 

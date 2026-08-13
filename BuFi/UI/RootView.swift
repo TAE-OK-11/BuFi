@@ -27,9 +27,8 @@ private struct PlayerPresentationSession: Identifiable {
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
-    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var playback: PlaybackState
     @EnvironmentObject private var playbackActivity: PlaybackActivityState
-    @EnvironmentObject private var playbackQueue: PlaybackQueueState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -174,12 +173,12 @@ struct RootView: View {
     }
 
     private var currentArtworkPageID: PlayerArtworkPageID? {
-        guard let song = playbackItem.currentSong else { return nil }
+        guard let song = playback.currentSong else { return nil }
         return PlayerArtworkPagerSnapshot.make(
             currentSong: song,
-            queue: playbackQueue.songs,
-            queueIndex: playbackQueue.index,
-            accountScope: playbackItem.currentItem?.accountScope
+            queue: playback.songs,
+            queueIndex: playback.index,
+            accountScope: playback.currentItem?.accountScope
         ).currentPage
     }
 
@@ -240,7 +239,7 @@ struct RootView: View {
         tabView
             .overlayPreferenceValue(MiniPlayerPlacementPreferenceKey.self) { anchor in
                 GeometryReader { proxy in
-                    if let anchor, playbackItem.currentSong != nil {
+                    if let anchor, playback.currentSong != nil {
                         let frame = proxy[anchor]
                         miniPlayer
                             .frame(width: frame.width, height: frame.height)
@@ -251,7 +250,7 @@ struct RootView: View {
             }
             .animation(
                 effectiveMotion ? BuFiMotion.content : .none,
-                value: playbackItem.currentSong != nil
+                value: playback.currentSong != nil
             )
     }
 
@@ -261,7 +260,7 @@ struct RootView: View {
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
             .safeAreaInset(edge: .bottom, spacing: 10) {
-                if playbackItem.currentSong != nil {
+                if playback.currentSong != nil {
                     Color.clear
                         .frame(maxWidth: .infinity)
                         .frame(height: 60)

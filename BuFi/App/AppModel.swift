@@ -185,6 +185,7 @@ final class AppModel: ObservableObject {
     }
 
     private(set) var client: OpenSubsonicClient?
+    private var historySessionToken: AccountSessionToken?
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
     private var recommendationTask: Task<Void, Never>?
@@ -221,19 +222,11 @@ final class AppModel: ObservableObject {
             forKey: Self.listenBrainzUsernameKey
         ) ?? ""
         Task { [weak self] in
-            let stored = await Task.detached(priority: .userInitiated) {
-                let store = SecureStore()
-                return (
-                    credentials: store.load(),
-                    hasLastFMKey: store.loadSecret(
-                        account: lastFMAccount
-                    )?.isEmpty == false,
-                    hasListenBrainzToken: store.loadSecret(
-                        account: listenBrainzAccount
-                    )?.isEmpty == false
-                )
-            }.value
             guard let self else { return }
+            let stored = await self.secureStore.loadBootstrapState(
+                lastFMAccount: lastFMAccount,
+                listenBrainzAccount: listenBrainzAccount
+            )
             self.hasLastFMAPIKey = stored.hasLastFMKey
             self.hasListenBrainzToken = stored.hasListenBrainzToken
             if let credentials = stored.credentials {
@@ -270,8 +263,9 @@ final class AppModel: ObservableObject {
         recommendationTask = nil
         clearFavoriteState()
         clearDetailCaches()
-        secureStore.delete()
+        await secureStore.delete()
         client = nil
+        historySessionToken = nil
         publishHome(.empty)
         searchResults = .empty
         isSearching = false
@@ -502,16 +496,16 @@ final class AppModel: ObservableObject {
         AudioEngine.shared.play(song, in: [song])
     }
 
-    func saveLastFMAPIKey(_ value: String) {
+    func saveLastFMAPIKey(_ value: String) async {
         let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             var snapshot = home
             snapshot.lastFMRecommendedSongs = []
             if key.isEmpty {
-                secureStore.deleteSecret(account: Self.lastFMKeyAccount)
+                await secureStore.deleteSecret(account: Self.lastFMKeyAccount)
                 hasLastFMAPIKey = false
             } else {
-                try secureStore.saveSecret(key, account: Self.lastFMKeyAccount)
+                try await secureStore.saveSecret(key, account: Self.lastFMKeyAccount)
                 hasLastFMAPIKey = true
             }
             publishHome(snapshot)
@@ -528,7 +522,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func saveListenBrainz(username: String, token: String) {
+    func saveListenBrainz(username: String, token: String) async {
         let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let secret = token.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(name, forKey: Self.listenBrainzUsernameKey)
@@ -536,11 +530,11 @@ final class AppModel: ObservableObject {
         do {
             if secret.isEmpty {
                 if name.isEmpty {
-                    secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
+                    await secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
                     hasListenBrainzToken = false
                 }
             } else {
-                try secureStore.saveSecret(
+                try await secureStore.saveSecret(
                     secret,
                     account: Self.listenBrainzTokenAccount
                 )
@@ -562,8 +556,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func removeListenBrainz() {
-        secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
+    func removeListenBrainz() async {
+        await secureStore.deleteSecret(account: Self.listenBrainzTokenAccount)
         UserDefaults.standard.removeObject(forKey: Self.listenBrainzUsernameKey)
         hasListenBrainzToken = false
         listenBrainzUsername = ""
@@ -857,6 +851,7 @@ final class AppModel: ObservableObject {
     func setStar(song: Song, enabled: Bool) async -> Bool {
         guard let client else { return false }
         let generation = sessionGeneration
+        let historySession = historySessionToken
         let previous = isStarred(song)
         updateStarredSong(song, enabled: enabled)
         AudioEngine.shared.updateStarred(songID: song.id, enabled: enabled)
@@ -868,10 +863,14 @@ final class AppModel: ObservableObject {
             generation: generation,
             initialState: previous
         )
-        if outcome.succeeded {
+        if outcome.succeeded,
+           generation == sessionGeneration,
+           self.client === client,
+           let historySession {
             await ListeningHistoryStore.shared.recordFavorite(
                 song,
-                enabled: enabled
+                enabled: enabled,
+                session: historySession
             )
             return true
         }
@@ -1827,8 +1826,8 @@ final class AppModel: ObservableObject {
         in snapshot: HomeSnapshot,
         client: OpenSubsonicClient
     ) async -> HomeSnapshot {
-        let lastFMKey = secureStore.loadSecret(account: Self.lastFMKeyAccount) ?? ""
-        let listenBrainzToken = secureStore.loadSecret(
+        let lastFMKey = await secureStore.loadSecret(account: Self.lastFMKeyAccount) ?? ""
+        let listenBrainzToken = await secureStore.loadSecret(
             account: Self.listenBrainzTokenAccount
         )
         let seed = snapshot.mostPlayedSongs.first
@@ -2012,6 +2011,7 @@ final class AppModel: ObservableObject {
         }
         let isReplacingActiveSession = client != nil
         client = nil
+        historySessionToken = nil
         if isReplacingActiveSession {
             await AudioEngine.shared.shutdownForSessionEnd()
             guard generation == sessionGeneration else { return }
@@ -2056,8 +2056,9 @@ final class AppModel: ObservableObject {
                 await deactivateStores(accountScope: accountScope)
                 return
             }
-            await ListeningHistoryStore.shared.activate(accountScope: accountScope)
-            guard generation == sessionGeneration else {
+            guard let historySession = await ListeningHistoryStore.shared.activate(
+                accountScope: accountScope
+            ), generation == sessionGeneration else {
                 await deactivateStores(accountScope: accountScope)
                 return
             }
@@ -2068,13 +2069,14 @@ final class AppModel: ObservableObject {
                 await deactivateStores(accountScope: accountScope)
                 return
             }
-            if persist { try secureStore.save(client.credentials) }
+            if persist { try await secureStore.save(client.credentials) }
 
             reconcileFavoriteStates(
                 in: snapshot,
                 authoritative: false
             )
             self.client = client
+            self.historySessionToken = historySession
             self.publishHome(applyingFavoriteOverrides(to: snapshot))
             self.lastFullRefresh = .distantPast
             self.lastHomeSnapshotSave = .distantPast
@@ -2087,6 +2089,7 @@ final class AppModel: ObservableObject {
             activatedAccountScope = nil
             AudioEngine.shared.configure(
                 client: client,
+                historySession: historySession,
                 songFavoriteMutationHandler: { [weak self] song in
                     guard let self else { return false }
                     return await self.setStar(
@@ -2120,6 +2123,7 @@ final class AppModel: ObservableObject {
             }
             guard generation == sessionGeneration else { return }
             client = nil
+            historySessionToken = nil
             publishHome(.empty)
             searchResults = .empty
             connectedServerAddress = ""

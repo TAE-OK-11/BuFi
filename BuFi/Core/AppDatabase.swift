@@ -10,35 +10,64 @@ struct OfflineDatabaseEntry: Sendable, Equatable {
 actor AppDatabase {
     static let shared = AppDatabase()
 
-    private let pool: DatabasePool?
+    private struct StoredQueueItem: Sendable {
+        let queueEntryID: String?
+        let songData: Data
+    }
+
+    private struct StoredQueueState: Sendable {
+        let items: [StoredQueueItem]
+        let currentSongID: String?
+        let currentQueueEntryID: String?
+        let index: Int
+        let elapsed: TimeInterval
+        let shuffle: Bool
+        let repeatMode: String
+        let revision: Int64
+    }
+
+    private struct EncodedQueueItem: Sendable {
+        let position: Int
+        let queueEntryID: String
+        let songData: Data
+    }
+
+    private let poolTask: Task<DatabasePool?, Never>
     private let currentDate: @Sendable () -> Date
 
     private init() {
         currentDate = { Date() }
-        do {
-            let support = FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            )[0]
-            let directory = support.appendingPathComponent("Database", isDirectory: true)
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true,
-                attributes: [
-                    .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
-                ]
-            )
-            try FileManager.default.setAttributes(
-                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                ofItemAtPath: directory.path
-            )
-
-            pool = try Self.makePool(
-                path: directory.appendingPathComponent("BuFi.sqlite").path
-            )
-        } catch {
-            assertionFailure("Database initialization failed: \(error)")
-            pool = nil
+        poolTask = Task.detached(priority: .utility) { () -> DatabasePool? in
+            do {
+                let support = FileManager.default.urls(
+                    for: .applicationSupportDirectory,
+                    in: .userDomainMask
+                )[0]
+                let directory = support.appendingPathComponent(
+                    "Database",
+                    isDirectory: true
+                )
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true,
+                    attributes: [
+                        .protectionKey:
+                            FileProtectionType.completeUntilFirstUserAuthentication
+                    ]
+                )
+                try FileManager.default.setAttributes(
+                    [
+                        .protectionKey:
+                            FileProtectionType.completeUntilFirstUserAuthentication
+                    ],
+                    ofItemAtPath: directory.path
+                )
+                return try Self.makePool(
+                    path: directory.appendingPathComponent("BuFi.sqlite").path
+                )
+            } catch {
+                return nil
+            }
         }
     }
 
@@ -47,11 +76,12 @@ actor AppDatabase {
         currentDate: @escaping @Sendable () -> Date = { Date() }
     ) throws {
         self.currentDate = currentDate
-        pool = try Self.makePool(path: databaseURL.path)
+        let pool = try Self.makePool(path: databaseURL.path)
+        poolTask = Task.detached { () -> DatabasePool? in pool }
     }
 
     func loadListeningHistory(scope: String) async -> [String: SongBehavior] {
-        guard let pool else { return [:] }
+        guard let pool = await poolTask.value else { return [:] }
         do {
             return try await pool.read { db in
                 let rows = try Row.fetchAll(
@@ -108,7 +138,7 @@ actor AppDatabase {
         deletedIDs: Set<String>,
         scope: String
     ) async -> Bool {
-        guard let pool else { return false }
+        guard let pool = await poolTask.value else { return false }
         do {
             try await pool.write { db in
                 for id in deletedIDs {
@@ -149,7 +179,7 @@ actor AppDatabase {
         _ values: [String: SongBehavior],
         scope: String
     ) async -> Bool {
-        guard let pool else { return false }
+        guard let pool = await poolTask.value else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -184,7 +214,8 @@ actor AppDatabase {
     }
 
     func clearListeningHistory(scope: String) async {
-        try? await pool?.write { db in
+        guard let pool = await poolTask.value else { return }
+        try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM listening_behavior WHERE account_scope = ?",
                 arguments: [scope]
@@ -199,7 +230,7 @@ actor AppDatabase {
         songID: String,
         scope: String
     ) async -> Bool {
-        guard let pool else { return false }
+        guard let pool = await poolTask.value else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -218,7 +249,7 @@ actor AppDatabase {
 #endif
 
     func loadOfflineEntries(scope: String) async -> [String: OfflineDatabaseEntry] {
-        guard let pool else { return [:] }
+        guard let pool = await poolTask.value else { return [:] }
         do {
             return try await pool.read { db in
                 let rows = try Row.fetchAll(
@@ -246,7 +277,7 @@ actor AppDatabase {
         deletedIDs: Set<String>,
         scope: String
     ) async -> Bool {
-        guard let pool else { return false }
+        guard let pool = await poolTask.value else { return false }
         do {
             try await pool.write { db in
                 for id in deletedIDs {
@@ -284,7 +315,7 @@ actor AppDatabase {
         _ values: [String: OfflineDatabaseEntry],
         scope: String
     ) async -> Bool {
-        guard let pool else { return false }
+        guard let pool = await poolTask.value else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -312,7 +343,8 @@ actor AppDatabase {
     }
 
     func clearOfflineEntries(scope: String) async {
-        try? await pool?.write { db in
+        guard let pool = await poolTask.value else { return }
+        try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM offline_entry WHERE account_scope = ?",
                 arguments: [scope]
@@ -324,7 +356,7 @@ actor AppDatabase {
         scope: String,
         maximumAge: TimeInterval
     ) async -> HomeSnapshot? {
-        guard let pool else { return nil }
+        guard let pool = await poolTask.value else { return nil }
         do {
             return try await pool.read { db in
                 guard let row = try Row.fetchOne(
@@ -353,7 +385,7 @@ actor AppDatabase {
         scope: String,
         maximumBytes: Int
     ) async -> Bool {
-        guard let pool,
+        guard let pool = await poolTask.value,
               let data = try? Self.encode(snapshot),
               data.count <= maximumBytes else { return false }
         do {
@@ -376,7 +408,8 @@ actor AppDatabase {
     }
 
     func removeHomeSnapshot(scope: String) async {
-        try? await pool?.write { db in
+        guard let pool = await poolTask.value else { return }
+        try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM home_snapshot WHERE account_scope = ?",
                 arguments: [scope]
@@ -389,7 +422,7 @@ actor AppDatabase {
         artworkKey: String,
         engineVersion: Int
     ) async -> ArtworkPalette? {
-        guard let pool,
+        guard let pool = await poolTask.value,
               !scope.isEmpty,
               scope.utf8.count <= 512,
               !artworkKey.isEmpty,
@@ -452,7 +485,7 @@ actor AppDatabase {
         maximumEntriesPerScope: Int = 384,
         maximumTotalEntries: Int = 1_024
     ) async -> Bool {
-        guard let pool,
+        guard let pool = await poolTask.value,
               !scope.isEmpty,
               scope.utf8.count <= 512,
               !artworkKey.isEmpty,
@@ -520,7 +553,8 @@ actor AppDatabase {
     }
 
     func clearArtworkPalettes(scope: String) async {
-        try? await pool?.write { db in
+        guard let pool = await poolTask.value else { return }
+        try? await pool.write { db in
             try db.execute(
                 sql: "DELETE FROM artwork_palette_cache WHERE account_scope = ?",
                 arguments: [scope]
@@ -529,15 +563,16 @@ actor AppDatabase {
     }
 
     func clearAllArtworkPalettes() async {
-        try? await pool?.write { db in
+        guard let pool = await poolTask.value else { return }
+        try? await pool.write { db in
             try db.execute(sql: "DELETE FROM artwork_palette_cache")
         }
     }
 
     func loadQueue(scope: String) async -> QueueSnapshot? {
-        guard let pool else { return nil }
+        guard let pool = await poolTask.value else { return nil }
         do {
-            return try await pool.read { db in
+            let stored = try await pool.read { db -> StoredQueueState? in
                 guard let state = try Row.fetchOne(
                     db,
                     sql: "SELECT * FROM queue_state WHERE account_scope = ?",
@@ -548,24 +583,48 @@ actor AppDatabase {
                 let itemRows = try Row.fetchAll(
                     db,
                     sql: """
-                    SELECT song_data FROM queue_item
+                    SELECT occurrence_id, song_data FROM queue_item
                     WHERE account_scope = ? ORDER BY position
                     """,
                     arguments: [scope]
                 )
-                let songs = try itemRows.map { row in
-                    try Self.decode(Song.self, from: row["song_data"] as Data)
+                let items = itemRows.map { row in
+                    StoredQueueItem(
+                        queueEntryID: row["occurrence_id"],
+                        songData: row["song_data"]
+                    )
                 }
-                guard !songs.isEmpty else { return nil }
-                return QueueSnapshot(
-                    queue: songs,
-                    currentID: state["current_song_id"],
+                return StoredQueueState(
+                    items: items,
+                    currentSongID: state["current_song_id"],
+                    currentQueueEntryID: state["current_occurrence_id"],
                     index: state["current_index"],
                     elapsed: state["elapsed"],
                     shuffle: state["shuffle"],
-                    repeatMode: RepeatMode(rawValue: state["repeat_mode"]) ?? .off
+                    repeatMode: state["repeat_mode"],
+                    revision: state["revision"]
                 )
             }
+            guard let stored else { return nil }
+            let entries = try stored.items.map { item in
+                PlaybackQueueEntry(
+                    song: try Self.decode(Song.self, from: item.songData),
+                    queueEntryID: item.queueEntryID.flatMap(UUID.init(uuidString:))
+                        ?? UUID()
+                )
+            }
+            return QueueSnapshot(
+                entries: entries,
+                currentID: stored.currentSongID,
+                currentQueueEntryID: stored.currentQueueEntryID.flatMap(
+                    UUID.init(uuidString:)
+                ),
+                index: stored.index,
+                elapsed: stored.elapsed,
+                shuffle: stored.shuffle,
+                repeatMode: RepeatMode(rawValue: stored.repeatMode) ?? .off,
+                revision: UInt64(max(0, stored.revision))
+            )
         } catch {
             return nil
         }
@@ -577,64 +636,150 @@ actor AppDatabase {
         scope: String,
         replacingItems: Bool = true
     ) async -> Bool {
-        guard let pool else { return false }
+        guard let pool = await poolTask.value else { return false }
+        let encodedItems: [EncodedQueueItem]
         do {
-            try await pool.write { db in
-                guard !snapshot.queue.isEmpty else {
-                    try db.execute(
-                        sql: "DELETE FROM queue_state WHERE account_scope = ?",
-                        arguments: [scope]
+            if replacingItems {
+                encodedItems = try snapshot.entries.enumerated().map {
+                    position, entry in
+                    EncodedQueueItem(
+                        position: position,
+                        queueEntryID: entry.id.uuidString,
+                        songData: try Self.encode(entry.song)
                     )
-                    return
+                }
+            } else {
+                encodedItems = []
+            }
+        } catch {
+            return false
+        }
+        do {
+            return try await pool.write { db in
+                let incomingRevision = Int64(clamping: snapshot.revision)
+                let persistedRevision: Int64? = try Int64.fetchOne(
+                    db,
+                    sql: """
+                    SELECT revision FROM queue_state WHERE account_scope = ?
+                    """,
+                    arguments: [scope]
+                )
+                if let persistedRevision,
+                   incomingRevision <= persistedRevision {
+                    return false
+                }
+                guard !snapshot.queue.isEmpty else {
+                    _ = try Self.writeQueueTombstone(
+                        in: db,
+                        scope: scope,
+                        minimumRevision: snapshot.revision
+                    )
+                    return true
                 }
                 try db.execute(
                     sql: """
                     INSERT INTO queue_state
-                        (account_scope, current_song_id, current_index, elapsed,
-                         shuffle, repeat_mode, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (account_scope, current_song_id, current_occurrence_id,
+                         current_index, elapsed, shuffle, repeat_mode, revision,
+                         updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(account_scope) DO UPDATE SET
                         current_song_id = excluded.current_song_id,
+                        current_occurrence_id = excluded.current_occurrence_id,
                         current_index = excluded.current_index,
                         elapsed = excluded.elapsed,
                         shuffle = excluded.shuffle,
                         repeat_mode = excluded.repeat_mode,
+                        revision = excluded.revision,
                         updated_at = excluded.updated_at
                     """,
                     arguments: [
-                        scope, snapshot.currentID, snapshot.index, snapshot.elapsed,
-                        snapshot.shuffle, snapshot.repeatMode.rawValue,
+                        scope, snapshot.currentID,
+                        snapshot.currentQueueEntryID?.uuidString,
+                        snapshot.index, snapshot.elapsed, snapshot.shuffle,
+                        snapshot.repeatMode.rawValue, incomingRevision,
                         Date().timeIntervalSince1970
                     ]
                 )
-                guard replacingItems else { return }
+                guard replacingItems else { return true }
                 try db.execute(
                     sql: "DELETE FROM queue_item WHERE account_scope = ?",
                     arguments: [scope]
                 )
-                for (position, song) in snapshot.queue.enumerated() {
+                for item in encodedItems {
                     try db.execute(
                         sql: """
-                        INSERT INTO queue_item
-                            (account_scope, position, song_data) VALUES (?, ?, ?)
+                            INSERT INTO queue_item
+                            (account_scope, position, occurrence_id, song_data)
+                            VALUES (?, ?, ?, ?)
                         """,
-                        arguments: [scope, position, try Self.encode(song)]
+                        arguments: [
+                            scope, item.position, item.queueEntryID,
+                            item.songData
+                        ]
                     )
                 }
+                return true
             }
-            return true
         } catch {
             return false
         }
     }
 
-    func clearQueue(scope: String) async {
-        try? await pool?.write { db in
-            try db.execute(
-                sql: "DELETE FROM queue_state WHERE account_scope = ?",
-                arguments: [scope]
+    @discardableResult
+    func clearQueue(
+        scope: String,
+        minimumRevision: UInt64
+    ) async -> UInt64? {
+        guard let pool = await poolTask.value else { return nil }
+        return try? await pool.write { db in
+            try Self.writeQueueTombstone(
+                in: db,
+                scope: scope,
+                minimumRevision: minimumRevision
             )
         }
+    }
+
+    private static func writeQueueTombstone(
+        in db: Database,
+        scope: String,
+        minimumRevision: UInt64
+    ) throws -> UInt64 {
+        let persistedRevision: Int64 = try Int64.fetchOne(
+            db,
+            sql: "SELECT revision FROM queue_state WHERE account_scope = ?",
+            arguments: [scope]
+        ) ?? -1
+        let requested = Int64(clamping: minimumRevision)
+        let nextRevision = max(requested, persistedRevision + 1)
+        try db.execute(
+            sql: """
+                INSERT INTO queue_state
+                    (account_scope, current_song_id, current_occurrence_id,
+                     current_index, elapsed, shuffle, repeat_mode, revision,
+                     updated_at)
+                VALUES (?, NULL, NULL, -1, 0, 0, ?, ?, ?)
+                ON CONFLICT(account_scope) DO UPDATE SET
+                    current_song_id = NULL,
+                    current_occurrence_id = NULL,
+                    current_index = -1,
+                    elapsed = 0,
+                    shuffle = 0,
+                    repeat_mode = excluded.repeat_mode,
+                    revision = excluded.revision,
+                    updated_at = excluded.updated_at
+                """,
+            arguments: [
+                scope, RepeatMode.off.rawValue, nextRevision,
+                Date().timeIntervalSince1970
+            ]
+        )
+        try db.execute(
+            sql: "DELETE FROM queue_item WHERE account_scope = ?",
+            arguments: [scope]
+        )
+        return UInt64(max(0, nextRevision))
     }
 
     private static func date(_ timestamp: Double) -> Date {
@@ -885,6 +1030,16 @@ actor AppDatabase {
                     FOREIGN KEY (account_scope) REFERENCES queue_state(account_scope)
                         ON DELETE CASCADE
                 ) WITHOUT ROWID;
+                """)
+        }
+        migrator.registerMigration("queue-occurrence-revision-v5") { db in
+            try db.execute(sql: """
+                ALTER TABLE queue_state
+                    ADD COLUMN current_occurrence_id TEXT;
+                ALTER TABLE queue_state
+                    ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE queue_item
+                    ADD COLUMN occurrence_id TEXT;
                 """)
         }
         return migrator

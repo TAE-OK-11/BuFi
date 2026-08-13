@@ -111,13 +111,38 @@ final class PlayerPresentationStateTests: XCTestCase {
             song(id: "second", coverArt: "cover-b")
         ]
 
-        let selected = PlaybackQueueSnapshot(songs: songs, index: 1)
+        let entries = songs.map { PlaybackQueueEntry(song: $0) }
+        let selected = PlaybackSnapshot(
+            entries: entries,
+            index: 1,
+            accountScope: "account"
+        )
         XCTAssertEqual(selected.index, 1)
         XCTAssertEqual(selected.songs[selected.index].id, "second")
+        XCTAssertEqual(selected.currentItem?.queueEntryID, entries[1].id)
 
-        let clamped = PlaybackQueueSnapshot(songs: songs, index: 8)
+        let clamped = PlaybackSnapshot(
+            entries: entries,
+            index: 8,
+            accountScope: "account"
+        )
         XCTAssertEqual(clamped.index, 1)
-        XCTAssertEqual(PlaybackQueueSnapshot.empty.index, -1)
+        XCTAssertEqual(PlaybackSnapshot.empty.index, -1)
+    }
+
+    func testDuplicateSongIDsKeepDistinctQueueOccurrences() {
+        let duplicate = song(id: "same-song", coverArt: "cover")
+        let first = PlaybackQueueEntry(song: duplicate)
+        let second = PlaybackQueueEntry(song: duplicate)
+        let snapshot = PlaybackSnapshot(
+            entries: [first, second],
+            index: 1,
+            accountScope: "account"
+        )
+
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(snapshot.currentItem?.id, second.id)
+        XCTAssertEqual(snapshot.currentSong?.id, duplicate.id)
     }
 
     private func song(id: String, coverArt: String?) -> Song {

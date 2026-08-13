@@ -14,10 +14,9 @@ struct BuFiApp: App {
                 .environmentObject(model.searchContent)
                 .environmentObject(model.favorites)
                 .environmentObject(audio)
-                .environmentObject(audio.itemState)
+                .environmentObject(audio.playbackState)
                 .environmentObject(audio.activityState)
                 .environmentObject(audio.controlState)
-                .environmentObject(audio.queueState)
                 .environmentObject(audio.presentation)
                 .tint(BuFiTheme.accent)
         }

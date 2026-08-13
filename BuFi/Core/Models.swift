@@ -150,21 +150,41 @@ struct PlaybackStreamReference: Equatable, Hashable, Sendable {
     let contentType: String?
 }
 
+/// One logical queue occurrence. Duplicate server song IDs remain distinct so
+/// late artwork, metadata, and transport work can be validated against the
+/// exact queue entry that requested it.
+struct PlaybackQueueEntry: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    var song: Song
+
+    init(song: Song, queueEntryID: UUID = UUID()) {
+        id = queueEntryID
+        self.song = song
+    }
+}
+
 /// One atomic now-playing value. The occurrence ID distinguishes two
 /// consecutive plays of the same server song, while the nested references
 /// guarantee that artwork and stream work are derived from the same metadata
 /// snapshot rather than independently sampled mutable state.
 struct PlaybackMediaItem: Identifiable, Equatable, Sendable {
+    /// Changes for every concrete playback attempt, even when the same durable
+    /// queue entry is replayed.
     let id: UUID
+    /// Stable identity of the queue row. This is persisted and survives
+    /// reordering independently of the active playback generation above.
+    let queueEntryID: UUID
     let accountScope: String?
     var song: Song
 
     init(
         song: Song,
         accountScope: String?,
-        occurrenceID: UUID = UUID()
+        queueEntryID: UUID = UUID(),
+        playbackGenerationID: UUID = UUID()
     ) {
-        id = occurrenceID
+        id = playbackGenerationID
+        self.queueEntryID = queueEntryID
         self.accountScope = accountScope
         self.song = song
     }

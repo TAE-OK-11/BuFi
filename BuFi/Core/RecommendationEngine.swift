@@ -2140,7 +2140,8 @@ struct ExternalRecommendationCandidate: Sendable {
 actor ExternalRecommendationClient {
     static let shared = ExternalRecommendationClient()
 
-    private let session: URLSession
+    private let publicSession: URLSession
+    private let privateSession: URLSession
     private let decoder = JSONDecoder()
 
     private init() {
@@ -2153,8 +2154,19 @@ actor ExternalRecommendationClient {
             allowsExpensiveNetworkAccess: true,
             allowsConstrainedNetworkAccess: false
         )
-        session = URLSession(
+        publicSession = URLSession(
             configuration: configuration,
+            delegate: HTTPSOnlyURLSessionDelegate(),
+            delegateQueue: nil
+        )
+        privateSession = URLSession(
+            configuration: ModernNetworkPolicy.makeEphemeralConfiguration(
+                requestTimeout: 12,
+                resourceTimeout: 24,
+                maximumConnectionsPerHost: 2,
+                allowsExpensiveNetworkAccess: true,
+                allowsConstrainedNetworkAccess: false
+            ),
             delegate: HTTPSOnlyURLSessionDelegate(),
             delegateQueue: nil
         )
@@ -2179,7 +2191,10 @@ actor ExternalRecommendationClient {
             URLQueryItem(name: "format", value: "json")
         ]
         guard let url = components.url,
-              let response: LastFMResponse = await decode(url: url) else {
+              let response: LastFMResponse = await decode(
+                url: url,
+                allowsCaching: false
+              ) else {
             return []
         }
         return (response.similartracks?.track ?? []).compactMap { item in
@@ -2220,7 +2235,8 @@ actor ExternalRecommendationClient {
         guard let url = components.url,
               let response: ListenBrainzRecommendationResponse = await decode(
                 url: url,
-                token: token
+                token: token,
+                allowsCaching: token?.isEmpty ?? true
               ) else {
             return []
         }
@@ -2238,7 +2254,8 @@ actor ExternalRecommendationClient {
         guard let resolvedURL = metadataURL.url,
               let metadata: [String: ListenBrainzMetadata] = await decode(
                 url: resolvedURL,
-                token: token
+                token: token,
+                allowsCaching: token?.isEmpty ?? true
               ) else {
             return []
         }
@@ -2270,12 +2287,14 @@ actor ExternalRecommendationClient {
 
     private func decode<Value: Decodable>(
         url: URL,
-        token: String? = nil
+        token: String? = nil,
+        allowsCaching: Bool = true
     ) async -> Value? {
         do {
             let data = try await responseData(
                 url: url,
                 token: token,
+                allowsCaching: allowsCaching,
                 acceptsZstandard: true
             )
             return try decoder.decode(Value.self, from: data)
@@ -2284,6 +2303,7 @@ actor ExternalRecommendationClient {
                 let data = try await responseData(
                     url: url,
                     token: token,
+                    allowsCaching: false,
                     acceptsZstandard: false
                 )
                 return try decoder.decode(Value.self, from: data)
@@ -2298,6 +2318,7 @@ actor ExternalRecommendationClient {
     private func responseData(
         url: URL,
         token: String?,
+        allowsCaching: Bool,
         acceptsZstandard: Bool
     ) async throws -> Data {
         var request = URLRequest(url: url)
@@ -2310,11 +2331,15 @@ actor ExternalRecommendationClient {
             // satisfy the compatibility retry with the same bytes.
             request.cachePolicy = .reloadIgnoringLocalCacheData
         }
+        if !allowsCaching {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
         request.setValue("BuFi/1.0.0", forHTTPHeaderField: "User-Agent")
         if let token, !token.isEmpty {
             request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         }
         try Task.checkCancellation()
+        let session = allowsCaching ? publicSession : privateSession
         let (data, response) = try await session.data(for: request)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse,

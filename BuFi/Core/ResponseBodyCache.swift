@@ -6,7 +6,7 @@ import Foundation
 struct ResponseBodyCache: Sendable {
     private struct Entry: Sendable {
         let data: Data
-        let storedAt: Date
+        let storedAt: ContinuousClock.Instant
         var accessOrdinal: UInt64
     }
 
@@ -33,11 +33,11 @@ struct ResponseBodyCache: Sendable {
     mutating func value(
         for key: String,
         maximumAge: TimeInterval,
-        now: Date = Date()
+        now: ContinuousClock.Instant = ContinuousClock().now
     ) -> Data? {
         guard var entry = entries[key] else { return nil }
         guard maximumAge > 0,
-              now.timeIntervalSince(entry.storedAt) <= maximumAge else {
+              entry.storedAt.duration(to: now) <= .seconds(maximumAge) else {
             removeValue(for: key)
             return nil
         }
@@ -50,8 +50,11 @@ struct ResponseBodyCache: Sendable {
     mutating func insert(
         _ data: Data,
         for key: String,
-        now: Date = Date()
+        now: ContinuousClock.Instant = ContinuousClock().now
     ) {
+        // A response that cannot be cached must still invalidate an older body
+        // under the same key; otherwise a later read can resurrect stale data.
+        removeValue(for: key)
         guard countLimit > 0,
               byteLimit > 0,
               data.count <= maximumEntryBytes,
@@ -59,9 +62,6 @@ struct ResponseBodyCache: Sendable {
             return
         }
 
-        if let existing = entries[key] {
-            byteCount = max(0, byteCount - existing.data.count)
-        }
         entries[key] = Entry(
             data: data,
             storedAt: now,

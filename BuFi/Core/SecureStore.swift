@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-enum SecureStoreError: LocalizedError {
+enum SecureStoreError: LocalizedError, Sendable {
     case encoding
     case keychain(OSStatus)
 
@@ -18,7 +18,16 @@ enum SecureStoreError: LocalizedError {
     }
 }
 
-struct SecureStore {
+struct SecureBootstrapState: Sendable {
+    let credentials: ServerCredentials?
+    let hasLastFMKey: Bool
+    let hasListenBrainzToken: Bool
+}
+
+/// Serializes Security.framework calls away from MainActor. Keychain queries
+/// are synchronous and can involve IPC, so UI state owners await this actor
+/// instead of performing those calls during view-driven mutations.
+actor SecureStore {
     private let service = "cloud.tae00217.BuFi"
     private let account = "server-credentials"
 
@@ -63,6 +72,17 @@ struct SecureStore {
             return nil
         }
         return try? JSONDecoder().decode(ServerCredentials.self, from: data)
+    }
+
+    func loadBootstrapState(
+        lastFMAccount: String,
+        listenBrainzAccount: String
+    ) -> SecureBootstrapState {
+        SecureBootstrapState(
+            credentials: load(),
+            hasLastFMKey: loadSecret(account: lastFMAccount)?.isEmpty == false,
+            hasListenBrainzToken: loadSecret(account: listenBrainzAccount)?.isEmpty == false
+        )
     }
 
     func delete() {

@@ -18,6 +18,7 @@ actor OfflineStore {
     }
 
     private let rootDirectory: URL
+    private let bootstrapTask: Task<Void, Never>
     private let wifiOnlySession: URLSession
     private let unrestrictedSession: URLSession
     private var directory: URL?
@@ -39,15 +40,21 @@ actor OfflineStore {
         rootDirectory = root
         wifiOnlySession = Self.makeDownloadSession(allowsExpensiveAccess: false)
         unrestrictedSession = Self.makeDownloadSession(allowsExpensiveAccess: true)
-        try? FileManager.default.createDirectory(
-            at: root,
-            withIntermediateDirectories: true,
-            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
-        )
-        Self.removeLegacyUnscopedFiles(in: root)
+        bootstrapTask = Task.detached(priority: .utility) {
+            try? FileManager.default.createDirectory(
+                at: root,
+                withIntermediateDirectories: true,
+                attributes: [
+                    .protectionKey:
+                        FileProtectionType.completeUntilFirstUserAuthentication
+                ]
+            )
+            Self.removeLegacyUnscopedFiles(in: root)
+        }
     }
 
     func activate(accountScope: String) async {
+        _ = await bootstrapTask.value
         guard activeScope != accountScope else { return }
         let previousScope = activeScope
         indexSaveTask?.cancel()
@@ -362,8 +369,12 @@ actor OfflineStore {
     }
 
     func removeAll() async throws {
-        guard activeScope != nil, let directory else { return }
+        guard let scope = activeScope, let directory else { return }
         scopeGeneration &+= 1
+        let token = AccountSessionToken(
+            accountScope: scope,
+            generation: scopeGeneration
+        )
         inFlight.values.forEach { $0.task.cancel() }
         inFlight.removeAll()
         let files = try FileManager.default.contentsOfDirectory(
@@ -385,11 +396,16 @@ actor OfflineStore {
                 result[pair.key] = pair.value
             }
         }
-        if let scope = activeScope {
-            await AppDatabase.shared.clearOfflineEntries(scope: scope)
-            dirtySongIDs = Set(entries.keys)
-            deletedSongIDs.removeAll(keepingCapacity: true)
+        await AppDatabase.shared.clearOfflineEntries(scope: scope)
+        guard token.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ) else {
+            if let firstError { throw firstError }
+            return
         }
+        dirtySongIDs = Set(entries.keys)
+        deletedSongIDs.removeAll(keepingCapacity: true)
         scheduleIndexPersistence(immediate: true)
         if let firstError { throw firstError }
     }

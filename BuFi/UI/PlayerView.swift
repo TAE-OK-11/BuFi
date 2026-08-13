@@ -78,8 +78,7 @@ struct PlayerView: View {
     @EnvironmentObject private var library: HomeLibraryState
     @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @EnvironmentObject private var audio: AudioEngine
-    @EnvironmentObject private var playbackItem: PlaybackItemState
-    @EnvironmentObject private var playbackQueue: PlaybackQueueState
+    @EnvironmentObject private var playback: PlaybackState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -108,7 +107,7 @@ struct PlayerView: View {
             ZStack {
                 background
 
-                if let song = playbackItem.currentSong {
+                if let song = playback.currentSong {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(song)
@@ -168,22 +167,22 @@ struct PlayerView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-        .onChange(of: playbackQueue.snapshot) { previous, next in
+        .onChange(of: playback.snapshot) { previous, next in
             handleQueueSnapshotChange(from: previous, to: next)
         }
-        .onChange(of: playbackItem.currentItem.map {
+        .onChange(of: playback.currentItem.map {
             [$0.id.uuidString, $0.metadataRevision]
         }) { _, _ in
-            // Queue and current-item state are published independently. Always
-            // re-anchor the pager when the visual now-playing identity changes.
+            // The queue and current item share one snapshot. Re-anchor when
+            // its per-play generation or metadata revision changes.
             pendingUserArtworkPage = nil
-            syncArtworkPage(to: playbackQueue.index, animated: false)
-            applyCachedPalette(at: playbackQueue.index)
+            syncArtworkPage(to: playback.index, animated: false)
+            applyCachedPalette(at: playback.index)
         }
         .onAppear {
-            applyCachedPalette(at: playbackQueue.index)
-            syncArtworkPage(to: playbackQueue.index, animated: false)
-            prefetchUpcomingArtwork(after: playbackQueue.index)
+            applyCachedPalette(at: playback.index)
+            syncArtworkPage(to: playback.index, animated: false)
+            prefetchUpcomingArtwork(after: playback.index)
         }
         .onDisappear {
             artworkPrefetchTask?.cancel()
@@ -192,8 +191,8 @@ struct PlayerView: View {
     }
 
     private func handleQueueSnapshotChange(
-        from previous: PlaybackQueueSnapshot,
-        to next: PlaybackQueueSnapshot
+        from previous: PlaybackSnapshot,
+        to next: PlaybackSnapshot
     ) {
         let indexChanged = previous.index != next.index
         let songsChanged = previous.songs != next.songs
@@ -445,9 +444,9 @@ struct PlayerView: View {
         let sideInset = max(0, (viewportWidth - edge) / 2)
         let snapshot = PlayerArtworkPagerSnapshot.make(
             currentSong: song,
-            queue: playbackQueue.songs,
-            queueIndex: playbackQueue.index,
-            accountScope: playbackItem.currentItem?.accountScope
+            queue: playback.songs,
+            queueIndex: playback.index,
+            accountScope: playback.currentItem?.accountScope
         )
         let pagerPosition = Binding<PlayerArtworkPageID?>(
             get: { artworkPage },
@@ -528,17 +527,17 @@ struct PlayerView: View {
         .onChange(of: artworkPage) { oldPage, page in
             guard pagerSelectionGate.shouldStartPlayback(for: page) else { return }
             guard let page,
-                  playbackQueue.songs.indices.contains(page.queueIndex),
-                  playbackQueue.songs[page.queueIndex].id == page.songID,
-                  playbackQueue.songs[page.queueIndex].artworkID == page.coverArtID,
-                  playbackQueue.songs[page.queueIndex].artworkRevision == page.artworkRevision else {
+                  playback.songs.indices.contains(page.queueIndex),
+                  playback.songs[page.queueIndex].id == page.songID,
+                  playback.songs[page.queueIndex].artworkID == page.coverArtID,
+                  playback.songs[page.queueIndex].artworkRevision == page.artworkRevision else {
                 return
             }
             let index = page.queueIndex
-            let oldIndex = oldPage?.queueIndex ?? playbackQueue.index
+            let oldIndex = oldPage?.queueIndex ?? playback.index
             transitionDirection = index >= oldIndex ? 1 : -1
-            guard index != playbackQueue.index,
-                  playbackQueue.songs.indices.contains(index) else { return }
+            guard index != playback.index,
+                  playback.songs.indices.contains(index) else { return }
             pendingUserArtworkPage = page
             audio.playQueueItem(at: index)
         }
@@ -733,7 +732,7 @@ struct PlayerView: View {
     }
 
     private func syncArtworkPage(to index: Int, animated: Bool) {
-        guard let currentSong = playbackItem.currentSong else {
+        guard let currentSong = playback.currentSong else {
             artworkPage = nil
             pendingUserArtworkPage = nil
             palette = .fallback
@@ -741,9 +740,9 @@ struct PlayerView: View {
         }
         let page = PlayerArtworkPagerSnapshot.make(
             currentSong: currentSong,
-            queue: playbackQueue.songs,
+            queue: playback.songs,
             queueIndex: index,
-            accountScope: playbackItem.currentItem?.accountScope
+            accountScope: playback.currentItem?.accountScope
         ).currentPage
         guard pagerSelectionGate.prepareProgrammaticChange(
             from: artworkPage,
@@ -773,12 +772,12 @@ struct PlayerView: View {
     }
 
     private var currentVisualArtworkPage: PlayerArtworkPageID? {
-        guard let currentSong = playbackItem.currentSong else { return nil }
+        guard let currentSong = playback.currentSong else { return nil }
         return PlayerArtworkPagerSnapshot.make(
             currentSong: currentSong,
-            queue: playbackQueue.songs,
-            queueIndex: playbackQueue.index,
-            accountScope: playbackItem.currentItem?.accountScope
+            queue: playback.songs,
+            queueIndex: playback.index,
+            accountScope: playback.currentItem?.accountScope
         ).currentPage
     }
 
@@ -788,9 +787,9 @@ struct PlayerView: View {
         song: Song
     ) {
         artworkPalettes[page] = nextPalette
-        guard playbackItem.currentSong?.id == song.id,
-              playbackItem.currentSong?.artworkID == song.artworkID,
-              playbackItem.currentSong?.artworkRevision == song.artworkRevision else {
+        guard playback.currentSong?.id == song.id,
+              playback.currentSong?.artworkID == song.artworkID,
+              playback.currentSong?.artworkRevision == song.artworkRevision else {
             return
         }
         if palette != nextPalette {
@@ -799,16 +798,16 @@ struct PlayerView: View {
     }
 
     private func applyCachedPalette(at index: Int) {
-        guard let currentSong = playbackItem.currentSong else {
+        guard let currentSong = playback.currentSong else {
             palette = .fallback
             return
         }
 
         let page = PlayerArtworkPagerSnapshot.make(
             currentSong: currentSong,
-            queue: playbackQueue.songs,
+            queue: playback.songs,
             queueIndex: index,
-            accountScope: playbackItem.currentItem?.accountScope
+            accountScope: playback.currentItem?.accountScope
         ).currentPage
         if let cached = artworkPalettes[page] {
             if palette != cached { palette = cached }
@@ -818,22 +817,22 @@ struct PlayerView: View {
     }
 
     private func pruneArtworkPalettes() {
-        var activePages = Set(playbackQueue.songs.indices.map {
+        var activePages = Set(playback.songs.indices.map {
             PlayerArtworkPageID(
                 queueIndex: $0,
-                songID: playbackQueue.songs[$0].id,
-                coverArtID: playbackQueue.songs[$0].artworkID,
-                artworkRevision: playbackQueue.songs[$0].artworkRevision,
-                accountScope: playbackItem.currentItem?.accountScope
+                songID: playback.songs[$0].id,
+                coverArtID: playback.songs[$0].artworkID,
+                artworkRevision: playback.songs[$0].artworkRevision,
+                accountScope: playback.currentItem?.accountScope
             )
         })
-        if let currentSong = playbackItem.currentSong {
+        if let currentSong = playback.currentSong {
             activePages.insert(
                 PlayerArtworkPagerSnapshot.make(
                     currentSong: currentSong,
-                    queue: playbackQueue.songs,
-                    queueIndex: playbackQueue.index,
-                    accountScope: playbackItem.currentItem?.accountScope
+                    queue: playback.songs,
+                    queueIndex: playback.index,
+                    accountScope: playback.currentItem?.accountScope
                 ).currentPage
             )
         }
@@ -843,7 +842,7 @@ struct PlayerView: View {
     private func prefetchUpcomingArtwork(after index: Int) {
         artworkPrefetchTask?.cancel()
         let thermalState = ProcessInfo.processInfo.thermalState
-        guard !playbackQueue.songs.isEmpty,
+        guard !playback.songs.isEmpty,
               !ProcessInfo.processInfo.isLowPowerModeEnabled,
               thermalState != .serious,
               thermalState != .critical else {
@@ -855,7 +854,7 @@ struct PlayerView: View {
         // normal track transition. Fetching two large covers keeps the network
         // radio and image decoder active longer without improving the
         // immediately visible animation.
-        let end = min(playbackQueue.songs.count, start + 1)
+        let end = min(playback.songs.count, start + 1)
         guard start < end else {
             artworkPrefetchTask = nil
             return
@@ -864,12 +863,12 @@ struct PlayerView: View {
             (
                 page: PlayerArtworkPageID(
                     queueIndex: index,
-                    songID: playbackQueue.songs[index].id,
-                    coverArtID: playbackQueue.songs[index].artworkID,
-                    artworkRevision: playbackQueue.songs[index].artworkRevision,
-                    accountScope: playbackItem.currentItem?.accountScope
+                    songID: playback.songs[index].id,
+                    coverArtID: playback.songs[index].artworkID,
+                    artworkRevision: playback.songs[index].artworkRevision,
+                    accountScope: playback.currentItem?.accountScope
                 ),
-                song: playbackQueue.songs[index]
+                song: playback.songs[index]
             )
         }
 
@@ -894,10 +893,10 @@ struct PlayerView: View {
                     image: image
                 )
                 guard !Task.isCancelled,
-                      playbackQueue.songs.indices.contains(item.page.queueIndex),
-                      playbackQueue.songs[item.page.queueIndex].id == item.page.songID,
-                      playbackQueue.songs[item.page.queueIndex].artworkID == item.page.coverArtID,
-                      playbackQueue.songs[item.page.queueIndex].artworkRevision == item.page.artworkRevision else {
+                      playback.songs.indices.contains(item.page.queueIndex),
+                      playback.songs[item.page.queueIndex].id == item.page.songID,
+                      playback.songs[item.page.queueIndex].artworkID == item.page.coverArtID,
+                      playback.songs[item.page.queueIndex].artworkRevision == item.page.artworkRevision else {
                     return
                 }
                 artworkPalettes[item.page] = nextPalette
@@ -1231,7 +1230,7 @@ private struct PlayerLyricsCard: View {
 }
 
 private struct FullLyricsView: View {
-    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var playback: PlaybackState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
@@ -1264,11 +1263,11 @@ private struct FullLyricsView: View {
             Spacer()
             VStack(spacing: 3) {
                 OverflowMarqueeText(
-                    text: playbackItem.currentSong?.title ?? "가사",
+                    text: playback.currentSong?.title ?? "가사",
                     font: .system(size: 15, weight: .bold),
                     restingAlignment: .center
                 )
-                Text(playbackItem.currentSong?.artist ?? "")
+                Text(playback.currentSong?.artist ?? "")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(lyricsSecondary)
                     .lineLimit(1)
@@ -1420,9 +1419,11 @@ private struct FullLyricsList: View {
     private func scrollToCurrentLine(using proxy: ScrollViewProxy) {
         let index = lyricsState.activeIndex
         guard lyricsState.document.lines.indices.contains(index) else { return }
-        DispatchQueue.main.async {
+        let lineID = lyricsState.document.lines[index].id
+        Task { @MainActor in
+            await Task.yield()
             proxy.scrollTo(
-                lyricsState.document.lines[index].id,
+                lineID,
                 anchor: UnitPoint(x: 0.5, y: 0.42)
             )
         }
@@ -1797,7 +1798,7 @@ private func palettePrefersDarkForeground(_ palette: ArtworkPalette) -> Bool {
 }
 
 private struct QueueView: View {
-    @EnvironmentObject private var playbackQueue: PlaybackQueueState
+    @EnvironmentObject private var playback: PlaybackState
     @Environment(\.dismiss) private var dismiss
     @State private var confirmClear = false
     private let audio = AudioEngine.shared
@@ -1805,11 +1806,11 @@ private struct QueueView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if playbackQueue.songs.isEmpty {
+                if playback.songs.isEmpty {
                     ContentUnavailableView("재생목록이 비어 있습니다", systemImage: "list.bullet")
                 } else {
                     List {
-                        ForEach(Array(playbackQueue.songs.enumerated()), id: \.offset) { index, song in
+                        ForEach(Array(playback.songs.enumerated()), id: \.offset) { index, song in
                             Button {
                                 audio.playQueueItem(at: index)
                                 dismiss()
@@ -1820,7 +1821,7 @@ private struct QueueView: View {
                                         .id("\(index)-\(song.id)-\(song.artworkID ?? "")")
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(song.title)
-                                            .foregroundStyle(index == playbackQueue.index ? BuFiTheme.accentSoft : Color.primary)
+                                            .foregroundStyle(index == playback.index ? BuFiTheme.accentSoft : Color.primary)
                                             .lineLimit(1)
                                         Text(song.artist)
                                             .font(.caption)
@@ -1828,7 +1829,7 @@ private struct QueueView: View {
                                             .lineLimit(1)
                                     }
                                     Spacer()
-                                    if index == playbackQueue.index {
+                                    if index == playback.index {
                                         Image(systemName: "speaker.wave.2.fill")
                                             .foregroundStyle(BuFiTheme.accent)
                                     }

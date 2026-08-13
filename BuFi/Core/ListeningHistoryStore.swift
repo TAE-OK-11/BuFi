@@ -241,8 +241,13 @@ actor ListeningHistoryStore {
 
     private init() {}
 
-    func activate(accountScope: String) async {
-        guard activeScope != accountScope else { return }
+    func activate(accountScope: String) async -> AccountSessionToken? {
+        if activeScope == accountScope {
+            return AccountSessionToken(
+                accountScope: accountScope,
+                generation: scopeGeneration
+            )
+        }
         let previousScope = activeScope
         persistenceTask?.cancel()
         persistenceTask = nil
@@ -257,11 +262,11 @@ actor ListeningHistoryStore {
                 generation: generation,
                 permitsInactiveScope: true
             )
-            guard generation == scopeGeneration, activeScope == nil else { return }
+            guard generation == scopeGeneration, activeScope == nil else { return nil }
         }
 
         var loaded = await AppDatabase.shared.loadListeningHistory(scope: accountScope)
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         if loaded.isEmpty,
            let legacyEntries = loadLegacyEntries(accountScope: accountScope) {
             loaded = legacyEntries
@@ -269,17 +274,21 @@ actor ListeningHistoryStore {
                 legacyEntries,
                 scope: accountScope
             ) {
-                guard generation == scopeGeneration, activeScope == nil else { return }
+                guard generation == scopeGeneration, activeScope == nil else { return nil }
                 removeLegacyStorage(accountScope: accountScope)
             }
         }
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         activeScope = accountScope
         entries = loaded
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
         revision &+= 1
         lastStartedSongID = nil
+        return AccountSessionToken(
+            accountScope: accountScope,
+            generation: generation
+        )
     }
 
     func deactivate(accountScope: String) async {
@@ -305,9 +314,13 @@ actor ListeningHistoryStore {
     func recordStart(
         _ song: Song,
         origin: PlaybackOrigin,
+        session: AccountSessionToken,
         at date: Date = Date()
     ) {
-        guard activeScope != nil, song.externalStreamURL == nil else { return }
+        guard session.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ), song.externalStreamURL == nil else { return }
         var value = entries[song.id] ?? SongBehavior(song: song, at: date)
         // A list/recommendation row is provisional until playback's getSong
         // resolver calls refreshMetadata. Never let a later stale row
@@ -346,8 +359,14 @@ actor ListeningHistoryStore {
     /// Refreshes persisted display metadata without changing listening counts.
     /// Playback calls this after resolving a cached list item through getSong,
     /// so an old cover-art ID cannot re-enter future mixes through local history.
-    func refreshMetadata(_ song: Song) {
-        guard activeScope != nil,
+    func refreshMetadata(
+        _ song: Song,
+        session: AccountSessionToken
+    ) {
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil,
               var value = entries[song.id],
               value.song != song else {
@@ -363,9 +382,13 @@ actor ListeningHistoryStore {
         _ song: Song,
         playedSeconds: TimeInterval,
         duration: TimeInterval,
-        reason: PlaybackEndReason
+        reason: PlaybackEndReason,
+        session: AccountSessionToken
     ) {
-        guard activeScope != nil,
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil,
               var value = entries[song.id] else {
             return
@@ -406,8 +429,14 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
-    func recordQueueRemoval(_ song: Song) {
-        guard activeScope != nil,
+    func recordQueueRemoval(
+        _ song: Song,
+        session: AccountSessionToken
+    ) {
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil else {
             return
         }
@@ -421,8 +450,15 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
-    func recordFavorite(_ song: Song, enabled: Bool) {
-        guard activeScope != nil,
+    func recordFavorite(
+        _ song: Song,
+        enabled: Bool,
+        session: AccountSessionToken
+    ) {
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil else {
             return
         }

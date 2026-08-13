@@ -58,9 +58,11 @@ struct ArtworkPalette: Codable, Equatable, Sendable {
 /// actor boundary instead of spreading unchecked crossings through UI code.
 struct ArtworkImage: @unchecked Sendable {
     let value: UIImage
+    fileprivate let cacheKey: String
 
-    init(_ value: UIImage) {
+    fileprivate init(_ value: UIImage, cacheKey: String) {
         self.value = value
+        self.cacheKey = cacheKey
     }
 }
 
@@ -103,17 +105,13 @@ actor ArtworkStore {
         ) else {
             return url
         }
-        // OpenSubsonic does not standardize an artwork validator. Explicitly
-        // revisioned player/detail requests therefore receive a bounded
-        // twelve-hour freshness epoch. Generic list thumbnails keep the base
-        // key, avoiding a broad periodic redownload across the whole library.
-        let boundedRevision: String
-        if let revision {
-            let freshnessEpoch = Int(Date().timeIntervalSince1970 / (12 * 60 * 60))
-            boundedRevision = "\(revision)-\(freshnessEpoch)"
-        } else {
-            boundedRevision = "base"
-        }
+        // OpenSubsonic does not standardize an artwork validator. Every image
+        // therefore receives a bounded freshness epoch, including generic list
+        // thumbnails that do not yet have a metadata revision. This prevents a
+        // server-side image replacement under the same coverArt ID from being
+        // retained indefinitely.
+        let freshnessEpoch = Int(Date().timeIntervalSince1970 / (12 * 60 * 60))
+        let boundedRevision = "\(revision ?? "unversioned")-\(freshnessEpoch)"
         components.fragment = [cacheSchemaRevision, boundedRevision]
             .joined(separator: "-")
         return components.url ?? url
@@ -163,7 +161,10 @@ actor ArtworkStore {
         guard activeScope == scope, pipeline === scopedPipeline else {
             throw CancellationError()
         }
-        return ArtworkImage(image)
+        return ArtworkImage(
+            image,
+            cacheKey: ArtworkPipelineDelegate.normalizedCacheKey(for: url)
+        )
     }
 
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
@@ -184,12 +185,13 @@ actor ArtworkStore {
         }
         let generation = paletteGeneration
         let cacheKey = ArtworkPipelineDelegate.normalizedCacheKey(for: url)
+        let validatedImage = image?.cacheKey == cacheKey ? image : nil
         let memoryKey = cacheKey as NSString
         if let cached = paletteMemory.object(forKey: memoryKey) { return cached.value }
 
         let value = await coalescedPalette(
             for: url,
-            providedImage: image,
+            providedImage: validatedImage,
             scope: scope,
             cacheKey: cacheKey,
             generation: generation
@@ -217,12 +219,21 @@ actor ArtworkStore {
         guard !isClearingAll else { return }
         isClearingAll = true
         let scope = activeScope
+        let scopedPipeline = pipeline
         let staleTasks = invalidateInFlightPalettes()
+        let generation = paletteGeneration
         for task in staleTasks {
             _ = await task.value
         }
-        pipeline.cache.removeAll(caches: [.all])
-        paletteMemory.removeAllObjects()
+        // Clear only the pipeline captured for this request. `activate` may
+        // install another account's pipeline while the cancelled palette work
+        // is draining at the suspension point above.
+        scopedPipeline.cache.removeAll(caches: [.all])
+        if activeScope == scope,
+           pipeline === scopedPipeline,
+           paletteGeneration == generation {
+            paletteMemory.removeAllObjects()
+        }
         if let scope {
             await database.clearArtworkPalettes(scope: scope)
         }
@@ -260,19 +271,29 @@ actor ArtworkStore {
             return .fallback
         }
 
-        let source: UIImage
+        let source: ArtworkImage
         if let providedImage {
-            source = providedImage.value
+            source = providedImage
         } else {
             guard let loaded = try? await image(for: url, pixelSize: 96) else {
                 return .fallback
             }
-            source = loaded.value
+            source = loaded
         }
         guard activeScope == scope,
               paletteGeneration == generation,
+              !Task.isCancelled else { return .fallback }
+
+        // Palette clustering is CPU-heavy. Keep it off the store actor so an
+        // account switch, cache clear, or visible image request is not blocked
+        // behind color analysis.
+        let value = await Task.detached(priority: .utility) {
+            Self.analyzedPalette(from: source.value)
+        }.value
+        guard activeScope == scope,
+              paletteGeneration == generation,
               !Task.isCancelled,
-              let value = Self.analyzedPalette(from: source) else { return .fallback }
+              let value else { return .fallback }
 
         guard paletteGeneration == generation else { return .fallback }
         _ = await database.saveArtworkPalette(

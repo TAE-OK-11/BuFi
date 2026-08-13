@@ -98,40 +98,6 @@ final class LyricsPlaybackState: ObservableObject {
 }
 
 @MainActor
-final class PlaybackItemState: ObservableObject {
-    @Published fileprivate(set) var currentItem: PlaybackMediaItem?
-
-    var currentSong: Song? { currentItem?.song }
-
-    fileprivate func begin(_ song: Song, accountScope: String?) {
-        currentItem = PlaybackMediaItem(
-            song: song,
-            accountScope: accountScope
-        )
-    }
-
-    fileprivate func setCurrentSong(_ value: Song?) {
-        guard let value else {
-            guard currentItem != nil else { return }
-            currentItem = nil
-            return
-        }
-        guard var currentItem else {
-            begin(value, accountScope: nil)
-            return
-        }
-        guard currentItem.song != value else { return }
-        currentItem.song = value
-        self.currentItem = currentItem
-    }
-
-    fileprivate func setCurrentItem(_ value: PlaybackMediaItem) {
-        guard currentItem != value else { return }
-        currentItem = value
-    }
-}
-
-@MainActor
 final class PlaybackActivityState: ObservableObject {
     @Published fileprivate(set) var isPlaying = false
 
@@ -157,42 +123,128 @@ final class PlaybackControlState: ObservableObject {
     }
 }
 
-struct PlaybackQueueSnapshot: Equatable, Sendable {
+struct PlaybackSnapshot: Equatable, Sendable {
+    let entries: [PlaybackQueueEntry]
     let songs: [Song]
     let index: Int
+    let accountScope: String?
+    let playbackGenerationID: UUID?
 
-    static let empty = PlaybackQueueSnapshot(songs: [], index: -1)
+    static let empty = PlaybackSnapshot(
+        entries: [],
+        index: -1,
+        accountScope: nil,
+        playbackGenerationID: nil
+    )
 
-    init(songs: [Song], index: Int) {
-        self.songs = songs
-        if songs.isEmpty {
+    init(
+        entries: [PlaybackQueueEntry],
+        index: Int,
+        accountScope: String?,
+        playbackGenerationID: UUID? = nil
+    ) {
+        self.entries = entries
+        songs = entries.map(\.song)
+        self.accountScope = accountScope
+        if entries.isEmpty {
             self.index = -1
+            self.playbackGenerationID = nil
         } else {
-            self.index = min(max(index, 0), songs.count - 1)
+            self.index = min(max(index, 0), entries.count - 1)
+            self.playbackGenerationID = playbackGenerationID ?? UUID()
         }
     }
+
+    var currentItem: PlaybackMediaItem? {
+        guard entries.indices.contains(index),
+              let playbackGenerationID else { return nil }
+        let entry = entries[index]
+        return PlaybackMediaItem(
+            song: entry.song,
+            accountScope: accountScope,
+            queueEntryID: entry.id,
+            playbackGenerationID: playbackGenerationID
+        )
+    }
+
+    var currentSong: Song? { currentItem?.song }
 }
 
 @MainActor
-final class PlaybackQueueState: ObservableObject {
-    /// Queue contents and selection are one published transaction. Views never
-    /// observe a new array with the previous index (or vice versa).
-    @Published fileprivate(set) var snapshot = PlaybackQueueSnapshot.empty
+final class PlaybackState: ObservableObject {
+    /// Current media, queue contents, selection, and account scope are derived
+    /// from one publication. No view can combine revisions from separate
+    /// ObservableObjects during a track transition.
+    @Published fileprivate(set) var snapshot = PlaybackSnapshot.empty
+    private(set) var entriesRevision: UInt64 = 0
 
+    var entries: [PlaybackQueueEntry] { snapshot.entries }
     var songs: [Song] { snapshot.songs }
     var index: Int { snapshot.index }
+    var currentItem: PlaybackMediaItem? { snapshot.currentItem }
+    var currentSong: Song? { snapshot.currentSong }
 
-    fileprivate func setSongs(_ value: [Song]) {
-        replace(songs: value, index: snapshot.index)
+    fileprivate func setIndex(
+        _ value: Int,
+        renewsPlayback: Bool = true
+    ) {
+        let entries = snapshot.entries
+        let resolvedIndex = entries.isEmpty
+            ? -1
+            : min(max(value, 0), entries.count - 1)
+        publish(PlaybackSnapshot(
+            entries: entries,
+            index: resolvedIndex,
+            accountScope: snapshot.accountScope,
+            playbackGenerationID: renewsPlayback
+                ? UUID()
+                : snapshot.playbackGenerationID
+        ))
     }
 
-    fileprivate func setIndex(_ value: Int) {
-        replace(songs: snapshot.songs, index: value)
+    fileprivate func setAccountScope(_ value: String?) {
+        publish(PlaybackSnapshot(
+            entries: snapshot.entries,
+            index: snapshot.index,
+            accountScope: value,
+            playbackGenerationID: snapshot.playbackGenerationID
+        ))
     }
 
-    fileprivate func replace(songs: [Song], index: Int) {
-        let value = PlaybackQueueSnapshot(songs: songs, index: index)
+    fileprivate func replace(
+        songs: [Song],
+        index: Int,
+        accountScope: String?
+    ) {
+        publish(PlaybackSnapshot(
+            entries: songs.map { PlaybackQueueEntry(song: $0) },
+            index: index,
+            accountScope: accountScope,
+            playbackGenerationID: UUID()
+        ))
+    }
+
+    fileprivate func replace(
+        entries: [PlaybackQueueEntry],
+        index: Int,
+        accountScope: String?,
+        renewsPlayback: Bool = false
+    ) {
+        publish(PlaybackSnapshot(
+            entries: entries,
+            index: index,
+            accountScope: accountScope,
+            playbackGenerationID: renewsPlayback
+                ? UUID()
+                : snapshot.playbackGenerationID
+        ))
+    }
+
+    private func publish(_ value: PlaybackSnapshot) {
         guard snapshot != value else { return }
+        if snapshot.entries != value.entries {
+            entriesRevision &+= 1
+        }
         snapshot = value
     }
 }
@@ -370,43 +422,52 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
 final class AudioEngine: NSObject, ObservableObject {
     static let shared = AudioEngine()
 
-    let itemState = PlaybackItemState()
+    let playbackState = PlaybackState()
     let activityState = PlaybackActivityState()
     let controlState = PlaybackControlState()
-    let queueState = PlaybackQueueState()
     let presentation = PlayerPresentationState()
     let timeline = PlaybackTimeline()
     let lyricsState = LyricsPlaybackState()
 
-    private(set) var currentSong: Song? {
-        get { itemState.currentSong }
-        set { itemState.setCurrentSong(newValue) }
-    }
+    private(set) var currentSong: Song? { playbackState.currentSong }
 
     private var currentPlaybackItem: PlaybackMediaItem? {
-        itemState.currentItem
+        playbackState.currentItem
     }
 
-    private func beginCurrentSong(_ song: Song) {
-        itemState.begin(song, accountScope: currentAccountScope)
+    private var queue: [Song] { playbackState.songs }
+
+    private var queueIndex: Int { playbackState.index }
+
+    private func replaceQueue(
+        _ entries: [PlaybackQueueEntry],
+        index: Int
+    ) {
+        playbackState.replace(
+            entries: entries,
+            index: index,
+            accountScope: currentAccountScope
+        )
     }
 
-    private func setCurrentPlaybackItem(_ item: PlaybackMediaItem) {
-        itemState.setCurrentItem(item)
+    private func replacePlayback(
+        _ entries: [PlaybackQueueEntry],
+        index: Int
+    ) {
+        playbackState.replace(
+            entries: entries,
+            index: index,
+            accountScope: currentAccountScope,
+            renewsPlayback: true
+        )
     }
 
-    private(set) var queue: [Song] {
-        get { queueState.songs }
-        set { queueState.setSongs(newValue) }
-    }
-
-    private(set) var queueIndex: Int {
-        get { queueState.index }
-        set { queueState.setIndex(newValue) }
-    }
-
-    private func replaceQueue(_ songs: [Song], index: Int) {
-        queueState.replace(songs: songs, index: index)
+    private func replacePlayback(_ songs: [Song], index: Int) {
+        playbackState.replace(
+            songs: songs,
+            index: index,
+            accountScope: currentAccountScope
+        )
     }
 
     private(set) var isPlaying: Bool {
@@ -511,7 +572,9 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private struct PreparedPlaybackAsset {
         let key: String
+        let queueEntryID: UUID
         let songID: String
+        let streamRevision: String
         let compatibilityFormat: String
         let asset: AVURLAsset
     }
@@ -519,6 +582,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingSession: MPNowPlayingSession?
     private var client: OpenSubsonicClient?
     private var currentAccountScope: String?
+    private var historySessionToken: AccountSessionToken?
     private var playbackSessionGeneration: UInt64 = 0
     private var queueMutationGeneration: UInt64 = 0
     private var queueRestorationGeneration: UInt64 = 0
@@ -561,6 +625,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private weak var stagedSuccessorItem: AVPlayerItem?
     private var stagedSuccessorSong: Song?
     private var stagedSuccessorQueueIndex: Int?
+    private var stagedSuccessorOccurrenceID: UUID?
     private var autoplayTask: Task<Void, Never>?
     private var historyMutationTask: Task<Void, Never>?
     private var playbackReportTask: Task<Void, Never>?
@@ -601,7 +666,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lastPlaybackReportState: String?
     private let queueStorageKey = "native-play-queue"
     private var queueRestoreTask: Task<Void, Never>?
-    private var lastPersistedQueue: [Song]?
+    private var queueSaveRevision: UInt64 = 0
+    private var lastPersistedEntriesRevision: UInt64?
     private var allowsSpeculativeNetworkPrefetch = false
     private var networkPathIsSatisfied = true
 
@@ -625,6 +691,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     func configure(
         client: OpenSubsonicClient?,
+        historySession: AccountSessionToken? = nil,
         songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil,
         autoplayContinuationProvider:
             (@MainActor (Song, Set<String>) async -> [Song])? = nil
@@ -651,6 +718,7 @@ final class AudioEngine: NSObject, ObservableObject {
         self.autoplayContinuationProvider = autoplayContinuationProvider
         if client == nil {
             finalizeCurrentPlayback(reason: .stopped)
+            historySessionToken = nil
             let pendingQueueSave = queueSaveTask
             queueSaveTask?.cancel()
             queueSaveTask = nil
@@ -668,21 +736,23 @@ final class AudioEngine: NSObject, ObservableObject {
             isSeekInFlight = false
             pendingSeekPosition = nil
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
-            lastPersistedQueue = nil
+            lastPersistedEntriesRevision = nil
             queueRestoreTask?.cancel()
             queueRestoreTask = nil
             if let previousAccountScope {
+                queueSaveRevision &+= 1
+                let clearRevision = queueSaveRevision
                 let previousClear = queueClearTask
                 queueClearTask = Task {
                     _ = await previousClear?.value
                     _ = await pendingQueueSave?.value
                     await AppDatabase.shared.clearQueue(
-                        scope: previousAccountScope
+                        scope: previousAccountScope,
+                        minimumRevision: clearRevision
                     )
                 }
             }
             pausePlayback(persistsQueue: false)
-            currentSong = nil
             replaceQueue([], index: -1)
             queueMutationGeneration &+= 1
             elapsed = 0
@@ -698,9 +768,11 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
 
+        historySessionToken = historySession
+
         if let song = currentSong {
             if previousAccountScope != currentAccountScope {
-                beginCurrentSong(song)
+                playbackState.setAccountScope(currentAccountScope)
             }
             restartPlaybackPlan(resumeFrom: elapsed)
             loadLyrics(for: song)
@@ -740,8 +812,7 @@ final class AudioEngine: NSObject, ObservableObject {
             let restoredIndex = serverQueue.songs.firstIndex {
                 $0.id == serverQueue.currentID
             } ?? 0
-            self.beginCurrentSong(serverQueue.songs[restoredIndex])
-            self.replaceQueue(serverQueue.songs, index: restoredIndex)
+            self.replacePlayback(serverQueue.songs, index: restoredIndex)
             self.queueMutationGeneration &+= 1
             self.behaviorStartRecordedForSongID = nil
             self.duration = self.currentSong?.safeDuration ?? 0
@@ -805,6 +876,25 @@ final class AudioEngine: NSObject, ObservableObject {
         origin: PlaybackOrigin = .manual,
         transitionReason: PlaybackEndReason = .replaced
     ) {
+        let songs = sourceQueue.isEmpty ? [song] : sourceQueue
+        startPlayback(
+            song,
+            in: songs.map { PlaybackQueueEntry(song: $0) },
+            preferredIndex: preferredIndex,
+            autoplay: autoplay,
+            origin: origin,
+            transitionReason: transitionReason
+        )
+    }
+
+    private func startPlayback(
+        _ song: Song,
+        in sourceEntries: [PlaybackQueueEntry],
+        preferredIndex: Int?,
+        autoplay: Bool = true,
+        origin: PlaybackOrigin = .manual,
+        transitionReason: PlaybackEndReason = .replaced
+    ) {
         reconcilePendingTransportTransition()
         // Every concrete track transition supersedes an in-flight autoplay
         // request. Keeping this invalidation here (rather than only in the
@@ -820,29 +910,32 @@ final class AudioEngine: NSObject, ObservableObject {
         cancelPlaybackRecovery()
         let previousSongID = currentSong?.id
         finalizeCurrentPlayback(reason: transitionReason)
-        var normalizedQueue = sourceQueue.isEmpty ? [song] : sourceQueue
+        var normalizedEntries = sourceEntries.isEmpty
+            ? [PlaybackQueueEntry(song: song)]
+            : sourceEntries
         let resolvedIndex: Int
-        if let preferredIndex, normalizedQueue.indices.contains(preferredIndex) {
+        if let preferredIndex, normalizedEntries.indices.contains(preferredIndex) {
             resolvedIndex = preferredIndex
-        } else if let visualMatch = normalizedQueue.firstIndex(where: {
-            $0.id == song.id && $0.artworkID == song.artworkID
+        } else if let visualMatch = normalizedEntries.firstIndex(where: {
+            $0.song.id == song.id && $0.song.artworkID == song.artworkID
         }) {
             resolvedIndex = visualMatch
         } else {
-            resolvedIndex = normalizedQueue.firstIndex(where: { $0.id == song.id }) ?? 0
+            resolvedIndex = normalizedEntries.firstIndex(where: {
+                $0.song.id == song.id
+            }) ?? 0
         }
-        if normalizedQueue[resolvedIndex].id == song.id {
+        if normalizedEntries[resolvedIndex].song.id == song.id {
             // The tapped row is the freshest metadata source. Replacing the
             // matching queue entry atomically prevents an older coverArt value
             // from becoming the visual now-playing source for this transition.
-            normalizedQueue[resolvedIndex] = song
+            normalizedEntries[resolvedIndex].song = song
         }
-        let selectedSong = normalizedQueue[resolvedIndex]
-        // Publish the selected item before queue/index. Player artwork derives
-        // from currentSong and can safely fall back while the queue catches up;
-        // the reverse order exposes the previous currentSong at the new index.
-        beginCurrentSong(selectedSong)
-        replaceQueue(normalizedQueue, index: resolvedIndex)
+        let selectedSong = normalizedEntries[resolvedIndex].song
+        // Current media, queue entries, selection, and account scope publish as
+        // one snapshot. A fresh playback generation invalidates late artwork
+        // and transport work without changing the durable queue-row identity.
+        replacePlayback(normalizedEntries, index: resolvedIndex)
         queueMutationGeneration &+= 1
         player.pause()
         isPlaying = false
@@ -1047,7 +1140,7 @@ final class AudioEngine: NSObject, ObservableObject {
         if isAutoAdvance, repeatMode == .one, let song = currentSong {
             startPlayback(
                 song,
-                in: queue,
+                in: playbackState.entries,
                 preferredIndex: queueIndex,
                 origin: .autoplay,
                 transitionReason: .completed
@@ -1068,7 +1161,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         startPlayback(
             queue[nextIndex],
-            in: queue,
+            in: playbackState.entries,
             preferredIndex: nextIndex,
             origin: isAutoAdvance ? .autoplay : .manual,
             transitionReason: isAutoAdvance ? .completed : .skipped
@@ -1132,7 +1225,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 if shouldAdvance { self.pause() }
                 return
             }
-            self.queue.append(contentsOf: additions)
+            let appendedEntries = self.playbackState.entries
+                + additions.map { PlaybackQueueEntry(song: $0) }
+            self.replaceQueue(appendedEntries, index: self.queueIndex)
             self.updateRemoteCommands()
             self.updateNowPlaying()
             self.scheduleNetworkPrefetch()
@@ -1157,7 +1252,7 @@ final class AudioEngine: NSObject, ObservableObject {
             : (repeatMode == .all ? queue.count - 1 : 0)
         startPlayback(
             queue[previousIndex],
-            in: queue,
+            in: playbackState.entries,
             preferredIndex: previousIndex,
             origin: .manual,
             transitionReason: .skipped
@@ -1169,7 +1264,7 @@ final class AudioEngine: NSObject, ObservableObject {
         guard queue.indices.contains(index) else { return }
         startPlayback(
             queue[index],
-            in: queue,
+            in: playbackState.entries,
             preferredIndex: index,
             origin: .queue,
             transitionReason: .replaced
@@ -1184,13 +1279,11 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let removedSong = queue[index]
-        var updatedQueue = queue
-        updatedQueue.remove(at: index)
+        var updatedEntries = playbackState.entries
+        updatedEntries.remove(at: index)
         let updatedIndex = index < queueIndex ? queueIndex - 1 : queueIndex
-        replaceQueue(updatedQueue, index: updatedIndex)
-        Task {
-            await ListeningHistoryStore.shared.recordQueueRemoval(removedSong)
-        }
+        replaceQueue(updatedEntries, index: updatedIndex)
+        recordQueueRemovals([removedSong])
         queueDidChange()
     }
 
@@ -1200,8 +1293,12 @@ final class AudioEngine: NSObject, ObservableObject {
             play(song, in: [song])
             return
         }
-        removeUpcomingOccurrence(of: song.id)
-        queue.insert(song, at: min(queueIndex + 1, queue.count))
+        var updatedEntries = entriesRemovingUpcomingOccurrence(of: song.id)
+        updatedEntries.insert(
+            PlaybackQueueEntry(song: song),
+            at: min(queueIndex + 1, updatedEntries.count)
+        )
+        replaceQueue(updatedEntries, index: queueIndex)
         queueDidChange()
     }
 
@@ -1211,8 +1308,9 @@ final class AudioEngine: NSObject, ObservableObject {
             play(song, in: [song])
             return
         }
-        removeUpcomingOccurrence(of: song.id)
-        queue.append(song)
+        var updatedEntries = entriesRemovingUpcomingOccurrence(of: song.id)
+        updatedEntries.append(PlaybackQueueEntry(song: song))
+        replaceQueue(updatedEntries, index: queueIndex)
         queueDidChange()
     }
 
@@ -1220,12 +1318,13 @@ final class AudioEngine: NSObject, ObservableObject {
         reconcilePendingTransportTransition()
         guard !offsets.isEmpty else { return }
         let currentOriginalIndex = queueIndex
+        let entries = playbackState.entries
         let moved = offsets.sorted().compactMap { index in
-            queue.indices.contains(index) ? (index, queue[index]) : nil
+            entries.indices.contains(index) ? (index, entries[index]) : nil
         }
         guard moved.count == offsets.count else { return }
-        var remaining = queue.enumerated().compactMap { index, song in
-            offsets.contains(index) ? nil : (index, song)
+        var remaining = entries.enumerated().compactMap { index, entry in
+            offsets.contains(index) ? nil : (index, entry)
         }
         let removedBeforeDestination = offsets.lazy.filter {
             $0 < destination
@@ -1235,13 +1334,13 @@ final class AudioEngine: NSObject, ObservableObject {
             remaining.count
         )
         remaining.insert(contentsOf: moved, at: insertionIndex)
-        let reorderedQueue = remaining.map { $0.1 }
+        let reorderedEntries = remaining.map { $0.1 }
         if let index = remaining.firstIndex(where: {
             $0.0 == currentOriginalIndex
         }) {
-            replaceQueue(reorderedQueue, index: index)
+            replaceQueue(reorderedEntries, index: index)
         } else {
-            replaceQueue(reorderedQueue, index: queueIndex)
+            replaceQueue(reorderedEntries, index: queueIndex)
         }
         queueDidChange()
     }
@@ -1252,18 +1351,19 @@ final class AudioEngine: NSObject, ObservableObject {
               queueIndex + 1 < queue.count else {
             return
         }
-        let prefix = Array(queue[...queueIndex])
-        var upcoming = Array(queue[(queueIndex + 1)...])
+        let entries = playbackState.entries
+        let prefix = Array(entries[...queueIndex])
+        var upcoming = Array(entries[(queueIndex + 1)...])
         upcoming.shuffle()
         if shuffleStyle == .fewerRepeats {
             let recent = Set(recentShuffleIDs.suffix(8))
             upcoming.sort {
-                let lhsRecent = recent.contains($0.id)
-                let rhsRecent = recent.contains($1.id)
+                let lhsRecent = recent.contains($0.song.id)
+                let rhsRecent = recent.contains($1.song.id)
                 return lhsRecent == rhsRecent ? false : !lhsRecent
             }
         }
-        queue = prefix + upcoming
+        replaceQueue(prefix + upcoming, index: queueIndex)
         queueDidChange()
     }
 
@@ -1277,13 +1377,12 @@ final class AudioEngine: NSObject, ObservableObject {
         autoplayTask = nil
         autoplayGeneration &+= 1
         autoplayShouldAdvance = false
-        let removedSongs = Array(queue[(queueIndex + 1)..<queue.count])
-        queue.removeSubrange((queueIndex + 1)..<queue.count)
-        Task {
-            for song in removedSongs {
-                await ListeningHistoryStore.shared.recordQueueRemoval(song)
-            }
-        }
+        var updatedEntries = playbackState.entries
+        let removedSongs = updatedEntries[(queueIndex + 1)..<updatedEntries.count]
+            .map(\.song)
+        updatedEntries.removeSubrange((queueIndex + 1)..<updatedEntries.count)
+        replaceQueue(updatedEntries, index: queueIndex)
+        recordQueueRemovals(removedSongs)
         queueDidChange()
     }
 
@@ -1292,9 +1391,9 @@ final class AudioEngine: NSObject, ObservableObject {
         guard queue.indices.contains(queueIndex) else { return }
         finalizeCurrentPlayback(reason: .queueRemoved)
         let removedIndex = queueIndex
-        var remainingQueue = queue
-        remainingQueue.remove(at: removedIndex)
-        guard !remainingQueue.isEmpty else {
+        var remainingEntries = playbackState.entries
+        remainingEntries.remove(at: removedIndex)
+        guard !remainingEntries.isEmpty else {
             queueMutationGeneration &+= 1
             pause()
             itemLoadTask?.cancel()
@@ -1308,7 +1407,6 @@ final class AudioEngine: NSObject, ObservableObject {
             seekGeneration &+= 1
             isSeekInFlight = false
             pendingSeekPosition = nil
-            currentSong = nil
             replaceQueue([], index: -1)
             elapsed = 0
             duration = 0
@@ -1322,10 +1420,10 @@ final class AudioEngine: NSObject, ObservableObject {
             scheduleQueueSave(immediate: true)
             return
         }
-        let nextIndex = min(removedIndex, remainingQueue.count - 1)
+        let nextIndex = min(removedIndex, remainingEntries.count - 1)
         startPlayback(
-            remainingQueue[nextIndex],
-            in: remainingQueue,
+            remainingEntries[nextIndex].song,
+            in: remainingEntries,
             preferredIndex: nextIndex,
             origin: .queue,
             transitionReason: .queueRemoved
@@ -1362,15 +1460,19 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func removeUpcomingOccurrence(of songID: String) {
-        guard queue.indices.contains(queueIndex),
-              queueIndex + 1 < queue.count,
-              let index = queue[(queueIndex + 1)...].firstIndex(
-                where: { $0.id == songID }
+    private func entriesRemovingUpcomingOccurrence(
+        of songID: String
+    ) -> [PlaybackQueueEntry] {
+        var entries = playbackState.entries
+        guard entries.indices.contains(queueIndex),
+              queueIndex + 1 < entries.count,
+              let index = entries[(queueIndex + 1)...].firstIndex(
+                where: { $0.song.id == songID }
               ) else {
-            return
+            return entries
         }
-        queue.remove(at: index)
+        entries.remove(at: index)
+        return entries
     }
 
     private func queueDidChange() {
@@ -1405,30 +1507,22 @@ final class AudioEngine: NSObject, ObservableObject {
         reconcilePendingTransportTransition()
         guard !states.isEmpty else { return }
 
-        var updatedCurrentSong = currentSong
-        if var song = updatedCurrentSong,
-           let enabled = states[song.id],
-           song.isStarred != enabled {
-            song.starred = enabled ? Self.iso8601Formatter.string(from: Date()) : nil
-            updatedCurrentSong = song
-        }
-
-        let updatedQueue = queue.map { song in
-            guard let enabled = states[song.id],
-                  song.isStarred != enabled else {
-                return song
+        let updatedEntries = playbackState.entries.map { entry in
+            guard let enabled = states[entry.song.id],
+                  entry.song.isStarred != enabled else {
+                return entry
             }
-            var updated = song
-            updated.starred = enabled ? Self.iso8601Formatter.string(from: Date()) : nil
+            var updated = entry
+            updated.song.starred = enabled
+                ? Self.iso8601Formatter.string(from: Date())
+                : nil
             return updated
         }
 
-        let currentChanged = updatedCurrentSong != currentSong
-        let queueChanged = updatedQueue != queue
-        guard currentChanged || queueChanged else { return }
+        let queueChanged = updatedEntries != playbackState.entries
+        guard queueChanged else { return }
 
-        if currentChanged { currentSong = updatedCurrentSong }
-        if queueChanged { queue = updatedQueue }
+        replaceQueue(updatedEntries, index: queueIndex)
         updateRemoteCommands()
         updateNowPlaying()
         scheduleQueueSave()
@@ -1444,8 +1538,10 @@ final class AudioEngine: NSObject, ObservableObject {
             let pendingSave = queueSaveTask
             queueSaveTask?.cancel()
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
-            lastPersistedQueue = nil
+            lastPersistedEntriesRevision = nil
             if let currentAccountScope {
+                queueSaveRevision &+= 1
+                let clearRevision = queueSaveRevision
                 let previousClear = queueClearTask
                 queueClearTask = Task { [weak self] in
                     _ = await previousClear?.value
@@ -1453,7 +1549,17 @@ final class AudioEngine: NSObject, ObservableObject {
                     guard let self,
                           generation == self.queueRestorationGeneration,
                           !self.queueRestorationEnabled else { return }
-                    await AppDatabase.shared.clearQueue(scope: currentAccountScope)
+                    let persistedRevision = await AppDatabase.shared.clearQueue(
+                        scope: currentAccountScope,
+                        minimumRevision: clearRevision
+                    )
+                    if let persistedRevision,
+                       generation == self.queueRestorationGeneration {
+                        self.queueSaveRevision = max(
+                            self.queueSaveRevision,
+                            persistedRevision
+                        )
+                    }
                 }
             }
         }
@@ -1648,11 +1754,19 @@ final class AudioEngine: NSObject, ObservableObject {
     private static let preparedPlaybackAssetLimit = 3
 
     private static func preparedPlaybackKey(
-        songID: String,
+        accountScope: String?,
+        queueEntryID: UUID,
+        streamRevision: String,
         quality: StreamQuality,
         compatibilityFormat: String
     ) -> String {
-        [songID, quality.rawValue, compatibilityFormat.lowercased()]
+        [
+            accountScope ?? "",
+            queueEntryID.uuidString,
+            streamRevision,
+            quality.rawValue,
+            compatibilityFormat.lowercased()
+        ]
             .joined(separator: "|")
     }
 
@@ -1669,7 +1783,8 @@ final class AudioEngine: NSObject, ObservableObject {
         return AVURLAsset(url: url, options: options)
     }
 
-    private func preparePlaybackAsset(for song: Song) {
+    private func preparePlaybackAsset(for entry: PlaybackQueueEntry) {
+        let song = entry.song
         guard song.externalStreamURL == nil else { return }
         let preparedQuality = quality
         let compatibilityFormat = Self.initialCompatibilityFormat(
@@ -1677,7 +1792,9 @@ final class AudioEngine: NSObject, ObservableObject {
             song: song
         )
         let key = Self.preparedPlaybackKey(
-            songID: song.id,
+            accountScope: currentAccountScope,
+            queueEntryID: entry.id,
+            streamRevision: song.playbackMetadataRevision,
             quality: preparedQuality,
             compatibilityFormat: compatibilityFormat
         )
@@ -1699,7 +1816,11 @@ final class AudioEngine: NSObject, ObservableObject {
                 )
                 guard !Task.isCancelled,
                       self.quality == preparedQuality,
-                      self.queue.contains(where: { $0.id == song.id }) else {
+                      self.playbackState.entries.contains(where: {
+                          $0.id == entry.id
+                              && $0.song.playbackMetadataRevision
+                                  == song.playbackMetadataRevision
+                      }) else {
                     self.preparedPlaybackWarmupTasks[key] = nil
                     return
                 }
@@ -1716,7 +1837,9 @@ final class AudioEngine: NSObject, ObservableObject {
                     guard !Task.isCancelled else { return }
                     let prepared = PreparedPlaybackAsset(
                         key: key,
+                        queueEntryID: entry.id,
                         songID: song.id,
+                        streamRevision: song.playbackMetadataRevision,
                         compatibilityFormat: compatibilityFormat,
                         asset: asset
                     )
@@ -1744,7 +1867,7 @@ final class AudioEngine: NSObject, ObservableObject {
               ) else {
             return
         }
-        preparePlaybackAsset(for: queue[plan.queueIndex])
+        preparePlaybackAsset(for: playbackState.entries[plan.queueIndex])
     }
 
     private func stagePreparedSuccessorIfPossible(
@@ -1767,7 +1890,12 @@ final class AudioEngine: NSObject, ObservableObject {
         ) else { return }
         let successorIndex = plan.queueIndex
         let successor = queue[successorIndex]
-        guard successor.id == prepared.songID else { return }
+        let successorEntry = playbackState.entries[successorIndex]
+        guard successorEntry.id == prepared.queueEntryID,
+              successor.id == prepared.songID,
+              successor.playbackMetadataRevision == prepared.streamRevision else {
+            return
+        }
 
         let item = AVPlayerItem(asset: prepared.asset)
         item.preferredForwardBufferDuration = 0
@@ -1777,15 +1905,16 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorItem = item
         stagedSuccessorSong = successor
         stagedSuccessorQueueIndex = successorIndex
+        stagedSuccessorOccurrenceID = successorEntry.id
         stagedSuccessorObservation = item.observe(
             \.status,
             options: [.new]
-        ) { [weak self, weak item] itemStatus, _ in
-            guard itemStatus.status == .failed else { return }
+        ) { [weak self, weak item] _, _ in
             Task { @MainActor in
                 guard let self,
                       let item,
-                      self.stagedSuccessorItem === item else { return }
+                      self.stagedSuccessorItem === item,
+                      item.status == .failed else { return }
                 if self.player.currentItem === item {
                     // Commit the logical boundary first; the active-item
                     // observer will then run the normal codec fallback plan.
@@ -1816,6 +1945,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.stagedSuccessorItem = nil
                 stagedSuccessorSong = nil
                 stagedSuccessorQueueIndex = nil
+                stagedSuccessorOccurrenceID = nil
                 stagedSuccessorObservation = nil
                 restartPlaybackPlan(resumeFrom: elapsed)
             }
@@ -1830,6 +1960,7 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorItem = nil
         stagedSuccessorSong = nil
         stagedSuccessorQueueIndex = nil
+        stagedSuccessorOccurrenceID = nil
         stagedSuccessorObservation = nil
     }
 
@@ -1854,17 +1985,22 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func takePreparedPlaybackAsset(
-        for song: Song,
+        for playbackItem: PlaybackMediaItem,
         compatibilityFormat: String?
     ) -> PreparedPlaybackAsset? {
         guard let compatibilityFormat else { return nil }
+        let song = playbackItem.song
         let key = Self.preparedPlaybackKey(
-            songID: song.id,
+            accountScope: playbackItem.accountScope,
+            queueEntryID: playbackItem.queueEntryID,
+            streamRevision: song.playbackMetadataRevision,
             quality: quality,
             compatibilityFormat: compatibilityFormat
         )
         guard let prepared = preparedPlaybackAssets.removeValue(forKey: key),
+              prepared.queueEntryID == playbackItem.queueEntryID,
               prepared.songID == song.id,
+              prepared.streamRevision == song.playbackMetadataRevision,
               prepared.compatibilityFormat == compatibilityFormat else {
             return nil
         }
@@ -1943,8 +2079,9 @@ final class AudioEngine: NSObject, ObservableObject {
         // Opening an AVURLAsset starts real media transport work. Warm only the
         // immediate successor so skip latency improves without spending radio,
         // decoder, and server resources on a track that may never be played.
-        if let nextSong = plan.upcomingSongs.first {
-            preparePlaybackAsset(for: nextSong)
+        let nextIndex = queueIndex + 1
+        if playbackState.entries.indices.contains(nextIndex) {
+            preparePlaybackAsset(for: playbackState.entries[nextIndex])
         }
 
         let token = UUID()
@@ -2063,7 +2200,7 @@ final class AudioEngine: NSObject, ObservableObject {
         isBuffering = wantsPlayback
 
         if let prepared = takePreparedPlaybackAsset(
-            for: song,
+            for: playbackItem,
             compatibilityFormat: compatibilityFormat
         ) {
             replacePlayerItem(
@@ -2191,8 +2328,11 @@ final class AudioEngine: NSObject, ObservableObject {
         guard item === stagedSuccessorItem,
               let stagedSong = stagedSuccessorSong,
               let successorIndex = stagedSuccessorQueueIndex,
+              let successorOccurrenceID = stagedSuccessorOccurrenceID,
               queue.indices.contains(successorIndex),
-              queue[successorIndex].id == stagedSong.id else {
+              queue[successorIndex].id == stagedSong.id,
+              playbackState.entries[successorIndex].id
+                  == successorOccurrenceID else {
             return
         }
         // Metadata (notably favorite and cover-art state) may have changed
@@ -2206,9 +2346,9 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorItem = nil
         stagedSuccessorSong = nil
         stagedSuccessorQueueIndex = nil
+        stagedSuccessorOccurrenceID = nil
         stagedSuccessorObservation = nil
-        beginCurrentSong(song)
-        queueIndex = successorIndex
+        playbackState.setIndex(successorIndex, renewsPlayback: true)
         recordPlaybackStart(song, origin: .autoplay)
         rememberShuffleSelection(song.id)
         elapsed = 0
@@ -3189,9 +3329,9 @@ final class AudioEngine: NSObject, ObservableObject {
             guard let event = event as? MPChangeShuffleModeCommandEvent else {
                 return .commandFailed
             }
+            let requested = event.shuffleType != .off
             Task { @MainActor in
                 guard let self else { return }
-                let requested = event.shuffleType != .off
                 if self.isShuffleEnabled != requested { self.toggleShuffle() }
             }
             return .success
@@ -3202,13 +3342,15 @@ final class AudioEngine: NSObject, ObservableObject {
             guard let event = event as? MPChangeRepeatModeCommandEvent else {
                 return .commandFailed
             }
+            let requested: RepeatMode
+            switch event.repeatType {
+            case .one: requested = .one
+            case .all: requested = .all
+            default: requested = .off
+            }
             Task { @MainActor in
                 guard let self else { return }
-                switch event.repeatType {
-                case .one: self.repeatMode = .one
-                case .all: self.repeatMode = .all
-                default: self.repeatMode = .off
-                }
+                self.repeatMode = requested
                 self.scheduleQueueSave()
                 self.updateRemoteCommands()
             }
@@ -3219,7 +3361,8 @@ final class AudioEngine: NSObject, ObservableObject {
             guard let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
-            Task { @MainActor in self?.seek(to: event.positionTime) }
+            let position = event.positionTime
+            Task { @MainActor in self?.seek(to: position) }
             return .success
         }
         commands.changePlaybackPositionCommand.isEnabled = true
@@ -3269,6 +3412,7 @@ final class AudioEngine: NSObject, ObservableObject {
         songMetadataGeneration &+= 1
         guard selectedSong.externalStreamURL == nil,
               let selectedItemID = currentPlaybackItem?.id,
+              let selectedQueueEntryID = currentPlaybackItem?.queueEntryID,
               let client else { return }
 
         let generation = songMetadataGeneration
@@ -3279,7 +3423,8 @@ final class AudioEngine: NSObject, ObservableObject {
             do {
                 canonicalItem = try await client.playbackMedia(
                     for: selectedSong,
-                    occurrenceID: selectedItemID
+                    queueEntryID: selectedQueueEntryID,
+                    playbackGenerationID: selectedItemID
                 )
             } catch {
                 return
@@ -3290,6 +3435,7 @@ final class AudioEngine: NSObject, ObservableObject {
                   sessionGeneration == self.playbackSessionGeneration,
                   accountScope == self.currentAccountScope,
                   self.currentPlaybackItem?.id == selectedItemID,
+                  self.currentPlaybackItem?.queueEntryID == selectedQueueEntryID,
                   let current = self.currentSong,
                   current.id == selectedSong.id else {
                 return
@@ -3305,19 +3451,21 @@ final class AudioEngine: NSObject, ObservableObject {
             let previousStream = self.currentPlaybackItem?.stream
             var resolvedItem = canonicalItem
             resolvedItem.song = resolved
-            self.setCurrentPlaybackItem(resolvedItem)
-            var updatedQueue = self.queue
-            var queueChanged = false
-            for index in updatedQueue.indices
-                where updatedQueue[index].id == resolved.id {
+            var updatedEntries = self.playbackState.entries
+            for index in updatedEntries.indices
+                where updatedEntries[index].song.id == resolved.id {
                 var queueSong = resolved
                 queueSong.starred = current.starred
-                if updatedQueue[index] != queueSong {
-                    updatedQueue[index] = queueSong
-                    queueChanged = true
-                }
+                updatedEntries[index] = PlaybackQueueEntry(
+                    song: queueSong,
+                    queueEntryID: updatedEntries[index].id
+                )
             }
-            if queueChanged { self.queue = updatedQueue }
+            self.playbackState.replace(
+                entries: updatedEntries,
+                index: self.queueIndex,
+                accountScope: self.currentAccountScope
+            )
             if self.duration <= 0 || self.duration == current.safeDuration {
                 self.duration = resolved.safeDuration
             }
@@ -3337,9 +3485,14 @@ final class AudioEngine: NSObject, ObservableObject {
             self.scheduleQueueSave()
 
             let previousMutation = self.historyMutationTask
+            let historySession = self.historySessionToken
             self.historyMutationTask = Task {
                 _ = await previousMutation?.value
-                await ListeningHistoryStore.shared.refreshMetadata(resolved)
+                guard let historySession else { return }
+                await ListeningHistoryStore.shared.refreshMetadata(
+                    resolved,
+                    session: historySession
+                )
             }
         }
     }
@@ -3472,12 +3625,14 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         behaviorStartRecordedForSongID = song.id
         reportPlaybackState("starting", song: song, position: 0)
+        guard let historySession = historySessionToken else { return }
         let previousMutation = historyMutationTask
         historyMutationTask = Task {
             _ = await previousMutation?.value
             await ListeningHistoryStore.shared.recordStart(
                 song,
-                origin: origin
+                origin: origin,
+                session: historySession
             )
         }
     }
@@ -3495,6 +3650,7 @@ final class AudioEngine: NSObject, ObservableObject {
             song: song,
             position: playedSeconds
         )
+        guard let historySession = historySessionToken else { return }
         let previousMutation = historyMutationTask
         historyMutationTask = Task {
             _ = await previousMutation?.value
@@ -3502,8 +3658,24 @@ final class AudioEngine: NSObject, ObservableObject {
                 song,
                 playedSeconds: playedSeconds,
                 duration: resolvedDuration,
-                reason: reason
+                reason: reason,
+                session: historySession
             )
+        }
+    }
+
+    private func recordQueueRemovals(_ songs: [Song]) {
+        guard !songs.isEmpty,
+              let historySession = historySessionToken else { return }
+        let previousMutation = historyMutationTask
+        historyMutationTask = Task {
+            _ = await previousMutation?.value
+            for song in songs {
+                await ListeningHistoryStore.shared.recordQueueRemoval(
+                    song,
+                    session: historySession
+                )
+            }
         }
     }
 
@@ -3557,19 +3729,25 @@ final class AudioEngine: NSObject, ObservableObject {
         queueSaveTask?.cancel()
         lastQueueSaveRequest = Date()
         guard let accountScope = currentAccountScope else { return }
+        queueSaveRevision &+= 1
+        let saveRevision = queueSaveRevision
+        let entriesRevision = playbackState.entriesRevision
+        let entries = playbackState.entries
         let sessionGeneration = playbackSessionGeneration
         let snapshot = QueueSnapshot(
-            queue: queue,
+            entries: entries,
             currentID: currentSong?.id,
+            currentQueueEntryID: currentPlaybackItem?.queueEntryID,
             index: queueIndex,
             elapsed: elapsed,
             shuffle: isShuffleEnabled,
-            repeatMode: repeatMode
+            repeatMode: repeatMode,
+            revision: saveRevision
         )
         let restorationEnabled = queueRestorationEnabled
         let restorationGeneration = queueRestorationGeneration
         let pendingClear = queueClearTask
-        let replacingItems = snapshot.queue != lastPersistedQueue
+        let replacingItems = entriesRevision != lastPersistedEntriesRevision
         queueSaveTask = Task {
             if !immediate { try? await Task.sleep(for: .milliseconds(450)) }
             _ = await pendingClear?.value
@@ -3587,12 +3765,25 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard !Task.isCancelled,
                       sessionGeneration == playbackSessionGeneration,
                       accountScope == currentAccountScope else { return }
-                if saved { lastPersistedQueue = snapshot.queue }
+                if saved {
+                    lastPersistedEntriesRevision = entriesRevision
+                }
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
             } else {
                 UserDefaults.standard.removeObject(forKey: queueStorageKey)
-                lastPersistedQueue = nil
-                await AppDatabase.shared.clearQueue(scope: accountScope)
+                lastPersistedEntriesRevision = nil
+                let persistedRevision = await AppDatabase.shared.clearQueue(
+                    scope: accountScope,
+                    minimumRevision: saveRevision
+                )
+                guard sessionGeneration == playbackSessionGeneration,
+                      accountScope == currentAccountScope else { return }
+                if let persistedRevision {
+                    queueSaveRevision = max(
+                        queueSaveRevision,
+                        persistedRevision
+                    )
+                }
             }
             guard let client,
                   syncServer,
@@ -3629,9 +3820,16 @@ final class AudioEngine: NSObject, ObservableObject {
             // The old UserDefaults queue has no account owner and must never
             // be adopted into an authenticated scope.
             UserDefaults.standard.removeObject(forKey: self.queueStorageKey)
-            guard !Task.isCancelled, let snapshot,
+            guard !Task.isCancelled,
                   sessionGeneration == self.playbackSessionGeneration,
-                  accountScope == self.currentAccountScope,
+                  accountScope == self.currentAccountScope else { return }
+            if let snapshot {
+                self.queueSaveRevision = max(
+                    self.queueSaveRevision,
+                    snapshot.revision
+                )
+            }
+            guard let snapshot,
                   expectedQueueRevision == self.queueMutationGeneration,
                   !snapshot.queue.isEmpty,
                   snapshot.queue.allSatisfy({ $0.externalStreamURL == nil }),
@@ -3643,9 +3841,13 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func applyRestoredQueue(_ snapshot: QueueSnapshot) {
-        lastPersistedQueue = snapshot.queue
         let restoredIndex: Int
-        if snapshot.queue.indices.contains(snapshot.index),
+        if let queueEntryID = snapshot.currentQueueEntryID,
+           let occurrenceIndex = snapshot.entries.firstIndex(where: {
+               $0.id == queueEntryID
+           }) {
+            restoredIndex = occurrenceIndex
+        } else if snapshot.queue.indices.contains(snapshot.index),
            (snapshot.currentID == nil
                 || snapshot.queue[snapshot.index].id == snapshot.currentID) {
             // The saved occurrence is authoritative when duplicate song IDs
@@ -3656,8 +3858,16 @@ final class AudioEngine: NSObject, ObservableObject {
                 snapshot.queue.firstIndex(where: { $0.id == currentID })
             } ?? 0
         }
-        beginCurrentSong(snapshot.queue[restoredIndex])
-        replaceQueue(snapshot.queue, index: restoredIndex)
+        playbackState.replace(
+            entries: snapshot.entries,
+            index: restoredIndex,
+            accountScope: currentAccountScope
+        )
+        // v4 rows migrate with revision zero and no occurrence IDs. Force one
+        // item rewrite so generated UUIDs become durable after the first load.
+        lastPersistedEntriesRevision = snapshot.revision == 0
+            ? nil
+            : playbackState.entriesRevision
         let restoredElapsed = snapshot.elapsed.isFinite ? max(0, snapshot.elapsed) : 0
         let restoredDuration = currentSong?.safeDuration ?? 0
         elapsed = restoredDuration > 0
@@ -3671,13 +3881,61 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 }
 
-struct QueueSnapshot: Codable, Sendable {
-    let queue: [Song]
+struct QueueSnapshot: Sendable {
+    let entries: [PlaybackQueueEntry]
     let currentID: String?
+    let currentQueueEntryID: UUID?
     let index: Int
     let elapsed: TimeInterval
     let shuffle: Bool
     let repeatMode: RepeatMode
+    let revision: UInt64
+
+    var queue: [Song] { entries.map(\.song) }
+
+    init(
+        queue: [Song],
+        currentID: String?,
+        index: Int,
+        elapsed: TimeInterval,
+        shuffle: Bool,
+        repeatMode: RepeatMode,
+        revision: UInt64 = 0
+    ) {
+        let entries = queue.map { PlaybackQueueEntry(song: $0) }
+        self.init(
+            entries: entries,
+            currentID: currentID,
+            currentQueueEntryID: entries.indices.contains(index)
+                ? entries[index].id
+                : nil,
+            index: index,
+            elapsed: elapsed,
+            shuffle: shuffle,
+            repeatMode: repeatMode,
+            revision: revision
+        )
+    }
+
+    init(
+        entries: [PlaybackQueueEntry],
+        currentID: String?,
+        currentQueueEntryID: UUID?,
+        index: Int,
+        elapsed: TimeInterval,
+        shuffle: Bool,
+        repeatMode: RepeatMode,
+        revision: UInt64
+    ) {
+        self.entries = entries
+        self.currentID = currentID
+        self.currentQueueEntryID = currentQueueEntryID
+        self.index = index
+        self.elapsed = elapsed
+        self.shuffle = shuffle
+        self.repeatMode = repeatMode
+        self.revision = revision
+    }
 }
 
 private actor AudioSessionController {
