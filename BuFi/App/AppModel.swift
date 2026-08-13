@@ -67,17 +67,44 @@ final class HomeLibraryState: ObservableObject {
 
 @MainActor
 final class SearchContentState: ObservableObject {
-    @Published fileprivate(set) var results = SearchResults.empty
-    @Published fileprivate(set) var isSearching = false
+    struct Presentation: Equatable, Sendable {
+        let query: String
+        let results: SearchResults
+        let isSearching: Bool
+
+        static let empty = Presentation(
+            query: "",
+            results: .empty,
+            isSearching: false
+        )
+    }
+
+    @Published fileprivate(set) var presentation = Presentation.empty
+
+    var results: SearchResults { presentation.results }
+    var isSearching: Bool { presentation.isSearching }
+    var query: String { presentation.query }
 
     fileprivate func setResults(_ value: SearchResults) {
-        guard results != value else { return }
-        results = value
+        publish(query: query, results: value, isSearching: isSearching)
     }
 
     fileprivate func setSearching(_ value: Bool) {
-        guard isSearching != value else { return }
-        isSearching = value
+        publish(query: query, results: results, isSearching: value)
+    }
+
+    fileprivate func publish(
+        query: String,
+        results: SearchResults,
+        isSearching: Bool
+    ) {
+        let next = Presentation(
+            query: query,
+            results: results,
+            isSearching: isSearching
+        )
+        guard presentation != next else { return }
+        presentation = next
     }
 }
 
@@ -427,29 +454,42 @@ final class AppModel: ObservableObject {
         searchTask?.cancel()
         let query = Self.normalizedSearchQuery(rawQuery)
         guard !query.isEmpty, let client else {
-            searchResults = .empty
-            isSearching = false
+            searchContent.publish(
+                query: query,
+                results: .empty,
+                isSearching: false
+            )
             return
         }
+        searchContent.publish(
+            query: query,
+            results: .empty,
+            isSearching: true
+        )
 
         searchTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(260))
                 try Task.checkCancellation()
                 guard let self, generation == self.searchGeneration, self.client === client else { return }
-                self.isSearching = true
                 let value = try await client.search(query)
                 try Task.checkCancellation()
                 guard generation == self.searchGeneration, self.client === client else { return }
                 self.reconcileFavoriteStates(in: value)
-                self.searchResults = self.applyingFavoriteOverrides(to: value)
-                self.isSearching = false
+                self.searchContent.publish(
+                    query: query,
+                    results: self.applyingFavoriteOverrides(to: value),
+                    isSearching: false
+                )
             } catch is CancellationError {
                 return
             } catch {
                 guard let self, generation == self.searchGeneration, self.client === client else { return }
-                self.isSearching = false
-                self.searchResults = .empty
+                self.searchContent.publish(
+                    query: query,
+                    results: .empty,
+                    isSearching: false
+                )
                 self.errorMessage = error.localizedDescription
             }
         }
@@ -461,23 +501,36 @@ final class AppModel: ObservableObject {
         searchTask?.cancel()
         let query = Self.normalizedSearchQuery(rawQuery)
         guard !query.isEmpty, let client else {
-            searchResults = .empty
-            isSearching = false
+            searchContent.publish(
+                query: query,
+                results: .empty,
+                isSearching: false
+            )
             return
         }
-        isSearching = true
+        searchContent.publish(
+            query: query,
+            results: .empty,
+            isSearching: true
+        )
         do {
             let value = try await client.search(query)
             guard generation == searchGeneration, self.client === client else { return }
             reconcileFavoriteStates(in: value)
-            searchResults = applyingFavoriteOverrides(to: value)
-            isSearching = false
+            searchContent.publish(
+                query: query,
+                results: applyingFavoriteOverrides(to: value),
+                isSearching: false
+            )
         } catch is CancellationError {
             return
         } catch {
             guard generation == searchGeneration, self.client === client else { return }
-            isSearching = false
-            searchResults = .empty
+            searchContent.publish(
+                query: query,
+                results: .empty,
+                isSearching: false
+            )
             errorMessage = error.localizedDescription
         }
     }
@@ -493,8 +546,7 @@ final class AppModel: ObservableObject {
     func clearSearch() {
         searchGeneration += 1
         searchTask?.cancel()
-        isSearching = false
-        searchResults = .empty
+        searchContent.presentation = .empty
     }
 
     func playRadio(from seed: Song) async {

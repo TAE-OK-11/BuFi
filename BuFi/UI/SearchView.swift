@@ -11,6 +11,7 @@ struct SearchView: View {
 
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
+    @State private var personalizedMixes: [PersonalizedMix] = []
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -57,6 +58,9 @@ struct SearchView: View {
                     browseMode = .main
                 }
                 model.search(value)
+            }
+            .task(id: personalizedMixTaskIdentity) {
+                await updatePersonalizedMixesIfNeeded()
             }
         }
     }
@@ -182,15 +186,7 @@ struct SearchView: View {
                 .padding(.horizontal, 16)
             }
         case .algorithmPlaylists:
-            algorithmPlaylists(
-                PersonalizedMixBuilder.make(
-                    snapshot: library.snapshot,
-                    snapshotRevision: library.revision,
-                    selectedArtists: ArtistMixPreferences.decode(
-                        selectedArtistMixes
-                    )
-                )
-            )
+            algorithmPlaylists(personalizedMixes)
         case .mostPlayed:
             browseCollectionHeader("자주 들은 곡")
             rankedSongs
@@ -527,6 +523,40 @@ struct SearchView: View {
         }
     }
 
+    private var personalizedMixTaskIdentity: SearchMixTaskIdentity {
+        SearchMixTaskIdentity(
+            revision: library.revision,
+            selectedArtists: selectedArtistMixes,
+            isVisible: browseMode == .algorithmPlaylists
+        )
+    }
+
+    private func updatePersonalizedMixesIfNeeded() async {
+        guard browseMode == .algorithmPlaylists else { return }
+        let snapshot = library.snapshot
+        let revision = library.revision
+        let selectedArtists = ArtistMixPreferences.decode(selectedArtistMixes)
+        let work = Task.detached(priority: .userInitiated) {
+            PersonalizedMixBuilder.make(
+                snapshot: snapshot,
+                snapshotRevision: revision,
+                selectedArtists: selectedArtists
+            )
+        }
+        let next = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard !Task.isCancelled,
+              browseMode == .algorithmPlaylists,
+              revision == library.revision,
+              selectedArtists == ArtistMixPreferences.decode(selectedArtistMixes) else {
+            return
+        }
+        personalizedMixes = next
+    }
+
     private var rowSeparator: some View {
         Divider()
             .padding(.leading, 85)
@@ -554,4 +584,10 @@ private struct SearchShortcut: Identifiable {
 
 private enum SearchScrollAnchor: Hashable {
     case top
+}
+
+private struct SearchMixTaskIdentity: Hashable {
+    let revision: HomeSnapshotRevision
+    let selectedArtists: String
+    let isVisible: Bool
 }
