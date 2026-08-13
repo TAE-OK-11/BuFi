@@ -3,10 +3,16 @@ import UIKit
 
 struct PlayerArtworkPageID: Hashable, Sendable {
     let queueIndex: Int
+    var queueEntryID: UUID? = nil
     let songID: String
     let coverArtID: String?
     var artworkRevision: String? = nil
     var accountScope: String? = nil
+}
+
+private struct PlayerArtworkPagerQueueID: Hashable {
+    let entryIDs: [UUID]
+    let accountScope: String?
 }
 
 struct PlayerArtworkPagerPage: Identifiable {
@@ -23,19 +29,24 @@ struct PlayerArtworkPagerSnapshot {
     static func make(
         currentSong: Song,
         queue: [Song],
+        queueEntries: [PlaybackQueueEntry] = [],
         queueIndex: Int,
+        currentQueueEntryID: UUID? = nil,
         accountScope: String? = nil,
         windowRadius: Int = PlayerArtworkPagerSnapshot.defaultWindowRadius
     ) -> PlayerArtworkPagerSnapshot {
         let resolvedIndex = resolvedQueueIndex(
             currentSong: currentSong,
             queue: queue,
-            queueIndex: queueIndex
+            queueEntries: queueEntries,
+            queueIndex: queueIndex,
+            currentQueueEntryID: currentQueueEntryID
         )
 
         guard let resolvedIndex else {
             let fallback = fallbackPageID(
                 currentSong: currentSong,
+                currentQueueEntryID: currentQueueEntryID,
                 accountScope: accountScope
             )
             return PlayerArtworkPagerSnapshot(
@@ -52,6 +63,9 @@ struct PlayerArtworkPagerSnapshot {
                 id: pageID(
                     for: queue[index],
                     queueIndex: index,
+                    queueEntryID: queueEntries.indices.contains(index)
+                        ? queueEntries[index].id
+                        : nil,
                     accountScope: accountScope
                 ),
                 song: queue[index]
@@ -62,6 +76,9 @@ struct PlayerArtworkPagerSnapshot {
             currentPage: pageID(
                 for: queue[resolvedIndex],
                 queueIndex: resolvedIndex,
+                queueEntryID: queueEntries.indices.contains(resolvedIndex)
+                    ? queueEntries[resolvedIndex].id
+                    : currentQueueEntryID,
                 accountScope: accountScope
             )
         )
@@ -72,22 +89,30 @@ struct PlayerArtworkPagerSnapshot {
     static func resolveCurrentPage(
         currentSong: Song,
         queue: [Song],
+        queueEntries: [PlaybackQueueEntry] = [],
         queueIndex: Int,
+        currentQueueEntryID: UUID? = nil,
         accountScope: String? = nil
     ) -> PlayerArtworkPageID {
         guard let index = resolvedQueueIndex(
             currentSong: currentSong,
             queue: queue,
-            queueIndex: queueIndex
+            queueEntries: queueEntries,
+            queueIndex: queueIndex,
+            currentQueueEntryID: currentQueueEntryID
         ) else {
             return fallbackPageID(
                 currentSong: currentSong,
+                currentQueueEntryID: currentQueueEntryID,
                 accountScope: accountScope
             )
         }
         return pageID(
             for: queue[index],
             queueIndex: index,
+            queueEntryID: queueEntries.indices.contains(index)
+                ? queueEntries[index].id
+                : currentQueueEntryID,
             accountScope: accountScope
         )
     }
@@ -95,8 +120,17 @@ struct PlayerArtworkPagerSnapshot {
     private static func resolvedQueueIndex(
         currentSong: Song,
         queue: [Song],
-        queueIndex: Int
+        queueEntries: [PlaybackQueueEntry],
+        queueIndex: Int,
+        currentQueueEntryID: UUID?
     ) -> Int? {
+        if let currentQueueEntryID,
+           queueEntries.indices.contains(queueIndex),
+           queueEntries[queueIndex].id == currentQueueEntryID,
+           queue.indices.contains(queueIndex),
+           visuallyMatches(queue[queueIndex], currentSong) {
+            return queueIndex
+        }
         if queue.indices.contains(queueIndex),
            visuallyMatches(queue[queueIndex], currentSong) {
             return queueIndex
@@ -107,10 +141,12 @@ struct PlayerArtworkPagerSnapshot {
     private static func pageID(
         for song: Song,
         queueIndex: Int,
+        queueEntryID: UUID?,
         accountScope: String?
     ) -> PlayerArtworkPageID {
         PlayerArtworkPageID(
             queueIndex: queueIndex,
+            queueEntryID: queueEntryID,
             songID: song.id,
             coverArtID: song.artworkID,
             artworkRevision: song.artworkRevision,
@@ -120,10 +156,12 @@ struct PlayerArtworkPagerSnapshot {
 
     private static func fallbackPageID(
         currentSong: Song,
+        currentQueueEntryID: UUID? = nil,
         accountScope: String?
     ) -> PlayerArtworkPageID {
         PlayerArtworkPageID(
             queueIndex: -1,
+            queueEntryID: currentQueueEntryID,
             songID: currentSong.id,
             coverArtID: currentSong.artworkID,
             artworkRevision: currentSong.artworkRevision,
@@ -196,7 +234,8 @@ struct PlayerView: View {
                                 lyricsState: audio.lyricsState,
                                 song: song,
                                 primary: playerPrimary,
-                                secondary: playerSecondary
+                                secondary: playerSecondary,
+                                onRetry: audio.retryLyrics
                             ) {
                                 audio.showFullLyrics = true
                             }
@@ -274,6 +313,7 @@ struct PlayerView: View {
            next.songs.indices.contains(pendingPage.queueIndex) {
             let pendingSong = next.songs[pendingPage.queueIndex]
             pendingPageIsStillValid = pendingSong.id == pendingPage.songID
+                && next.entries[pendingPage.queueIndex].id == pendingPage.queueEntryID
                 && pendingSong.artworkID == pendingPage.coverArtID
                 && pendingSong.artworkRevision == pendingPage.artworkRevision
         } else {
@@ -394,14 +434,18 @@ struct PlayerView: View {
                 heightPadding: 42
             )
 
-            metadataContent(song)
+            metadataContent(song, availableWidth: viewportWidth)
                 .padding(.bottom, 18)
         }
+        .frame(width: viewportWidth)
         .frame(height: edge + 116)
         .contentShape(Rectangle())
     }
 
-    private func metadataContent(_ song: Song) -> some View {
+    private func metadataContent(
+        _ song: Song,
+        availableWidth: CGFloat
+    ) -> some View {
         HStack(spacing: 14) {
             ZStack(alignment: .leading) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -446,6 +490,7 @@ struct PlayerView: View {
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
         }
+        .frame(width: availableWidth)
     }
 
     private func dynamicPlayer(
@@ -461,7 +506,10 @@ struct PlayerView: View {
             )
 
             VStack(spacing: 2) {
-                dynamicMetadataContent(song)
+                dynamicMetadataContent(
+                    song,
+                    availableWidth: max(1, availableWidth - 80)
+                )
                     .padding(.bottom, 4)
                 progress
                     .padding(.horizontal, 2)
@@ -510,7 +558,9 @@ struct PlayerView: View {
         let snapshot = PlayerArtworkPagerSnapshot.make(
             currentSong: song,
             queue: playback.songs,
+            queueEntries: playback.entries,
             queueIndex: playback.index,
+            currentQueueEntryID: playback.currentItem?.queueEntryID,
             accountScope: playback.currentItem?.accountScope
         )
         let pagerPosition = Binding<PlayerArtworkPageID?>(
@@ -559,6 +609,10 @@ struct PlayerView: View {
             .contentMargins(.horizontal, sideInset, for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
             .scrollPosition(id: pagerPosition, anchor: .center)
+            .id(PlayerArtworkPagerQueueID(
+                entryIDs: playback.entries.map(\.id),
+                accountScope: playback.currentItem?.accountScope
+            ))
             .simultaneousGesture(
                 DragGesture(minimumDistance: 5)
                     .onChanged { _ in
@@ -582,7 +636,7 @@ struct PlayerView: View {
                     }
                 )
                 .frame(width: edge, height: edge)
-                .id("active-\(song.id)-\(song.artworkID ?? "")-\(song.artworkRevision)")
+                .id("active-\(playback.currentItem?.id.uuidString ?? "")-\(song.id)-\(song.artworkID ?? "")-\(song.artworkRevision)")
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
@@ -593,6 +647,8 @@ struct PlayerView: View {
             guard pagerSelectionGate.shouldStartPlayback(for: page) else { return }
             guard let page,
                   playback.songs.indices.contains(page.queueIndex),
+                  playback.entries.indices.contains(page.queueIndex),
+                  playback.entries[page.queueIndex].id == page.queueEntryID,
                   playback.songs[page.queueIndex].id == page.songID,
                   playback.songs[page.queueIndex].artworkID == page.coverArtID,
                   playback.songs[page.queueIndex].artworkRevision == page.artworkRevision else {
@@ -608,7 +664,10 @@ struct PlayerView: View {
         }
     }
 
-    private func dynamicMetadataContent(_ song: Song) -> some View {
+    private func dynamicMetadataContent(
+        _ song: Song,
+        availableWidth: CGFloat
+    ) -> some View {
         ZStack {
             VStack(spacing: 4) {
                 OverflowMarqueeText(
@@ -642,6 +701,7 @@ struct PlayerView: View {
                 .accessibilityLabel(model.isStarred(song) ? "좋아요 취소" : "좋아요 표시")
             }
         }
+        .frame(width: availableWidth)
     }
 
     private var progress: some View {
@@ -806,7 +866,9 @@ struct PlayerView: View {
         let page = PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: currentSong,
             queue: playback.songs,
+            queueEntries: playback.entries,
             queueIndex: index,
+            currentQueueEntryID: playback.currentItem?.queueEntryID,
             accountScope: playback.currentItem?.accountScope
         )
         guard pagerSelectionGate.prepareProgrammaticChange(
@@ -841,7 +903,9 @@ struct PlayerView: View {
         return PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: currentSong,
             queue: playback.songs,
+            queueEntries: playback.entries,
             queueIndex: playback.index,
+            currentQueueEntryID: playback.currentItem?.queueEntryID,
             accountScope: playback.currentItem?.accountScope
         )
     }
@@ -852,7 +916,8 @@ struct PlayerView: View {
         song: Song
     ) {
         artworkPalettes[page] = nextPalette
-        guard playback.currentSong?.id == song.id,
+        guard playback.currentItem?.queueEntryID == page.queueEntryID,
+              playback.currentSong?.id == song.id,
               playback.currentSong?.artworkID == song.artworkID,
               playback.currentSong?.artworkRevision == song.artworkRevision else {
             return
@@ -871,7 +936,9 @@ struct PlayerView: View {
         let page = PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: currentSong,
             queue: playback.songs,
+            queueEntries: playback.entries,
             queueIndex: index,
+            currentQueueEntryID: playback.currentItem?.queueEntryID,
             accountScope: playback.currentItem?.accountScope
         )
         if let cached = artworkPalettes[page] {
@@ -887,9 +954,11 @@ struct PlayerView: View {
         artworkPalettes = artworkPalettes.filter { element in
             let page = element.key
             guard page.accountScope == accountScope else { return false }
-            if songs.indices.contains(page.queueIndex) {
+            if songs.indices.contains(page.queueIndex),
+               playback.entries.indices.contains(page.queueIndex) {
                 let song = songs[page.queueIndex]
-                return song.id == page.songID
+                return playback.entries[page.queueIndex].id == page.queueEntryID
+                    && song.id == page.songID
                     && song.artworkID == page.coverArtID
                     && song.artworkRevision == page.artworkRevision
             }
@@ -898,6 +967,7 @@ struct PlayerView: View {
                 return false
             }
             return currentSong.id == page.songID
+                && playback.currentItem?.queueEntryID == page.queueEntryID
                 && currentSong.artworkID == page.coverArtID
                 && currentSong.artworkRevision == page.artworkRevision
         }
@@ -927,6 +997,7 @@ struct PlayerView: View {
             (
                 page: PlayerArtworkPageID(
                     queueIndex: index,
+                    queueEntryID: playback.entries[index].id,
                     songID: playback.songs[index].id,
                     coverArtID: playback.songs[index].artworkID,
                     artworkRevision: playback.songs[index].artworkRevision,
@@ -958,6 +1029,8 @@ struct PlayerView: View {
                 )
                 guard !Task.isCancelled,
                       playback.songs.indices.contains(item.page.queueIndex),
+                      playback.entries.indices.contains(item.page.queueIndex),
+                      playback.entries[item.page.queueIndex].id == item.page.queueEntryID,
                       playback.songs[item.page.queueIndex].id == item.page.songID,
                       playback.songs[item.page.queueIndex].artworkID == item.page.coverArtID,
                       playback.songs[item.page.queueIndex].artworkRevision == item.page.artworkRevision else {
@@ -1157,6 +1230,7 @@ private struct PlayerLyricsCard: View {
     let song: Song
     let primary: Color
     let secondary: Color
+    let onRetry: () -> Void
     let onOpen: () -> Void
 
     @ViewBuilder
@@ -1208,11 +1282,35 @@ private struct PlayerLyricsCard: View {
             .buFiGlass(cornerRadius: 24, interactive: true)
             .padding(.top, 10)
         } else {
-            Text("이 곡에는 표시할 가사가 없습니다.")
+            lyricsPlaceholder
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 18)
+        }
+    }
+
+    @ViewBuilder
+    private var lyricsPlaceholder: some View {
+        switch lyricsState.status {
+        case .loading:
+            HStack(spacing: 10) {
+                ProgressView()
+                    .tint(primary)
+                Text("가사를 불러오는 중…")
+            }
+            .accessibilityElement(children: .combine)
+        case .failed:
+            HStack(spacing: 12) {
+                Text("가사를 불러오지 못했습니다.")
+                Spacer()
+                Button("다시 시도", action: onRetry)
+                    .fontWeight(.bold)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(primary)
+            }
+        case .idle, .unavailable, .available:
+            Text("이 곡에는 표시할 가사가 없습니다.")
         }
     }
 

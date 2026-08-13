@@ -298,7 +298,7 @@ final class ModernNetworkPolicyTests: XCTestCase {
             OpenSubsonicRequestPolicy.responseCachePolicy(
                 for: "getLyricsBySongId"
             ).lifetime,
-            6 * 60 * 60
+            0
         )
         XCTAssertEqual(
             OpenSubsonicRequestPolicy.responseCachePolicy(

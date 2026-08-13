@@ -400,7 +400,7 @@ struct LyricLine: Identifiable, Hashable, Sendable {
     let text: String
 }
 
-struct LyricsDocument: Sendable {
+struct LyricsDocument: Equatable, Sendable {
     var synced: Bool
     var lines: [LyricLine]
 
@@ -627,6 +627,7 @@ struct LyricsList: Decodable, Sendable {
 }
 
 struct StructuredLyrics: Decodable, Sendable {
+    let lang: String?
     let offset: Int?
     let synced: Bool?
     let line: [StructuredLyricLine]?

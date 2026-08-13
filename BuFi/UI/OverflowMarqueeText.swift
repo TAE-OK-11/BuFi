@@ -25,30 +25,48 @@ struct OverflowMarqueeText: View {
     @State private var travel: CGFloat = 0
 
     var body: some View {
-        ZStack(alignment: resolvedAlignment) {
-            Text(text)
-                .font(font)
-                .tracking(tracking)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .offset(x: signedOffset)
-                .onGeometryChange(for: CGSize.self) { proxy in
-                    proxy.size
-                } action: { size in
-                    textSize = size
+        // The short hidden label establishes only the line height. Keeping the
+        // moving label in an overlay prevents its intrinsic width from making
+        // an HStack or ZStack wider than the visible player viewport.
+        Text("M")
+            .font(font)
+            .tracking(tracking)
+            .lineLimit(1)
+            .hidden()
+            .frame(maxWidth: .infinity, alignment: frameAlignment)
+            .overlay {
+                GeometryReader { proxy in
+                    ZStack(alignment: resolvedAlignment) {
+                        Text(text)
+                            .font(font)
+                            .tracking(tracking)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .offset(x: signedOffset)
+                            .onGeometryChange(for: CGSize.self) { textProxy in
+                                textProxy.size
+                            } action: { size in
+                                textSize = size
+                            }
+                    }
+                    .frame(
+                        width: proxy.size.width,
+                        height: proxy.size.height,
+                        alignment: resolvedAlignment
+                    )
+                    .clipped()
                 }
-        }
-        .frame(maxWidth: .infinity, alignment: frameAlignment)
-        .clipped()
-        .onGeometryChange(for: CGSize.self) { proxy in
-            proxy.size
-        } action: { size in
-            containerSize = size
-        }
-        .task(id: animationIdentity) {
-            await runAnimation(distance: overflowDistance)
-        }
-        .accessibilityLabel(text)
+            }
+            .onGeometryChange(for: CGSize.self) { proxy in
+                proxy.size
+            } action: { size in
+                containerSize = size
+            }
+            .task(id: animationIdentity) {
+                await runAnimation(distance: overflowDistance)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
     }
 
     private var overflowDistance: CGFloat {

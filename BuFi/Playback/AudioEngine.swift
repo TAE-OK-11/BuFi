@@ -213,9 +213,18 @@ final class PlaybackTimeline: ObservableObject {
 
 @MainActor
 final class LyricsPlaybackState: ObservableObject {
+    enum Status: Equatable, Sendable {
+        case idle
+        case loading
+        case available
+        case unavailable
+        case failed
+    }
+
     // Lyric highlighting has its own render boundary for the same reason.
     @Published fileprivate(set) var document = LyricsDocument.empty
     @Published fileprivate(set) var activeIndex = -1
+    @Published fileprivate(set) var status: Status = .idle
 }
 
 @MainActor
@@ -973,6 +982,7 @@ final class AudioEngine: NSObject, ObservableObject {
             self.elapsed = self.duration > 0 ? min(restoredPosition, self.duration) : restoredPosition
             self.applyLyricsDocument(.empty)
             self.updateNowPlaying()
+            self.loadLyrics(for: serverQueue.songs[restoredIndex])
             self.refreshCanonicalMetadata(
                 for: serverQueue.songs[restoredIndex]
             )
@@ -2911,42 +2921,74 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func loadLyrics(for song: Song) {
+    func retryLyrics() {
+        guard let song = currentSong else { return }
+        loadLyrics(for: song, forceRefresh: true)
+    }
+
+    private func loadLyrics(
+        for song: Song,
+        forceRefresh: Bool = false
+    ) {
         lyricsTask?.cancel()
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
         let playbackItemID = currentPlaybackItem?.id
         guard song.externalStreamURL == nil else {
-            applyLyricsDocument(.empty)
+            applyLyricsDocument(.empty, status: .unavailable)
             return
         }
         guard let client else {
-            applyLyricsDocument(.empty)
+            applyLyricsDocument(.empty, status: .failed)
             return
         }
+        applyLyricsDocument(.empty, status: .loading)
         lyricsTask = Task { [weak self] in
-            do {
-                let document = try await client.lyrics(songID: song.id)
-                guard let self,
-                      !Task.isCancelled,
-                      self.lyricsLoadGeneration == generation,
-                      self.currentPlaybackItem?.id == playbackItemID,
-                      self.currentSong?.id == song.id else {
+            for attempt in 0...1 {
+                do {
+                    let document = try await client.lyrics(
+                        songID: song.id,
+                        forceRefresh: forceRefresh || attempt > 0
+                    )
+                    guard let self,
+                          !Task.isCancelled,
+                          self.lyricsLoadGeneration == generation,
+                          self.currentPlaybackItem?.id == playbackItemID,
+                          self.currentSong?.id == song.id else {
+                        return
+                    }
+                    if document.lines.isEmpty, attempt == 0 {
+                        try await Task.sleep(for: .milliseconds(650))
+                        continue
+                    }
+                    self.lyricsTask = nil
+                    self.applyLyricsDocument(
+                        document,
+                        status: document.lines.isEmpty ? .unavailable : .available
+                    )
                     return
-                }
-                self.lyricsTask = nil
-                self.applyLyricsDocument(document)
-            } catch {
-                guard let self,
-                      !Task.isCancelled,
-                      self.lyricsLoadGeneration == generation,
-                      self.currentPlaybackItem?.id == playbackItemID,
-                      self.currentSong?.id == song.id else {
+                } catch is CancellationError {
                     return
+                } catch {
+                    guard let self,
+                          !Task.isCancelled,
+                          self.lyricsLoadGeneration == generation,
+                          self.currentPlaybackItem?.id == playbackItemID,
+                          self.currentSong?.id == song.id else {
+                        return
+                    }
+                    if attempt == 0 {
+                        do {
+                            try await Task.sleep(for: .milliseconds(650))
+                        } catch {
+                            return
+                        }
+                        continue
+                    }
+                    self.lyricsTask = nil
+                    Self.logger.error("Lyrics request failed after retry")
+                    self.applyLyricsDocument(.empty, status: .failed)
                 }
-                self.lyricsTask = nil
-                Self.logger.error("Lyrics request failed")
-                self.applyLyricsDocument(.empty)
             }
         }
     }
@@ -3073,8 +3115,14 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func applyLyricsDocument(_ document: LyricsDocument) {
+    private func applyLyricsDocument(
+        _ document: LyricsDocument,
+        status: LyricsPlaybackState.Status? = nil
+    ) {
         lyrics = document
+        lyricsState.status = status ?? (
+            document.lines.isEmpty ? .idle : .available
+        )
         let lyricPosition = currentLyricPosition(fallback: elapsed)
         updateActiveLyric(at: lyricPosition)
         installNextLyricBoundary(after: lyricPosition)
@@ -4079,6 +4127,10 @@ final class AudioEngine: NSObject, ObservableObject {
         isShuffleEnabled = snapshot.shuffle
         repeatMode = snapshot.repeatMode
         queueMutationGeneration &+= 1
+        applyLyricsDocument(.empty)
+        if let restoredSong = currentSong {
+            loadLyrics(for: restoredSong)
+        }
         refreshCanonicalMetadata(for: snapshot.queue[restoredIndex])
     }
 }

@@ -190,7 +190,9 @@ struct RootView: View {
         return PlayerArtworkPagerSnapshot.resolveCurrentPage(
             currentSong: song,
             queue: playback.songs,
+            queueEntries: playback.entries,
             queueIndex: playback.index,
+            currentQueueEntryID: playback.currentItem?.queueEntryID,
             accountScope: playback.currentItem?.accountScope
         )
     }

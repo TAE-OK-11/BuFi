@@ -184,6 +184,26 @@ final class PlayerPresentationStateTests: XCTestCase {
         XCTAssertEqual(snapshot.currentPage.queueIndex, 0)
     }
 
+    func testArtworkSnapshotKeepsDuplicateSongOccurrencesDistinct() {
+        let duplicate = song(id: "same-song", coverArt: "same-cover")
+        let first = PlaybackQueueEntry(song: duplicate)
+        let second = PlaybackQueueEntry(song: duplicate)
+
+        let snapshot = PlayerArtworkPagerSnapshot.make(
+            currentSong: duplicate,
+            queue: [duplicate, duplicate],
+            queueEntries: [first, second],
+            queueIndex: 1,
+            currentQueueEntryID: second.id,
+            accountScope: "account"
+        )
+
+        XCTAssertEqual(snapshot.currentPage.queueIndex, 1)
+        XCTAssertEqual(snapshot.currentPage.queueEntryID, second.id)
+        XCTAssertEqual(snapshot.pages.map(\.id.queueEntryID), [first.id, second.id])
+        XCTAssertNotEqual(snapshot.pages[0].id, snapshot.pages[1].id)
+    }
+
     func testSessionTransitionDrainsObsoleteScrobbleBeforeReplacement() async {
         let lifecycle = PlayerTaskLifecycle()
         let gate = PlayerTaskGate()

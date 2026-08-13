@@ -76,6 +76,7 @@ struct MiniPlayerView: View {
                             .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
                         .allowsHitTesting(false)
                         .animation(
                             motionEnabled ? BuFiMotion.trackText : .none,

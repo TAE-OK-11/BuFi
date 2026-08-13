@@ -185,7 +185,10 @@ enum OpenSubsonicRequestPolicy {
         case "getOpenSubsonicExtensions":
             return OpenSubsonicResponseCachePolicy(lifetime: 60 * 60)
         case "getLyricsBySongId":
-            return OpenSubsonicResponseCachePolicy(lifetime: 6 * 60 * 60)
+            // Raw empty lyric payloads are not authoritative and must not
+            // suppress a later successful response. Parsed, non-empty lyric
+            // documents use a separate positive-only cache below.
+            return OpenSubsonicResponseCachePolicy(lifetime: 0)
         case "getGenres", "getInternetRadioStations":
             return OpenSubsonicResponseCachePolicy(lifetime: 30 * 60)
         case "getArtistInfo2":
@@ -452,6 +455,112 @@ actor HomeEnrichmentRequestLimiter {
     }
 }
 
+struct LyricsDocumentCache: Sendable {
+    private struct Entry: Sendable {
+        let document: LyricsDocument
+        let storedAt: ContinuousClock.Instant
+        var accessOrdinal: UInt64
+    }
+
+    let countLimit: Int
+    private var entries: [String: Entry] = [:]
+    private var accessClock: UInt64 = 0
+
+    var count: Int { entries.count }
+
+    init(countLimit: Int) {
+        self.countLimit = max(0, countLimit)
+    }
+
+    mutating func value(
+        for songID: String,
+        maximumAge: TimeInterval,
+        now: ContinuousClock.Instant = ContinuousClock().now
+    ) -> LyricsDocument? {
+        guard var entry = entries[songID] else { return nil }
+        guard maximumAge > 0,
+              entry.storedAt.duration(to: now) <= .seconds(maximumAge) else {
+            entries.removeValue(forKey: songID)
+            return nil
+        }
+        entry.accessOrdinal = nextAccessOrdinal()
+        entries[songID] = entry
+        return entry.document
+    }
+
+    mutating func insert(
+        _ document: LyricsDocument,
+        for songID: String,
+        now: ContinuousClock.Instant = ContinuousClock().now
+    ) {
+        guard countLimit > 0, !document.lines.isEmpty else { return }
+        entries[songID] = Entry(
+            document: document,
+            storedAt: now,
+            accessOrdinal: nextAccessOrdinal()
+        )
+        while entries.count > countLimit,
+              let leastRecentlyUsed = entries.min(by: {
+                  $0.value.accessOrdinal < $1.value.accessOrdinal
+              })?.key {
+            entries.removeValue(forKey: leastRecentlyUsed)
+        }
+    }
+
+    mutating func removeAll(keepingCapacity: Bool = false) {
+        entries.removeAll(keepingCapacity: keepingCapacity)
+        accessClock = 0
+    }
+
+    private mutating func nextAccessOrdinal() -> UInt64 {
+        accessClock &+= 1
+        return accessClock
+    }
+}
+
+enum LyricsDocumentParser {
+    static func parse(_ payload: LyricsPayload) -> LyricsDocument {
+        guard let sources = payload.lyricsList?.structuredLyrics else {
+            return .empty
+        }
+
+        // OpenSubsonic may return independent lyric representations. Preserve
+        // server preference order, but skip empty or whitespace-only entries.
+        for source in sources {
+            let validLines = (source.line ?? []).enumerated().compactMap {
+                index, item -> (index: Int, start: Int?, text: String)? in
+                guard let text = item.value?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ), !text.isEmpty else {
+                    return nil
+                }
+                return (index, item.start, text)
+            }
+            guard !validLines.isEmpty else { continue }
+
+            let isSynced = source.synced == true
+                && validLines.allSatisfy { $0.start != nil }
+            let offset = TimeInterval(source.offset ?? 0) / 1_000
+            var lines = validLines.map { item in
+                LyricLine(
+                    id: item.index,
+                    start: isSynced
+                        ? max(0, TimeInterval(item.start ?? 0) / 1_000 + offset)
+                        : 0,
+                    text: item.text
+                )
+            }
+            if isSynced {
+                lines.sort {
+                    $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start
+                }
+            }
+            return LyricsDocument(synced: isSynced, lines: lines)
+        }
+        return .empty
+    }
+}
+
 actor OpenSubsonicClient {
     static let apiVersion = "1.16.1"
     static let clientName = "BuFi"
@@ -518,6 +627,7 @@ actor OpenSubsonicClient {
         byteLimit: OpenSubsonicClient.responseCacheByteLimit,
         maximumEntryBytes: OpenSubsonicClient.maximumCachedResponseBytes
     )
+    private var lyricsCache = LyricsDocumentCache(countLimit: 64)
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -2178,27 +2288,26 @@ actor OpenSubsonicClient {
         )
     }
 
-    func lyrics(songID: String) async throws -> LyricsDocument {
+    func lyrics(
+        songID: String,
+        forceRefresh: Bool = false
+    ) async throws -> LyricsDocument {
+        if !forceRefresh,
+           let cached = lyricsCache.value(
+               for: songID,
+               maximumAge: 6 * 60 * 60
+           ) {
+            return cached
+        }
         let payload: LyricsPayload = try await readRequest(
             "getLyricsBySongId",
             parameters: ["id": songID]
         )
-        guard let source = payload.lyricsList?.structuredLyrics?.first else {
-            return .empty
+        let document = LyricsDocumentParser.parse(payload)
+        if !document.lines.isEmpty {
+            lyricsCache.insert(document, for: songID)
         }
-        let offset = TimeInterval(source.offset ?? 0) / 1_000
-        let lines = (source.line ?? []).enumerated().compactMap { index, item -> LyricLine? in
-            guard let text = item.value?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty else {
-                return nil
-            }
-            let start = max(0, TimeInterval(item.start ?? 0) / 1_000 + offset)
-            return LyricLine(id: index, start: start, text: text)
-        }
-        return LyricsDocument(
-            synced: source.synced ?? !lines.isEmpty,
-            lines: lines.sorted { $0.start < $1.start }
-        )
+        return document
     }
 
     func prefetchLyrics(songIDs: [String]) async {
@@ -2214,6 +2323,7 @@ actor OpenSubsonicClient {
         // user-facing cancellation. Shared transfers are released naturally
         // when their last waiter goes away.
         clearResponseCache()
+        lyricsCache.removeAll(keepingCapacity: true)
     }
 
     func streamURL(
