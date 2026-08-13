@@ -11,6 +11,7 @@ actor AppDatabase {
     static let shared = AppDatabase()
 
     private struct StoredQueueItem: Sendable {
+        let position: Int
         let queueEntryID: String?
         let songData: Data
     }
@@ -224,6 +225,29 @@ actor AppDatabase {
     }
 
 #if DEBUG
+    @discardableResult
+    func overwriteQueuePayloadForTesting(
+        _ data: Data,
+        position: Int,
+        scope: String
+    ) async -> Bool {
+        guard let pool = await poolTask.value else { return false }
+        do {
+            try await pool.write { db in
+                try db.execute(
+                    sql: """
+                    UPDATE queue_item SET song_data = ?
+                    WHERE account_scope = ? AND position = ?
+                    """,
+                    arguments: [data, scope, position]
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     @discardableResult
     func overwriteListeningHistoryPayloadForTesting(
         _ data: Data,
@@ -583,13 +607,14 @@ actor AppDatabase {
                 let itemRows = try Row.fetchAll(
                     db,
                     sql: """
-                    SELECT occurrence_id, song_data FROM queue_item
+                    SELECT position, occurrence_id, song_data FROM queue_item
                     WHERE account_scope = ? ORDER BY position
                     """,
                     arguments: [scope]
                 )
                 let items = itemRows.map { row in
                     StoredQueueItem(
+                        position: row["position"],
                         queueEntryID: row["occurrence_id"],
                         songData: row["song_data"]
                     )
@@ -606,25 +631,103 @@ actor AppDatabase {
                 )
             }
             guard let stored else { return nil }
-            let entries = try stored.items.map { item in
-                PlaybackQueueEntry(
-                    song: try Self.decode(Song.self, from: item.songData),
-                    queueEntryID: item.queueEntryID.flatMap(UUID.init(uuidString:))
-                        ?? UUID()
+            var repairedItems = false
+            let decodedItems = stored.items.compactMap { item -> (
+                position: Int,
+                entry: PlaybackQueueEntry
+            )? in
+                guard let song = try? Self.decode(Song.self, from: item.songData) else {
+                    repairedItems = true
+                    return nil
+                }
+                let parsedID = item.queueEntryID.flatMap(UUID.init(uuidString:))
+                if parsedID == nil { repairedItems = true }
+                return (
+                    position: item.position,
+                    entry: PlaybackQueueEntry(
+                        song: song,
+                        queueEntryID: parsedID ?? UUID()
+                    )
                 )
             }
-            return QueueSnapshot(
+            let storedRevision = UInt64(max(0, stored.revision))
+            guard !decodedItems.isEmpty else {
+                let emptyStateNeedsRepair = repairedItems
+                    || stored.currentSongID != nil
+                    || stored.currentQueueEntryID != nil
+                    || stored.index != -1
+                    || stored.elapsed != 0
+                let empty = QueueSnapshot(
+                    entries: [],
+                    currentID: nil,
+                    currentQueueEntryID: nil,
+                    index: -1,
+                    elapsed: 0,
+                    shuffle: false,
+                    repeatMode: .off,
+                    revision: emptyStateNeedsRepair
+                        ? Self.nextQueueRevision(after: storedRevision)
+                        : storedRevision
+                )
+                if emptyStateNeedsRepair, empty.revision > storedRevision {
+                    _ = await saveQueue(empty, scope: scope)
+                }
+                return empty
+            }
+
+            let requestedOccurrenceID = stored.currentQueueEntryID.flatMap(
+                UUID.init(uuidString:)
+            )
+            if stored.currentQueueEntryID != nil, requestedOccurrenceID == nil {
+                repairedItems = true
+            }
+            let selectedIndex: Int
+            if let requestedOccurrenceID,
+               let occurrenceIndex = decodedItems.firstIndex(where: {
+                   $0.entry.id == requestedOccurrenceID
+               }) {
+                selectedIndex = occurrenceIndex
+            } else if let positionIndex = decodedItems.firstIndex(where: {
+                $0.position == stored.index
+                    && (stored.currentSongID == nil
+                        || $0.entry.song.id == stored.currentSongID)
+            }) {
+                selectedIndex = positionIndex
+            } else if let songID = stored.currentSongID,
+                      let songIndex = decodedItems.firstIndex(where: {
+                          $0.entry.song.id == songID
+                      }) {
+                selectedIndex = songIndex
+            } else {
+                selectedIndex = min(max(stored.index, 0), decodedItems.count - 1)
+            }
+            let selected = decodedItems[selectedIndex]
+            let selectionWasPreserved = requestedOccurrenceID == selected.entry.id
+                || (selected.position == stored.index
+                    && (stored.currentSongID == nil
+                        || selected.entry.song.id == stored.currentSongID))
+            let entries = decodedItems.map { $0.entry }
+            let stateNeedsRepair = stored.index != selectedIndex
+                || stored.currentSongID != selected.entry.song.id
+                || requestedOccurrenceID != selected.entry.id
+            let needsRepair = repairedItems || stateNeedsRepair
+            let revision = needsRepair
+                ? Self.nextQueueRevision(after: storedRevision)
+                : storedRevision
+            let snapshot = QueueSnapshot(
                 entries: entries,
-                currentID: stored.currentSongID,
-                currentQueueEntryID: stored.currentQueueEntryID.flatMap(
-                    UUID.init(uuidString:)
-                ),
-                index: stored.index,
-                elapsed: stored.elapsed,
+                currentID: selected.entry.song.id,
+                currentQueueEntryID: selected.entry.id,
+                index: selectedIndex,
+                elapsed: selectionWasPreserved ? stored.elapsed : 0,
                 shuffle: stored.shuffle,
                 repeatMode: RepeatMode(rawValue: stored.repeatMode) ?? .off,
-                revision: UInt64(max(0, stored.revision))
+                revision: revision
             )
+            if needsRepair, revision > storedRevision {
+                _ = await saveQueue(snapshot, scope: scope)
+            }
+            return snapshot
         } catch {
             return nil
         }
@@ -784,6 +887,11 @@ actor AppDatabase {
 
     private static func date(_ timestamp: Double) -> Date {
         Date(timeIntervalSince1970: timestamp)
+    }
+
+    private static func nextQueueRevision(after revision: UInt64) -> UInt64 {
+        let maximum = UInt64(Int64.max)
+        return revision < maximum ? revision + 1 : revision
     }
 
     private static func nextPaletteAccessTimestamp(

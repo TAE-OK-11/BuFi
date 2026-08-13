@@ -328,6 +328,44 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertEqual(restored?.revision, 7)
     }
 
+    func testQueueRestoreSkipsCorruptRowsAndPersistsRepair() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        let first = PlaybackQueueEntry(song: song(id: "first"))
+        let corrupt = PlaybackQueueEntry(song: song(id: "corrupt"))
+        let current = PlaybackQueueEntry(song: song(id: "current"))
+        let snapshot = QueueSnapshot(
+            entries: [first, corrupt, current],
+            currentID: current.song.id,
+            currentQueueEntryID: current.id,
+            index: 2,
+            elapsed: 37,
+            shuffle: true,
+            repeatMode: .all,
+            revision: 5
+        )
+        let saved = await context.database.saveQueue(snapshot, scope: "account")
+        XCTAssertTrue(saved)
+        let corrupted = await context.database.overwriteQueuePayloadForTesting(
+            Data([0]),
+            position: 1,
+            scope: "account"
+        )
+        XCTAssertTrue(corrupted)
+
+        let repaired = await context.database.loadQueue(scope: "account")
+
+        XCTAssertEqual(repaired?.entries.map(\.id), [first.id, current.id])
+        XCTAssertEqual(repaired?.currentQueueEntryID, current.id)
+        XCTAssertEqual(repaired?.index, 1)
+        XCTAssertEqual(repaired?.elapsed, 37)
+        XCTAssertEqual(repaired?.revision, 6)
+
+        let persistedRepair = await context.database.loadQueue(scope: "account")
+        XCTAssertEqual(persistedRepair?.entries.map(\.id), [first.id, current.id])
+        XCTAssertEqual(persistedRepair?.revision, 6)
+    }
+
     func testArtworkPaletteCacheIsAccountAndVersionIsolated() async throws {
         let context = try makeDatabase()
         defer { try? FileManager.default.removeItem(at: context.directory) }
