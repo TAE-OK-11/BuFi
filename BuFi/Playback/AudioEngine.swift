@@ -766,6 +766,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var playbackReportTask: Task<Void, Never>?
     private var nowPlayingVisualKey: String?
     private var nowPlayingArtworkKey: String?
+    private var nowPlayingArtworkRequestKey: String?
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryTask: Task<Void, Never>?
@@ -892,6 +893,7 @@ final class AudioEngine: NSObject, ObservableObject {
             lyricsTask = nil
             nowPlayingArtworkTask?.cancel()
             nowPlayingArtworkTask = nil
+            nowPlayingArtworkRequestKey = nil
             itemLoadGeneration &+= 1
             lyricsLoadGeneration &+= 1
             seekGeneration &+= 1
@@ -1676,12 +1678,19 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     func cycleRepeat() {
-        reconcilePendingTransportTransition()
+        let nextMode: RepeatMode
         switch repeatMode {
-        case .off: repeatMode = .all
-        case .all: repeatMode = .one
-        case .one: repeatMode = .off
+        case .off: nextMode = .all
+        case .all: nextMode = .one
+        case .one: nextMode = .off
         }
+        setRepeatMode(nextMode)
+    }
+
+    private func setRepeatMode(_ mode: RepeatMode) {
+        reconcilePendingTransportTransition()
+        guard repeatMode != mode else { return }
+        repeatMode = mode
         invalidateStagedSuccessor(removeFromPlayer: true)
         updateRemoteCommands()
         scheduleQueueSave()
@@ -2106,7 +2115,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard let self,
                       self.stagedSuccessorObservationID == observationID,
                       let item = self.stagedSuccessorItem,
-                      self.stagedSuccessorItem === item,
                       item.status == .failed else { return }
                 if self.player.currentItem === item {
                     // Commit the logical boundary first; the active-item
@@ -3614,10 +3622,7 @@ final class AudioEngine: NSObject, ObservableObject {
             default: requested = .off
             }
             Task { @MainActor in
-                guard let self else { return }
-                self.repeatMode = requested
-                self.scheduleQueueSave()
-                self.updateRemoteCommands()
+                self?.setRepeatMode(requested)
             }
             return .success
         }
@@ -3768,6 +3773,7 @@ final class AudioEngine: NSObject, ObservableObject {
             nowPlayingArtworkTask?.cancel()
             nowPlayingVisualKey = nil
             nowPlayingArtworkKey = nil
+            nowPlayingArtworkRequestKey = nil
             nowPlayingInfoCenter.nowPlayingInfo = nil
             updateRemoteCommands()
             return
@@ -3784,6 +3790,7 @@ final class AudioEngine: NSObject, ObservableObject {
             nowPlayingArtworkTask?.cancel()
             nowPlayingVisualKey = visualKey
             nowPlayingArtworkKey = nil
+            nowPlayingArtworkRequestKey = nil
         }
         var info = visualChanged ? [:] : (nowPlayingInfoCenter.nowPlayingInfo ?? [:])
         info[MPNowPlayingInfoPropertyMediaType] = NSNumber(
@@ -3811,10 +3818,17 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let artworkKey = visualKey
-        guard nowPlayingArtworkKey != artworkKey else { return }
+        guard nowPlayingArtworkKey != artworkKey,
+              nowPlayingArtworkRequestKey != artworkKey else { return }
         nowPlayingArtworkTask?.cancel()
-        nowPlayingArtworkKey = artworkKey
+        nowPlayingArtworkRequestKey = artworkKey
         nowPlayingArtworkTask = Task {
+            defer {
+                if self.nowPlayingArtworkRequestKey == artworkKey {
+                    self.nowPlayingArtworkRequestKey = nil
+                    self.nowPlayingArtworkTask = nil
+                }
+            }
             guard let sourceURL = try? await client.coverURL(id: coverID, size: 600) else {
                 return
             }
@@ -3827,13 +3841,14 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.currentPlaybackItem?.id == playbackItem.id,
                   self.currentSong?.id == song.id,
                   self.currentSong?.artworkID == coverID,
-                  self.nowPlayingArtworkKey == artworkKey else {
+                  self.nowPlayingArtworkRequestKey == artworkKey else {
                 return
             }
             let artworkProvider = NowPlayingArtworkProvider(image: image)
             var refreshed = self.nowPlayingInfoCenter.nowPlayingInfo ?? [:]
             refreshed[MPMediaItemPropertyArtwork] = artworkProvider.makeArtwork()
             self.nowPlayingInfoCenter.nowPlayingInfo = refreshed
+            self.nowPlayingArtworkKey = artworkKey
         }
     }
 
