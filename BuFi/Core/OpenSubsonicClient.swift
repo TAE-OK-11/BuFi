@@ -2561,12 +2561,26 @@ actor OpenSubsonicClient {
         id: String,
         position: TimeInterval,
         state: String
-    ) async {
-        guard await supportsExtension("playbackReport") else { return }
+    ) async throws {
+        let extensionNames: Set<String>
+        if let supportedExtensions {
+            extensionNames = supportedExtensions
+        } else {
+            let payload: OpenSubsonicExtensionsPayload = try await readRequest(
+                "getOpenSubsonicExtensions"
+            )
+            extensionNames = Set(
+                (payload.openSubsonicExtensions ?? []).compactMap { value in
+                    value.versions.isEmpty ? nil : value.name
+                }
+            )
+            supportedExtensions = extensionNames
+        }
+        guard extensionNames.contains("playbackReport") else { return }
         let allowedStates = ["starting", "playing", "paused", "stopped"]
         guard allowedStates.contains(state) else { return }
         let positionMs = Int(max(0, position) * 1_000)
-        let _: EmptyPayload? = try? await mutationRequest(
+        let _: EmptyPayload = try await mutationRequest(
             "reportPlayback",
             parameters: [
                 "mediaId": id,

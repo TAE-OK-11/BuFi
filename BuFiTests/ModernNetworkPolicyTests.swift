@@ -266,6 +266,24 @@ final class ModernNetworkPolicyTests: XCTestCase {
         state.finish(queueSave)
     }
 
+    func testPlaybackTelemetryRetriesOnlyTransientFailures() {
+        XCTAssertTrue(PlaybackTelemetryRetryPolicy.shouldRetry(
+            URLError(.networkConnectionLost)
+        ))
+        XCTAssertTrue(PlaybackTelemetryRetryPolicy.shouldRetry(
+            OpenSubsonicError.http(503)
+        ))
+        XCTAssertTrue(PlaybackTelemetryRetryPolicy.shouldRetry(
+            OpenSubsonicError.http(429)
+        ))
+        XCTAssertFalse(PlaybackTelemetryRetryPolicy.shouldRetry(
+            OpenSubsonicError.invalidResponse
+        ))
+        XCTAssertFalse(PlaybackTelemetryRetryPolicy.shouldRetry(
+            CancellationError()
+        ))
+    }
+
     func testFavoriteMutationInvalidatesOnlyRelevantRepresentations() {
         let songStar = OpenSubsonicRequestPolicy.mutationImpact(
             for: "star",

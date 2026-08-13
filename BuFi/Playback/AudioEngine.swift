@@ -126,6 +126,127 @@ final class PlayerTaskLifecycle {
     }
 }
 
+enum PlaybackTelemetryRetryPolicy {
+    static let maximumAttempts = 3
+
+    static func shouldRetry(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let openSubsonicError = error as? OpenSubsonicError,
+           case .http(let status) = openSubsonicError {
+            return status == 408 || status == 429 || (500...599).contains(status)
+        }
+        guard let urlError = error as? URLError else { return false }
+        return [
+            .timedOut,
+            .cannotFindHost,
+            .cannotConnectToHost,
+            .networkConnectionLost,
+            .dnsLookupFailed,
+            .notConnectedToInternet,
+            .internationalRoamingOff,
+            .dataNotAllowed
+        ].contains(urlError.code)
+    }
+
+    static func delay(afterFailedAttempt attempt: Int) -> Duration {
+        switch attempt {
+        case 1: .milliseconds(400)
+        default: .milliseconds(900)
+        }
+    }
+}
+
+/// A small latest-state transport buffer replaces the previous linked task
+/// chain. Telemetry can wait behind a slow network without retaining every
+/// historical transition or affecting player/UI state publication.
+@MainActor
+final class PlaybackReportDeliveryQueue {
+    private struct Request: Sendable {
+        let client: OpenSubsonicClient
+        let songID: String
+        let position: TimeInterval
+        let state: String
+    }
+
+    private static let maximumPendingReports = 8
+
+    private var pending: [Request] = []
+    private var drainToken: UUID?
+    private(set) var drainTask: Task<Void, Never>?
+
+    func enqueue(
+        client: OpenSubsonicClient,
+        songID: String,
+        position: TimeInterval,
+        state: String
+    ) {
+        pending.append(Request(
+            client: client,
+            songID: songID,
+            position: position,
+            state: state
+        ))
+        trimPendingReports()
+        startDrainIfNeeded()
+    }
+
+    private func trimPendingReports() {
+        while pending.count > Self.maximumPendingReports {
+            let removableIndex = pending.firstIndex {
+                $0.state == "playing" || $0.state == "paused"
+            } ?? pending.startIndex
+            pending.remove(at: removableIndex)
+        }
+    }
+
+    private func startDrainIfNeeded() {
+        guard drainTask == nil else { return }
+        let token = UUID()
+        drainToken = token
+        drainTask = Task { [weak self] in
+            await self?.drain(token: token)
+        }
+    }
+
+    private func drain(token: UUID) async {
+        while !Task.isCancelled, !pending.isEmpty {
+            let request = pending.removeFirst()
+            await deliver(request)
+        }
+        guard drainToken == token else { return }
+        drainToken = nil
+        drainTask = nil
+    }
+
+    private func deliver(_ request: Request) async {
+        for attempt in 1...PlaybackTelemetryRetryPolicy.maximumAttempts {
+            do {
+                try await request.client.reportPlayback(
+                    id: request.songID,
+                    position: request.position,
+                    state: request.state
+                )
+                return
+            } catch {
+                guard !Task.isCancelled,
+                      attempt < PlaybackTelemetryRetryPolicy.maximumAttempts,
+                      PlaybackTelemetryRetryPolicy.shouldRetry(error) else {
+                    return
+                }
+                do {
+                    try await Task.sleep(
+                        for: PlaybackTelemetryRetryPolicy.delay(
+                            afterFailedAttempt: attempt
+                        )
+                    )
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+}
+
 /// Owns AVPlayer and NotificationCenter tokens as one lifecycle unit. All
 /// mutations are performed by AudioEngine on the main actor.
 @MainActor
@@ -819,7 +940,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var stagedSuccessorOccurrenceID: UUID?
     private var autoplayTask: Task<Void, Never>?
     private var historyMutationTask: Task<Void, Never>?
-    private var playbackReportTask: Task<Void, Never>?
+    private let playbackReportDelivery = PlaybackReportDeliveryQueue()
     private var nowPlayingVisualKey: String?
     private var nowPlayingArtworkKey: String?
     private var nowPlayingArtworkRequestKey: String?
@@ -1058,7 +1179,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let finalHistoryMutation = historyMutationTask
         let pendingQueueSave = queueSaveTask
         let pendingServerQueueSave = serverQueueSaveTask
-        let finalPlaybackReport = playbackReportTask
+        let finalPlaybackReport = playbackReportDelivery.drainTask
         configure(client: nil)
         let finalPlayerTaskDrain = playerTaskLifecycle.sessionTransitionTask
         let finalQueueClear = queueClearTask
@@ -1072,7 +1193,6 @@ final class AudioEngine: NSObject, ObservableObject {
         _ = await finalPlaybackReport?.value
         _ = await finalPlayerTaskDrain?.value
         historyMutationTask = nil
-        playbackReportTask = nil
     }
 
     func play(
@@ -4065,16 +4185,12 @@ final class AudioEngine: NSObject, ObservableObject {
         lastPlaybackReportSongID = song.id
         lastPlaybackReportState = state
         let resolvedPosition = position ?? elapsed
-        let previousReport = playbackReportTask
-        playbackReportTask = Task {
-            _ = await previousReport?.value
-            guard !Task.isCancelled else { return }
-            await client.reportPlayback(
-                id: song.id,
-                position: resolvedPosition,
-                state: state
-            )
-        }
+        playbackReportDelivery.enqueue(
+            client: client,
+            songID: song.id,
+            position: resolvedPosition,
+            state: state
+        )
     }
 
     private func submitScrobbleIfNeeded() {
