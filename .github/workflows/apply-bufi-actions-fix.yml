@@ -29,7 +29,10 @@ jobs:
               p = Path(path)
               text = p.read_text()
               count = text.count(old)
-              if count != expected:
+              if expected is None:
+                  if count < 1:
+                      raise SystemExit(f"{path}: expected at least 1 match, found 0")
+              elif count != expected:
                   raise SystemExit(f"{path}: expected {expected} matches, found {count}")
               p.write_text(text.replace(old, new))
 
@@ -58,7 +61,8 @@ jobs:
               replace_exact(
                   workflow,
                   '''          xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID"''',
-                  '''          PROCINFO="$(xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID" 2>&1 || true)"\n          printf '%s\\n' "$PROCINFO"\n          printf '%s\\n' "$PROCINFO" | grep -q 'job state = running' '''.rstrip()
+                  '''          PROCINFO="$(xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID" 2>&1 || true)"\n          printf '%s\\n' "$PROCINFO"\n          printf '%s\\n' "$PROCINFO" | grep -q 'job state = running' '''.rstrip(),
+                  expected=None
               )
           PY
 
