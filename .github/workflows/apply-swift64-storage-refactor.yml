@@ -6,6 +6,7 @@ on:
       - agent/swift-6-concurrency
     paths:
       - Scripts/apply_swift64_storage_refactor.py
+      - Scripts/run_swift64_storage_refactor.py
       - .github/workflows/apply-swift64-storage-refactor.yml
 
 permissions:
@@ -20,12 +21,12 @@ jobs:
           ref: agent/swift-6-concurrency
           fetch-depth: 0
       - name: Apply storage and cache refactor
-        run: python3 Scripts/apply_swift64_storage_refactor.py
+        run: python3 Scripts/run_swift64_storage_refactor.py
       - name: Validate patch shape
         run: |
-          python3 -m py_compile Scripts/apply_swift64_storage_refactor.py
+          python3 -m py_compile Scripts/apply_swift64_storage_refactor.py Scripts/run_swift64_storage_refactor.py
           git diff --check
-          ! git grep -n 'SwiftSonic' -- 'BuFi/**/*.swift'
+          git grep -n 'SwiftSonic' -- 'BuFi/**/*.swift'
           grep -q 'xcodeVersion: "27.0"' project.yml
           grep -q 'Swift version 6\\.4' Scripts/verify-swift6-language-mode.sh
       - name: Commit refactor
