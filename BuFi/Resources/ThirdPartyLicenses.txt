@@ -57,9 +57,9 @@ SOFTWARE.
 
 -------------------------------------------------------------------------------
 
-Nuke 13.0.6
-Source: https://github.com/kean/Nuke/tree/13.0.6
-License file: https://github.com/kean/Nuke/blob/13.0.6/LICENSE
+Nuke 13.1.0
+Source: https://github.com/kean/Nuke/tree/13.1.0
+License file: https://github.com/kean/Nuke/blob/13.1.0/LICENSE
 
 The MIT License (MIT)
 

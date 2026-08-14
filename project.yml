@@ -9,7 +9,7 @@ options:
     - ja
   deploymentTarget:
     iOS: "17.0"
-  xcodeVersion: "26.6"
+  xcodeVersion: "27.0"
   projectFormat: xcode16_3
   createIntermediateGroups: true
 settings:
@@ -40,10 +40,9 @@ settings:
       SWIFT_OPTIMIZATION_LEVEL: "-O"
       SWIFT_COMPILATION_MODE: wholemodule
       SWIFT_SERIALIZE_DEBUGGING_OPTIONS: NO
-      # iOS 27 beta 4 has device-only launch failures when some Xcode 26/27
-      # Release binaries are post-linked or stripped. Keep normal Swift
-      # optimization and dead-code stripping, but avoid LTO and post-build
-      # Mach-O mutation until the iOS 27 toolchain/runtime pair is stable.
+      # Keep release post-linking conservative on the current Swift 6.4
+      # toolchain. One iOS 17+ binary covers current iOS releases without
+      # maintaining a separate OS-specific artifact.
       LLVM_LTO: NO
       DEAD_CODE_STRIPPING: YES
       DEPLOYMENT_POSTPROCESSING: NO
@@ -55,9 +54,8 @@ settings:
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
       ASSETCATALOG_COMPILER_OPTIMIZATION: space
       COPY_PHASE_STRIP: NO
-      # Xcode 26.3-27 beta strip -S -T can corrupt dyld chained fixups in
-      # Swift 6 binaries (FB23528109). Keep safe non-global stripping until
-      # the affected toolchains are retired.
+      # Keep unsigned CI artifacts free from aggressive post-link stripping;
+      # normal Swift optimization and dead-code stripping remain enabled.
       STRIP_STYLE: non-global
       STRIP_INSTALLED_PRODUCT: NO
       STRIP_SWIFT_SYMBOLS: NO

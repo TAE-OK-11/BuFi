@@ -228,6 +228,13 @@ struct RecommendationBehaviorSnapshot: Sendable {
 actor ListeningHistoryStore {
     static let shared = ListeningHistoryStore()
 
+    private struct PersistenceBatch: Sendable {
+        let scope: String
+        let generation: UInt64
+        let dirty: [String: SongBehavior]
+        let deleted: Set<String>
+    }
+
     private let storagePrefix = "listening-history-v2"
     private let legacyStoragePrefix = "listening-history-v1"
     private var activeScope: String?
@@ -616,14 +623,20 @@ actor ListeningHistoryStore {
                     generation: scopeGeneration
                 )),
               !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty else { return }
-        let dirty = Dictionary(uniqueKeysWithValues: dirtySongIDs.compactMap { id in
-            entries[id].map { (id, $0) }
-        })
-        let deleted = deletedSongIDs
+        let batch = PersistenceBatch(
+            scope: scope,
+            generation: generation,
+            dirty: Dictionary(
+                uniqueKeysWithValues: dirtySongIDs.compactMap { id in
+                    entries[id].map { (id, $0) }
+                }
+            ),
+            deleted: deletedSongIDs
+        )
         guard await AppDatabase.shared.applyListeningHistory(
-            dirty,
-            deletedIDs: deleted,
-            scope: scope
+            batch.dirty,
+            deletedIDs: batch.deleted,
+            scope: batch.scope
         ) else { return }
         guard permitsInactiveScope
                 ? activeScope == nil && scopeGeneration == generation
@@ -634,10 +647,11 @@ actor ListeningHistoryStore {
         // The actor can accept a newer playback event while the database write
         // is suspended. Only acknowledge the exact values that were written;
         // otherwise the newer mutation must remain dirty for the next flush.
-        for (id, savedValue) in dirty where entries[id] == savedValue {
+        guard batch.generation == generation else { return }
+        for (id, savedValue) in batch.dirty where entries[id] == savedValue {
             dirtySongIDs.remove(id)
         }
-        for id in deleted where entries[id] == nil {
+        for id in batch.deleted where entries[id] == nil {
             deletedSongIDs.remove(id)
         }
     }

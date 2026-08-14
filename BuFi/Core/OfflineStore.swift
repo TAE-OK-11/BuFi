@@ -19,6 +19,11 @@ actor OfflineStore {
         var waiters: Set<UUID>
     }
 
+    private struct StagedDownload: Sendable {
+        let url: URL
+        let byteCount: Int64
+    }
+
     private let rootDirectory: URL
     private let bootstrapTask: Task<Void, Never>
     private let wifiOnlySession: URLSession
@@ -27,7 +32,7 @@ actor OfflineStore {
     private var indexURL: URL?
     private var activeScope: String?
     private var entries: [String: Entry] = [:]
-    private var inFlight: [String: InFlightDownload] = [:]
+    private var inFlight: [OfflineDownloadKey: InFlightDownload] = [:]
     private var scopeGeneration: UInt64 = 0
     private var indexSaveTask: Task<Void, Never>?
     private var indexIsDirty = false
@@ -35,6 +40,7 @@ actor OfflineStore {
     private var dirtySongIDs: Set<String> = []
     private var deletedSongIDs: Set<String> = []
     private var indexMutationEpoch: UInt64 = 0
+    private var accessRecency = OfflineAccessRecency()
 
     init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -107,23 +113,11 @@ actor OfflineStore {
             scope: accountScope
         )
         guard generation == scopeGeneration, activeScope == nil else { return nil }
-        var loadedEntries: [String: Entry] = databaseEntries.reduce(into: [:]) { result, pair in
-            let entry = Entry(
-                fileName: pair.value.fileName,
-                byteCount: pair.value.byteCount,
-                lastAccessedAt: pair.value.lastAccessedAt,
-                mediaRevision: pair.value.mediaRevision
-            )
-            let fileURL = scopedDirectory.appendingPathComponent(entry.fileName)
-            if Self.isValidOfflineFile(
-                at: fileURL,
-                expectedByteCount: entry.byteCount
-            ) {
-                result[pair.key] = entry
-            } else if FileManager.default.fileExists(atPath: fileURL.path) {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-        }
+        var loadedEntries = await Self.validatedDatabaseEntries(
+            databaseEntries,
+            directory: scopedDirectory
+        )
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         let missingDatabaseIDs = Swift.Set<String>(databaseEntries.keys).subtracting(loadedEntries.keys)
         if !missingDatabaseIDs.isEmpty {
             _ = await AppDatabase.shared.applyOfflineEntries(
@@ -155,6 +149,9 @@ actor OfflineStore {
         directory = scopedDirectory
         indexURL = scopedIndexURL
         entries = loadedEntries
+        accessRecency.seed(
+            lastAccess: loadedEntries.values.map(\.lastAccessedAt).max()
+        )
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
         indexIsDirty = false
@@ -187,6 +184,7 @@ actor OfflineStore {
         directory = nil
         indexURL = nil
         entries.removeAll(keepingCapacity: false)
+        accessRecency = OfflineAccessRecency()
         indexIsDirty = false
         indexRetryCount = 0
         dirtySongIDs.removeAll(keepingCapacity: false)
@@ -236,8 +234,13 @@ actor OfflineStore {
                 entry.mediaRevision = expectedMediaRevision
                 entryChanged = true
             }
-            if Date().timeIntervalSince(entry.lastAccessedAt) > 3_600 {
-                entry.lastAccessedAt = Date()
+            let now = Date()
+            if now.timeIntervalSince(entry.lastAccessedAt) > 3_600
+                || now < entry.lastAccessedAt {
+                entry.lastAccessedAt = accessRecency.next(
+                    now: now,
+                    after: entry.lastAccessedAt
+                )
                 entryChanged = true
             }
             if entryChanged {
@@ -270,7 +273,10 @@ actor OfflineStore {
         if let existing = localURL(for: song) { return existing }
 
         let generation = scopeGeneration
-        let taskKey = scope + ":" + song.id
+        let taskKey = OfflineDownloadKey(
+            accountScope: scope,
+            songID: song.id
+        )
         if var existing = inFlight[taskKey] {
             if existing.mediaRevision == mediaRevision {
                 let waiter = UUID()
@@ -313,28 +319,20 @@ actor OfflineStore {
                 throw OpenSubsonicError.http(http.statusCode)
             }
 
-            let values = try temporary.resourceValues(forKeys: [.fileSizeKey])
-            let bytes = Int64(values.fileSize ?? 0)
-            guard bytes > 0 else { throw URLError(.zeroByteResource) }
-
-            let staging = directory.appendingPathComponent(
-                fileName + "." + UUID().uuidString + ".partial"
+            let staged = try await Self.stageDownloadedFile(
+                temporary: temporary,
+                directory: directory,
+                fileName: fileName
             )
-            try FileManager.default.moveItem(at: temporary, to: staging)
-            do {
-                try Task.checkCancellation()
-            } catch {
-                try? FileManager.default.removeItem(at: staging)
-                throw error
-            }
+            try Task.checkCancellation()
             guard let self else {
-                try? FileManager.default.removeItem(at: staging)
+                try? FileManager.default.removeItem(at: staged.url)
                 throw CancellationError()
             }
             return try await self.commitDownload(
-                staging: staging,
+                staging: staged.url,
                 destination: destination,
-                byteCount: bytes,
+                byteCount: staged.byteCount,
                 songID: song.id,
                 mediaRevision: mediaRevision,
                 scope: scope,
@@ -360,7 +358,7 @@ actor OfflineStore {
 
     private func awaitDownload(
         _ download: InFlightDownload,
-        taskKey: String,
+        taskKey: OfflineDownloadKey,
         waiter: UUID,
         scope: String
     ) async throws -> URL {
@@ -435,7 +433,7 @@ actor OfflineStore {
             entries[songID] = Entry(
                 fileName: destination.lastPathComponent,
                 byteCount: byteCount,
-                lastAccessedAt: Date(),
+                lastAccessedAt: accessRecency.next(),
                 mediaRevision: mediaRevision
             )
             markDirty(songID)
@@ -476,6 +474,9 @@ actor OfflineStore {
                 result[pair.key] = pair.value
             }
         }
+        accessRecency.seed(
+            lastAccess: entries.values.map(\.lastAccessedAt).max()
+        )
         await AppDatabase.shared.clearOfflineEntries(scope: scope)
         guard token.matches(
             accountScope: activeScope,
@@ -634,13 +635,13 @@ actor OfflineStore {
         )
     }
 
-    private func clearInFlight(taskKey: String, token: UUID) {
+    private func clearInFlight(taskKey: OfflineDownloadKey, token: UUID) {
         guard inFlight[taskKey]?.token == token else { return }
         inFlight[taskKey] = nil
     }
 
     private func cancelDownloadWaiter(
-        taskKey: String,
+        taskKey: OfflineDownloadKey,
         token: UUID,
         waiter: UUID
     ) {
@@ -718,6 +719,74 @@ actor OfflineStore {
         SHA256.hash(data: Data(value.utf8))
             .map { String(format: "%02x", $0) }
             .joined()
+    }
+
+    private static func validatedDatabaseEntries(
+        _ databaseEntries: [String: OfflineDatabaseEntry],
+        directory: URL
+    ) async -> [String: Entry] {
+        let worker = Task.detached(priority: .utility) {
+            databaseEntries.reduce(into: [String: Entry]()) { result, pair in
+                guard !Task.isCancelled else { return }
+                let entry = Entry(
+                    fileName: pair.value.fileName,
+                    byteCount: pair.value.byteCount,
+                    lastAccessedAt: pair.value.lastAccessedAt,
+                    mediaRevision: pair.value.mediaRevision
+                )
+                let fileURL = directory.appendingPathComponent(entry.fileName)
+                if Self.isValidOfflineFile(
+                    at: fileURL,
+                    expectedByteCount: entry.byteCount
+                ) {
+                    result[pair.key] = entry
+                } else if FileManager.default.fileExists(atPath: fileURL.path) {
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
+            }
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    private static func stageDownloadedFile(
+        temporary: URL,
+        directory: URL,
+        fileName: String
+    ) async throws -> StagedDownload {
+        let worker = Task.detached(priority: .utility) { () throws -> StagedDownload in
+            try Task.checkCancellation()
+            let attributes = try FileManager.default.attributesOfItem(
+                atPath: temporary.path
+            )
+            guard let size = attributes[.size] as? NSNumber,
+                  size.int64Value > 0 else {
+                throw URLError(.zeroByteResource)
+            }
+
+            let staging = directory.appendingPathComponent(
+                fileName + "." + UUID().uuidString + ".partial"
+            )
+            do {
+                try FileManager.default.moveItem(at: temporary, to: staging)
+                try Task.checkCancellation()
+                return StagedDownload(
+                    url: staging,
+                    byteCount: size.int64Value
+                )
+            } catch {
+                try? FileManager.default.removeItem(at: staging)
+                throw error
+            }
+        }
+        return try await withTaskCancellationHandler {
+            try await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     private static func loadEntries(indexURL: URL, directory: URL) -> [String: Entry] {

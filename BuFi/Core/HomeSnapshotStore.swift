@@ -3,7 +3,7 @@ import Foundation
 actor HomeSnapshotStore {
     static let shared = HomeSnapshotStore()
 
-    private struct CachedSnapshot: Codable {
+    private struct CachedSnapshot: Codable, Sendable {
         let savedAt: Date
         let snapshot: HomeSnapshot
     }
@@ -77,7 +77,10 @@ actor HomeSnapshotStore {
             guard let data = UserDefaults.standard.data(forKey: key),
                   data.count <= maximumBytes,
                   let cached = try? JSONDecoder().decode(CachedSnapshot.self, from: data),
-                  Date().timeIntervalSince(cached.savedAt) <= maximumAge else {
+                  CacheFreshnessPolicy.isFresh(
+                    savedAt: cached.savedAt,
+                    maximumAge: maximumAge
+                  ) else {
                 continue
             }
             return cached

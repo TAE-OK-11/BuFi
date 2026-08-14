@@ -110,7 +110,7 @@ actor ArtworkStore {
     private var didDiscardLegacyCache = false
     private let paletteMemory = NSCache<NSString, PaletteBox>()
     private let database: AppDatabase
-    private var inFlightPalettes: [String: InFlightPalette] = [:]
+    private var inFlightPalettes: [ArtworkPaletteRequestKey: InFlightPalette] = [:]
     private var paletteGeneration: UInt64 = 0
     private var clearRequestID: UUID?
 
@@ -422,6 +422,7 @@ actor ArtworkStore {
         } onCancel: {
             Task {
                 await self.cancelPaletteWaiter(
+                    scope: scope,
                     cacheKey: cacheKey,
                     generation: generation,
                     waiterID: waiterID
@@ -447,10 +448,15 @@ actor ArtworkStore {
             return
         }
 
-        if var pending = inFlightPalettes[cacheKey],
+        let requestKey = ArtworkPaletteRequestKey(
+            accountScope: scope,
+            cacheKey: cacheKey,
+            generation: generation
+        )
+        if var pending = inFlightPalettes[requestKey],
            pending.generation == generation {
             pending.waiters[waiterID] = continuation
-            inFlightPalettes[cacheKey] = pending
+            inFlightPalettes[requestKey] = pending
             return
         }
 
@@ -464,12 +470,14 @@ actor ArtworkStore {
                 generation: generation
             )
             finishPaletteRequest(
+                scope: scope,
                 cacheKey: cacheKey,
+                generation: generation,
                 requestID: requestID,
                 value: value
             )
         }
-        inFlightPalettes[cacheKey] = InFlightPalette(
+        inFlightPalettes[requestKey] = InFlightPalette(
             id: requestID,
             generation: generation,
             task: task,
@@ -492,11 +500,17 @@ actor ArtworkStore {
     }
 
     private func cancelPaletteWaiter(
+        scope: String,
         cacheKey: String,
         generation: UInt64,
         waiterID: UUID
     ) {
-        guard var request = inFlightPalettes[cacheKey],
+        let requestKey = ArtworkPaletteRequestKey(
+            accountScope: scope,
+            cacheKey: cacheKey,
+            generation: generation
+        )
+        guard var request = inFlightPalettes[requestKey],
               request.generation == generation,
               let continuation = request.waiters.removeValue(
                 forKey: waiterID
@@ -506,22 +520,29 @@ actor ArtworkStore {
         continuation.resume(returning: .fallback)
         if request.waiters.isEmpty {
             request.task.cancel()
-            inFlightPalettes[cacheKey] = nil
+            inFlightPalettes[requestKey] = nil
         } else {
-            inFlightPalettes[cacheKey] = request
+            inFlightPalettes[requestKey] = request
         }
     }
 
     private func finishPaletteRequest(
+        scope: String,
         cacheKey: String,
+        generation: UInt64,
         requestID: UUID,
         value: ArtworkPalette
     ) {
-        guard let request = inFlightPalettes[cacheKey],
+        let requestKey = ArtworkPaletteRequestKey(
+            accountScope: scope,
+            cacheKey: cacheKey,
+            generation: generation
+        )
+        guard let request = inFlightPalettes[requestKey],
               request.id == requestID else {
             return
         }
-        inFlightPalettes[cacheKey] = nil
+        inFlightPalettes[requestKey] = nil
         request.waiters.values.forEach { $0.resume(returning: value) }
     }
 
