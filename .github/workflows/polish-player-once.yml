@@ -1,0 +1,252 @@
+name: Polish player once
+
+on:
+  push:
+    branches:
+      - agent/swift-6-concurrency
+    paths:
+      - .github/workflows/polish-player-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  polish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/swift-6-concurrency
+          fetch-depth: 1
+
+      - name: Polish player
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              print(f"{label}: {count}")
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          player = "BuFi/UI/PlayerView.swift"
+
+          replace_once(
+              player,
+              """        .scrollPosition(id: pagerPosition, anchor: .center)
+    .simultaneousGesture(
+        DragGesture(minimumDistance: 5)
+            .onChanged { _ in
+                pagerSelectionGate.beginUserInteraction()
+            }
+    )
+""",
+              """        .scrollPosition(id: pagerPosition, anchor: .center)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 5)
+                .onChanged { _ in
+                    pagerSelectionGate.beginUserInteraction()
+                }
+        )
+""",
+              "pager indentation",
+          )
+
+          replace_once(
+              player,
+              """    private var artworkQueueCacheIdentity: PlayerArtworkQueueCacheIdentity {
+    let snapshot = playback.snapshot
+    return PlayerArtworkQueueCacheIdentity(
+        entriesRevision: playback.entriesRevision,
+        accountScope: snapshot.accountScope
+    )
+}
+
+private func pruneArtworkPalettes(using snapshot: PlaybackSnapshot) {
+        let validPages = Set(snapshot.entries.map { entry in
+            PlayerArtworkPageID(
+                queueEntryID: entry.id,
+                songID: entry.song.id,
+                coverArtID: entry.song.artworkID,
+                artworkRevision: entry.song.artworkRevision,
+                accountScope: snapshot.accountScope
+            )
+        })
+        let filtered = artworkPalettes.filter { validPages.contains($0.key) }
+    if filtered.count != artworkPalettes.count {
+        artworkPalettes = filtered
+    }
+    }
+""",
+              """    private var artworkQueueCacheIdentity: PlayerArtworkQueueCacheIdentity {
+        let snapshot = playback.snapshot
+        return PlayerArtworkQueueCacheIdentity(
+            entriesRevision: playback.entriesRevision,
+            accountScope: snapshot.accountScope
+        )
+    }
+
+    private func pruneArtworkPalettes(using snapshot: PlaybackSnapshot) {
+        let validPages = Set(snapshot.entries.map { entry in
+            PlayerArtworkPageID(
+                queueEntryID: entry.id,
+                songID: entry.song.id,
+                coverArtID: entry.song.artworkID,
+                artworkRevision: entry.song.artworkRevision,
+                accountScope: snapshot.accountScope
+            )
+        })
+        let filtered = artworkPalettes.filter { validPages.contains($0.key) }
+        if filtered.count != artworkPalettes.count {
+            artworkPalettes = filtered
+        }
+    }
+""",
+              "queue cache indentation",
+          )
+
+          replace_once(
+              player,
+              """    private var artistRoute: MusicRoute? {
+        let artists = library.snapshot.starredArtists + library.snapshot.artists
+        if let artistID = song.artistId {
+            let artist = artists.first(where: { $0.id == artistID }) ?? Artist(
+                id: artistID,
+                name: song.artist,
+                coverArt: nil,
+                albumCount: nil,
+                starred: nil
+            )
+            return .artist(artist)
+        }
+        guard let artist = artists.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+        }) else {
+            return nil
+        }
+        return .artist(artist)
+    }
+""",
+              """    private var artistRoute: MusicRoute? {
+        let snapshot = library.snapshot
+        if let artistID = song.artistId {
+            let artist = snapshot.starredArtists.first { $0.id == artistID }
+                ?? snapshot.artists.first { $0.id == artistID }
+                ?? Artist(
+                    id: artistID,
+                    name: song.artist,
+                    coverArt: nil,
+                    albumCount: nil,
+                    starred: nil
+                )
+            return .artist(artist)
+        }
+        guard let artist = snapshot.starredArtists.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+        }) ?? snapshot.artists.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+        }) else {
+            return nil
+        }
+        return .artist(artist)
+    }
+""",
+              "artist route allocation",
+          )
+
+          tests = "BuFiTests/PlayerPresentationStateTests.swift"
+          replace_once(
+              tests,
+              """    func testPagerGateSuppressesProgrammaticScrollUntilDestination() {
+    let intermediate = artworkPageID(songID: "intermediate")
+    let destination = artworkPageID(songID: "destination")
+    var gate = PlayerPagerSelectionGate()
+
+    gate.beginProgrammaticMove(to: destination)
+
+    XCTAssertFalse(gate.shouldStartPlayback(for: intermediate))
+    XCTAssertEqual(gate.programmaticDestination, destination)
+    XCTAssertFalse(gate.shouldStartPlayback(for: destination))
+    XCTAssertNil(gate.programmaticDestination)
+}
+
+func testPagerGateLetsUserTakeOverProgrammaticScroll() {
+    let destination = artworkPageID(songID: "destination")
+    let userSelection = artworkPageID(songID: "user-selection")
+    var gate = PlayerPagerSelectionGate()
+
+    gate.beginProgrammaticMove(to: destination)
+    gate.beginUserInteraction()
+
+    XCTAssertNil(gate.programmaticDestination)
+    XCTAssertTrue(gate.shouldStartPlayback(for: userSelection))
+}
+
+private func artworkPageID(songID: String) -> PlayerArtworkPageID {
+    PlayerArtworkPageID(
+        queueEntryID: UUID(),
+        songID: songID,
+        coverArtID: "cover-" + songID,
+        artworkRevision: "revision-" + songID,
+        accountScope: "account"
+    )
+}
+
+private func song(id: String, coverArt: String?) -> Song {
+""",
+              """    func testPagerGateSuppressesProgrammaticScrollUntilDestination() {
+        let intermediate = artworkPageID(songID: "intermediate")
+        let destination = artworkPageID(songID: "destination")
+        var gate = PlayerPagerSelectionGate()
+
+        gate.beginProgrammaticMove(to: destination)
+
+        XCTAssertFalse(gate.shouldStartPlayback(for: intermediate))
+        XCTAssertEqual(gate.programmaticDestination, destination)
+        XCTAssertFalse(gate.shouldStartPlayback(for: destination))
+        XCTAssertNil(gate.programmaticDestination)
+    }
+
+    func testPagerGateLetsUserTakeOverProgrammaticScroll() {
+        let destination = artworkPageID(songID: "destination")
+        let userSelection = artworkPageID(songID: "user-selection")
+        var gate = PlayerPagerSelectionGate()
+
+        gate.beginProgrammaticMove(to: destination)
+        gate.beginUserInteraction()
+
+        XCTAssertNil(gate.programmaticDestination)
+        XCTAssertTrue(gate.shouldStartPlayback(for: userSelection))
+    }
+
+    private func artworkPageID(songID: String) -> PlayerArtworkPageID {
+        PlayerArtworkPageID(
+            queueEntryID: UUID(),
+            songID: songID,
+            coverArtID: "cover-" + songID,
+            artworkRevision: "revision-" + songID,
+            accountScope: "account"
+        )
+    }
+
+    private func song(id: String, coverArt: String?) -> Song {
+""",
+              "test indentation",
+          )
+          PY
+
+          git diff --check
+
+      - name: Commit polish
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/UI/PlayerView.swift BuFiTests/PlayerPresentationStateTests.swift
+          git commit -m "Polish Swift 6 player hot paths"
+          git push origin HEAD:agent/swift-6-concurrency
