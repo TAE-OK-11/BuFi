@@ -1,4 +1,4 @@
-name: Apply Swift 6 player hardening
+name: Polish Swift 6 player hardening
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  apply:
+  polish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -19,7 +19,7 @@ jobs:
           ref: agent/swift-6-concurrency
           fetch-depth: 1
 
-      - name: Apply player hardening
+      - name: Polish player hot paths
         shell: bash
         run: |
           python3 <<'PY'
@@ -38,69 +38,14 @@ jobs:
 
           replace_once(
               player,
-              "private struct PlayerArtworkPage: Identifiable {",
-              '''struct PlayerPagerSelectionGate {
-              private(set) var programmaticDestination: PlayerArtworkPageID?
-
-              mutating func beginProgrammaticMove(to destination: PlayerArtworkPageID?) {
-                  programmaticDestination = destination
-              }
-
-              mutating func beginUserInteraction() {
-                  programmaticDestination = nil
-              }
-
-              mutating func shouldStartPlayback(for selection: PlayerArtworkPageID?) -> Bool {
-                  guard let destination = programmaticDestination else {
-                      return selection != nil
+              '''        .scrollPosition(id: pagerPosition, anchor: .center)
+          .simultaneousGesture(
+              DragGesture(minimumDistance: 5)
+                  .onChanged { _ in
+                      pagerSelectionGate.beginUserInteraction()
                   }
-                  if selection == destination {
-                      programmaticDestination = nil
-                  }
-                  return false
-              }
-          }
-
-          private struct PlayerArtworkQueueCacheIdentity: Equatable {
-              let entriesRevision: UInt64
-              let accountScope: String?
-          }
-
-          private struct PlayerArtworkPage: Identifiable {''',
-              "insert pager coordination types",
           )
-
-          replace_once(
-              player,
-              "    @State private var artworkPage: PlayerArtworkPageID?\n",
-              "    @State private var artworkPage: PlayerArtworkPageID?\n    @State private var pagerSelectionGate = PlayerPagerSelectionGate()\n",
-              "add pager gate state",
-          )
-
-          replace_once(
-              player,
-              "        .onChange(of: playback.snapshot) { _, next in\n",
-              "        .onChange(of: artworkQueueCacheIdentity) { _, _ in\n            let next = playback.snapshot\n",
-              "use lightweight queue cache identity",
-          )
-
-          replace_once(
-              player,
-              "                guard artworkPage != page else { return }\n",
-              "                let shouldStartPlayback = pagerSelectionGate.shouldStartPlayback(for: page)\n                guard artworkPage != page else { return }\n",
-              "classify pager selection",
-          )
-
-          replace_once(
-              player,
-              "                guard let page,\n                      let destination = indexForArtworkPage(page),\n",
-              "                guard shouldStartPlayback,\n                      let page,\n                      let destination = indexForArtworkPage(page),\n",
-              "suppress programmatic playback",
-          )
-
-          replace_once(
-              player,
-              "        .scrollPosition(id: pagerPosition, anchor: .center)\n",
+          ''',
               '''        .scrollPosition(id: pagerPosition, anchor: .center)
               .simultaneousGesture(
                   DragGesture(minimumDistance: 5)
@@ -109,26 +54,35 @@ jobs:
                       }
               )
           ''',
-              "track user pager interaction",
+              "format pager gesture",
           )
 
           replace_once(
               player,
-              "        guard let currentPage = currentArtworkPageID(in: snapshot) else {\n            artworkPage = nil\n",
-              "        guard let currentPage = currentArtworkPageID(in: snapshot) else {\n            pagerSelectionGate.beginProgrammaticMove(to: nil)\n            artworkPage = nil\n",
-              "clear programmatic destination with empty queue",
+              '''    private var artworkQueueCacheIdentity: PlayerArtworkQueueCacheIdentity {
+          let snapshot = playback.snapshot
+          return PlayerArtworkQueueCacheIdentity(
+              entriesRevision: playback.entriesRevision,
+              accountScope: snapshot.accountScope
           )
+      }
 
-          replace_once(
-              player,
-              "        let update = {\n            artworkPage = currentPage\n        }\n",
-              "        if artworkPage != currentPage {\n            pagerSelectionGate.beginProgrammaticMove(to: currentPage)\n        }\n        let update = {\n            artworkPage = currentPage\n        }\n",
-              "mark programmatic pager movement",
-          )
-
-          replace_once(
-              player,
-              "    private func pruneArtworkPalettes(using snapshot: PlaybackSnapshot) {\n",
+      private func pruneArtworkPalettes(using snapshot: PlaybackSnapshot) {
+              let validPages = Set(snapshot.entries.map { entry in
+                  PlayerArtworkPageID(
+                      queueEntryID: entry.id,
+                      songID: entry.song.id,
+                      coverArtID: entry.song.artworkID,
+                      artworkRevision: entry.song.artworkRevision,
+                      accountScope: snapshot.accountScope
+                  )
+              })
+              let filtered = artworkPalettes.filter { validPages.contains($0.key) }
+          if filtered.count != artworkPalettes.count {
+              artworkPalettes = filtered
+          }
+              }
+          ''',
               '''    private var artworkQueueCacheIdentity: PlayerArtworkQueueCacheIdentity {
               let snapshot = playback.snapshot
               return PlayerArtworkQueueCacheIdentity(
@@ -138,39 +92,113 @@ jobs:
           }
 
           private func pruneArtworkPalettes(using snapshot: PlaybackSnapshot) {
-          ''',
-              "add queue revision identity",
-          )
-
-          replace_once(
-              player,
-              "        artworkPalettes = artworkPalettes.filter { validPages.contains($0.key) }\n",
-              '''        let filtered = artworkPalettes.filter { validPages.contains($0.key) }
+              let validPages = Set(snapshot.entries.map { entry in
+                  PlayerArtworkPageID(
+                      queueEntryID: entry.id,
+                      songID: entry.song.id,
+                      coverArtID: entry.song.artworkID,
+                      artworkRevision: entry.song.artworkRevision,
+                      accountScope: snapshot.accountScope
+                  )
+              })
+              let filtered = artworkPalettes.filter { validPages.contains($0.key) }
               if filtered.count != artworkPalettes.count {
                   artworkPalettes = filtered
               }
+          }
           ''',
-              "avoid no-op palette cache publication",
+              "format queue cache helpers",
           )
 
           replace_once(
               player,
-              "    var body: some View {\n        NavigationStack {\n            Group {\n",
-              "    var body: some View {\n        let currentQueueEntryID = playback.currentItem?.queueEntryID\n        NavigationStack {\n            Group {\n",
-              "cache current queue occurrence in QueueView",
-          )
-
-          replace_once(
-              player,
-              "                            let isCurrent = entry.id == playback.currentItem?.queueEntryID\n",
-              "                            let isCurrent = entry.id == currentQueueEntryID\n",
-              "reuse current queue occurrence",
+              '''    private var artistRoute: MusicRoute? {
+              let artists = library.snapshot.starredArtists + library.snapshot.artists
+              if let artistID = song.artistId {
+                  let artist = artists.first(where: { $0.id == artistID }) ?? Artist(
+                      id: artistID,
+                      name: song.artist,
+                      coverArt: nil,
+                      albumCount: nil,
+                      starred: nil
+                  )
+                  return .artist(artist)
+              }
+              guard let artist = artists.first(where: {
+                  $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+              }) else {
+                  return nil
+              }
+              return .artist(artist)
+          }
+          ''',
+              '''    private var artistRoute: MusicRoute? {
+              let snapshot = library.snapshot
+              if let artistID = song.artistId {
+                  let artist = snapshot.starredArtists.first { $0.id == artistID }
+                      ?? snapshot.artists.first { $0.id == artistID }
+                      ?? Artist(
+                          id: artistID,
+                          name: song.artist,
+                          coverArt: nil,
+                          albumCount: nil,
+                          starred: nil
+                      )
+                  return .artist(artist)
+              }
+              guard let artist = snapshot.starredArtists.first(where: {
+                  $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+              }) ?? snapshot.artists.first(where: {
+                  $0.name.localizedCaseInsensitiveCompare(song.artist) == .orderedSame
+              }) else {
+                  return nil
+              }
+              return .artist(artist)
+          }
+          ''',
+              "avoid artist-array allocation",
           )
 
           tests = "BuFiTests/PlayerPresentationStateTests.swift"
           replace_once(
               tests,
-              "    private func song(id: String, coverArt: String?) -> Song {\n",
+              '''    func testPagerGateSuppressesProgrammaticScrollUntilDestination() {
+          let intermediate = artworkPageID(songID: "intermediate")
+          let destination = artworkPageID(songID: "destination")
+          var gate = PlayerPagerSelectionGate()
+
+          gate.beginProgrammaticMove(to: destination)
+
+          XCTAssertFalse(gate.shouldStartPlayback(for: intermediate))
+          XCTAssertEqual(gate.programmaticDestination, destination)
+          XCTAssertFalse(gate.shouldStartPlayback(for: destination))
+          XCTAssertNil(gate.programmaticDestination)
+      }
+
+      func testPagerGateLetsUserTakeOverProgrammaticScroll() {
+          let destination = artworkPageID(songID: "destination")
+          let userSelection = artworkPageID(songID: "user-selection")
+          var gate = PlayerPagerSelectionGate()
+
+          gate.beginProgrammaticMove(to: destination)
+          gate.beginUserInteraction()
+
+          XCTAssertNil(gate.programmaticDestination)
+          XCTAssertTrue(gate.shouldStartPlayback(for: userSelection))
+      }
+
+      private func artworkPageID(songID: String) -> PlayerArtworkPageID {
+          PlayerArtworkPageID(
+              queueEntryID: UUID(),
+              songID: songID,
+              coverArtID: "cover-" + songID,
+              artworkRevision: "revision-" + songID,
+              accountScope: "account"
+          )
+      }
+
+      private func song(id: String, coverArt: String?) -> Song {
+          ''',
               '''    func testPagerGateSuppressesProgrammaticScrollUntilDestination() {
               let intermediate = artworkPageID(songID: "intermediate")
               let destination = artworkPageID(songID: "destination")
@@ -208,17 +236,17 @@ jobs:
 
           private func song(id: String, coverArt: String?) -> Song {
           ''',
-              "add pager gate regression tests",
+              "format pager gate tests",
           )
           PY
 
           git diff --check
 
-      - name: Commit player hardening
+      - name: Commit polish
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add BuFi/UI/PlayerView.swift BuFiTests/PlayerPresentationStateTests.swift
-          git commit -m "Harden Swift 6 player state transitions"
+          git commit -m "Polish Swift 6 player hot paths"
           git push origin HEAD:agent/swift-6-concurrency
