@@ -14,9 +14,7 @@ struct HomeView: View {
     private var selectedArtistMixes = "[]"
     @State private var filter = HomeFilter.all
     @State private var presentation = HomePresentation.empty
-    @State private var presentationInput: HomePresentationInput?
-    @State private var presentationGeneration: UInt64 = 0
-    @State private var presentationTask: Task<Void, Never>?
+    @State private var hasLoadedPresentation = false
 
     var body: some View {
         NavigationStack {
@@ -39,19 +37,8 @@ struct HomeView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .onAppear { updatePresentationIfNeeded() }
-        .onChange(of: library.revision) { _, _ in
-            updatePresentationIfNeeded()
-        }
-        .onChange(of: selectedArtistMixes) { _, _ in
-            updatePresentationIfNeeded()
-        }
-        .onDisappear {
-            if presentationTask != nil {
-                presentationInput = nil
-            }
-            presentationTask?.cancel()
-            presentationTask = nil
+        .task(id: presentationTaskIdentity) {
+            await updatePresentation()
         }
     }
 
@@ -345,45 +332,59 @@ struct HomeView: View {
         }
     }
 
-    private func updatePresentationIfNeeded() {
-        let input = HomePresentationInput(
-            snapshot: library.snapshot,
+    private var presentationTaskIdentity: HomePresentationTaskIdentity {
+        HomePresentationTaskIdentity(
             revision: library.revision,
-            selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
+            selectedArtists: selectedArtistMixes
         )
-        guard input != presentationInput else { return }
-        let isInitialPresentation = presentationInput == nil
-        presentationInput = input
-        presentationGeneration &+= 1
-        let generation = presentationGeneration
-        presentationTask?.cancel()
-        presentationTask = Task {
-            if !isInitialPresentation {
-                do {
-                    try await Task.sleep(for: .milliseconds(120))
-                } catch {
-                    return
-                }
+    }
+
+    @MainActor
+    private func updatePresentation() async {
+        let revision = library.revision
+        let snapshot = library.snapshot
+        let selectedArtistsStorage = selectedArtistMixes
+        guard revision == library.revision else { return }
+
+        let input = HomePresentationInput(
+            snapshot: snapshot,
+            revision: revision,
+            selectedArtists: ArtistMixPreferences.decode(selectedArtistsStorage)
+        )
+
+        if hasLoadedPresentation {
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
             }
-            let work = Task.detached(priority: .userInitiated) {
-                HomePresentation.make(input: input)
-            }
-            let next = await withTaskCancellationHandler {
-                await work.value
-            } onCancel: {
-                work.cancel()
-            }
-            guard !Task.isCancelled,
-                  generation == presentationGeneration,
-                  input == presentationInput else { return }
-            presentation = next
-            presentationTask = nil
+            guard revision == library.revision,
+                  selectedArtistsStorage == selectedArtistMixes else { return }
         }
+
+        let work = Task.detached(priority: .userInitiated) {
+            HomePresentation.make(input: input)
+        }
+        let next = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard !Task.isCancelled,
+              revision == library.revision,
+              selectedArtistsStorage == selectedArtistMixes else { return }
+        presentation = next
+        hasLoadedPresentation = true
     }
 
     private func countText(_ count: Int) -> String {
         String(format: String(localized: "%d곡"), count)
     }
+}
+
+private struct HomePresentationTaskIdentity: Hashable, Sendable {
+    let revision: HomeSnapshotRevision
+    let selectedArtists: String
 }
 
 struct HomePresentationInput: Equatable, Sendable {
