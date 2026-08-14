@@ -14,28 +14,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  unsigned-ipa:
-    runs-on: macos-26
+  unified-ios:
+    name: Swift 6.4 unified iOS build
+    runs-on: xcode-27
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
 
-      - name: Select stable Xcode 26.6
+      - name: Show build toolchain
         run: |
-          test -d /Applications/Xcode_26.6.app
-          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           xcodebuild -version
+          xcrun swiftc --version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Cache Swift packages
         uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/BuFiSourcePackages
-          key: ${{ runner.os }}-xcode26.6-spm-${{ hashFiles('project.yml', 'Package.resolved') }}
+          key: ${{ runner.os }}-xcode27-swift6.4-spm-${{ hashFiles('project.yml', 'Package.resolved') }}
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          brew install xcodegen
+          xcodegen --version
 
       - name: Prepare generated assets
         run: sh Scripts/prepare-assets.sh
@@ -45,7 +48,8 @@ jobs:
           plutil -lint BuFi/Resources/PrivacyInfo.xcprivacy
           xcodegen generate
           sh Scripts/apply-package-lock.sh
-      - name: Verify Swift 6 language mode
+
+      - name: Verify Swift 6.4 unified configuration
         run: Scripts/verify-swift6-language-mode.sh
 
       - name: Boot an available iPhone simulator
@@ -55,6 +59,24 @@ jobs:
           echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> "$GITHUB_ENV"
           xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+
+      - name: Compile unit tests
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild \
+            -disableAutomaticPackageResolution \
+            -quiet \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath build/DerivedData-Tests \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing 2>&1 | tee build/tests-build.log
 
       - name: Run unit tests
         run: |
@@ -67,15 +89,15 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath "$RUNNER_TEMP/BuFiTestDerivedData" \
+            -derivedDataPath build/DerivedData-Tests \
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
-            test
+            test-without-building 2>&1 | tee build/tests-run.log
 
       - name: Launch smoke test
         run: |
-          APP_PATH="$RUNNER_TEMP/BuFiTestDerivedData/Build/Products/Debug-iphonesimulator/BuFi.app"
+          APP_PATH="build/DerivedData-Tests/Build/Products/Debug-iphonesimulator/BuFi.app"
           test -d "$APP_PATH"
           test -f "$APP_PATH/PrivacyInfo.xcprivacy"
           xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
@@ -98,7 +120,7 @@ jobs:
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/BuFiDerivedData" \
+            -derivedDataPath build/DerivedData \
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
             -parallelizeTargets \
             -showBuildTimingSummary \
@@ -109,22 +131,35 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee build/xcode.log
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: BuFi-1.0.0-swift6.4-failure-logs-${{ github.sha }}
+          path: |
+            build/xcode.log
+            build/tests-build.log
+            build/tests-run.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Package unsigned IPA
         run: |
-          APP_PATH="$RUNNER_TEMP/BuFiDerivedData/Build/Products/Release-iphoneos/BuFi.app"
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/BuFi.app"
           test -d "$APP_PATH"
           test -f "$APP_PATH/PrivacyInfo.xcprivacy"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP_PATH/Info.plist")" = "17.0"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")" = "1.0.0"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "$BUFI_BUILD_NUMBER"
           test ! -d "$APP_PATH/_CodeSignature"
           test ! -f "$APP_PATH/embedded.mobileprovision"
-          mkdir -p "$RUNNER_TEMP/Payload"
-          ditto "$APP_PATH" "$RUNNER_TEMP/Payload/BuFi.app"
-          cd "$RUNNER_TEMP"
-          zip -qry "$GITHUB_WORKSPACE/BuFi-1.0.0-build${BUFI_BUILD_NUMBER}-unsigned.ipa" Payload
-          cd "$GITHUB_WORKSPACE"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          ditto "$APP_PATH" build/Payload/BuFi.app
+          cd build
+          zip -qry "BuFi-1.0.0-build${BUFI_BUILD_NUMBER}-unsigned.ipa" Payload
           shasum -a 256 "BuFi-1.0.0-build${BUFI_BUILD_NUMBER}-unsigned.ipa" > "BuFi-1.0.0-build${BUFI_BUILD_NUMBER}-unsigned.ipa.sha256"
 
       - name: Upload unsigned IPA
@@ -132,152 +167,10 @@ jobs:
         with:
           name: BuFi-1.0.0-build${{ github.run_number }}-unsigned-${{ github.sha }}
           path: |
-            BuFi-1.0.0-build${{ github.run_number }}-unsigned.ipa
-            BuFi-1.0.0-build${{ github.run_number }}-unsigned.ipa.sha256
+            build/BuFi-1.0.0-build${{ github.run_number }}-unsigned.ipa
+            build/BuFi-1.0.0-build${{ github.run_number }}-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 30
-
-      - name: Shut down simulator
-        if: always()
-        run: |
-          if [ -n "${SIMULATOR_UDID:-}" ]; then
-            xcrun simctl shutdown "$SIMULATOR_UDID" 2>/dev/null || true
-          fi
-
-  ios-27-compatibility:
-    name: iOS 27 beta 4 Release launch
-    runs-on: xcode-27
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Show Xcode and iOS SDK
-        run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-
-      - name: Cache Swift packages
-        uses: actions/cache@v5
-        with:
-          path: ${{ runner.temp }}/BuFi27SourcePackages
-          key: ${{ runner.os }}-xcode27-spm-${{ hashFiles('project.yml', 'Package.resolved') }}
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Prepare generated assets
-        run: sh Scripts/prepare-assets.sh
-
-      - name: Generate project
-        run: |
-          xcodegen generate
-          sh Scripts/apply-package-lock.sh
-      - name: Verify Swift 6 language mode
-        run: Scripts/verify-swift6-language-mode.sh
-      - name: Boot an iOS 27 simulator
-        run: |
-          SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(device["udid"] for runtime,devices in reversed(list(data["devices"].items())) if "iOS-27" in runtime for device in devices if device.get("isAvailable") and device.get("name", "").startswith("iPhone")))')"
-          test -n "$SIMULATOR_UDID"
-          echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> "$GITHUB_ENV"
-          xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-
-      - name: Build with iOS 27 SDK
-        run: |
-          set -o pipefail
-          mkdir -p "$RUNNER_TEMP/BuFi27Logs"
-          xcodebuild \
-            -disableAutomaticPackageResolution \
-            -quiet \
-            -project BuFi.xcodeproj \
-            -scheme BuFi \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$RUNNER_TEMP/BuFi27DerivedData" \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFi27SourcePackages" \
-            -parallelizeTargets \
-            -showBuildTimingSummary \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            STRIP_SWIFT_SYMBOLS=NO \
-            STRIP_STYLE=non-global \
-            CURRENT_PROJECT_VERSION="$BUFI_BUILD_NUMBER" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee "$RUNNER_TEMP/BuFi27Logs/xcode27.log"
-
-      - name: Build and launch Release on iOS 27
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -disableAutomaticPackageResolution \
-            -quiet \
-            -project BuFi.xcodeproj \
-            -scheme BuFi \
-            -configuration Release \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath "$RUNNER_TEMP/BuFi27SimulatorDerivedData" \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFi27SourcePackages" \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            CURRENT_PROJECT_VERSION="$BUFI_BUILD_NUMBER" \
-            CODE_SIGNING_ALLOWED=NO \
-            build 2>&1 | tee "$RUNNER_TEMP/BuFi27Logs/xcode27-simulator.log"
-          APP_PATH="$RUNNER_TEMP/BuFi27SimulatorDerivedData/Build/Products/Release-iphonesimulator/BuFi.app"
-          test -d "$APP_PATH"
-          xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
-          LAUNCH_OUTPUT="$(xcrun simctl launch --terminate-running-process "$SIMULATOR_UDID" cloud.tae00217.BuFi)"
-          APP_PID="${LAUNCH_OUTPUT##*: }"
-          test -n "$APP_PID"
-          sleep 8
-          PROCINFO="$(xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID" 2>&1 || true)"
-          printf '%s\n' "$PROCINFO"
-          printf '%s\n' "$PROCINFO" | grep -q 'job state = running'
-          DATA_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" cloud.tae00217.BuFi data)"
-          PREFS="$DATA_CONTAINER/Library/Preferences/cloud.tae00217.BuFi.plist"
-          test -f "$PREFS"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :launch-diagnostics-last-phase' "$PREFS")" = "application-bootstrap-ready"
-
-      - name: Package iOS 27 beta 4 unsigned IPA
-        run: |
-          APP_PATH="$RUNNER_TEMP/BuFi27DerivedData/Build/Products/Release-iphoneos/BuFi.app"
-          test -d "$APP_PATH"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")" = "$BUFI_BUILD_NUMBER"
-          test ! -d "$APP_PATH/_CodeSignature"
-          test ! -f "$APP_PATH/embedded.mobileprovision"
-          mkdir -p "$RUNNER_TEMP/BuFi27Package/Payload"
-          ditto "$APP_PATH" "$RUNNER_TEMP/BuFi27Package/Payload/BuFi.app"
-          cp Docs/IOS27_BETA_INSTALLATION.md "$RUNNER_TEMP/BuFi27Package/IOS27_INSTALLATION.txt"
-          cd "$RUNNER_TEMP/BuFi27Package"
-          /usr/bin/zip -qry "$GITHUB_WORKSPACE/BuFi-1.0.0-build${BUFI_BUILD_NUMBER}-ios27-beta4-unsigned.ipa" Payload
-          cd "$GITHUB_WORKSPACE"
-          shasum -a 256 "BuFi-1.0.0-build${BUFI_BUILD_NUMBER}-ios27-beta4-unsigned.ipa" > "BuFi-1.0.0-build${BUFI_BUILD_NUMBER}-ios27-beta4-unsigned.ipa.sha256"
-          cp "$RUNNER_TEMP/BuFi27Package/IOS27_INSTALLATION.txt" .
-
-      - name: Upload iOS 27 beta 4 unsigned IPA
-        uses: actions/upload-artifact@v7
-        with:
-          name: BuFi-1.0.0-build${{ github.run_number }}-ios27-beta4-unsigned-${{ github.sha }}
-          path: |
-            BuFi-1.0.0-build${{ github.run_number }}-ios27-beta4-unsigned.ipa
-            BuFi-1.0.0-build${{ github.run_number }}-ios27-beta4-unsigned.ipa.sha256
-            IOS27_INSTALLATION.txt
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload Xcode 27 preview log
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: BuFi-xcode27-preview-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/BuFi27Logs/xcode27.log
-            ${{ runner.temp }}/BuFi27Logs/xcode27-simulator.log
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Shut down simulator
         if: always()
