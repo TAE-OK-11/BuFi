@@ -34,6 +34,8 @@ for target in BuFi BuFiTests; do
         printf '%s\n' "$settings" \
             | grep -Eq '^[[:space:]]*SWIFT_STRICT_CONCURRENCY = complete[[:space:]]*$'
         printf '%s\n' "$settings" \
+            | grep -Eq '^[[:space:]]*OTHER_SWIFT_FLAGS = .*NonisolatedNonsendingByDefault'
+        printf '%s\n' "$settings" \
             | grep -Eq '^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = 17\.0[[:space:]]*$'
     done
 done
