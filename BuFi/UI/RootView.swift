@@ -1,4 +1,3 @@
-import Combine
 import SwiftUI
 import UIKit
 
@@ -95,48 +94,14 @@ struct RootView: View {
                 await ListeningHistoryStore.shared.flushPendingWrites()
             }
         }
-        .onReceive(
-            NotificationCenter.default
-                .publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)
-                .receive(on: DispatchQueue.main)
-        ) { _ in
-            let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
-            lowPowerMode = currentLowPowerMode
-            model.handleEnergyConstraints(
-                lowPowerMode: currentLowPowerMode,
-                thermalState: thermalState
-            )
-            audio.handleEnergyConstraints(
-                lowPowerMode: currentLowPowerMode,
-                thermalState: thermalState
-            )
+        .task {
+            await observePowerStateChanges()
         }
-        .onReceive(
-            NotificationCenter.default
-                .publisher(for: ProcessInfo.thermalStateDidChangeNotification)
-                .receive(on: DispatchQueue.main)
-        ) { _ in
-            let currentThermalState = ProcessInfo.processInfo.thermalState
-            thermalState = currentThermalState
-            model.handleEnergyConstraints(
-                lowPowerMode: lowPowerMode,
-                thermalState: currentThermalState
-            )
-            audio.handleEnergyConstraints(
-                lowPowerMode: lowPowerMode,
-                thermalState: currentThermalState
-            )
+        .task {
+            await observeThermalStateChanges()
         }
-        .onReceive(
-            NotificationCenter.default
-                .publisher(for: UIApplication.didReceiveMemoryWarningNotification)
-                .receive(on: DispatchQueue.main)
-        ) { _ in
-            model.handleMemoryPressure()
-            audio.handleMemoryPressure()
-            Task(priority: .utility) {
-                await ArtworkStore.shared.clearMemory()
-            }
+        .task {
+            await observeMemoryWarnings()
         }
         .alert(
             "오류",
@@ -331,6 +296,56 @@ struct RootView: View {
             return max(selected, 180)
         }
         return selected
+    }
+
+    @MainActor
+    private func observePowerStateChanges() async {
+        for await _ in NotificationCenter.default.notifications(
+            named: Notification.Name.NSProcessInfoPowerStateDidChange
+        ) {
+            guard !Task.isCancelled else { return }
+            let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            lowPowerMode = currentLowPowerMode
+            model.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
+        }
+    }
+
+    @MainActor
+    private func observeThermalStateChanges() async {
+        for await _ in NotificationCenter.default.notifications(
+            named: ProcessInfo.thermalStateDidChangeNotification
+        ) {
+            guard !Task.isCancelled else { return }
+            let currentThermalState = ProcessInfo.processInfo.thermalState
+            thermalState = currentThermalState
+            model.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
+        }
+    }
+
+    @MainActor
+    private func observeMemoryWarnings() async {
+        for await _ in NotificationCenter.default.notifications(
+            named: UIApplication.didReceiveMemoryWarningNotification
+        ) {
+            guard !Task.isCancelled else { return }
+            model.handleMemoryPressure()
+            audio.handleMemoryPressure()
+            await ArtworkStore.shared.clearMemory()
+        }
     }
 
     private func runAutomaticSync() async {

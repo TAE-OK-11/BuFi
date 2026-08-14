@@ -362,14 +362,7 @@ struct HomeView: View {
                   selectedArtistsStorage == selectedArtistMixes else { return }
         }
 
-        let work = Task.detached(priority: .userInitiated) {
-            HomePresentation.make(input: input)
-        }
-        let next = await withTaskCancellationHandler {
-            await work.value
-        } onCancel: {
-            work.cancel()
-        }
+        let next = await HomePresentation.makeConcurrently(input: input)
         guard !Task.isCancelled,
               revision == library.revision,
               selectedArtistsStorage == selectedArtistMixes else { return }
@@ -424,6 +417,15 @@ struct HomePresentation: Sendable {
         primaryArtists: [],
         featuredArtists: []
     )
+
+    @concurrent
+    static func makeConcurrently(
+        input: HomePresentationInput
+    ) async -> HomePresentation {
+        guard !Task.isCancelled else { return .empty }
+        let value = make(input: input)
+        return Task.isCancelled ? .empty : value
+    }
 
     static func make(input: HomePresentationInput) -> HomePresentation {
         let snapshot = input.snapshot

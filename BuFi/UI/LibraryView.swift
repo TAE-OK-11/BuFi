@@ -350,14 +350,7 @@ struct LibraryView: View {
             artists: snapshot.artists,
             starredArtists: snapshot.starredArtists
         )
-        let work = Task.detached(priority: .userInitiated) {
-            LibraryArtistPresentation.make(input: input)
-        }
-        let next = await withTaskCancellationHandler {
-            await work.value
-        } onCancel: {
-            work.cancel()
-        }
+        let next = await LibraryArtistPresentation.makeConcurrently(input: input)
         guard !Task.isCancelled,
               revision == library.revision else { return }
         artistPresentation = next
@@ -379,6 +372,15 @@ struct LibraryArtistPresentation: Sendable {
         favorites: [],
         sections: []
     )
+
+    @concurrent
+    static func makeConcurrently(
+        input: LibraryArtistPresentationInput
+    ) async -> LibraryArtistPresentation {
+        guard !Task.isCancelled else { return .empty }
+        let value = make(input: input)
+        return Task.isCancelled ? .empty : value
+    }
 
     static func make(input: LibraryArtistPresentationInput) -> LibraryArtistPresentation {
         let favoriteIDs = Set(input.starredArtists.map(\.id))

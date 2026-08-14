@@ -21,6 +21,33 @@ final class SwiftConcurrencyArchitectureTests: XCTestCase {
         XCTAssertNotEqual(lhs, rhs)
     }
 
+    func testConcurrentUIPresentationBoundariesPreserveEmptyInputs() async {
+        let home = await HomePresentation.makeConcurrently(
+            input: HomePresentationInput(
+                snapshot: .empty,
+                selectedArtists: []
+            )
+        )
+        let library = await LibraryArtistPresentation.makeConcurrently(
+            input: LibraryArtistPresentationInput(
+                artists: [],
+                starredArtists: []
+            )
+        )
+
+        XCTAssertTrue(home.personalizedMixes.isEmpty)
+        XCTAssertTrue(library.allArtists.isEmpty)
+        XCTAssertTrue(library.sections.isEmpty)
+    }
+
+    func testLatencyDurationConversionUsesMonotonicDurationUnits() {
+        XCTAssertEqual(
+            OpenSubsonicClient.milliseconds(from: .milliseconds(125)),
+            125,
+            accuracy: 0.001
+        )
+    }
+
     func testConcurrentContentDecoderPassesThroughPlainData() async throws {
         let input = Data("swift-6.4".utf8)
         let output = try await HTTPContentDecoder.decodeAsync(

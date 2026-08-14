@@ -540,18 +540,11 @@ struct SearchView: View {
         let selectedArtistsStorage = selectedArtistMixes
         guard revision == library.revision else { return }
         let selectedArtists = ArtistMixPreferences.decode(selectedArtistsStorage)
-        let work = Task.detached(priority: .userInitiated) {
-            PersonalizedMixBuilder.make(
-                snapshot: snapshot,
-                snapshotRevision: revision,
-                selectedArtists: selectedArtists
-            )
-        }
-        let next = await withTaskCancellationHandler {
-            await work.value
-        } onCancel: {
-            work.cancel()
-        }
+        let next = await SearchPersonalizedMixWork.make(
+            snapshot: snapshot,
+            revision: revision,
+            selectedArtists: selectedArtists
+        )
         guard !Task.isCancelled,
               browseMode == .algorithmPlaylists,
               revision == library.revision,
@@ -588,6 +581,23 @@ private struct SearchShortcut: Identifiable {
 
 private enum SearchScrollAnchor: Hashable {
     case top
+}
+
+private enum SearchPersonalizedMixWork {
+    @concurrent
+    static func make(
+        snapshot: HomeSnapshot,
+        revision: HomeSnapshotRevision,
+        selectedArtists: [String]
+    ) async -> [PersonalizedMix] {
+        guard !Task.isCancelled else { return [] }
+        let value = PersonalizedMixBuilder.make(
+            snapshot: snapshot,
+            snapshotRevision: revision,
+            selectedArtists: selectedArtists
+        )
+        return Task.isCancelled ? [] : value
+    }
 }
 
 private struct SearchMixTaskIdentity: Hashable, Sendable {

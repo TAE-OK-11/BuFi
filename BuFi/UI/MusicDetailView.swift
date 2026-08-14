@@ -718,22 +718,13 @@ struct MusicDetailView: View {
                 songs = detail.topSongs
                 albums = detail.albums
                 artistAlbumCount = detail.artist.albumCount ?? detail.albums.count
-                let rawBiography = detail.info?.biography ?? ""
-                let artistAlbums = detail.albums
-                let work = Task.detached(priority: .utility) {
-                    (
-                        ArtistBiographySanitizer.sanitize(rawBiography),
-                        ArtistDiscographyPresentation.make(artistAlbums)
-                    )
-                }
-                let preparedArtistContent = await withTaskCancellationHandler {
-                    await work.value
-                } onCancel: {
-                    work.cancel()
-                }
+                let preparedArtistContent = await ArtistDetailPresentation.make(
+                    biography: detail.info?.biography ?? "",
+                    albums: detail.albums
+                )
                 guard !Task.isCancelled, route == loadingRoute else { return }
-                artistBiography = preparedArtistContent.0
-                discography = preparedArtistContent.1
+                artistBiography = preparedArtistContent.biography
+                discography = preparedArtistContent.discography
             }
         } catch {
             guard !Task.isCancelled else { return }
@@ -768,6 +759,35 @@ struct MusicDetailArtworkIdentity: Hashable, Sendable {
         case .playlist(let playlist):
             "playlist-\(playlist.id)-\(coverArtID ?? "")"
         }
+    }
+}
+
+private struct ArtistDetailPresentation: Sendable {
+    let biography: String
+    let discography: ArtistDiscographyPresentation
+
+    @concurrent
+    static func make(
+        biography: String,
+        albums: [Album]
+    ) async -> ArtistDetailPresentation {
+        guard !Task.isCancelled else {
+            return ArtistDetailPresentation(
+                biography: "",
+                discography: .empty
+            )
+        }
+        let value = ArtistDetailPresentation(
+            biography: ArtistBiographySanitizer.sanitize(biography),
+            discography: ArtistDiscographyPresentation.make(albums)
+        )
+        if Task.isCancelled {
+            return ArtistDetailPresentation(
+                biography: "",
+                discography: .empty
+            )
+        }
+        return value
     }
 }
 

@@ -3,7 +3,7 @@ import UIKit
 
 struct ArtistHeroArtwork: View {
     private struct LoadedArtwork {
-        let requestIdentity: String
+        let requestIdentity: ArtworkLoadRequestIdentity
         let image: UIImage
     }
 
@@ -69,7 +69,7 @@ struct ArtistHeroArtwork: View {
     }
 
     @MainActor
-    private func loadImage(requestID: String) async {
+    private func loadImage(requestID: ArtworkLoadRequestIdentity) async {
         loadedArtwork = nil
 
         // OpenSubsonic may include third-party artist-image URLs. Fetching those
@@ -117,8 +117,13 @@ struct ArtistHeroArtwork: View {
         onPalette(palette)
     }
 
-    private var artworkRequestIdentity: String {
-        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(cacheRevision ?? "base")-\(Int(requestedPixelSize))"
+    private var artworkRequestIdentity: ArtworkLoadRequestIdentity {
+        ArtworkLoadRequestIdentity(
+            context: model.artworkContextID,
+            coverArtID: normalizedCoverArt,
+            cacheRevision: cacheRevision,
+            pixelSize: Int(requestedPixelSize)
+        )
     }
 
     private var requestedPixelSize: CGFloat {

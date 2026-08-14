@@ -124,7 +124,11 @@ struct OverflowMarqueeText: View {
                 withAnimation(.linear(duration: returnDuration)) {
                     travel = 0
                 }
-                try await Task.sleep(for: .seconds(returnDuration + 1.6))
+                // Long titles remain discoverable, but repeated GPU animation
+                // is intentionally sparse after the first cycle. The view task still
+                // cancels immediately on scene/identity changes.
+                let restDuration = max(5.5, min(8.0, Double(distance / 32)))
+                try await Task.sleep(for: .seconds(returnDuration + restDuration))
             }
         } catch {
             guard animationRunID == runID else { return }

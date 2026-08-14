@@ -363,9 +363,16 @@ struct BuFiShortcutCard: View {
     }
 }
 
+struct ArtworkLoadRequestIdentity: Hashable, Sendable {
+    let context: ArtworkContextIdentity
+    let coverArtID: String?
+    let cacheRevision: String?
+    let pixelSize: Int
+}
+
 struct ArtworkView: View {
     private struct LoadedArtwork {
-        let requestIdentity: String
+        let requestIdentity: ArtworkLoadRequestIdentity
         let image: UIImage
     }
 
@@ -451,8 +458,13 @@ struct ArtworkView: View {
         .accessibilityHidden(true)
     }
 
-    private var artworkRequestIdentity: String {
-        "\(model.artworkContextID)-\(normalizedCoverArt ?? "")-\(cacheRevision ?? "base")-\(Int(requestedPixelSize))"
+    private var artworkRequestIdentity: ArtworkLoadRequestIdentity {
+        ArtworkLoadRequestIdentity(
+            context: model.artworkContextID,
+            coverArtID: normalizedCoverArt,
+            cacheRevision: cacheRevision,
+            pixelSize: Int(requestedPixelSize)
+        )
     }
 
     private var requestedPixelSize: CGFloat {

@@ -1,6 +1,11 @@
 import Combine
 import Foundation
 
+struct ArtworkContextIdentity: Hashable, Sendable {
+    let sessionGeneration: Int
+    let accountScope: String?
+}
+
 @MainActor
 final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var phase: AppModel.SessionState = .signedOut
@@ -212,7 +217,7 @@ final class AppModel: ObservableObject {
 
     private struct CachedValue<Value> {
         let value: Value
-        let expiresAt: Date
+        let expiresAt: ContinuousClock.Instant
     }
 
     private struct DetailRequest<Value: Sendable> {
@@ -314,8 +319,9 @@ final class AppModel: ObservableObject {
     private var bootstrapState = BootstrapState.idle
     private var loginInFlight = false
     private var refreshInFlight = false
-    private var lastFullRefresh = Date.distantPast
-    private var lastHomeSnapshotSave = Date.distantPast
+    private let runtimeClock = ContinuousClock()
+    private var lastFullRefresh: ContinuousClock.Instant?
+    private var lastHomeSnapshotSave: ContinuousClock.Instant?
     private var sessionGeneration = 0
     private var searchGeneration = 0
     private var homeRevision = 0
@@ -437,8 +443,8 @@ final class AppModel: ObservableObject {
         searchResults = .empty
         isSearching = false
         refreshInFlight = false
-        lastFullRefresh = .distantPast
-        lastHomeSnapshotSave = .distantPast
+        lastFullRefresh = nil
+        lastHomeSnapshotSave = nil
         connectedServerAddress = ""
         serverVersion = ""
         subsonicAPIVersion = ""
@@ -482,9 +488,12 @@ final class AppModel: ObservableObject {
         }
 
         do {
-            let needsFullRefresh = forceFull ||
-                Date().timeIntervalSince(lastFullRefresh) >= 300 ||
-                isHomeEmpty
+            let refreshNow = runtimeClock.now
+            let needsFullRefresh = forceFull
+                || lastFullRefresh.map {
+                    $0.duration(to: refreshNow) >= .seconds(300)
+                } ?? true
+                || isHomeEmpty
             let loadResult: HomeLoadResult
             if needsFullRefresh {
                 loadResult = try await client.home(from: isHomeEmpty ? nil : previousHome)
@@ -495,7 +504,7 @@ final class AppModel: ObservableObject {
             guard generation == sessionGeneration, self.client === client else { return }
             guard revision == homeRevision else { return }
             guard starRequests.isEmpty else { return }
-            if needsFullRefresh { lastFullRefresh = Date() }
+            if needsFullRefresh { lastFullRefresh = runtimeClock.now }
             reconcileFavoriteStates(
                 in: snapshot,
                 authoritative: loadResult.hasAuthoritativeStarredState
@@ -503,9 +512,11 @@ final class AppModel: ObservableObject {
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
             let snapshotChanged = home != resolvedSnapshot
             if snapshotChanged { publishHome(resolvedSnapshot) }
-            let now = Date()
-            if snapshotChanged
-                || now.timeIntervalSince(lastHomeSnapshotSave) >= 3_600 {
+            let saveNow = runtimeClock.now
+            let snapshotSaveIsDue = lastHomeSnapshotSave.map {
+                $0.duration(to: saveNow) >= .seconds(3_600)
+            } ?? true
+            if snapshotChanged || snapshotSaveIsDue {
                 let accountScope = AccountScope.identifier(for: client.credentials)
                 await HomeSnapshotStore.shared.save(
                     resolvedSnapshot,
@@ -513,7 +524,7 @@ final class AppModel: ObservableObject {
                 )
                 guard generation == sessionGeneration,
                       self.client === client else { return }
-                lastHomeSnapshotSave = now
+                lastHomeSnapshotSave = saveNow
             }
             if needsFullRefresh {
                 scheduleExternalRecommendationRefresh(
@@ -1067,8 +1078,11 @@ final class AppModel: ObservableObject {
         return url
     }
 
-    var artworkContextID: String {
-        "\(sessionGeneration):\(client?.accountScope ?? "signed-out")"
+    var artworkContextID: ArtworkContextIdentity {
+        ArtworkContextIdentity(
+            sessionGeneration: sessionGeneration,
+            accountScope: client?.accountScope
+        )
     }
 
     func isStarred(_ song: Song) -> Bool {
@@ -1734,7 +1748,7 @@ final class AppModel: ObservableObject {
         cache: inout [String: CachedValue<Value>]
     ) -> Value? {
         guard let cached = cache[id] else { return nil }
-        guard cached.expiresAt > Date() else {
+        guard cached.expiresAt > ContinuousClock().now else {
             cache[id] = nil
             return nil
         }
@@ -1748,10 +1762,11 @@ final class AppModel: ObservableObject {
         limit: Int,
         cache: inout [String: CachedValue<Value>]
     ) {
-        let now = Date()
+        let clock = ContinuousClock()
+        let now = clock.now
         cache[id] = CachedValue(
             value: value,
-            expiresAt: now.addingTimeInterval(lifetime)
+            expiresAt: now.advanced(by: .seconds(lifetime))
         )
         guard limit > 0 else {
             cache.removeAll(keepingCapacity: false)

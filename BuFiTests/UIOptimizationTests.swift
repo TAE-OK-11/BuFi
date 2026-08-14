@@ -15,6 +15,29 @@ final class UIOptimizationTests: XCTestCase {
         XCTAssertNil(second.value)
     }
 
+    func testArtworkRequestIdentityKeepsFieldsStructurallyDistinct() {
+        let first = ArtworkLoadRequestIdentity(
+            context: ArtworkContextIdentity(
+                sessionGeneration: 7,
+                accountScope: "scope-part"
+            ),
+            coverArtID: "cover",
+            cacheRevision: "revision",
+            pixelSize: 600
+        )
+        let second = ArtworkLoadRequestIdentity(
+            context: ArtworkContextIdentity(
+                sessionGeneration: 7,
+                accountScope: "scope"
+            ),
+            coverArtID: "part-cover",
+            cacheRevision: "revision",
+            pixelSize: 600
+        )
+
+        XCTAssertNotEqual(first, second)
+    }
+
     func testArtworkRequestSizingUsesStableBoundedPixelBuckets() {
         XCTAssertEqual(
             ArtworkRequestSizing.pixelSize(pointSize: 50, displayScale: 3),
