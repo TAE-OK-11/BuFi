@@ -901,7 +901,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private struct PreparedPlaybackAsset {
-        let key: String
+        let key: PreparedPlaybackKey
         let queueEntryID: UUID
         let songID: String
         let streamRevision: String
@@ -957,9 +957,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var offlinePrefetchToken: UUID?
     private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastOfflinePrefetchKey: PlaybackPrefetchPlan.Key?
-    private var preparedPlaybackAssets: [String: PreparedPlaybackAsset] = [:]
-    private var preparedPlaybackAssetOrder: [String] = []
-    private var preparedPlaybackWarmupTasks: [String: Task<Void, Never>] = [:]
+    private var preparedPlaybackAssets: [PreparedPlaybackKey: PreparedPlaybackAsset] = [:]
+    private var preparedPlaybackAssetOrder: [PreparedPlaybackKey] = []
+    private var preparedPlaybackWarmupTasks: [PreparedPlaybackKey: Task<Void, Never>] = [:]
     private weak var stagedSuccessorItem: AVPlayerItem?
     private var stagedSuccessorSong: Song?
     private var stagedSuccessorQueueIndex: Int?
@@ -1051,7 +1051,20 @@ final class AudioEngine: NSObject, ObservableObject {
         installNetworkPathMonitor()
         LaunchDiagnostics.mark("remote-commands-installing")
         installRemoteCommands()
-        LaunchDiagnostics.mark("audio-runtime-ready")
+        LaunchDiagnostics.mark("audio-runtime-ready    private static func preparedPlaybackKey(
+        accountScope: String?,
+        queueEntryID: UUID,
+        streamRevision: String,
+        quality: StreamQuality,
+        compatibilityFormat: String
+    ) -> PreparedPlaybackKey {
+        PreparedPlaybackKey(
+            accountScope: accountScope,
+            queueEntryID: queueEntryID,
+            streamRevision: streamRevision,
+            quality: quality,
+            compatibilityFormat: compatibilityFormat
+        )
     }
 
     func configure(

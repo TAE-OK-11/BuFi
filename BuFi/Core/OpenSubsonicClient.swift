@@ -612,23 +612,7 @@ actor OpenSubsonicClient {
         case mutation(OpenSubsonicMutationImpact)
     }
 
-    private struct ReadRequestKey: Hashable, Sendable {
-        let endpoint: String
-        let queryItems: [String]
-        let cacheRevision: OpenSubsonicCacheRevision
-
-        init(
-            endpoint: String,
-            queryItems: [URLQueryItem],
-            cacheRevision: OpenSubsonicCacheRevision
-        ) {
-            self.endpoint = endpoint
-            self.cacheRevision = cacheRevision
-            self.queryItems = queryItems
-                .map { "\($0.name)=\($0.value ?? "")" }
-                .sorted()
-        }
-    }
+    private typealias ReadRequestKey = OpenSubsonicReadRequestKey
 
     /// Sendable transport value used by coalesced requests. Foundation's
     /// HTTPURLResponse is a reference type, so extract only the immutable
