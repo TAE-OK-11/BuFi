@@ -87,12 +87,10 @@ struct RootView: View {
         .task(id: syncTaskID) {
             await runAutomaticSync()
         }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { return }
-            Task(priority: .utility) {
-                await OfflineStore.shared.flushPendingWrites()
-                await ListeningHistoryStore.shared.flushPendingWrites()
-            }
+        .task(id: scenePhase == .active) {
+            guard scenePhase != .active else { return }
+            await OfflineStore.shared.flushPendingWrites()
+            await ListeningHistoryStore.shared.flushPendingWrites()
         }
         .task {
             await observePowerStateChanges()

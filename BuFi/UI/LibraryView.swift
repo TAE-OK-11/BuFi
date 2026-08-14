@@ -288,7 +288,7 @@ struct LibraryView: View {
         @ViewBuilder row: @escaping (Item) -> Row
     ) -> some View {
         BuFiGroupedSurface {
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 ForEach(items) { item in
                     row(item)
                     if item.id != items.last?.id {

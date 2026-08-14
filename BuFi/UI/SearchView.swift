@@ -517,7 +517,7 @@ struct SearchView: View {
         VStack(alignment: .leading, spacing: 11) {
             SectionTitle(title: title)
             BuFiGroupedSurface {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     content()
                 }
             }
