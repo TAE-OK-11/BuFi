@@ -264,8 +264,8 @@ struct PersonalizedMixDetailView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(mix.songs.enumerated()), id: \.offset) {
-                        index, song in
+                    ForEach(mix.songs.indices, id: \.self) { index in
+                        let song = mix.songs[index]
                         HStack(spacing: mix.showsRanking ? 10 : 2) {
                             if mix.showsRanking {
                                 Text("\(index + 1)")
