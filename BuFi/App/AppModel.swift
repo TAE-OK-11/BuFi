@@ -2163,7 +2163,7 @@ final class AppModel: ObservableObject {
         serverVersion = ""
         subsonicAPIVersion = ""
         refreshInFlight = false
-        lastHomeSnapshotSave = .distantPast
+        lastHomeSnapshotSave = nil
         isSearching = false
         clearFavoriteState()
         clearDetailCaches()
@@ -2247,8 +2247,8 @@ final class AppModel: ObservableObject {
             self.artworkSessionToken = artworkSession
             self.historySessionToken = historySession
             self.publishHome(applyingFavoriteOverrides(to: snapshot))
-            self.lastFullRefresh = .distantPast
-            self.lastHomeSnapshotSave = .distantPast
+            self.lastFullRefresh = nil
+            self.lastHomeSnapshotSave = nil
             self.connectedServerAddress = Self.serverDisplayAddress(
                 from: client.credentials.serverURL
             )
@@ -2299,7 +2299,7 @@ final class AppModel: ObservableObject {
             serverVersion = ""
             subsonicAPIVersion = ""
             refreshInFlight = false
-            lastHomeSnapshotSave = .distantPast
+            lastHomeSnapshotSave = nil
             isSearching = false
             sessionState = .signedOut
             errorMessage = error.localizedDescription
