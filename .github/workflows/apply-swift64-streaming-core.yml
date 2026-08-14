@@ -1,0 +1,73 @@
+name: Apply Swift 6.4 Streaming Core Migration
+
+on:
+  push:
+    branches:
+      - agent/swift-6-concurrency
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-swift64-streaming-core
+  cancel-in-progress: true
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/swift-6-concurrency
+          fetch-depth: 0
+
+      - name: Harden migration helper
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Scripts/apply-swift64-streaming-core.py')
+          text = path.read_text()
+          old = '''            defer {
+                          guard self.preparedPlaybackWarmupTokens[key] == warmupToken else {
+                              return
+                          }
+                          self.preparedPlaybackWarmupTokens[key] = nil
+                          self.preparedPlaybackWarmupTasks[key] = nil
+                      }
+          '''
+          new = '''            defer {
+                          if self.preparedPlaybackWarmupTokens[key] == warmupToken {
+                              self.preparedPlaybackWarmupTokens[key] = nil
+                              self.preparedPlaybackWarmupTasks[key] = nil
+                          }
+                      }
+          '''
+          if old not in text:
+              raise SystemExit('warmup defer pattern not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Apply streaming and core refactor
+        run: |
+          python3 Scripts/apply-swift64-streaming-core.py
+          git diff --check
+          ! grep -R "Task\.detached" BuFi/Core/OpenSubsonicClient.swift BuFi/Core/HTTPContentDecoder.swift
+
+      - name: Commit source changes
+        run: |
+          git config user.name "TAE-OK-11"
+          git config user.email "tae.ok.pen@gmail.com"
+          git add \
+            project.yml \
+            BuFi/Core/HTTPContentDecoder.swift \
+            BuFi/Core/OpenSubsonicClient.swift \
+            BuFi/Playback/AudioEngine.swift \
+            BuFiTests/SwiftConcurrencyArchitectureTests.swift
+          if git diff --cached --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git commit -m "Refactor streaming core for Swift 6.4 concurrency"
+          git push origin HEAD:agent/swift-6-concurrency
