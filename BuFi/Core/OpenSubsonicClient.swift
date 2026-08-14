@@ -1000,15 +1000,15 @@ actor OpenSubsonicClient {
     private func decodeResponseData<Payload: Decodable & Sendable>(
         _ data: Data
     ) async throws -> Payload {
-        let task: Task<Payload, Error> = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
-            return try Self.decodePayload(data)
-        }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        try await Self.decodePayloadConcurrently(data)
+    }
+
+    @concurrent
+    private static func decodePayloadConcurrently<Payload: Decodable & Sendable>(
+        _ data: Data
+    ) async throws -> Payload {
+        try Task.checkCancellation()
+        return try decodePayload(data)
     }
 
     private nonisolated static func decodePayload<Payload: Decodable & Sendable>(
@@ -1042,19 +1042,7 @@ actor OpenSubsonicClient {
             guard (200..<300).contains(response.statusCode) else {
                 throw OpenSubsonicError.http(response.statusCode)
             }
-            let responseData = response.data
-            let decodeTask = Task.detached(priority: .userInitiated) {
-                try Task.checkCancellation()
-                return try JSONDecoder().decode(
-                    StatusEnvelope.self,
-                    from: responseData
-                )
-            }
-            let envelope = try await withTaskCancellationHandler {
-                try await decodeTask.value
-            } onCancel: {
-                decodeTask.cancel()
-            }
+            let envelope = try await Self.decodeStatusEnvelope(response.data)
             guard envelope.response.status == "ok" else {
                 throw OpenSubsonicError.server(
                     code: envelope.response.error?.code,
@@ -1067,6 +1055,12 @@ actor OpenSubsonicClient {
             logFailure(error, endpoint: endpoint)
             throw error
         }
+    }
+
+    @concurrent
+    private static func decodeStatusEnvelope(_ data: Data) async throws -> StatusEnvelope {
+        try Task.checkCancellation()
+        return try JSONDecoder().decode(StatusEnvelope.self, from: data)
     }
 
     private func coalescedReadResponse(
@@ -1378,18 +1372,10 @@ actor OpenSubsonicClient {
         }
         let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
         do {
-            let decodeTask = Task.detached(priority: .utility) {
-                try Task.checkCancellation()
-                return try HTTPContentDecoder.decode(
-                    encodedData,
-                    contentEncoding: contentEncoding
-                )
-            }
-            let data = try await withTaskCancellationHandler {
-                try await decodeTask.value
-            } onCancel: {
-                decodeTask.cancel()
-            }
+            let data = try await HTTPContentDecoder.decodeAsync(
+                encodedData,
+                contentEncoding: contentEncoding
+            )
             return HTTPResponseData(
                 data: data,
                 statusCode: http.statusCode,

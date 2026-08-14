@@ -738,6 +738,94 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
     }
 }
 
+struct PlaybackResourceRequest: Sendable {
+    let song: Song
+    let quality: StreamQuality
+    let compatibilityFormat: String?
+    let allowLocalSource: Bool
+}
+
+struct PlaybackResourceDescriptor: Sendable {
+    let url: URL
+    let mimeType: String?
+}
+
+enum PlaybackResourceResolver {
+    @concurrent
+    static func resolve(
+        _ request: PlaybackResourceRequest,
+        client: OpenSubsonicClient?
+    ) async throws -> PlaybackResourceDescriptor {
+        try Task.checkCancellation()
+        let song = request.song
+        if let value = song.externalStreamURL,
+           let url = URL(string: value),
+           url.scheme?.lowercased() == "https" {
+            return PlaybackResourceDescriptor(
+                url: url,
+                mimeType: song.contentType
+            )
+        }
+        if request.allowLocalSource,
+           request.compatibilityFormat?.lowercased() == "raw",
+           let local = await OfflineStore.shared.localURL(for: song) {
+            try Task.checkCancellation()
+            return PlaybackResourceDescriptor(
+                url: local,
+                mimeType: sourceMIMEType(for: song)
+            )
+        }
+        guard let client else { throw OpenSubsonicError.invalidServerURL }
+        let url = try await client.streamURL(
+            songID: song.id,
+            quality: request.quality,
+            compatibilityFormat: request.compatibilityFormat
+        )
+        try Task.checkCancellation()
+        return PlaybackResourceDescriptor(
+            url: url,
+            mimeType: mimeType(
+                for: request.compatibilityFormat,
+                sourceSong: song
+            )
+        )
+    }
+
+    private static func mimeType(
+        for compatibilityFormat: String?,
+        sourceSong song: Song
+    ) -> String? {
+        switch compatibilityFormat?.lowercased() {
+        case "aac": "audio/aac"
+        case "mp3": "audio/mpeg"
+        case "opus": "audio/ogg; codecs=opus"
+        case "raw", nil: sourceMIMEType(for: song)
+        default: song.contentType
+        }
+    }
+
+    private static func sourceMIMEType(for song: Song) -> String? {
+        switch song.suffix?.lowercased() {
+        case "flac": "audio/flac"
+        case "opus": "audio/ogg; codecs=opus"
+        case "ogg", "oga": song.contentType ?? "audio/ogg"
+        case "mp3": "audio/mpeg"
+        case "aac": "audio/aac"
+        case "m4a", "m4b", "mp4", "alac": "audio/mp4"
+        case "wav", "wave": "audio/wav"
+        case "aif", "aiff": "audio/aiff"
+        default: song.contentType
+        }
+    }
+}
+
+struct NowPlayingVisualIdentity: Hashable, Sendable {
+    let accountScope: String?
+    let playbackID: UUID
+    let metadataRevision: String
+    let artworkRevision: String
+}
+
 @MainActor
 final class AudioEngine: NSObject, ObservableObject {
     private struct ServerQueueSaveRequest: Sendable {
@@ -895,11 +983,6 @@ final class AudioEngine: NSObject, ObservableObject {
         category: "Playback"
     )
 
-    private struct PlaybackResource {
-        let url: URL
-        let mimeType: String?
-    }
-
     private struct PreparedPlaybackAsset {
         let key: PreparedPlaybackKey
         let queueEntryID: UUID
@@ -960,6 +1043,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var preparedPlaybackAssets: [PreparedPlaybackKey: PreparedPlaybackAsset] = [:]
     private var preparedPlaybackAssetOrder: [PreparedPlaybackKey] = []
     private var preparedPlaybackWarmupTasks: [PreparedPlaybackKey: Task<Void, Never>] = [:]
+    private var preparedPlaybackWarmupTokens: [PreparedPlaybackKey: UUID] = [:]
     private weak var stagedSuccessorItem: AVPlayerItem?
     private var stagedSuccessorSong: Song?
     private var stagedSuccessorQueueIndex: Int?
@@ -967,9 +1051,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var autoplayTask: Task<Void, Never>?
     private var historyMutationTask: Task<Void, Never>?
     private let playbackReportDelivery = PlaybackReportDeliveryQueue()
-    private var nowPlayingVisualKey: String?
-    private var nowPlayingArtworkKey: String?
-    private var nowPlayingArtworkRequestKey: String?
+    private var nowPlayingVisualKey: NowPlayingVisualIdentity?
+    private var nowPlayingArtworkKey: NowPlayingVisualIdentity?
+    private var nowPlayingArtworkRequestKey: NowPlayingVisualIdentity?
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryTask: Task<Void, Never>?
@@ -1990,34 +2074,16 @@ final class AudioEngine: NSObject, ObservableObject {
         for song: Song,
         compatibilityFormat: String?,
         allowLocalSource: Bool = true
-    ) async throws -> PlaybackResource {
-        if let value = song.externalStreamURL,
-           let url = URL(string: value),
-           url.scheme?.lowercased() == "https" {
-            return PlaybackResource(url: url, mimeType: song.contentType)
-        }
-        // A downloaded source avoids radio use and is attempted once. If the
-        // system rejects it, later codec fallbacks bypass the local source.
-        if allowLocalSource,
-           compatibilityFormat?.lowercased() == "raw",
-           let local = await OfflineStore.shared.localURL(for: song) {
-            return PlaybackResource(
-                url: local,
-                mimeType: Self.sourceMIMEType(for: song)
-            )
-        }
-        guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let url = try await client.streamURL(
-            songID: song.id,
+    ) async throws -> PlaybackResourceDescriptor {
+        let request = PlaybackResourceRequest(
+            song: song,
             quality: quality,
-            compatibilityFormat: compatibilityFormat
+            compatibilityFormat: compatibilityFormat,
+            allowLocalSource: allowLocalSource
         )
-        return PlaybackResource(
-            url: url,
-            mimeType: Self.mimeType(
-                for: compatibilityFormat,
-                sourceSong: song
-            )
+        return try await PlaybackResourceResolver.resolve(
+            request,
+            client: client
         )
     }
 
@@ -2081,33 +2147,6 @@ final class AudioEngine: NSObject, ObservableObject {
         // accepted by AVFoundation stay bit-for-bit original. Unknown formats
         // also try the source first, then use the AAC/MP3 fallback plan.
         return "raw"
-    }
-
-    private static func mimeType(
-        for compatibilityFormat: String?,
-        sourceSong song: Song
-    ) -> String? {
-        switch compatibilityFormat?.lowercased() {
-        case "aac": "audio/aac"
-        case "mp3": "audio/mpeg"
-        case "opus": "audio/ogg; codecs=opus"
-        case "raw", nil: sourceMIMEType(for: song)
-        default: song.contentType
-        }
-    }
-
-    private static func sourceMIMEType(for song: Song) -> String? {
-        switch song.suffix?.lowercased() {
-        case "flac": "audio/flac"
-        case "opus": "audio/ogg; codecs=opus"
-        case "ogg", "oga": song.contentType ?? "audio/ogg"
-        case "mp3": "audio/mpeg"
-        case "aac": "audio/aac"
-        case "m4a", "m4b", "mp4", "alac": "audio/mp4"
-        case "wav", "wave": "audio/wav"
-        case "aif", "aiff": "audio/aiff"
-        default: song.contentType
-        }
     }
 
     private func installNetworkPathMonitor() {
@@ -2211,8 +2250,16 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
 
+        let warmupToken = UUID()
+        preparedPlaybackWarmupTokens[key] = warmupToken
         let task = Task(priority: .utility) { [weak self] in
             guard let self else { return }
+            defer {
+                if self.preparedPlaybackWarmupTokens[key] == warmupToken {
+                    self.preparedPlaybackWarmupTokens[key] = nil
+                    self.preparedPlaybackWarmupTasks[key] = nil
+                }
+            }
             do {
                 let resource = try await self.playbackResource(
                     for: song,
@@ -2226,7 +2273,6 @@ final class AudioEngine: NSObject, ObservableObject {
                               && $0.song.audioResourceRevision
                                   == song.audioResourceRevision
                       }) else {
-                    self.preparedPlaybackWarmupTasks[key] = nil
                     return
                 }
 
@@ -2255,7 +2301,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 // Warming is speculative. Active playback retains its normal
                 // codec fallback and recovery path if preparation fails.
             }
-            self.preparedPlaybackWarmupTasks[key] = nil
         }
         preparedPlaybackWarmupTasks[key] = task
     }
@@ -2333,6 +2378,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         preparedPlaybackAssets[prepared.key] = nil
         preparedPlaybackAssetOrder.removeAll { $0 == prepared.key }
+        preparedPlaybackWarmupTokens[prepared.key] = nil
         preparedPlaybackWarmupTasks[prepared.key] = nil
     }
 
@@ -2389,6 +2435,7 @@ final class AudioEngine: NSObject, ObservableObject {
         while preparedPlaybackAssetOrder.count > Self.preparedPlaybackAssetLimit {
             let evicted = preparedPlaybackAssetOrder.removeFirst()
             preparedPlaybackAssets[evicted] = nil
+            preparedPlaybackWarmupTokens[evicted] = nil
             preparedPlaybackWarmupTasks.removeValue(forKey: evicted)?.cancel()
         }
     }
@@ -2417,6 +2464,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // Do not cancel an in-progress AVAsset warmup after handing that same
         // asset to the active player. Dropping our task handle lets it finish
         // while AVPlayer immediately consumes the partially warmed resource.
+        preparedPlaybackWarmupTokens[key] = nil
         preparedPlaybackWarmupTasks[key] = nil
         return prepared
     }
@@ -2424,6 +2472,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private func discardPreparedPlaybackAssets() {
         preparedPlaybackWarmupTasks.values.forEach { $0.cancel() }
         preparedPlaybackWarmupTasks.removeAll(keepingCapacity: false)
+        preparedPlaybackWarmupTokens.removeAll(keepingCapacity: false)
         preparedPlaybackAssets.removeAll(keepingCapacity: false)
         preparedPlaybackAssetOrder.removeAll(keepingCapacity: false)
     }
@@ -4034,12 +4083,12 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let song = playbackItem.song
-        let visualKey = [
-            playbackItem.accountScope ?? "",
-            playbackItem.id.uuidString,
-            playbackItem.metadataRevision,
-            playbackItem.artwork.revision
-        ].joined(separator: "|")
+        let visualKey = NowPlayingVisualIdentity(
+            accountScope: playbackItem.accountScope,
+            playbackID: playbackItem.id,
+            metadataRevision: playbackItem.metadataRevision,
+            artworkRevision: playbackItem.artwork.revision
+        )
         let visualChanged = nowPlayingVisualKey != visualKey
         if visualChanged {
             nowPlayingArtworkTask?.cancel()

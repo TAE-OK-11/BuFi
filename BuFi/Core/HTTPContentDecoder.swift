@@ -5,6 +5,15 @@ enum HTTPContentDecoder {
     private static let zstandardMagic: [UInt8] = [0x28, 0xB5, 0x2F, 0xFD]
     private static let maximumDecodedBytes = 64 * 1_024 * 1_024
 
+    @concurrent
+    static func decodeAsync(
+        _ data: Data,
+        contentEncoding: String?
+    ) async throws -> Data {
+        try Task.checkCancellation()
+        return try decode(data, contentEncoding: contentEncoding)
+    }
+
     static func decode(_ data: Data, contentEncoding: String?) throws -> Data {
         try Task.checkCancellation()
         guard isZstandardFrame(data) else {
