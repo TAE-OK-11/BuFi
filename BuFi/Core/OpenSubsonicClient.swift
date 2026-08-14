@@ -631,6 +631,13 @@ actor OpenSubsonicClient {
         var waiters: [UUID: CheckedContinuation<HTTPResponseData, Error>]
     }
 
+    private struct MutationWaiter {
+        let dependencies: Set<OpenSubsonicCacheDependency>
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var mutationWaiters: [UUID: MutationWaiter] = [:]
+
     private static let responseCacheLimit = 128
     private static let responseCacheByteLimit = 16 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
@@ -851,10 +858,10 @@ actor OpenSubsonicClient {
                 allowsRetry: false
             )
             let payload: Payload = try await decodeResponse(response)
-            cacheRevisionState.finish(impact)
+            finishMutation(impact)
             return payload
         } catch {
-            cacheRevisionState.finish(impact)
+            finishMutation(impact)
             logFailure(error, endpoint: endpoint)
             throw error
         }
@@ -939,12 +946,9 @@ actor OpenSubsonicClient {
                 guard staleReadRetryCount < 2 else {
                     throw CancellationError()
                 }
-                while cacheRevisionState.hasMutation(
+                try await waitForRelevantMutations(
                     affecting: cachePolicy.dependencies
-                ) {
-                    try Task.checkCancellation()
-                    try await Task.sleep(for: .milliseconds(20))
-                }
+                )
                 return try await performRequest(
                     endpoint,
                     queryItems: queryItems,
@@ -953,12 +957,12 @@ actor OpenSubsonicClient {
                     staleReadRetryCount: staleReadRetryCount + 1
                 )
             case .mutation(let impact):
-                cacheRevisionState.finish(impact)
+                finishMutation(impact)
             }
             return payload
         } catch {
             if case .mutation(let impact) = semantics {
-                cacheRevisionState.finish(impact)
+                finishMutation(impact)
             }
             logFailure(error, endpoint: endpoint)
             throw error
@@ -1168,6 +1172,73 @@ actor OpenSubsonicClient {
             case .failure(let error):
                 continuation.resume(throwing: error)
             }
+        }
+    }
+
+    private func waitForRelevantMutations(
+        affecting dependencies: Set<OpenSubsonicCacheDependency>
+    ) async throws {
+        try Task.checkCancellation()
+        guard cacheRevisionState.hasMutation(affecting: dependencies) else {
+            return
+        }
+
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                registerMutationWaiter(
+                    continuation,
+                    id: waiterID,
+                    dependencies: dependencies
+                )
+            }
+        } onCancel: {
+            Task {
+                await self.cancelMutationWaiter(waiterID)
+            }
+        }
+        try Task.checkCancellation()
+    }
+
+    private func registerMutationWaiter(
+        _ continuation: CheckedContinuation<Void, Error>,
+        id: UUID,
+        dependencies: Set<OpenSubsonicCacheDependency>
+    ) {
+        guard !Task.isCancelled else {
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        guard cacheRevisionState.hasMutation(affecting: dependencies) else {
+            continuation.resume(returning: ())
+            return
+        }
+        mutationWaiters[id] = MutationWaiter(
+            dependencies: dependencies,
+            continuation: continuation
+        )
+    }
+
+    private func cancelMutationWaiter(_ id: UUID) {
+        guard let waiter = mutationWaiters.removeValue(forKey: id) else {
+            return
+        }
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func finishMutation(_ impact: OpenSubsonicMutationImpact) {
+        cacheRevisionState.finish(impact)
+        guard !mutationWaiters.isEmpty else { return }
+
+        let readyIDs = mutationWaiters.compactMap { id, waiter in
+            cacheRevisionState.hasMutation(affecting: waiter.dependencies)
+                ? nil
+                : id
+        }
+        for id in readyIDs {
+            mutationWaiters.removeValue(forKey: id)?
+                .continuation
+                .resume(returning: ())
         }
     }
 
