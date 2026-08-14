@@ -114,29 +114,15 @@ jobs:
 
           replace_once(
               player,
-              '''        guard let currentPage = currentArtworkPageID(in: snapshot) else {
-                  artworkPage = nil
-          ''',
-              '''        guard let currentPage = currentArtworkPageID(in: snapshot) else {
-                  pagerSelectionGate.beginProgrammaticMove(to: nil)
-                  artworkPage = nil
-          ''',
+              "        guard let currentPage = currentArtworkPageID(in: snapshot) else {\n            artworkPage = nil\n",
+              "        guard let currentPage = currentArtworkPageID(in: snapshot) else {\n            pagerSelectionGate.beginProgrammaticMove(to: nil)\n            artworkPage = nil\n",
               "clear programmatic destination with empty queue",
           )
 
           replace_once(
               player,
-              '''        let update = {
-                  artworkPage = currentPage
-              }
-          ''',
-              '''        if artworkPage != currentPage {
-                  pagerSelectionGate.beginProgrammaticMove(to: currentPage)
-              }
-              let update = {
-                  artworkPage = currentPage
-              }
-          ''',
+              "        let update = {\n            artworkPage = currentPage\n        }\n",
+              "        if artworkPage != currentPage {\n            pagerSelectionGate.beginProgrammaticMove(to: currentPage)\n        }\n        let update = {\n            artworkPage = currentPage\n        }\n",
               "mark programmatic pager movement",
           )
 
