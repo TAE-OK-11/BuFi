@@ -38,6 +38,33 @@ struct PlayerArtworkPageID: Hashable, Sendable {
     let accountScope: String?
 }
 
+struct PlayerPagerSelectionGate {
+    private(set) var programmaticDestination: PlayerArtworkPageID?
+
+    mutating func beginProgrammaticMove(to destination: PlayerArtworkPageID?) {
+        programmaticDestination = destination
+    }
+
+    mutating func beginUserInteraction() {
+        programmaticDestination = nil
+    }
+
+    mutating func shouldStartPlayback(for selection: PlayerArtworkPageID?) -> Bool {
+        guard let destination = programmaticDestination else {
+            return selection != nil
+        }
+        if selection == destination {
+            programmaticDestination = nil
+        }
+        return false
+    }
+}
+
+private struct PlayerArtworkQueueCacheIdentity: Equatable {
+    let entriesRevision: UInt64
+    let accountScope: String?
+}
+
 private struct PlayerArtworkPage: Identifiable {
     let id: PlayerArtworkPageID
     let song: Song
@@ -62,6 +89,7 @@ struct PlayerView: View {
     @State private var showQueue = false
     @State private var transitionDirection: CGFloat = 1
     @State private var artworkPage: PlayerArtworkPageID?
+    @State private var pagerSelectionGate = PlayerPagerSelectionGate()
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
@@ -138,7 +166,8 @@ struct PlayerView: View {
         .onChange(of: currentPlayback.snapshot) { previous, next in
             handleCurrentPlaybackChange(from: previous, to: next)
         }
-        .onChange(of: playback.snapshot) { _, next in
+        .onChange(of: artworkQueueCacheIdentity) { _, _ in
+            let next = playback.snapshot
             pruneArtworkPalettes(using: next)
             if let artworkPage,
                !next.entries.contains(where: { $0.id == artworkPage.queueEntryID }) {
@@ -328,11 +357,13 @@ struct PlayerView: View {
         let pagerPosition = Binding<PlayerArtworkPageID?>(
             get: { artworkPage },
             set: { page in
+                let shouldStartPlayback = pagerSelectionGate.shouldStartPlayback(for: page)
                 guard artworkPage != page else { return }
                 let previousIndex = artworkPage.flatMap(indexForArtworkPage)
                     ?? currentPlayback.index
                 artworkPage = page
-                guard let page,
+                guard shouldStartPlayback,
+                      let page,
                       let destination = indexForArtworkPage(page),
                       destination != currentPlayback.index else {
                     applyPalette(for: page)
@@ -371,6 +402,12 @@ struct PlayerView: View {
         .contentMargins(.horizontal, sideInset, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: pagerPosition, anchor: .center)
+    .simultaneousGesture(
+        DragGesture(minimumDistance: 5)
+            .onChanged { _ in
+                pagerSelectionGate.beginUserInteraction()
+            }
+    )
         .frame(width: viewportWidth)
         .frame(height: edge + heightPadding)
         .contentShape(Rectangle())
@@ -426,9 +463,13 @@ struct PlayerView: View {
 
     private func syncArtworkPage(to snapshot: PlaybackSnapshot, animated: Bool) {
         guard let currentPage = currentArtworkPageID(in: snapshot) else {
+            pagerSelectionGate.beginProgrammaticMove(to: nil)
             artworkPage = nil
             if palette != .fallback { palette = .fallback }
             return
+        }
+        if artworkPage != currentPage {
+            pagerSelectionGate.beginProgrammaticMove(to: currentPage)
         }
         let update = {
             artworkPage = currentPage
@@ -464,7 +505,15 @@ struct PlayerView: View {
         if palette != cached { palette = cached }
     }
 
-    private func pruneArtworkPalettes(using snapshot: PlaybackSnapshot) {
+    private var artworkQueueCacheIdentity: PlayerArtworkQueueCacheIdentity {
+    let snapshot = playback.snapshot
+    return PlayerArtworkQueueCacheIdentity(
+        entriesRevision: playback.entriesRevision,
+        accountScope: snapshot.accountScope
+    )
+}
+
+private func pruneArtworkPalettes(using snapshot: PlaybackSnapshot) {
         let validPages = Set(snapshot.entries.map { entry in
             PlayerArtworkPageID(
                 queueEntryID: entry.id,
@@ -474,7 +523,10 @@ struct PlayerView: View {
                 accountScope: snapshot.accountScope
             )
         })
-        artworkPalettes = artworkPalettes.filter { validPages.contains($0.key) }
+        let filtered = artworkPalettes.filter { validPages.contains($0.key) }
+    if filtered.count != artworkPalettes.count {
+        artworkPalettes = filtered
+    }
     }
 
     private func dynamicMetadataContent(
@@ -1642,6 +1694,7 @@ private struct QueueView: View {
     private let audio = AudioEngine.shared
 
     var body: some View {
+        let currentQueueEntryID = playback.currentItem?.queueEntryID
         NavigationStack {
             Group {
                 if playback.songs.isEmpty {
@@ -1650,7 +1703,7 @@ private struct QueueView: View {
                     List {
                         ForEach(playback.entries) { entry in
                             let song = entry.song
-                            let isCurrent = entry.id == playback.currentItem?.queueEntryID
+                            let isCurrent = entry.id == currentQueueEntryID
                             Button {
                                 playQueueEntry(entry)
                                 dismiss()

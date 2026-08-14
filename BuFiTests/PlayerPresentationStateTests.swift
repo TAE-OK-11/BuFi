@@ -262,7 +262,42 @@ final class PlayerPresentationStateTests: XCTestCase {
         XCTAssertNotEqual(before, after)
     }
 
-    private func song(id: String, coverArt: String?) -> Song {
+    func testPagerGateSuppressesProgrammaticScrollUntilDestination() {
+    let intermediate = artworkPageID(songID: "intermediate")
+    let destination = artworkPageID(songID: "destination")
+    var gate = PlayerPagerSelectionGate()
+
+    gate.beginProgrammaticMove(to: destination)
+
+    XCTAssertFalse(gate.shouldStartPlayback(for: intermediate))
+    XCTAssertEqual(gate.programmaticDestination, destination)
+    XCTAssertFalse(gate.shouldStartPlayback(for: destination))
+    XCTAssertNil(gate.programmaticDestination)
+}
+
+func testPagerGateLetsUserTakeOverProgrammaticScroll() {
+    let destination = artworkPageID(songID: "destination")
+    let userSelection = artworkPageID(songID: "user-selection")
+    var gate = PlayerPagerSelectionGate()
+
+    gate.beginProgrammaticMove(to: destination)
+    gate.beginUserInteraction()
+
+    XCTAssertNil(gate.programmaticDestination)
+    XCTAssertTrue(gate.shouldStartPlayback(for: userSelection))
+}
+
+private func artworkPageID(songID: String) -> PlayerArtworkPageID {
+    PlayerArtworkPageID(
+        queueEntryID: UUID(),
+        songID: songID,
+        coverArtID: "cover-" + songID,
+        artworkRevision: "revision-" + songID,
+        accountScope: "account"
+    )
+}
+
+private func song(id: String, coverArt: String?) -> Song {
         Song(
             id: id,
             title: id,
