@@ -1,38 +1,14 @@
-name: Apply Swift 6.4 storage refactor
+name: Archived Swift 6.4 refactor helper
 
 on:
-  push:
-    branches:
-      - agent/swift-6-concurrency
-    paths:
-      - Scripts/apply_swift64_storage_refactor.py
-      - Scripts/run_swift64_storage_refactor.py
-      - .github/workflows/apply-swift64-storage-refactor.yml
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
+  archived:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: agent/swift-6-concurrency
-          fetch-depth: 0
-      - name: Apply storage and cache refactor
-        run: python3 Scripts/run_swift64_storage_refactor.py
-      - name: Validate patch shape
-        run: |
-          python3 -m py_compile Scripts/apply_swift64_storage_refactor.py Scripts/run_swift64_storage_refactor.py
-          git diff --check
-          git grep -n 'SwiftSonic' -- 'BuFi/**/*.swift'
-          grep -q 'xcodeVersion: "27.0"' project.yml
-          grep -q 'Swift version 6\\.4' Scripts/verify-swift6-language-mode.sh
-      - name: Commit refactor
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'Modernize storage caches for Swift 6.4'
-          git push origin HEAD:agent/swift-6-concurrency
+      - run: echo 'Refactor already applied; retained only because automated deletion was blocked.'
