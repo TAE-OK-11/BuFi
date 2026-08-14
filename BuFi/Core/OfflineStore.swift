@@ -783,7 +783,14 @@ actor OfflineStore {
             }
         }
         return try await withTaskCancellationHandler {
-            try await worker.value
+            let staged = try await worker.value
+            do {
+                try Task.checkCancellation()
+                return staged
+            } catch {
+                try? FileManager.default.removeItem(at: staged.url)
+                throw error
+            }
         } onCancel: {
             worker.cancel()
         }
