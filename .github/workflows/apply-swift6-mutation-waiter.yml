@@ -1,0 +1,40 @@
+name: Apply Swift 6 mutation waiter
+
+"on":
+  push:
+    branches:
+      - agent/swift-6-concurrency
+    paths:
+      - .github/workflows/apply-swift6-mutation-waiter.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/swift-6-concurrency
+          fetch-depth: 1
+
+      - name: Apply exact API patch
+        run: python3 Scripts/apply_swift6_mutation_waiter.py
+
+      - name: Validate source shape
+        run: |
+          git diff --check
+          grep -F 'try await waitForRelevantMutations(' BuFi/Core/OpenSubsonicClient.swift
+          grep -F 'private func finishMutation(' BuFi/Core/OpenSubsonicClient.swift
+          if grep -F 'Task.sleep(for: .milliseconds(20))' BuFi/Core/OpenSubsonicClient.swift; then
+            exit 1
+          fi
+
+      - name: Commit API changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Core/OpenSubsonicClient.swift
+          git commit -m "Replace API mutation polling with continuation waiters"
+          git push origin HEAD:agent/swift-6-concurrency
