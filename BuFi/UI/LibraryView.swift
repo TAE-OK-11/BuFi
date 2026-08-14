@@ -7,9 +7,6 @@ struct LibraryView: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var filter = LibraryFilter.playlists
     @State private var artistPresentation = LibraryArtistPresentation.empty
-    @State private var artistPresentationInput: LibraryArtistPresentationInput?
-    @State private var artistPresentationGeneration: UInt64 = 0
-    @State private var artistPresentationTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -31,16 +28,8 @@ struct LibraryView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .onAppear { updateArtistPresentationIfNeeded() }
-        .onChange(of: library.revision) { _, _ in
-            updateArtistPresentationIfNeeded()
-        }
-        .onDisappear {
-            if artistPresentationTask != nil {
-                artistPresentationInput = nil
-            }
-            artistPresentationTask?.cancel()
-            artistPresentationTask = nil
+        .task(id: library.revision) {
+            await updateArtistPresentation()
         }
     }
 
@@ -54,12 +43,13 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var content: some View {
+        let snapshot = library.snapshot
         switch filter {
         case .playlists:
-            if library.snapshot.playlists.isEmpty {
+            if snapshot.playlists.isEmpty {
                 empty("플레이리스트가 없습니다", icon: "music.note.list")
             } else {
-                groupedLibraryRows(library.snapshot.playlists) { playlist in
+                groupedLibraryRows(snapshot.playlists) { playlist in
                     NavigationLink(value: MusicRoute.playlist(playlist)) {
                         libraryRow(
                             title: playlist.name,
@@ -75,7 +65,7 @@ struct LibraryView: View {
                 }
             }
         case .albums:
-            if library.snapshot.starredAlbums.isEmpty {
+            if snapshot.starredAlbums.isEmpty {
                 empty("저장한 앨범이 없습니다", icon: "square.stack")
             } else {
                 LazyVGrid(
@@ -86,7 +76,7 @@ struct LibraryView: View {
                     alignment: .leading,
                     spacing: 24
                 ) {
-                    ForEach(library.snapshot.starredAlbums) { album in
+                    ForEach(snapshot.starredAlbums) { album in
                         NavigationLink(value: MusicRoute.album(album)) {
                             AlbumCard(
                                 album: album,
@@ -104,20 +94,20 @@ struct LibraryView: View {
         case .artists:
             artistsContent
         case .songs:
-            if library.snapshot.starredSongs.isEmpty {
+            if snapshot.starredSongs.isEmpty {
                 empty("좋아요 표시한 곡이 없습니다", icon: "heart")
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(library.snapshot.starredSongs.indices, id: \.self) { index in
-                            let song = library.snapshot.starredSongs[index]
+                        ForEach(snapshot.starredSongs.indices, id: \.self) { index in
+                            let song = snapshot.starredSongs[index]
                             SongRow(
                                 song: song,
-                                queue: library.snapshot.starredSongs,
+                                queue: snapshot.starredSongs,
                                 queueIndex: index
                             )
                                 .padding(.horizontal, 14)
-                            if index < library.snapshot.starredSongs.count - 1 {
+                            if index < snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
                         }
@@ -350,31 +340,27 @@ struct LibraryView: View {
             .padding(.top, 70)
     }
 
-    private func updateArtistPresentationIfNeeded() {
+    @MainActor
+    private func updateArtistPresentation() async {
+        let revision = library.revision
+        let snapshot = library.snapshot
+        guard revision == library.revision else { return }
+
         let input = LibraryArtistPresentationInput(
-            artists: library.snapshot.artists,
-            starredArtists: library.snapshot.starredArtists
+            artists: snapshot.artists,
+            starredArtists: snapshot.starredArtists
         )
-        guard input != artistPresentationInput else { return }
-        artistPresentationInput = input
-        artistPresentationGeneration &+= 1
-        let generation = artistPresentationGeneration
-        artistPresentationTask?.cancel()
-        artistPresentationTask = Task {
-            let work = Task.detached(priority: .userInitiated) {
-                LibraryArtistPresentation.make(input: input)
-            }
-            let next = await withTaskCancellationHandler {
-                await work.value
-            } onCancel: {
-                work.cancel()
-            }
-            guard !Task.isCancelled,
-                  generation == artistPresentationGeneration,
-                  input == artistPresentationInput else { return }
-            artistPresentation = next
-            artistPresentationTask = nil
+        let work = Task.detached(priority: .userInitiated) {
+            LibraryArtistPresentation.make(input: input)
         }
+        let next = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard !Task.isCancelled,
+              revision == library.revision else { return }
+        artistPresentation = next
     }
 }
 
