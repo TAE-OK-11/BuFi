@@ -1051,20 +1051,7 @@ final class AudioEngine: NSObject, ObservableObject {
         installNetworkPathMonitor()
         LaunchDiagnostics.mark("remote-commands-installing")
         installRemoteCommands()
-        LaunchDiagnostics.mark("audio-runtime-ready    private static func preparedPlaybackKey(
-        accountScope: String?,
-        queueEntryID: UUID,
-        streamRevision: String,
-        quality: StreamQuality,
-        compatibilityFormat: String
-    ) -> PreparedPlaybackKey {
-        PreparedPlaybackKey(
-            accountScope: accountScope,
-            queueEntryID: queueEntryID,
-            streamRevision: streamRevision,
-            quality: quality,
-            compatibilityFormat: compatibilityFormat
-        )
+        LaunchDiagnostics.mark("audio-runtime-ready")
     }
 
     func configure(
@@ -2178,15 +2165,14 @@ final class AudioEngine: NSObject, ObservableObject {
         streamRevision: String,
         quality: StreamQuality,
         compatibilityFormat: String
-    ) -> String {
-        [
-            accountScope ?? "",
-            queueEntryID.uuidString,
-            streamRevision,
-            quality.rawValue,
-            compatibilityFormat.lowercased()
-        ]
-            .joined(separator: "|")
+    ) -> PreparedPlaybackKey {
+        PreparedPlaybackKey(
+            accountScope: accountScope,
+            queueEntryID: queueEntryID,
+            streamRevision: streamRevision,
+            quality: quality,
+            compatibilityFormat: compatibilityFormat
+        )
     }
 
     private static func makeURLAsset(
