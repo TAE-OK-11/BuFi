@@ -4,13 +4,20 @@ set -eu
 xcode_version="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
 swift_version="$(xcrun swiftc --version | sed -n '1p')"
 
-# SWIFT_VERSION is the language-mode selector. Swift 6.3 still uses
-# SWIFT_VERSION=6.0 / -swift-version 6. Xcode 26.6 is the stable CI toolchain
-# that provides Swift 6.3.x, so verify the compiler release separately.
-if [ "$xcode_version" = "26.6" ]; then
-    printf '%s\n' "$swift_version" \
-        | grep -Eq 'Swift version 6\.3(\.[0-9]+)?([[:space:]]|$)'
-fi
+# SWIFT_VERSION is the language-mode selector. Swift 6.3/6.4 both use
+# SWIFT_VERSION=6.0 / -swift-version 6. Verify the actual compiler release
+# separately so stable Xcode 26.6 remains the Swift 6.3 baseline while the
+# Xcode 27 compatibility lane is guaranteed to compile BuFi with Swift 6.4.
+case "$xcode_version" in
+    26.6)
+        printf '%s\n' "$swift_version" \
+            | grep -Eq '(Apple )?Swift version 6\.3(\.[0-9]+)?([[:space:]]|$)'
+        ;;
+    27.*)
+        printf '%s\n' "$swift_version" \
+            | grep -Eq '(Apple )?Swift version 6\.4(\.[0-9]+)?([[:space:]]|$)'
+        ;;
+esac
 
 printf 'Xcode %s / %s\n' "$xcode_version" "$swift_version"
 
