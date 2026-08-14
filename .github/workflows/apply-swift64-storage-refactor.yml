@@ -6,6 +6,7 @@ on:
       - agent/swift-6-concurrency
     paths:
       - Scripts/apply_swift64_storage_refactor.py
+      - .github/workflows/apply-swift64-storage-refactor.yml
 
 permissions:
   contents: write
