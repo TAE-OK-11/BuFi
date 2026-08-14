@@ -24,6 +24,15 @@ private struct PlayerPresentationSession: Identifiable {
     let id: UUID
 }
 
+private struct RootSyncTaskIdentity: Hashable, Sendable {
+    let isReady: Bool
+    let isSceneActive: Bool
+    let syncInterval: TimeInterval
+    let lowPowerMode: Bool
+    let thermalKey: String
+    let isPlaying: Bool
+}
+
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
@@ -283,8 +292,15 @@ struct RootView: View {
             )
     }
 
-    private var syncTaskID: String {
-        "\(session.phase)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)"
+    private var syncTaskID: RootSyncTaskIdentity {
+        RootSyncTaskIdentity(
+            isReady: session.phase == .ready,
+            isSceneActive: scenePhase == .active,
+            syncInterval: syncInterval,
+            lowPowerMode: lowPowerMode,
+            thermalKey: thermalKey,
+            isPlaying: playbackActivity.isPlaying
+        )
     }
 
     private var thermalKey: String {
