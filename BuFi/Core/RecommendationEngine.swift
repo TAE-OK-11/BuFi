@@ -333,6 +333,63 @@ private final class RecommendationMixCache: @unchecked Sendable {
 enum RecommendationMixer {
     private static let cache = RecommendationMixCache()
 
+    /// CPU-heavy recommendation scoring deliberately leaves the caller's
+    /// actor. The async boundary stays structured, so cancellation belongs to
+    /// the request that asked for the mix instead of an orphan detached task.
+    @concurrent
+    static func mixConcurrently(
+        snapshot: HomeSnapshot,
+        snapshotRevision: HomeSnapshotRevision? = nil,
+        weights: RecommendationWeights,
+        purpose: RecommendationPurpose = .home,
+        behavior: RecommendationBehaviorSnapshot = .empty,
+        limit: Int = 30,
+        date: Date = Date()
+    ) async -> [Song] {
+        guard !Task.isCancelled else { return [] }
+        return mix(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            purpose: purpose,
+            behavior: behavior,
+            limit: limit,
+            date: date
+        )
+    }
+
+    /// Home and daylist deliberately share one concurrent job and evaluation
+    /// timestamp. Running them in parallel would compete for CPU/radio-adjacent
+    /// work and increase energy use without improving first-result latency.
+    @concurrent
+    static func sectionsConcurrently(
+        snapshot: HomeSnapshot,
+        snapshotRevision: HomeSnapshotRevision? = nil,
+        weights: RecommendationWeights,
+        behavior: RecommendationBehaviorSnapshot,
+        date: Date = Date()
+    ) async -> (recommended: [Song], daylist: [Song]) {
+        guard !Task.isCancelled else { return ([], []) }
+        let recommended = mix(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            behavior: behavior,
+            date: date
+        )
+        guard !Task.isCancelled else { return (recommended, []) }
+        let daylist = mix(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            purpose: .daylist,
+            behavior: behavior,
+            limit: 24,
+            date: date
+        )
+        return (recommended, daylist)
+    }
+
     static func mix(
         snapshot: HomeSnapshot,
         snapshotRevision: HomeSnapshotRevision? = nil,

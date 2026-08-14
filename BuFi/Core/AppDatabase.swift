@@ -84,6 +84,12 @@ actor AppDatabase {
         paletteTouchTask = nil
     }
 
+    @concurrent
+    private static func openPoolConcurrently(path: String) async -> DatabasePool? {
+        guard !Task.isCancelled else { return nil }
+        return openPool(path: path)
+    }
+
     private func databasePool() async -> DatabasePool? {
         if let pool {
             return pool
@@ -93,8 +99,8 @@ actor AppDatabase {
         }
 
         let path = databasePath
-        let task = Task.detached(priority: .utility) { () -> DatabasePool? in
-            Self.openPool(path: path)
+        let task = Task(priority: .utility) {
+            await Self.openPoolConcurrently(path: path)
         }
         poolTask = task
         let openedPool = await task.value
@@ -438,8 +444,10 @@ actor AppDatabase {
         maximumBytes: Int
     ) async -> Bool {
         guard let pool = await databasePool(),
-              let data = try? Self.encode(snapshot),
-              data.count <= maximumBytes else { return false }
+              let data = await Self.encodeHomeSnapshotConcurrently(
+                snapshot,
+                maximumBytes: maximumBytes
+              ) else { return false }
         do {
             try await pool.write { db in
                 try db.execute(
@@ -768,20 +776,16 @@ actor AppDatabase {
         let encodedItems: [EncodedQueueItem]
         do {
             if replacingItems {
-                encodedItems = try snapshot.entries.enumerated().map {
-                    position, entry in
-                    EncodedQueueItem(
-                        position: position,
-                        queueEntryID: entry.id.uuidString,
-                        songData: try Self.encode(entry.song)
-                    )
-                }
+                encodedItems = try await Self.encodeQueueItemsConcurrently(
+                    snapshot.entries
+                )
             } else {
                 encodedItems = []
             }
         } catch {
             return false
         }
+        guard !Task.isCancelled else { return false }
         do {
             return try await pool.write { db in
                 let incomingRevision = Int64(clamping: snapshot.revision)
@@ -932,6 +936,39 @@ actor AppDatabase {
         )
         guard let persisted, persisted.isFinite else { return wallClock }
         return max(wallClock, persisted.nextUp)
+    }
+
+    @concurrent
+    private static func encodeHomeSnapshotConcurrently(
+        _ snapshot: HomeSnapshot,
+        maximumBytes: Int
+    ) async -> Data? {
+        guard !Task.isCancelled,
+              let data = try? encode(snapshot),
+              data.count <= maximumBytes else {
+            return nil
+        }
+        return data
+    }
+
+    @concurrent
+    private static func encodeQueueItemsConcurrently(
+        _ entries: [PlaybackQueueEntry]
+    ) async throws -> [EncodedQueueItem] {
+        try Task.checkCancellation()
+        var encoded: [EncodedQueueItem] = []
+        encoded.reserveCapacity(entries.count)
+        for (position, entry) in entries.enumerated() {
+            if position.isMultiple(of: 32) {
+                try Task.checkCancellation()
+            }
+            encoded.append(EncodedQueueItem(
+                position: position,
+                queueEntryID: entry.id.uuidString,
+                songData: try encode(entry.song)
+            ))
+        }
+        return encoded
     }
 
     private static func encode<Value: Encodable>(_ value: Value) throws -> Data {

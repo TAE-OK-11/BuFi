@@ -96,6 +96,7 @@ actor ArtworkStore {
 
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
     private static let cacheSchemaRevision = "media-v2"
+    private static let artworkFreshnessInterval: TimeInterval = 12 * 60 * 60
     private static let paletteEngineVersion = 5
     private static let sampleSide = 48
     private static let neutralChromaLimit = 0.035
@@ -124,23 +125,40 @@ actor ArtworkStore {
     /// them in its cache identity. This gives an updated metadata snapshot a
     /// fresh decoded image, data-cache entry, and palette without adding an
     /// unsupported query parameter to an OpenSubsonic server.
-    nonisolated static func cacheURL(for url: URL, revision: String?) -> URL {
+    nonisolated static func cacheURL(
+        for url: URL,
+        revision: String?,
+        date: Date = Date()
+    ) -> URL {
         guard var components = URLComponents(
             url: url,
             resolvingAgainstBaseURL: false
         ) else {
             return url
         }
-        // OpenSubsonic does not standardize an artwork validator. Every image
-        // therefore receives a bounded freshness epoch, including generic list
-        // thumbnails that do not yet have a metadata revision. This prevents a
-        // server-side image replacement under the same coverArt ID from being
-        // retained indefinitely.
-        let freshnessEpoch = Int(Date().timeIntervalSince1970 / (12 * 60 * 60))
+        // OpenSubsonic does not standardize an artwork validator. Keep the
+        // twelve-hour freshness bound, but deterministically stagger each URL's
+        // epoch. A wall-clock boundary can no longer expire every visible cover
+        // at once and trigger a burst of radio, decode, and palette work.
+        let freshnessEpoch = artworkFreshnessEpoch(for: url, at: date)
         let boundedRevision = "\(revision ?? "unversioned")-\(freshnessEpoch)"
         components.fragment = [cacheSchemaRevision, boundedRevision]
             .joined(separator: "-")
         return components.url ?? url
+    }
+
+    nonisolated static func artworkFreshnessEpoch(
+        for url: URL,
+        at date: Date
+    ) -> Int {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in url.absoluteString.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        let interval = artworkFreshnessInterval
+        let offset = Double(hash % UInt64(Int(interval)))
+        return Int(floor((date.timeIntervalSince1970 + offset) / interval))
     }
 
     func activate(accountScope: String) async -> AccountSessionToken {
@@ -365,20 +383,9 @@ actor ArtworkStore {
             return .fallback
         }
 
-        // Palette clustering is CPU-heavy. Keep it off the store actor so an
-        // account switch, cache clear, or visible image request is not blocked
-        // behind color analysis.
-        let analysisTask: Task<ArtworkPalette?, Never> = Task.detached(
-            priority: .utility
-        ) {
-            guard !Task.isCancelled else { return nil }
-            return Self.analyzedPalette(from: sampleBytes)
-        }
-        let value = await withTaskCancellationHandler {
-            await analysisTask.value
-        } onCancel: {
-            analysisTask.cancel()
-        }
+        // Palette clustering is CPU-heavy. `@concurrent` keeps the work off
+        // the store actor while preserving structured cancellation ownership.
+        let value = await Self.analyzedPaletteConcurrently(from: sampleBytes)
         guard activeScope == scope,
               paletteGeneration == generation,
               !Task.isCancelled,
@@ -614,6 +621,14 @@ actor ArtworkStore {
         let population: Double
         let averageAlpha: Double
         let score: Double
+    }
+
+    @concurrent
+    private static func analyzedPaletteConcurrently(
+        from bytes: [UInt8]
+    ) async -> ArtworkPalette? {
+        guard !Task.isCancelled else { return nil }
+        return analyzedPalette(from: bytes)
     }
 
     private static func analyzedPalette(from bytes: [UInt8]) -> ArtworkPalette? {

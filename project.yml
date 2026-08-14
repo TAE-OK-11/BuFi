@@ -41,10 +41,10 @@ settings:
       SWIFT_COMPILATION_MODE: wholemodule
       SWIFT_SERIALIZE_DEBUGGING_OPTIONS: NO
       OTHER_SWIFT_FLAGS: "$(inherited) -enable-upcoming-feature NonisolatedNonsendingByDefault"
-      # Keep release post-linking conservative on the current Swift 6.4
-      # toolchain. One iOS 17+ binary covers current iOS releases without
-      # maintaining a separate OS-specific artifact.
-      LLVM_LTO: NO
+      # Release favors final runtime/code-size optimization over build
+      # latency. Monolithic LLVM LTO complements Swift whole-module -O and lets
+      # the linker optimize across object-file boundaries.
+      LLVM_LTO: YES
       DEAD_CODE_STRIPPING: YES
       DEPLOYMENT_POSTPROCESSING: NO
       ENABLE_NS_ASSERTIONS: NO

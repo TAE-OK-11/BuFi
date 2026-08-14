@@ -273,6 +273,28 @@ final class PlaybackReportDeliveryQueue {
     }
 }
 
+enum PlaybackTimelineRefreshPolicy {
+    static func interval(
+        isApplicationActive: Bool,
+        showsFullPlayer: Bool,
+        lowPowerModeEnabled: Bool,
+        thermallyConstrained: Bool
+    ) -> TimeInterval {
+        // Background playback needs persistence/scrobble maintenance, not UI
+        // animation. Two-second ticks cut wakeups by 75% versus the old 2 Hz
+        // cadence while keeping 30/180-second maintenance comfortably precise.
+        guard isApplicationActive else { return 2.0 }
+        // The mini player needs only coarse progress. Reserve 4 Hz for the full
+        // player when the system is not asking us to conserve power/thermals.
+        guard showsFullPlayer,
+              !lowPowerModeEnabled,
+              !thermallyConstrained else {
+            return 1.0
+        }
+        return 0.25
+    }
+}
+
 /// Owns AVPlayer and NotificationCenter tokens as one lifecycle unit. All
 /// mutations are performed by AudioEngine on the main actor.
 @MainActor
@@ -1094,6 +1116,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var allowsSpeculativeNetworkPrefetch = false
     private var networkPathIsSatisfied = true
     private var runtimeIsActive = false
+    private var applicationIsActive = true
 
     override private init() {
         quality = StreamQuality(
@@ -1111,6 +1134,7 @@ final class AudioEngine: NSObject, ObservableObject {
     func activateRuntimeIfNeeded() {
         guard !runtimeIsActive else { return }
         runtimeIsActive = true
+        applicationIsActive = UIApplication.shared.applicationState == .active
         LaunchDiagnostics.mark("audio-runtime-starting")
         LaunchDiagnostics.mark("audio-player-creating")
         player.automaticallyWaitsToMinimizeStalling = true
@@ -3377,12 +3401,13 @@ final class AudioEngine: NSObject, ObservableObject {
         timelineObserverGeneration &+= 1
         let generation = timelineObserverGeneration
         let processInfo = ProcessInfo.processInfo
-        let canUseSmoothRefresh =
-            showPlayer
-            && !processInfo.isLowPowerModeEnabled
-            && processInfo.thermalState != .serious
-            && processInfo.thermalState != .critical
-        let refreshInterval = canUseSmoothRefresh ? 0.25 : 0.5
+        let thermalState = processInfo.thermalState
+        let refreshInterval = PlaybackTimelineRefreshPolicy.interval(
+            isApplicationActive: applicationIsActive,
+            showsFullPlayer: showPlayer,
+            lowPowerModeEnabled: processInfo.isLowPowerModeEnabled,
+            thermallyConstrained: thermalState == .serious || thermalState == .critical
+        )
         playbackObservers.replacePeriodicTimeObserver(
             interval: CMTime(
                 seconds: refreshInterval,
@@ -3712,14 +3737,22 @@ final class AudioEngine: NSObject, ObservableObject {
                 object: nil,
                 queue: .main
             ) { @Sendable [weak self] _ in
-                Task { @MainActor in self?.handleDidEnterBackground() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.setApplicationActive(false)
+                    self.handleDidEnterBackground()
+                }
             })
             tokens.append(center.addObserver(
                 forName: UIApplication.willResignActiveNotification,
                 object: nil,
                 queue: .main
             ) { @Sendable [weak self] _ in
-                Task { @MainActor in self?.preserveActivePlayback() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.setApplicationActive(false)
+                    self.preserveActivePlayback()
+                }
             })
             tokens.append(center.addObserver(
                 forName: UIApplication.didBecomeActiveNotification,
@@ -3727,12 +3760,20 @@ final class AudioEngine: NSObject, ObservableObject {
                 queue: .main
             ) { @Sendable [weak self] _ in
                 Task { @MainActor in
-                    guard let self, self.wantsPlayback else { return }
+                    guard let self else { return }
+                    self.setApplicationActive(true)
+                    guard self.wantsPlayback else { return }
                     self.preserveActivePlayback()
                 }
             })
             return tokens
         }
+    }
+
+    private func setApplicationActive(_ value: Bool) {
+        guard applicationIsActive != value else { return }
+        applicationIsActive = value
+        installPlaybackTimeObserver()
     }
 
     private func handleDidEnterBackground() {

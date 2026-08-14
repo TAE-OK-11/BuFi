@@ -48,16 +48,8 @@ actor OfflineStore {
         rootDirectory = root
         wifiOnlySession = Self.makeDownloadSession(allowsExpensiveAccess: false)
         unrestrictedSession = Self.makeDownloadSession(allowsExpensiveAccess: true)
-        bootstrapTask = Task.detached(priority: .utility) {
-            try? FileManager.default.createDirectory(
-                at: root,
-                withIntermediateDirectories: true,
-                attributes: [
-                    .protectionKey:
-                        FileProtectionType.completeUntilFirstUserAuthentication
-                ]
-            )
-            Self.removeLegacyUnscopedFiles(in: root)
+        bootstrapTask = Task(priority: .utility) {
+            await Self.bootstrapStorage(at: root)
         }
     }
 
@@ -706,6 +698,21 @@ actor OfflineStore {
         directory.appendingPathComponent(Self.digest(songID)).appendingPathExtension("audio")
     }
 
+    @concurrent
+    private static func bootstrapStorage(at root: URL) async {
+        guard !Task.isCancelled else { return }
+        try? FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [
+                .protectionKey:
+                    FileProtectionType.completeUntilFirstUserAuthentication
+            ]
+        )
+        guard !Task.isCancelled else { return }
+        removeLegacyUnscopedFiles(in: root)
+    }
+
     private static func fileName(for song: Song) -> String {
         let sanitized = song.suffix?
             .trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
@@ -721,78 +728,60 @@ actor OfflineStore {
             .joined()
     }
 
+    @concurrent
     private static func validatedDatabaseEntries(
         _ databaseEntries: [String: OfflineDatabaseEntry],
         directory: URL
     ) async -> [String: Entry] {
-        let worker = Task.detached(priority: .utility) {
-            databaseEntries.reduce(into: [String: Entry]()) { result, pair in
-                guard !Task.isCancelled else { return }
-                let entry = Entry(
-                    fileName: pair.value.fileName,
-                    byteCount: pair.value.byteCount,
-                    lastAccessedAt: pair.value.lastAccessedAt,
-                    mediaRevision: pair.value.mediaRevision
-                )
-                let fileURL = directory.appendingPathComponent(entry.fileName)
-                if Self.isValidOfflineFile(
-                    at: fileURL,
-                    expectedByteCount: entry.byteCount
-                ) {
-                    result[pair.key] = entry
-                } else if FileManager.default.fileExists(atPath: fileURL.path) {
-                    try? FileManager.default.removeItem(at: fileURL)
-                }
+        guard !Task.isCancelled else { return [:] }
+        return databaseEntries.reduce(into: [String: Entry]()) { result, pair in
+            guard !Task.isCancelled else { return }
+            let entry = Entry(
+                fileName: pair.value.fileName,
+                byteCount: pair.value.byteCount,
+                lastAccessedAt: pair.value.lastAccessedAt,
+                mediaRevision: pair.value.mediaRevision
+            )
+            let fileURL = directory.appendingPathComponent(entry.fileName)
+            if Self.isValidOfflineFile(
+                at: fileURL,
+                expectedByteCount: entry.byteCount
+            ) {
+                result[pair.key] = entry
+            } else if FileManager.default.fileExists(atPath: fileURL.path) {
+                try? FileManager.default.removeItem(at: fileURL)
             }
-        }
-        return await withTaskCancellationHandler {
-            await worker.value
-        } onCancel: {
-            worker.cancel()
         }
     }
 
+    @concurrent
     private static func stageDownloadedFile(
         temporary: URL,
         directory: URL,
         fileName: String
     ) async throws -> StagedDownload {
-        let worker = Task.detached(priority: .utility) { () throws -> StagedDownload in
-            try Task.checkCancellation()
-            let attributes = try FileManager.default.attributesOfItem(
-                atPath: temporary.path
-            )
-            guard let size = attributes[.size] as? NSNumber,
-                  size.int64Value > 0 else {
-                throw URLError(.zeroByteResource)
-            }
-
-            let staging = directory.appendingPathComponent(
-                fileName + "." + UUID().uuidString + ".partial"
-            )
-            do {
-                try FileManager.default.moveItem(at: temporary, to: staging)
-                try Task.checkCancellation()
-                return StagedDownload(
-                    url: staging,
-                    byteCount: size.int64Value
-                )
-            } catch {
-                try? FileManager.default.removeItem(at: staging)
-                throw error
-            }
+        try Task.checkCancellation()
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: temporary.path
+        )
+        guard let size = attributes[.size] as? NSNumber,
+              size.int64Value > 0 else {
+            throw URLError(.zeroByteResource)
         }
-        return try await withTaskCancellationHandler {
-            let staged = try await worker.value
-            do {
-                try Task.checkCancellation()
-                return staged
-            } catch {
-                try? FileManager.default.removeItem(at: staged.url)
-                throw error
-            }
-        } onCancel: {
-            worker.cancel()
+
+        let staging = directory.appendingPathComponent(
+            fileName + "." + UUID().uuidString + ".partial"
+        )
+        do {
+            try FileManager.default.moveItem(at: temporary, to: staging)
+            try Task.checkCancellation()
+            return StagedDownload(
+                url: staging,
+                byteCount: size.int64Value
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            throw error
         }
     }
 

@@ -37,5 +37,19 @@ for target in BuFi BuFiTests; do
             | grep -Eq '^[[:space:]]*OTHER_SWIFT_FLAGS = .*NonisolatedNonsendingByDefault'
         printf '%s\n' "$settings" \
             | grep -Eq '^[[:space:]]*IPHONEOS_DEPLOYMENT_TARGET = 17\.0[[:space:]]*$'
+
+        if [ "$configuration" = "Debug" ]; then
+            printf '%s\n' "$settings" \
+                | grep -Eq '^[[:space:]]*OTHER_SWIFT_FLAGS = .*enable-actor-data-race-checks'
+        else
+            printf '%s\n' "$settings" \
+                | grep -Eq '^[[:space:]]*SWIFT_OPTIMIZATION_LEVEL = -O[[:space:]]*$'
+            printf '%s\n' "$settings" \
+                | grep -Eq '^[[:space:]]*SWIFT_COMPILATION_MODE = wholemodule[[:space:]]*$'
+            printf '%s\n' "$settings" \
+                | grep -Eq '^[[:space:]]*LLVM_LTO = YES[[:space:]]*$'
+            printf '%s\n' "$settings" \
+                | grep -Eq '^[[:space:]]*DEAD_CODE_STRIPPING = YES[[:space:]]*$'
+        fi
     done
 done

@@ -1856,21 +1856,14 @@ final class AppModel: ObservableObject {
         behavior: RecommendationBehaviorSnapshot = .empty,
         limit: Int = 30
     ) async -> [Song] {
-        let task = Task.detached(priority: .userInitiated) {
-            RecommendationMixer.mix(
-                snapshot: snapshot,
-                snapshotRevision: snapshotRevision,
-                weights: weights,
-                purpose: purpose,
-                behavior: behavior,
-                limit: limit
-            )
-        }
-        return await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        await RecommendationMixer.mixConcurrently(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            purpose: purpose,
+            behavior: behavior,
+            limit: limit
+        )
     }
 
     nonisolated private static func recommendationSections(
@@ -1879,29 +1872,12 @@ final class AppModel: ObservableObject {
         weights: RecommendationWeights,
         behavior: RecommendationBehaviorSnapshot
     ) async -> (recommended: [Song], daylist: [Song]) {
-        let task = Task.detached(priority: .userInitiated) { () -> (recommended: [Song], daylist: [Song]) in
-            let recommended = RecommendationMixer.mix(
-                snapshot: snapshot,
-                snapshotRevision: snapshotRevision,
-                weights: weights,
-                behavior: behavior
-            )
-            guard !Task.isCancelled else { return (recommended, []) }
-            let daylist = RecommendationMixer.mix(
-                snapshot: snapshot,
-                snapshotRevision: snapshotRevision,
-                weights: weights,
-                purpose: .daylist,
-                behavior: behavior,
-                limit: 24
-            )
-            return (recommended, daylist)
-        }
-        return await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        await RecommendationMixer.sectionsConcurrently(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            behavior: behavior
+        )
     }
 
     private func resolvedRecommendedArtists(
