@@ -148,6 +148,33 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         ))
     }
 
+    func testAutomaticBufferingWaitIsNotForcedImmediately() {
+        XCTAssertTrue(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .toMinimizeStalls
+        ))
+        XCTAssertTrue(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .evaluatingBufferingRate
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .toMinimizeStalls
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .evaluatingBufferingRate
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .paused,
+            waitingReason: nil
+        ))
+        XCTAssertTrue(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .paused,
+            waitingReason: nil
+        ))
+    }
+
     func testNetworkRecoverySkipsRawBeforeTryingLowerBandwidthFormat() {
         let originalQualityFallbacks = ["aac", "mp3"]
         let opusQualityFallbacks = ["aac", "mp3", "raw"]
@@ -227,6 +254,72 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
             )?.queueIndex,
             0
         )
+    }
+
+    func testGaplessPreparationDoesNotOpenSecondStreamEarly() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 30,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertTrue(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 162,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+    }
+
+    func testGaplessStagingWaitsUntilFinalPlaybackWindow() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 170,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertTrue(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 174,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 179,
+            duration: 180,
+            isBuffering: true,
+            isActivelyPlaying: true
+        ))
+    }
+
+    func testGaplessPreparationStopsDuringBuffering() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 175,
+            duration: 180,
+            isBuffering: true,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 175,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: false
+        ))
+    }
+
+    func testGaplessPreparationRequiresKnownFiniteDuration() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 10,
+            duration: 0,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 10,
+            duration: .infinity,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
     }
 
     private func song(

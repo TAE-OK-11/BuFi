@@ -725,6 +725,27 @@ enum PlaybackRecoveryPolicy {
         start.isFinite && end.isFinite && end >= start + 0.1
     }
 
+    static func isManagedBufferingWait(
+        timeControlStatus: AVPlayer.TimeControlStatus,
+        waitingReason: AVPlayer.WaitingReason?
+    ) -> Bool {
+        guard timeControlStatus == .waitingToPlayAtSpecifiedRate else {
+            return false
+        }
+        return waitingReason == .toMinimizeStalls
+            || waitingReason == .evaluatingBufferingRate
+    }
+
+    static func shouldForceImmediatePlayback(
+        timeControlStatus: AVPlayer.TimeControlStatus,
+        waitingReason: AVPlayer.WaitingReason?
+    ) -> Bool {
+        !isManagedBufferingWait(
+            timeControlStatus: timeControlStatus,
+            waitingReason: waitingReason
+        )
+    }
+
     static func nextCompatibilityIndex(
         in formats: [String],
         from startIndex: Int,
@@ -757,6 +778,46 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
         return repeatMode == .all
             ? GaplessSuccessorPlan(queueIndex: 0)
             : nil
+    }
+}
+
+enum PlaybackGaplessPreparationPolicy {
+    static func shouldPrepare(
+        elapsed: TimeInterval,
+        duration: TimeInterval,
+        isBuffering: Bool,
+        isActivelyPlaying: Bool
+    ) -> Bool {
+        guard isActivelyPlaying,
+              !isBuffering,
+              elapsed.isFinite,
+              duration.isFinite,
+              duration > 0 else {
+            return false
+        }
+        let position = min(max(0, elapsed), duration)
+        let remaining = max(0, duration - position)
+        let leadTime = min(20, max(6, duration * 0.12))
+        return remaining <= leadTime
+    }
+
+    static func shouldStage(
+        elapsed: TimeInterval,
+        duration: TimeInterval,
+        isBuffering: Bool,
+        isActivelyPlaying: Bool
+    ) -> Bool {
+        guard isActivelyPlaying,
+              !isBuffering,
+              elapsed.isFinite,
+              duration.isFinite,
+              duration > 0 else {
+            return false
+        }
+        let position = min(max(0, elapsed), duration)
+        let remaining = max(0, duration - position)
+        let leadTime = min(8, max(3, duration * 0.04))
+        return remaining <= leadTime
     }
 }
 
@@ -1502,7 +1563,7 @@ final class AudioEngine: NSObject, ObservableObject {
         player.volume = 1
         activateNowPlayingSession()
         if !needsReload {
-            player.playImmediately(atRate: 1)
+            player.play()
         }
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
@@ -1604,9 +1665,16 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.recomputeTimelineFromPlayer()
                 self.installNextLyricBoundary(after: self.elapsed)
                 self.updateNowPlaying()
-                if resumesPlayback, finished, self.wantsPlayback {
-                    self.configureAudioSession()
-                    self.player.playImmediately(atRate: 1)
+                if resumesPlayback, self.wantsPlayback {
+                    if finished {
+                        self.isBuffering = false
+                        self.configureAudioSession()
+                        self.player.play()
+                        self.schedulePlaybackRecovery()
+                    } else {
+                        self.isBuffering = true
+                        self.schedulePlaybackRecovery()
+                    }
                 }
                 if persistsQueue, finished {
                     self.scheduleQueueSave()
@@ -2212,7 +2280,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else {
                     guard self.player.timeControlStatus != .playing else { return }
                     self.configureAudioSession()
-                    self.player.playImmediately(atRate: 1)
+                    self.player.play()
                     self.schedulePlaybackRecovery()
                 }
             }
@@ -2220,7 +2288,7 @@ final class AudioEngine: NSObject, ObservableObject {
         networkPathMonitor.start(queue: networkPathQueue)
     }
 
-    private static let preparedPlaybackAssetLimit = 3
+    private static let preparedPlaybackAssetLimit = 1
 
     private static func preparedPlaybackKey(
         accountScope: String?,
@@ -2330,9 +2398,15 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleGaplessSuccessor() {
+        let activelyPlaying = player.timeControlStatus == .playing
         guard wantsPlayback,
-              player.timeControlStatus == .playing,
               stagedSuccessorItem == nil,
+              PlaybackGaplessPreparationPolicy.shouldPrepare(
+                elapsed: currentPlayerPosition(),
+                duration: duration,
+                isBuffering: isBuffering,
+                isActivelyPlaying: activelyPlaying
+              ),
               let plan = GaplessSuccessorPlan.make(
                 queueCount: queue.count,
                 currentIndex: queueIndex,
@@ -2351,6 +2425,12 @@ final class AudioEngine: NSObject, ObservableObject {
               !isShuffleEnabled,
               repeatMode != .one,
               wantsPlayback,
+              PlaybackGaplessPreparationPolicy.shouldStage(
+                elapsed: currentPlayerPosition(),
+                duration: duration,
+                isBuffering: isBuffering,
+                isActivelyPlaying: player.timeControlStatus == .playing
+              ),
               let currentItem = player.currentItem,
               queue.indices.contains(queueIndex),
               currentSong?.id == queue[queueIndex].id else {
@@ -2555,16 +2635,10 @@ final class AudioEngine: NSObject, ObservableObject {
         cancelNetworkPrefetch(resetKey: false)
         lastNetworkPrefetchKey = plan.key
 
-        // Prepare the actual AVURLAsset in addition to lyrics and artwork.
-        // The player consumes this same object on skip, so work completed while
-        // the current song is playing is not discarded or repeated.
-        // Opening an AVURLAsset starts real media transport work. Warm only the
-        // immediate successor so skip latency improves without spending radio,
-        // decoder, and server resources on a track that may never be played.
-        let nextIndex = queueIndex + 1
-        if playbackState.entries.indices.contains(nextIndex) {
-            preparePlaybackAsset(for: playbackState.entries[nextIndex])
-        }
+        // Keep speculative work light while the active stream is playing.
+        // Opening/staging the next AVURLAsset starts a second media transport and
+        // can compete with the current stream. Gapless media preparation is now
+        // deferred to the final playback window by scheduleGaplessSuccessor().
 
         let token = UUID()
         networkPrefetchToken = token
@@ -2801,25 +2875,32 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
                 switch item.status {
                 case .readyToPlay:
-                    self.isBuffering = false
                     self.updateDuration(using: item.duration.seconds)
                     let targetPosition = self.pendingSeekPosition ?? resumePosition
-                    if targetPosition > 0 {
+                    let needsPositioning = targetPosition > 0.05
+                    if needsPositioning {
+                        // Never start a freshly reloaded item at zero and then
+                        // seek it back to the recovery position. Wait for the
+                        // seek completion before resuming audio so a transient
+                        // transport retry cannot produce an audible jump/cut.
+                        self.isBuffering = self.wantsPlayback
                         self.seekPlayer(
                             to: targetPosition,
-                            persistsQueue: false
+                            persistsQueue: false,
+                            resumesPlayback: self.wantsPlayback
                         )
                     } else {
                         self.pendingSeekPosition = nil
+                        self.isBuffering = false
                         self.recomputeTimelineFromPlayer()
                         self.installNextLyricBoundary(after: self.elapsed)
                     }
-                    if self.wantsPlayback {
+                    if self.wantsPlayback, !needsPositioning {
                         self.configureAudioSession()
                         self.player.isMuted = false
                         self.player.volume = 1
                         self.activateNowPlayingSession()
-                        self.player.playImmediately(atRate: 1)
+                        self.player.play()
                         self.schedulePlaybackRecovery()
                     }
                 case .failed:
@@ -2940,8 +3021,10 @@ final class AudioEngine: NSObject, ObservableObject {
                             return
                         }
                         Self.logger.warning(
-                            "Playback stalled; scheduling bounded recovery"
+                            "Playback stalled; prioritizing active stream recovery"
                         )
+                        self.invalidateStagedSuccessor(removeFromPlayer: true)
+                        self.suspendSpeculativePrefetch()
                         self.schedulePlaybackRecovery()
                     }
                 },
@@ -3001,6 +3084,11 @@ final class AudioEngine: NSObject, ObservableObject {
                     return
                 }
                 if item.isPlaybackBufferEmpty, self.wantsPlayback {
+                    // The active stream owns bandwidth during a stall. Remove
+                    // any staged successor and cancel optional transfers before
+                    // recovery so they cannot prolong the underrun.
+                    self.invalidateStagedSuccessor(removeFromPlayer: true)
+                    self.suspendSpeculativePrefetch()
                     self.schedulePlaybackRecovery()
                 }
             }
@@ -3016,10 +3104,12 @@ final class AudioEngine: NSObject, ObservableObject {
                       self.player.currentItem === item else {
                     return
                 }
-                guard item.isPlaybackLikelyToKeepUp else { return }
+                guard item.isPlaybackLikelyToKeepUp,
+                      !self.isSeekInFlight,
+                      self.pendingSeekPosition == nil else { return }
                 if self.wantsPlayback, self.player.timeControlStatus != .playing {
                     self.configureAudioSession()
-                    self.player.playImmediately(atRate: 1)
+                    self.player.play()
                     self.recomputeTimelineFromPlayer()
                     self.installNextLyricBoundary(after: self.elapsed)
                     self.schedulePlaybackRecovery()
@@ -3155,7 +3245,11 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func schedulePlaybackRecovery() {
-        guard wantsPlayback, currentSong != nil, recoveryTask == nil else { return }
+        guard wantsPlayback,
+              currentSong != nil,
+              recoveryTask == nil,
+              !isSeekInFlight,
+              pendingSeekPosition == nil else { return }
         if player.timeControlStatus != .playing {
             isBuffering = true
         }
@@ -3177,6 +3271,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
             }
             guard !Task.isCancelled, self.wantsPlayback,
+                  !self.isSeekInFlight,
+                  self.pendingSeekPosition == nil,
                   let item = self.player.currentItem else { return }
             var progressBaseline = recoveryStartPosition
             let positionBeforeAttempt = self.currentPlayerPosition()
@@ -3188,15 +3284,24 @@ final class AudioEngine: NSObject, ObservableObject {
                 return
             }
 
-            self.configureAudioSession()
-            self.player.playImmediately(atRate: 1)
-            self.recomputeTimelineFromPlayer()
-            self.installNextLyricBoundary(after: self.elapsed)
+            if PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+                timeControlStatus: self.player.timeControlStatus,
+                waitingReason: self.player.reasonForWaitingToPlay
+            ) {
+                self.configureAudioSession()
+                self.player.playImmediately(atRate: 1)
+                self.recomputeTimelineFromPlayer()
+                self.installNextLyricBoundary(after: self.elapsed)
+            }
 
             if item.status == .readyToPlay,
                self.currentSong?.externalStreamURL == nil,
                !self.isSeekInFlight,
                self.pendingSeekPosition == nil,
+               !PlaybackRecoveryPolicy.isManagedBufferingWait(
+                    timeControlStatus: self.player.timeControlStatus,
+                    waitingReason: self.player.reasonForWaitingToPlay
+               ),
                let target = PlaybackRecoveryPolicy.startupNudgeTarget(
                     elapsed: positionBeforeAttempt,
                     duration: self.duration,
@@ -3220,6 +3325,8 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             guard !Task.isCancelled, self.wantsPlayback,
                   self.networkPathIsSatisfied,
+                  !self.isSeekInFlight,
+                  self.pendingSeekPosition == nil,
                   self.player.currentItem === item else { return }
             if self.player.timeControlStatus == .playing,
                PlaybackRecoveryPolicy.hasMeaningfulProgress(
@@ -3227,6 +3334,32 @@ final class AudioEngine: NSObject, ObservableObject {
                     to: self.currentPlayerPosition()
                ) {
                 return
+            }
+
+            if PlaybackRecoveryPolicy.isManagedBufferingWait(
+                timeControlStatus: self.player.timeControlStatus,
+                waitingReason: self.player.reasonForWaitingToPlay
+            ) {
+                // AVPlayer has deliberately paused to build a safer buffer.
+                // Give that buffer time to fill instead of throwing away the
+                // partially loaded item and restarting the HTTP media request.
+                do {
+                    try await Task.sleep(for: .seconds(4))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, self.wantsPlayback,
+                      self.networkPathIsSatisfied,
+                      !self.isSeekInFlight,
+                      self.pendingSeekPosition == nil,
+                      self.player.currentItem === item else { return }
+                if self.player.timeControlStatus == .playing,
+                   PlaybackRecoveryPolicy.hasMeaningfulProgress(
+                        from: progressBaseline,
+                        to: self.currentPlayerPosition()
+                   ) {
+                    return
+                }
             }
 
             self.recoveryAttempt += 1
@@ -3384,7 +3517,10 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
                     // A buffering or recovery transition must give the active
-                    // stream sole use of the radio and server connection.
+                    // stream sole use of the radio and server connection. A
+                    // queued successor can itself keep a second media request
+                    // alive, so remove it until the current stream is healthy.
+                    self.invalidateStagedSuccessor(removeFromPlayer: true)
                     self.suspendSpeculativePrefetch()
                     self.schedulePlaybackRecovery()
                 }
@@ -3445,6 +3581,11 @@ final class AudioEngine: NSObject, ObservableObject {
                     if let itemDuration = self.player.currentItem?.duration.seconds {
                         self.updateDuration(using: itemDuration)
                     }
+                    // Re-evaluate once per playback second. The policy keeps
+                    // the next media transport closed until the final window,
+                    // then preserves gapless hand-off without long-lived dual
+                    // stream contention.
+                    self.scheduleGaplessSuccessor()
                     self.submitScrobbleIfNeeded()
                     if Date().timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
                         let shouldSyncServer = Date().timeIntervalSince(
@@ -3823,7 +3964,7 @@ final class AudioEngine: NSObject, ObservableObject {
         configureAudioSession()
         player.isMuted = false
         player.volume = 1
-        player.playImmediately(atRate: 1)
+        player.play()
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
         updateNowPlaying()
