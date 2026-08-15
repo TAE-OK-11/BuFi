@@ -461,6 +461,102 @@ final class RecommendationEngineTests: XCTestCase {
         })
     }
 
+    func testFavoriteIdentitySurvivesStaleCandidateMetadata() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let staleFavorite = song(
+            id: "favorite-id",
+            title: "Favorite",
+            artist: "Old Metadata Artist"
+        )
+        let currentFavorite = song(
+            id: "favorite-id",
+            title: "Favorite",
+            artist: "Current Favorite Artist",
+            starred: "2026-08-01T00:00:00Z"
+        )
+        let competitor = song(
+            id: "known-competitor",
+            title: "Competitor",
+            artist: "Other Artist"
+        )
+        var recommendationWeights = isolatedWeights()
+        recommendationWeights.favorites = 1
+        recommendationWeights.discoveryRatio = 0
+
+        let result = RecommendationMixer.mix(
+            snapshot: HomeSnapshot(
+                serverRecommendedSongs: [staleFavorite, competitor],
+                mostPlayedSongs: [competitor],
+                starredSongs: [currentFavorite]
+            ),
+            weights: recommendationWeights,
+            purpose: .taste,
+            limit: 2,
+            date: date
+        )
+
+        XCTAssertEqual(result.first?.id, "favorite-id")
+    }
+
+    func testLocalRecommendationConsensusOutranksSingleSourceSignal() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let consensus = song(
+            id: "consensus-local",
+            title: "Consensus",
+            artist: "Consensus Artist"
+        )
+        let single = song(
+            id: "single-local",
+            title: "Single",
+            artist: "Single Artist"
+        )
+        func filler(_ id: String) -> Song {
+            song(id: id, title: id, artist: "Filler \(id)")
+        }
+        var recommendationWeights = isolatedWeights()
+        recommendationWeights.serverSimilarity = 1
+        recommendationWeights.discoveryRatio = 1
+        let snapshot = HomeSnapshot(
+            serverRecommendedSongs: [filler("s0"), consensus, filler("s2")],
+            sonicRecommendedSongs: [filler("q0"), single, consensus],
+            similarArtistSongs: [filler("m0"), consensus, filler("m2")],
+            genreRecommendedSongs: [filler("g0"), consensus, filler("g2")]
+        )
+
+        let result = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: recommendationWeights,
+            purpose: .artistMix,
+            limit: 20,
+            date: date
+        )
+        let consensusIndex = result.firstIndex { $0.id == consensus.id }
+        let singleIndex = result.firstIndex { $0.id == single.id }
+
+        XCTAssertNotNil(consensusIndex)
+        XCTAssertNotNil(singleIndex)
+        if let consensusIndex, let singleIndex {
+            XCTAssertLessThan(consensusIndex, singleIndex)
+        }
+    }
+
+    func testPersonalizedSearchableTextIncludesSecondaryGenresAndMoods() {
+        var value = song(
+            id: "secondary-metadata",
+            title: "Neutral Title",
+            artist: "Artist"
+        )
+        value.genres = [SongGenre(name: "K-Pop")]
+        value.moods = ["Happy"]
+
+        let text = PersonalizedMixBuilder.searchableText(value)
+
+        XCTAssertTrue(text.contains("k-pop"))
+        XCTAssertTrue(text.contains("happy"))
+    }
+
     func testArtistMixPreferencesDeduplicateAndKeepFourRecentArtists() {
         var encoded = "[]"
         for artist in ["A", "B", "C", "D", "E", "B"] {

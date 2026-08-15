@@ -240,34 +240,81 @@ private struct RecommendationPreset {
     }
 }
 
+private struct RecommendationCandidateMetadata {
+    let artistKey: String
+    let albumKey: String
+    let genreKeys: [String]
+    let moodKeys: [String]
+    let timeText: String
+    let deduplicationKey: String
+
+    init(song: Song) {
+        artistKey = Self.artistKey(for: song)
+        albumKey = RecommendationMixer.normalized(song.albumId ?? song.album)
+        genreKeys = Self.genreKeys(for: song)
+        moodKeys = Self.moodKeys(for: song)
+        timeText = RecommendationMixer.normalized(
+            (
+                [song.genre, song.title].compactMap { $0 }
+                + (song.genres ?? []).map(\.name)
+                + (song.moods ?? [])
+            ).joined(separator: " ")
+        )
+        deduplicationKey = RecommendationMixer.deduplicationKey(for: song)
+    }
+
+    static func artistKey(for song: Song) -> String {
+        RecommendationMixer.normalized(song.artist)
+    }
+
+    static func genreKeys(for song: Song) -> [String] {
+        normalizedUnique(
+            [song.genre].compactMap { $0 }
+                + (song.genres ?? []).map(\.name)
+        )
+    }
+
+    static func moodKeys(for song: Song) -> [String] {
+        normalizedUnique(song.moods ?? [])
+    }
+
+    private static func normalizedUnique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        result.reserveCapacity(values.count)
+        for value in values {
+            let key = RecommendationMixer.normalized(value)
+            if !key.isEmpty, seen.insert(key).inserted {
+                result.append(key)
+            }
+        }
+        return result
+    }
+}
+
 private struct RecommendationProfile {
     var artists: [String: Double] = [:]
     var genres: [String: Double] = [:]
     var moods: [String: Double] = [:]
 
-    func affinity(for song: Song) -> Double {
-        var strongest = 0.0
-        if !song.artist.isEmpty {
-            strongest = max(
-                strongest,
-                artists[RecommendationMixer.normalized(song.artist)] ?? 0
-            )
+    func affinity(for metadata: RecommendationCandidateMetadata) -> Double {
+        let artist = metadata.artistKey.isEmpty
+            ? 0
+            : (artists[metadata.artistKey] ?? 0)
+        var genre = 0.0
+        for key in metadata.genreKeys {
+            genre = max(genre, genres[key] ?? 0)
         }
-        for genre in ([song.genre].compactMap { $0 } + (song.genres ?? []).map(\.name)) {
-            if !genre.isEmpty {
-                strongest = max(
-                    strongest,
-                    genres[RecommendationMixer.normalized(genre)] ?? 0
-                )
-            }
+        var mood = 0.0
+        for key in metadata.moodKeys {
+            mood = max(mood, moods[key] ?? 0)
         }
-        for mood in song.moods ?? [] {
-            strongest = max(
-                strongest,
-                moods[RecommendationMixer.normalized(mood)] ?? 0
-            )
-        }
-        return strongest
+
+        // Keep a strong single match, but reward independent corroboration.
+        let strongest = max(artist, max(genre, mood))
+        let weakest = min(artist, min(genre, mood))
+        let middle = artist + genre + mood - strongest - weakest
+        return min(1, strongest + middle * 0.18 + weakest * 0.08)
     }
 }
 
@@ -283,8 +330,21 @@ private struct RankedRecommendation {
 }
 
 private struct RecommendationScoringPlan {
-    let weights: [RecommendationFeature: Double]
+    let weights: [Double]
     let totalWeight: Double
+
+    @inline(__always)
+    func contribution(
+        _ feature: RecommendationFeature,
+        score: Double
+    ) -> Double {
+        min(max(score, 0), 1) * weights[feature.rawValue]
+    }
+
+    @inline(__always)
+    func normalizedScore(_ weightedTotal: Double) -> Double {
+        totalWeight > 0 ? weightedTotal / totalWeight : 0
+    }
 }
 
 private final class RecommendationMixCache: @unchecked Sendable {
@@ -428,14 +488,14 @@ enum RecommendationMixer {
         }
         let shortCutoff = evaluationDate.addingTimeInterval(-14 * 86_400)
         let longCutoff = evaluationDate.addingTimeInterval(-365 * 86_400)
-        let shortProfile = profile(
-            from: allBehaviors.filter { $0.lastPlayed >= shortCutoff },
+        let temporalProfiles = temporalProfiles(
+            from: allBehaviors,
+            shortCutoff: shortCutoff,
+            longCutoff: longCutoff,
             date: evaluationDate
         )
-        let longProfile = profile(
-            from: allBehaviors.filter { $0.lastPlayed >= longCutoff },
-            date: evaluationDate
-        )
+        let shortProfile = temporalProfiles.short
+        let longProfile = temporalProfiles.long
         let contextProfile = profile(
             from: behavior.recentSongs.compactMap { behavior.songs[$0.id] },
             date: evaluationDate,
@@ -451,11 +511,10 @@ enum RecommendationMixer {
         )
         guard !Task.isCancelled else { return [] }
 
-        let knownSongIDs = Set(
-            snapshot.starredSongs.map(\.id)
-            + snapshot.mostPlayedSongs.map(\.id)
-            + Array(behavior.songs.keys)
-        )
+        let starredSongIDs = Set(snapshot.starredSongs.map(\.id))
+        var knownSongIDs = starredSongIDs
+        knownSongIDs.formUnion(snapshot.mostPlayedSongs.lazy.map(\.id))
+        knownSongIDs.formUnion(behavior.songs.keys)
         let knownArtists = Set(
             (snapshot.starredSongs + snapshot.mostPlayedSongs)
                 .map { normalized($0.artist) }
@@ -488,7 +547,8 @@ enum RecommendationMixer {
             snapshot.daylistSongs,
             snapshot.recommendedSongs
         ]
-        let candidates = unique(sourceLists.flatMap { $0 })
+        // Deduplicate while streaming sources; avoid a second flattened corpus.
+        let candidates = unique(sourceLists)
         guard !candidates.isEmpty else { return [] }
 
         let serverRanks = rankMap(snapshot.serverRecommendedSongs)
@@ -539,23 +599,27 @@ enum RecommendationMixer {
         for (index, song) in candidates.enumerated() {
             if index.isMultiple(of: 32), Task.isCancelled { return [] }
             let songBehavior = behavior.songs[song.id]
-            let shortAffinity = shortProfile.affinity(for: song)
-            let longAffinity = longProfile.affinity(for: song)
+            let metadata = RecommendationCandidateMetadata(song: song)
+            let shortAffinity = shortProfile.affinity(for: metadata)
+            let longAffinity = longProfile.affinity(for: metadata)
             let historyAffinity =
                 shortAffinity * preset.shortTermRatio
                 + longAffinity * (1 - preset.shortTermRatio)
-            let exactFavorite = song.isStarred ? 1.0 : 0.0
+            // Favorite identity is authoritative even when an earlier source
+            // carries stale metadata for the same server song ID.
+            let exactFavorite = starredSongIDs.contains(song.id) || song.isStarred
+                ? 1.0 : 0.0
             let favoriteAffinity = max(
                 exactFavorite,
-                favoriteProfile.affinity(for: song)
+                favoriteProfile.affinity(for: metadata)
             )
-            let serverScore = [
+            let serverScore = consensusScore(
                 rankScore(song.id, in: serverRanks),
                 rankScore(song.id, in: sonicRanks),
                 rankScore(song.id, in: similarRanks),
                 rankScore(song.id, in: genreRanks),
                 rankScore(song.id, in: topArtistRanks)
-            ].max() ?? 0
+            )
             let behaviorScore = behaviorAffinity(songBehavior)
             let completionScore = completionAffinity(
                 songBehavior?.averageCompletion
@@ -590,42 +654,57 @@ enum RecommendationMixer {
                 now: evaluationDate
             )
             let rotationScore = artistRotationScore(
-                song: song,
+                artistKey: metadata.artistKey,
                 favoriteAffinity: favoriteAffinity,
                 recentArtists: recentArtists
             )
-            let timeScore = timeAwarenessScore(song, hour: currentHour)
+            let timeScore = timeAwarenessScore(
+                song,
+                normalizedText: metadata.timeText,
+                hour: currentHour
+            )
             let popularityScore = max(
                 rankScore(song.id, in: popularRanks),
                 min(1, log1p(Double(song.playCount ?? 0)) / log1p(maxPlayCount))
             )
-            let features: [RecommendationFeature: Double] = [
-                .history: historyAffinity,
-                .favorites: favoriteAffinity,
-                .server: serverScore,
-                .discovery: rankScore(song.id, in: discoveryRanks),
-                .lastFM: rankScore(song.id, in: lastFMRanks),
-                .listenBrainz: rankScore(song.id, in: listenBrainzRanks),
-                .behavior: behaviorScore,
-                .completion: completionScore,
-                .repeatListening: repeatScore,
-                .recency: recencyScore,
-                .context: contextProfile.affinity(for: song),
-                .localMetadata: metadataScore,
-                .playlistAffinity: playlistScore,
-                .albumCompletion: albumProgress,
-                .forgottenFavorites: forgottenScore,
-                .artistRotation: rotationScore,
-                .timeAwareness: timeScore,
-                .popularity: popularityScore
-            ]
-            let score = weightedScore(
-                features: features,
-                plan: scoringPlan
+            // Dense weights remove an 18-entry Dictionary allocation and
+            // Dictionary probes from every candidate in the ranking corpus.
+            var weightedTotal = 0.0
+            weightedTotal += scoringPlan.contribution(.history, score: historyAffinity)
+            weightedTotal += scoringPlan.contribution(.favorites, score: favoriteAffinity)
+            weightedTotal += scoringPlan.contribution(.server, score: serverScore)
+            weightedTotal += scoringPlan.contribution(
+                .discovery,
+                score: rankScore(song.id, in: discoveryRanks)
             )
+            weightedTotal += scoringPlan.contribution(
+                .lastFM,
+                score: rankScore(song.id, in: lastFMRanks)
+            )
+            weightedTotal += scoringPlan.contribution(
+                .listenBrainz,
+                score: rankScore(song.id, in: listenBrainzRanks)
+            )
+            weightedTotal += scoringPlan.contribution(.behavior, score: behaviorScore)
+            weightedTotal += scoringPlan.contribution(.completion, score: completionScore)
+            weightedTotal += scoringPlan.contribution(.repeatListening, score: repeatScore)
+            weightedTotal += scoringPlan.contribution(.recency, score: recencyScore)
+            weightedTotal += scoringPlan.contribution(
+                .context,
+                score: contextProfile.affinity(for: metadata)
+            )
+            weightedTotal += scoringPlan.contribution(.localMetadata, score: metadataScore)
+            weightedTotal += scoringPlan.contribution(.playlistAffinity, score: playlistScore)
+            weightedTotal += scoringPlan.contribution(.albumCompletion, score: albumProgress)
+            weightedTotal += scoringPlan.contribution(.forgottenFavorites, score: forgottenScore)
+            weightedTotal += scoringPlan.contribution(.artistRotation, score: rotationScore)
+            weightedTotal += scoringPlan.contribution(.timeAwareness, score: timeScore)
+            weightedTotal += scoringPlan.contribution(.popularity, score: popularityScore)
+            let score = scoringPlan.normalizedScore(weightedTotal)
             let metadataConfidence = metadataConfidence(song)
             let sourceConfidence = sourceConfidence(
                 song: song,
+                metadata: metadata,
                 lastFMRanks: lastFMRanks,
                 listenBrainzRanks: listenBrainzRanks,
                 sonicRanks: sonicRanks,
@@ -645,16 +724,18 @@ enum RecommendationMixer {
                     + jitter
             )
             let isDiscovery = !knownSongIDs.contains(song.id)
-            let artistKey = normalized(song.artist)
-            let isNewArtist = !knownArtists.contains(artistKey)
+            let isNewArtist = !knownArtists.contains(metadata.artistKey)
+            // Missing play-count metadata means unknown popularity, not a gem.
             let isHiddenGem = isDiscovery
-                && (song.playCount ?? 0) <= 2
+                && song.playCount.map { $0 <= 2 } == true
+                && metadataConfidence >= 0.85
+                && sourceConfidence >= 0.45
             ranked.append(RankedRecommendation(
                 song: song,
                 score: finalScore,
-                artistKey: artistKey,
-                albumKey: normalized(song.albumId ?? song.album),
-                deduplicationKey: deduplicationKey(for: song),
+                artistKey: metadata.artistKey,
+                albumKey: metadata.albumKey,
+                deduplicationKey: metadata.deduplicationKey,
                 isDiscovery: isDiscovery,
                 isNewArtist: isNewArtist,
                 isHiddenGem: isHiddenGem
@@ -717,34 +798,24 @@ enum RecommendationMixer {
             userWeights[.history] = 0.15
             userWeights[.behavior] = 0.15
         }
-        var effectiveWeights: [RecommendationFeature: Double] = [:]
-        effectiveWeights.reserveCapacity(preset.featureWeights.count)
+        var effectiveWeights = Array(
+            repeating: 0.0,
+            count: RecommendationFeature.allCases.count
+        )
+        var totalWeight = 0.0
         for feature in RecommendationFeature.allCases {
             guard let presetWeight = preset.featureWeights[feature] else {
                 continue
             }
             let weight = presetWeight * (userWeights[feature] ?? 0)
-            if weight > 0 { effectiveWeights[feature] = weight }
+            guard weight > 0 else { continue }
+            effectiveWeights[feature.rawValue] = weight
+            totalWeight += weight
         }
         return RecommendationScoringPlan(
             weights: effectiveWeights,
-            totalWeight: RecommendationFeature.allCases.reduce(0) {
-                $0 + (effectiveWeights[$1] ?? 0)
-            }
+            totalWeight: totalWeight
         )
-    }
-
-    private static func weightedScore(
-        features: [RecommendationFeature: Double],
-        plan: RecommendationScoringPlan
-    ) -> Double {
-        var total = 0.0
-        for feature in RecommendationFeature.allCases {
-            guard let featureScore = features[feature],
-                  let weight = plan.weights[feature] else { continue }
-            total += min(max(featureScore, 0), 1) * weight
-        }
-        return plan.totalWeight > 0 ? total / plan.totalWeight : 0
     }
 
     private static func profile(
@@ -755,35 +826,68 @@ enum RecommendationMixer {
         var result = RecommendationProfile()
         for (index, value) in values.enumerated() {
             if index.isMultiple(of: 64), Task.isCancelled { break }
-            let behavior = behaviorAffinity(value)
             let decay = appliesDecay
                 ? timeDecay(since: value.lastPlayed, now: date)
                 : 1
-            let strength = max(0.05, behavior) * decay
-            if !value.song.artist.isEmpty {
-                result.artists[normalized(value.song.artist), default: 0] += strength
-            }
-            for genre in (
-                [value.song.genre].compactMap { $0 }
-                + (value.song.genres ?? []).map(\.name)
-            ) where !genre.isEmpty {
-                result.genres[normalized(genre), default: 0] += strength
-            }
-            for mood in value.song.moods ?? [] where !mood.isEmpty {
-                result.moods[normalized(mood), default: 0] += strength
+            addProfileSignals(
+                from: value.song,
+                strength: max(0.05, behaviorAffinity(value)) * decay,
+                to: &result
+            )
+        }
+        normalizeProfile(&result)
+        return result
+    }
+
+    private static func temporalProfiles(
+        from values: [SongBehavior],
+        shortCutoff: Date,
+        longCutoff: Date,
+        date: Date
+    ) -> (short: RecommendationProfile, long: RecommendationProfile) {
+        var short = RecommendationProfile()
+        var long = RecommendationProfile()
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { break }
+            guard value.lastPlayed >= longCutoff else { continue }
+            let strength = max(0.05, behaviorAffinity(value))
+                * timeDecay(since: value.lastPlayed, now: date)
+            addProfileSignals(from: value.song, strength: strength, to: &long)
+            if value.lastPlayed >= shortCutoff {
+                addProfileSignals(from: value.song, strength: strength, to: &short)
             }
         }
-        normalizeMap(&result.artists)
-        normalizeMap(&result.genres)
-        normalizeMap(&result.moods)
-        return result
+        normalizeProfile(&short)
+        normalizeProfile(&long)
+        return (short, long)
+    }
+
+    private static func addProfileSignals(
+        from song: Song,
+        strength: Double,
+        to result: inout RecommendationProfile
+    ) {
+        let artistKey = RecommendationCandidateMetadata.artistKey(for: song)
+        if !artistKey.isEmpty {
+            result.artists[artistKey, default: 0] += strength
+        }
+        for key in RecommendationCandidateMetadata.genreKeys(for: song) {
+            result.genres[key, default: 0] += strength
+        }
+        for key in RecommendationCandidateMetadata.moodKeys(for: song) {
+            result.moods[key, default: 0] += strength
+        }
+    }
+
+    private static func normalizeProfile(_ value: inout RecommendationProfile) {
+        normalizeMap(&value.artists)
+        normalizeMap(&value.genres)
+        normalizeMap(&value.moods)
     }
 
     private static func normalizeMap(_ values: inout [String: Double]) {
         guard let maximum = values.values.max(), maximum > 0 else { return }
-        for key in values.keys.sorted() {
-            values[key] = min(max((values[key] ?? 0) / maximum, 0), 1)
-        }
+        values = values.mapValues { min(max($0 / maximum, 0), 1) }
     }
 
     private static func behaviorAffinity(_ value: SongBehavior?) -> Double {
@@ -889,25 +993,21 @@ enum RecommendationMixer {
     }
 
     private static func artistRotationScore(
-        song: Song,
+        artistKey: String,
         favoriteAffinity: Double,
         recentArtists: Set<String>
     ) -> Double {
         guard favoriteAffinity > 0 else { return 0 }
-        return recentArtists.contains(normalized(song.artist))
+        return recentArtists.contains(artistKey)
             ? favoriteAffinity * 0.15
             : favoriteAffinity
     }
 
-    private static func timeAwarenessScore(_ song: Song, hour: Int) -> Double {
-        let text = normalized(
-            (
-                [song.genre, song.title].compactMap { $0 }
-                + (song.genres ?? []).map(\.name)
-                + (song.moods ?? [])
-            )
-                .joined(separator: " ")
-        )
+    private static func timeAwarenessScore(
+        _ song: Song,
+        normalizedText text: String,
+        hour: Int
+    ) -> Double {
         let calmTokens = ["chill", "ambient", "acoustic", "jazz", "ballad", "sleep", "잔잔"]
         let activeTokens = ["dance", "edm", "rock", "hip hop", "workout", "upbeat", "댄스"]
         let bpm = song.bpm ?? 0
@@ -933,6 +1033,7 @@ enum RecommendationMixer {
 
     private static func sourceConfidence(
         song: Song,
+        metadata: RecommendationCandidateMetadata,
         lastFMRanks: [String: Int],
         listenBrainzRanks: [String: Int],
         sonicRanks: [String: Int],
@@ -942,11 +1043,7 @@ enum RecommendationMixer {
         let lastFM = lastFMRanks[song.id] != nil
         let listenBrainz = listenBrainzRanks[song.id] != nil
         if lastFM, listenBrainz {
-            let genres = [song.genre].compactMap { $0 }
-                + (song.genres ?? []).map(\.name)
-            if genres.contains(where: {
-                favoriteGenres.contains(normalized($0))
-            }) {
+            if metadata.genreKeys.contains(where: favoriteGenres.contains) {
                 return 0.90
             }
             return 0.75
@@ -1055,6 +1152,10 @@ enum RecommendationMixer {
             var bestAdjustedScore = -Double.infinity
             for index in values.indices where isRemaining[index] {
                 let value = values[index]
+                // Input is score-descending and diversity factors never exceed 1.
+                // Once a base score cannot beat the current adjusted winner,
+                // no later candidate can beat it either.
+                if bestIndex != nil, value.score <= bestAdjustedScore { break }
                 let artistCount = artistCounts[value.artistKey, default: 0]
                 let albumCount = albumCounts[value.albumKey, default: 0]
                 let adjusted = value.score
@@ -1094,7 +1195,7 @@ enum RecommendationMixer {
         }
     }
 
-    private static func deduplicationKey(for song: Song) -> String {
+    fileprivate static func deduplicationKey(for song: Song) -> String {
         if let mbid = song.musicBrainzId, !mbid.isEmpty {
             return "mbid:\(normalized(mbid))"
         }
@@ -1123,6 +1224,37 @@ enum RecommendationMixer {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    @inline(__always)
+    private static func consensusScore(
+        _ a: Double,
+        _ b: Double,
+        _ c: Double,
+        _ d: Double,
+        _ e: Double
+    ) -> Double {
+        var first = 0.0
+        var second = 0.0
+        var third = 0.0
+        func include(_ score: Double) {
+            if score > first {
+                third = second
+                second = first
+                first = score
+            } else if score > second {
+                third = second
+                second = score
+            } else if score > third {
+                third = score
+            }
+        }
+        include(a)
+        include(b)
+        include(c)
+        include(d)
+        include(e)
+        return min(1, first + second * 0.18 + third * 0.08)
+    }
+
     private static func rankMap(_ values: [Song]) -> [String: Int] {
         var result: [String: Int] = [:]
         result.reserveCapacity(values.count)
@@ -1147,6 +1279,23 @@ enum RecommendationMixer {
         for (index, value) in values.enumerated() {
             if index.isMultiple(of: 64), Task.isCancelled { return [] }
             if ids.insert(value.id).inserted { result.append(value) }
+        }
+        return result
+    }
+
+    private static func unique(_ sources: [[Song]]) -> [Song] {
+        let capacity = sources.reduce(into: 0) { $0 += $1.count }
+        var ids = Set<String>()
+        ids.reserveCapacity(capacity)
+        var result: [Song] = []
+        result.reserveCapacity(capacity)
+        var visited = 0
+        for source in sources {
+            for song in source {
+                if visited.isMultiple(of: 64), Task.isCancelled { return [] }
+                visited += 1
+                if ids.insert(song.id).inserted { result.append(song) }
+            }
         }
         return result
     }
@@ -1609,7 +1758,7 @@ private struct PersonalizedSongCorpus {
     let canonicalSongs: [String: Song]
     let searchableTexts: [String: String]
     let normalizedArtists: [String: String]
-    let normalizedGenres: [String: String]
+    let normalizedGenres: [String: [String]]
     let songsByArtist: [String: [Song]]
     let songsByGenre: [String: [Song]]
     let songsWithoutGenre: [Song]
@@ -1631,7 +1780,7 @@ private struct PersonalizedSongCorpus {
         )
         var searchableTexts: [String: String] = [:]
         var normalizedArtists: [String: String] = [:]
-        var normalizedGenres: [String: String] = [:]
+        var normalizedGenres: [String: [String]] = [:]
         var songsByArtist: [String: [Song]] = [:]
         var songsByGenre: [String: [Song]] = [:]
         var songsWithoutGenre: [Song] = []
@@ -1644,12 +1793,14 @@ private struct PersonalizedSongCorpus {
             searchableTexts[song.id] = PersonalizedMixBuilder.searchableText(song)
             normalizedArtists[song.id] = artist
             songsByArtist[artist, default: []].append(song)
-            if let genre = song.genre {
-                let normalizedGenre = PersonalizedMixBuilder.normalized(genre)
-                normalizedGenres[song.id] = normalizedGenre
-                songsByGenre[normalizedGenre, default: []].append(song)
-            } else {
+            let genreKeys = RecommendationCandidateMetadata.genreKeys(for: song)
+            if genreKeys.isEmpty {
                 songsWithoutGenre.append(song)
+            } else {
+                normalizedGenres[song.id] = genreKeys
+                for genreKey in genreKeys {
+                    songsByGenre[genreKey, default: []].append(song)
+                }
             }
         }
         self.searchableTexts = searchableTexts
@@ -1944,8 +2095,8 @@ enum PersonalizedMixBuilder {
             seed: seed,
             limit: limit
         )
-        let primaryGenres = Set(primary.compactMap {
-            corpus.normalizedGenres[$0.id]
+        let primaryGenres = Set(primary.flatMap {
+            corpus.normalizedGenres[$0.id] ?? []
         })
         let relatedPool = primaryGenres.sorted().flatMap {
             corpus.songsByGenre[$0] ?? []
@@ -2166,9 +2317,11 @@ enum PersonalizedMixBuilder {
 
     fileprivate static func searchableText(_ song: Song) -> String {
         normalized(
-            [song.genre, song.title, song.album, song.artist]
-                .compactMap { $0 }
-                .joined(separator: " ")
+            (
+                [song.genre, song.title, song.album, song.artist].compactMap { $0 }
+                + (song.genres ?? []).map(\.name)
+                + (song.moods ?? [])
+            ).joined(separator: " ")
         )
     }
 
