@@ -109,12 +109,7 @@ struct PersonalizedMixArtwork: View {
     }
 
     private var foreground: Color {
-        switch assetName {
-        case "MixListenAgain", "MixGenre", "MixMood",
-             "MixMoodBoost", "MixChillWaves":
-            Color(red: 0.08, green: 0.06, blue: 0.15)
-        default: .white
-        }
+        .white
     }
 
     private var coverFont: Font {
