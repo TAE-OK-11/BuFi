@@ -7,12 +7,12 @@ import SoundAnalysis
 #endif
 
 /// Apple's built-in Sound Analysis classifier (Core ML, shipped with iOS).
-/// Only the first 20 seconds of a local file are scored so playback stays light.
-/// Labels and the hashed confidence vector go into SQLite and are not recomputed
-/// for the same audio revision.
+/// Long tracks are sampled at the intro, middle and ending instead of burning
+/// the same budget on the first 20 seconds only. The total analyzed audio is
+/// capped at about 18 seconds and cached by audio revision.
 enum SoundAnalysisClassifier {
     static let dimensions = 64
-    private static let analysisDuration: Double = 20
+    private static let segmentDuration: Double = 6
 
     struct Analysis: Sendable {
         var labels: [String]
@@ -72,19 +72,28 @@ enum SoundAnalysisClassifier {
         do {
             let file = try AVAudioFile(forReading: url)
             let format = file.processingFormat
-            guard format.sampleRate > 0, format.channelCount > 0 else {
-                return analyzeWholeFile(at: url)
+            guard format.sampleRate > 0, format.channelCount > 0, file.length > 0 else {
+                return nil
             }
+
             let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
             let collector = SoundClassificationCollector()
             let analyzer = SNAudioStreamAnalyzer(format: format)
             try analyzer.add(request, withObserver: collector)
 
-            let frameCap = AVAudioFrameCount(min(
-                Double(file.length),
-                format.sampleRate * analysisDuration
-            ))
-            guard frameCap > 0 else { return nil }
+            let segmentFrames = AVAudioFramePosition(format.sampleRate * segmentDuration)
+            guard segmentFrames > 0 else { return nil }
+            let starts: [AVAudioFramePosition]
+            if file.length <= segmentFrames * 3 {
+                starts = [0]
+            } else {
+                starts = [
+                    0,
+                    max(0, file.length / 2 - segmentFrames / 2),
+                    max(0, file.length - segmentFrames)
+                ]
+            }
+
             let bufferSize: AVAudioFrameCount = 4_096
             guard let buffer = AVAudioPCMBuffer(
                 pcmFormat: format,
@@ -93,20 +102,29 @@ enum SoundAnalysisClassifier {
                 return nil
             }
 
-            var remaining = frameCap
-            var position: AVAudioFramePosition = 0
-            while remaining > 0 {
-                let frames = min(bufferSize, remaining)
-                try file.read(into: buffer, frameCount: frames)
-                guard buffer.frameLength > 0 else { break }
-                analyzer.analyze(buffer, atAudioFramePosition: position)
-                position += AVAudioFramePosition(buffer.frameLength)
-                remaining -= buffer.frameLength
+            var analysisPosition: AVAudioFramePosition = 0
+            for start in starts {
+                file.framePosition = start
+                let available = file.length - start
+                let target = starts.count == 1
+                    ? available
+                    : min(segmentFrames, available)
+                var remaining = AVAudioFrameCount(max(0, target))
+
+                while remaining > 0 {
+                    let frames = min(bufferSize, remaining)
+                    try file.read(into: buffer, frameCount: frames)
+                    guard buffer.frameLength > 0 else { break }
+                    analyzer.analyze(buffer, atAudioFramePosition: analysisPosition)
+                    analysisPosition += AVAudioFramePosition(buffer.frameLength)
+                    remaining -= buffer.frameLength
+                }
             }
+
             analyzer.completeAnalysis()
-            return finished(collector.scores()) ?? analyzeWholeFile(at: url)
+            return finished(collector.scores())
         } catch {
-            return analyzeWholeFile(at: url)
+            return nil
         }
     }
 
