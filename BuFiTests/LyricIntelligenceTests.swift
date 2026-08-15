@@ -323,9 +323,10 @@ final class LyricIntelligenceTests: XCTestCase {
             SoundAnalysisClassifier.topLabels(from: [
                 "singing": 0.91,
                 "music": 0.74,
-                "noise": 0.05
+                "noise": 0.05,
+                "hum": 0.04
             ]),
-            ["singing", "music"]
+            ["singing", "music", "noise"]
         )
     }
 
