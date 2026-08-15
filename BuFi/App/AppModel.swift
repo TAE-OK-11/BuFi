@@ -24,6 +24,8 @@ final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var hasLastFMAPIKey = false
     @Published fileprivate(set) var hasListenBrainzToken = false
     @Published fileprivate(set) var listenBrainzUsername = ""
+    @Published fileprivate(set) var hasOpenAIKey = false
+    @Published fileprivate(set) var hasOpenRouterKey = false
     @Published var errorMessage: String?
 
     fileprivate func setPhase(_ value: AppModel.SessionState) {
@@ -59,6 +61,16 @@ final class AppSessionState: ObservableObject {
     fileprivate func setListenBrainzUsername(_ value: String) {
         guard listenBrainzUsername != value else { return }
         listenBrainzUsername = value
+    }
+
+    fileprivate func setHasOpenAIKey(_ value: Bool) {
+        guard hasOpenAIKey != value else { return }
+        hasOpenAIKey = value
+    }
+
+    fileprivate func setHasOpenRouterKey(_ value: Bool) {
+        guard hasOpenRouterKey != value else { return }
+        hasOpenRouterKey = value
     }
 
     fileprivate func setErrorMessage(_ value: String?) {
@@ -319,6 +331,16 @@ final class AppModel: ObservableObject {
         set { session.setListenBrainzUsername(newValue) }
     }
 
+    private(set) var hasOpenAIKey: Bool {
+        get { session.hasOpenAIKey }
+        set { session.setHasOpenAIKey(newValue) }
+    }
+
+    private(set) var hasOpenRouterKey: Bool {
+        get { session.hasOpenRouterKey }
+        set { session.setHasOpenRouterKey(newValue) }
+    }
+
     var errorMessage: String? {
         get { session.errorMessage }
         set { session.setErrorMessage(newValue) }
@@ -366,6 +388,8 @@ final class AppModel: ObservableObject {
     private static let playlistDetailCacheLimit = 24
     private static let artistDetailCacheLimit = 32
     private static let lastFMKeyAccount = "lastfm-api-key"
+    private static let openAIKeyAccount = LyricIntelligenceSettings.openAIAccount
+    private static let openRouterKeyAccount = LyricIntelligenceSettings.openRouterAccount
     private static let listenBrainzTokenAccount = "listenbrainz-token"
     private static let listenBrainzUsernameKey = "listenbrainz-username"
 
@@ -393,6 +417,12 @@ final class AppModel: ObservableObject {
         }
         hasLastFMAPIKey = stored.hasLastFMKey
         hasListenBrainzToken = stored.hasListenBrainzToken
+        hasOpenAIKey = await secureStore.loadSecret(
+            account: Self.openAIKeyAccount
+        )?.isEmpty == false
+        hasOpenRouterKey = await secureStore.loadSecret(
+            account: Self.openRouterKeyAccount
+        )?.isEmpty == false
         LaunchDiagnostics.mark("credential-bootstrap-loaded")
         if let credentials = stored.credentials {
             await connect(credentials, persist: false)
@@ -730,6 +760,7 @@ final class AppModel: ObservableObject {
         guard self.client === client else { return [] }
         let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
         guard self.client === client else { return [] }
+        let lyricIndex = await LyricIntelligence.shared.index()
         var snapshot = home
         snapshot.serverRecommendedSongs = Self.uniqueSongs(
             serverValues + snapshot.serverRecommendedSongs
@@ -740,6 +771,7 @@ final class AppModel: ObservableObject {
             purpose: .autoplay,
             behavior: behavior,
             seed: seed,
+            lyricIndex: lyricIndex,
             limit: 32
         )
         return Self.uniqueSongs(ranked + serverValues)
@@ -795,6 +827,27 @@ final class AppModel: ObservableObject {
                   operationGeneration == lastFMKeyOperationGeneration else {
                 return
             }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func saveLyricAPIKey(_ value: String, provider: LyricIntelligenceProviderKind) async {
+        let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = provider == .openRouter
+            ? Self.openRouterKeyAccount
+            : Self.openAIKeyAccount
+        do {
+            if key.isEmpty {
+                try await secureStore.deleteSecret(account: account)
+            } else {
+                try await secureStore.saveSecret(key, account: account)
+            }
+            if provider == .openRouter {
+                hasOpenRouterKey = !key.isEmpty
+            } else {
+                hasOpenAIKey = !key.isEmpty
+            }
+        } catch {
             errorMessage = error.localizedDescription
         }
     }
@@ -902,6 +955,7 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             let behavior = await ListeningHistoryStore.shared
                 .recommendationSnapshot()
+            let lyricIndex = await LyricIntelligence.shared.index()
             guard !Task.isCancelled,
                   requestGeneration == self.recommendationGeneration,
                   session == self.sessionGeneration,
@@ -911,7 +965,8 @@ final class AppModel: ObservableObject {
                 snapshot: snapshot,
                 snapshotRevision: sourceRevision,
                 weights: weights,
-                behavior: behavior
+                behavior: behavior,
+                lyricIndex: lyricIndex
             )
             let latestBehaviorRevision = await ListeningHistoryStore.shared
                 .recommendationRevision()
@@ -1984,11 +2039,13 @@ final class AppModel: ObservableObject {
     ) async -> HomeSnapshot {
         var value = await mergingListeningHistory(into: snapshot)
         let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
+        let lyricIndex = await LyricIntelligence.shared.index()
         let weights = RecommendationWeights.current()
         let sections = await Self.recommendationSections(
             snapshot: value,
             weights: weights,
-            behavior: behavior
+            behavior: behavior,
+            lyricIndex: lyricIndex
         )
         value.recommendedSongs = sections.recommended
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
@@ -2003,6 +2060,7 @@ final class AppModel: ObservableObject {
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
         seed: Song? = nil,
+        lyricIndex: LyricSignatureIndex = .empty,
         limit: Int = 30
     ) async -> [Song] {
         await RecommendationMixer.mixConcurrently(
@@ -2012,6 +2070,7 @@ final class AppModel: ObservableObject {
             purpose: purpose,
             behavior: behavior,
             seed: seed,
+            lyricIndex: lyricIndex,
             limit: limit
         )
     }
@@ -2020,13 +2079,15 @@ final class AppModel: ObservableObject {
         snapshot: HomeSnapshot,
         snapshotRevision: HomeSnapshotRevision? = nil,
         weights: RecommendationWeights,
-        behavior: RecommendationBehaviorSnapshot
+        behavior: RecommendationBehaviorSnapshot,
+        lyricIndex: LyricSignatureIndex = .empty
     ) async -> (recommended: [Song], daylist: [Song]) {
         await RecommendationMixer.sectionsConcurrently(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
-            behavior: behavior
+            behavior: behavior,
+            lyricIndex: lyricIndex
         )
     }
 
@@ -2198,6 +2259,7 @@ final class AppModel: ObservableObject {
             }
             let behavior = await ListeningHistoryStore.shared
                 .recommendationSnapshot()
+            let lyricIndex = await LyricIntelligence.shared.index()
             guard !Task.isCancelled,
                   requestGeneration == self.recommendationGeneration,
                   generation == self.sessionGeneration,
@@ -2216,7 +2278,8 @@ final class AppModel: ObservableObject {
                     ? publicationRevision
                     : nil,
                 weights: weights,
-                behavior: behavior
+                behavior: behavior,
+                lyricIndex: lyricIndex
             )
             let latestBehaviorRevision = await ListeningHistoryStore.shared
                 .recommendationRevision()

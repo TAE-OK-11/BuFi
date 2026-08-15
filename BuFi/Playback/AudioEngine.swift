@@ -3845,6 +3845,14 @@ final class AudioEngine: NSObject, ObservableObject {
                         document,
                         status: document.lines.isEmpty ? .unavailable : .available
                     )
+                    if !document.lines.isEmpty {
+                        Task {
+                            await LyricIntelligence.shared.scheduleAnalysis(
+                                song: song,
+                                document: document
+                            )
+                        }
+                    }
                     return
                 } catch is CancellationError {
                     return

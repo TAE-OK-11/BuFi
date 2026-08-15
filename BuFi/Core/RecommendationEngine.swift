@@ -18,6 +18,7 @@ struct RecommendationWeights: Sendable {
     var forgottenFavorites: Double
     var artistRotation: Double
     var timeAwareness: Double
+    var lyricMood: Double
     var discoveryRatio: Double
 
     static func current(_ defaults: UserDefaults = .standard) -> RecommendationWeights {
@@ -58,6 +59,10 @@ struct RecommendationWeights: Sendable {
                 "recommendation-weight-time-awareness",
                 fallback: 0.30
             ),
+            lyricMood: value(
+                "recommendation-weight-lyric-mood",
+                fallback: 0.50
+            ),
             discoveryRatio: value(
                 "recommendation-discovery-ratio",
                 fallback: 0.35
@@ -95,6 +100,7 @@ private enum RecommendationFeature: Int, CaseIterable, Hashable {
     case artistRotation
     case timeAwareness
     case popularity
+    case lyricMood
 }
 
 private struct StableFingerprint {
@@ -180,7 +186,8 @@ private struct RecommendationPreset {
                     .forgottenFavorites: 0.06,
                     .artistRotation: 0.08,
                     .timeAwareness: purpose == .daylist ? 0.12 : 0.06,
-                    .popularity: 0.06
+                    .popularity: 0.06,
+                    .lyricMood: purpose == .daylist ? 0.12 : 0.10
                 ]
             )
         case .taste:
@@ -191,7 +198,7 @@ private struct RecommendationPreset {
                     .behavior: 0.22, .completion: 0.18,
                     .repeatListening: 0.15, .localMetadata: 0.12,
                     .forgottenFavorites: 0.09, .playlistAffinity: 0.08,
-                    .artistRotation: 0.07
+                    .artistRotation: 0.07, .lyricMood: 0.08
                 ]
             )
         case .artistMix:
@@ -201,7 +208,8 @@ private struct RecommendationPreset {
                     .favorites: 0.24, .server: 0.32, .history: 0.20,
                     .discovery: 0.10, .lastFM: 0.14,
                     .listenBrainz: 0.14, .behavior: 0.12,
-                    .localMetadata: 0.18, .artistRotation: 0.05
+                    .localMetadata: 0.18, .artistRotation: 0.05,
+                    .lyricMood: 0.10
                 ]
             )
         case .discovery:
@@ -212,7 +220,8 @@ private struct RecommendationPreset {
                     .listenBrainz: 0.25, .history: 0.15,
                     .server: 0.22, .context: 0.12,
                     .localMetadata: 0.10, .artistRotation: 0.12,
-                    .timeAwareness: 0.06, .popularity: 0.06
+                    .timeAwareness: 0.06, .popularity: 0.06,
+                    .lyricMood: 0.10
                 ]
             )
         case .frequent:
@@ -233,7 +242,7 @@ private struct RecommendationPreset {
                     .listenBrainz: 0.10, .behavior: 0.16,
                     .completion: 0.12, .discovery: 0.08,
                     .localMetadata: 0.14, .artistRotation: 0.10,
-                    .timeAwareness: 0.08
+                    .timeAwareness: 0.08, .lyricMood: 0.16
                 ]
             )
         }
@@ -678,6 +687,7 @@ enum RecommendationMixer {
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
         seed: Song? = nil,
+        lyricIndex: LyricSignatureIndex = .empty,
         limit: Int = 30,
         date: Date = Date()
     ) async -> [Song] {
@@ -689,6 +699,7 @@ enum RecommendationMixer {
             purpose: purpose,
             behavior: behavior,
             seed: seed,
+            lyricIndex: lyricIndex,
             limit: limit,
             date: date
         )
@@ -703,6 +714,7 @@ enum RecommendationMixer {
         snapshotRevision: HomeSnapshotRevision? = nil,
         weights: RecommendationWeights,
         behavior: RecommendationBehaviorSnapshot,
+        lyricIndex: LyricSignatureIndex = .empty,
         date: Date = Date()
     ) async -> (recommended: [Song], daylist: [Song]) {
         guard !Task.isCancelled else { return ([], []) }
@@ -711,6 +723,7 @@ enum RecommendationMixer {
             snapshotRevision: snapshotRevision,
             weights: weights,
             behavior: behavior,
+            lyricIndex: lyricIndex,
             date: date
         )
         guard !Task.isCancelled else { return (recommended, []) }
@@ -720,6 +733,7 @@ enum RecommendationMixer {
             weights: weights,
             purpose: .daylist,
             behavior: behavior,
+            lyricIndex: lyricIndex,
             limit: 24,
             date: date
         )
@@ -733,6 +747,7 @@ enum RecommendationMixer {
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
         seed: Song? = nil,
+        lyricIndex: LyricSignatureIndex = .empty,
         limit: Int = 30,
         date: Date = Date()
     ) -> [Song] {
@@ -744,6 +759,7 @@ enum RecommendationMixer {
             purpose: purpose,
             behavior: behavior,
             seed: seed,
+            lyricIndex: lyricIndex,
             limit: limit,
             date: date
         ) else { return [] }
@@ -1006,6 +1022,14 @@ enum RecommendationMixer {
             weightedTotal += scoringPlan.contribution(.artistRotation, score: rotationScore)
             weightedTotal += scoringPlan.contribution(.timeAwareness, score: timeScore)
             weightedTotal += scoringPlan.contribution(.popularity, score: popularityScore)
+            weightedTotal += scoringPlan.contribution(
+                .lyricMood,
+                score: lyricIndex.affinity(
+                    candidateID: song.id,
+                    recentIDs: behavior.recentSongs.map(\.id),
+                    favoriteIDs: snapshot.starredSongs.map(\.id)
+                )
+            )
             let score = scoringPlan.normalizedScore(weightedTotal)
             let metadataConfidence = metadataConfidence(song)
             let sourceConfidence = sourceConfidence(
@@ -1093,7 +1117,8 @@ enum RecommendationMixer {
             .forgottenFavorites: weights.forgottenFavorites,
             .artistRotation: weights.artistRotation,
             .timeAwareness: weights.timeAwareness,
-            .popularity: 0.65
+            .popularity: 0.65,
+            .lyricMood: weights.lyricMood
         ]
         if coldStart {
             userWeights[.favorites] = max(userWeights[.favorites] ?? 0, 0.95)
@@ -1636,6 +1661,7 @@ enum RecommendationMixer {
         purpose: RecommendationPurpose,
         behavior: RecommendationBehaviorSnapshot,
         seed: Song?,
+        lyricIndex: LyricSignatureIndex,
         limit: Int,
         date: Date
     ) -> String? {
@@ -1710,7 +1736,7 @@ enum RecommendationMixer {
             weights.recency, weights.context, weights.localMetadata,
             weights.playlistAffinity, weights.albumCompletion,
             weights.forgottenFavorites, weights.artistRotation,
-            weights.timeAwareness, weights.discoveryRatio
+            weights.timeAwareness, weights.lyricMood, weights.discoveryRatio
         ]
         for value in weightValues { weightsFingerprint.append(value) }
         let calendar = Calendar.current
@@ -1720,6 +1746,7 @@ enum RecommendationMixer {
             snapshotIdentity,
             behaviorIdentity,
             seed?.id ?? "",
+            String(lyricIndex.bySongID.count),
             String(weightsFingerprint.value),
             String(temporalBucket(for: purpose, date: date)),
             String(describing: calendar.identifier),

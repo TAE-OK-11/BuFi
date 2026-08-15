@@ -582,8 +582,16 @@ private struct RecommendationSettingsView: View {
     private var artistRotationWeight = 0.45
     @AppStorage("recommendation-weight-time-awareness")
     private var timeAwarenessWeight = 0.30
+    @AppStorage("recommendation-weight-lyric-mood")
+    private var lyricMoodWeight = 0.50
     @AppStorage("recommendation-discovery-ratio")
     private var discoveryRatio = 0.35
+    @AppStorage("lyric-intelligence-provider")
+    private var lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
+    @AppStorage("lyric-intelligence-openrouter-model")
+    private var openRouterModel = "google/gemma-3-270m-it"
+    @State private var openAIKey = ""
+    @State private var openRouterKey = ""
 
     var body: some View {
         ScrollView {
@@ -623,6 +631,7 @@ private struct RecommendationSettingsView: View {
                         weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
                         weightRow("아티스트 순환", value: $artistRotationWeight)
                         weightRow("시간대 맞춤", value: $timeAwarenessWeight)
+                        weightRow("가사 분위기", value: $lyricMoodWeight)
                         Button("기본값으로 복원") {
                             restoreDefaults()
                         }
@@ -701,6 +710,84 @@ private struct RecommendationSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+
+                SettingsGroup(title: "가사 지능") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Picker("분석 엔진", selection: $lyricProviderRaw) {
+                            ForEach(LyricIntelligenceProviderKind.allCases) { kind in
+                                Text(kind.title).tag(kind.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        settingsDescription("자동은 Apple Intelligence가 있으면 기기에서 분석하고, 없으면 Gemma 3 270M을 씁니다. Gemma는 앱에 넣지 않고 OpenRouter 키가 있을 때 호출합니다.")
+                        if lyricProviderRaw == LyricIntelligenceProviderKind.onDevice.rawValue {
+                            SecureField(
+                                session.hasOpenRouterKey
+                                    ? "Gemma 3 대체용 OpenRouter 키 유지/교체"
+                                    : "Gemma 3용 OpenRouter 키 (선택)",
+                                text: $openRouterKey
+                            )
+                            .settingsTextField()
+                            Button(session.hasOpenRouterKey ? "키 갱신" : "키 저장") {
+                                Task {
+                                    await model.saveLyricAPIKey(
+                                        openRouterKey,
+                                        provider: .openRouter
+                                    )
+                                    openRouterKey = ""
+                                }
+                            }
+                            .buttonStyle(SettingsActionButtonStyle())
+                            .disabled(
+                                openRouterKey
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .isEmpty
+                            )
+                        }
+                        if lyricProviderRaw == LyricIntelligenceProviderKind.openAI.rawValue {
+                            SecureField(
+                                session.hasOpenAIKey ? "저장된 OpenAI 키 교체" : "OpenAI API 키",
+                                text: $openAIKey
+                            )
+                            .settingsTextField()
+                            Button(session.hasOpenAIKey ? "OpenAI 키 갱신" : "OpenAI 키 저장") {
+                                Task {
+                                    await model.saveLyricAPIKey(openAIKey, provider: .openAI)
+                                    openAIKey = ""
+                                }
+                            }
+                            .buttonStyle(SettingsActionButtonStyle())
+                            .disabled(openAIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        if lyricProviderRaw == LyricIntelligenceProviderKind.openRouter.rawValue {
+                            TextField("OpenRouter 모델", text: $openRouterModel)
+                                .settingsTextField()
+                            SecureField(
+                                session.hasOpenRouterKey
+                                    ? "저장된 OpenRouter 키 교체"
+                                    : "OpenRouter API 키",
+                                text: $openRouterKey
+                            )
+                            .settingsTextField()
+                            Button(session.hasOpenRouterKey ? "OpenRouter 키 갱신" : "OpenRouter 키 저장") {
+                                Task {
+                                    await model.saveLyricAPIKey(
+                                        openRouterKey,
+                                        provider: .openRouter
+                                    )
+                                    openRouterKey = ""
+                                }
+                            }
+                            .buttonStyle(SettingsActionButtonStyle())
+                            .disabled(
+                                openRouterKey
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .isEmpty
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
             }
             .padding(.top, 18)
             .buFiMiniPlayerContentClearance()
@@ -766,6 +853,7 @@ private struct RecommendationSettingsView: View {
         forgottenFavoritesWeight = 0.50
         artistRotationWeight = 0.45
         timeAwarenessWeight = 0.30
+        lyricMoodWeight = 0.50
         discoveryRatio = 0.35
         model.rebuildRecommendations()
     }

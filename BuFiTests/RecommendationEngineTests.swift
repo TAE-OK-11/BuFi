@@ -724,6 +724,7 @@ final class RecommendationEngineTests: XCTestCase {
         value.forgottenFavorites = 0
         value.artistRotation = 0
         value.timeAwareness = 0
+        value.lyricMood = 0
         value.discoveryRatio = 0.35
         return value
     }
