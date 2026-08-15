@@ -725,15 +725,25 @@ enum PlaybackRecoveryPolicy {
         start.isFinite && end.isFinite && end >= start + 0.1
     }
 
-    static func shouldForceImmediatePlayback(
+    static func isManagedBufferingWait(
         timeControlStatus: AVPlayer.TimeControlStatus,
         waitingReason: AVPlayer.WaitingReason?
     ) -> Bool {
         guard timeControlStatus == .waitingToPlayAtSpecifiedRate else {
-            return true
+            return false
         }
-        return waitingReason != .toMinimizeStalls
-            && waitingReason != .evaluatingBufferingRate
+        return waitingReason == .toMinimizeStalls
+            || waitingReason == .evaluatingBufferingRate
+    }
+
+    static func shouldForceImmediatePlayback(
+        timeControlStatus: AVPlayer.TimeControlStatus,
+        waitingReason: AVPlayer.WaitingReason?
+    ) -> Bool {
+        !isManagedBufferingWait(
+            timeControlStatus: timeControlStatus,
+            waitingReason: waitingReason
+        )
     }
 
     static func nextCompatibilityIndex(
@@ -3261,6 +3271,10 @@ final class AudioEngine: NSObject, ObservableObject {
                self.currentSong?.externalStreamURL == nil,
                !self.isSeekInFlight,
                self.pendingSeekPosition == nil,
+               !PlaybackRecoveryPolicy.isManagedBufferingWait(
+                    timeControlStatus: self.player.timeControlStatus,
+                    waitingReason: self.player.reasonForWaitingToPlay
+               ),
                let target = PlaybackRecoveryPolicy.startupNudgeTarget(
                     elapsed: positionBeforeAttempt,
                     duration: self.duration,
@@ -3293,6 +3307,32 @@ final class AudioEngine: NSObject, ObservableObject {
                     to: self.currentPlayerPosition()
                ) {
                 return
+            }
+
+            if PlaybackRecoveryPolicy.isManagedBufferingWait(
+                timeControlStatus: self.player.timeControlStatus,
+                waitingReason: self.player.reasonForWaitingToPlay
+            ) {
+                // AVPlayer has deliberately paused to build a safer buffer.
+                // Give that buffer time to fill instead of throwing away the
+                // partially loaded item and restarting the HTTP media request.
+                do {
+                    try await Task.sleep(for: .seconds(4))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, self.wantsPlayback,
+                      self.networkPathIsSatisfied,
+                      !self.isSeekInFlight,
+                      self.pendingSeekPosition == nil,
+                      self.player.currentItem === item else { return }
+                if self.player.timeControlStatus == .playing,
+                   PlaybackRecoveryPolicy.hasMeaningfulProgress(
+                        from: progressBaseline,
+                        to: self.currentPlayerPosition()
+                   ) {
+                    return
+                }
             }
 
             self.recoveryAttempt += 1

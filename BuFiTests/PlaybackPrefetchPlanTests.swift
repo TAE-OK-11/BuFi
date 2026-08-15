@@ -149,6 +149,14 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
     }
 
     func testAutomaticBufferingWaitIsNotForcedImmediately() {
+        XCTAssertTrue(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .toMinimizeStalls
+        ))
+        XCTAssertTrue(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .evaluatingBufferingRate
+        ))
         XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
             timeControlStatus: .waitingToPlayAtSpecifiedRate,
             waitingReason: .toMinimizeStalls
@@ -156,6 +164,10 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
             timeControlStatus: .waitingToPlayAtSpecifiedRate,
             waitingReason: .evaluatingBufferingRate
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .paused,
+            waitingReason: nil
         ))
         XCTAssertTrue(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
             timeControlStatus: .paused,
