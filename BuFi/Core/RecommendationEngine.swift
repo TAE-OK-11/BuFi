@@ -571,6 +571,70 @@ private final class RecommendationMixCache: @unchecked Sendable {
 /// Home snapshots can carry thousands of starred songs. Scoring every
 /// unique ID is wasted work because the mixer only publishes a few dozen
 /// tracks and source lists are already ordered by usefulness.
+enum RecommendationSuppressionPolicy {
+    /// Songs the user repeatedly rejects should not come back in a mix.
+    static func shouldDrop(_ value: SongBehavior?) -> Bool {
+        guard let value else { return false }
+        if value.earlySkipCount >= 2, value.earlySkipCount > value.completedCount {
+            return true
+        }
+        if value.queueRemovalCount >= 2, value.playCount <= 2 {
+            return true
+        }
+        if value.skipCount >= 4, value.completedCount == 0 {
+            return true
+        }
+        return false
+    }
+}
+
+enum RecommendationSeedAffinity {
+    /// Distance to the current seed. Same album after a completed listen is
+    /// the strongest local radio cue; BPM and genre keep the lane.
+    static func score(
+        candidate: Song,
+        seed: Song,
+        seedCompleted: Bool
+    ) -> Double {
+        if candidate.id == seed.id { return 0 }
+        var score = 0.0
+        let seedArtist = RecommendationCandidateMetadata.artistKey(for: seed)
+        let candidateArtist = RecommendationCandidateMetadata.artistKey(for: candidate)
+        if !seedArtist.isEmpty, seedArtist == candidateArtist {
+            score = max(score, 0.80)
+        }
+        let seedAlbum = RecommendationMixer.normalized(seed.albumId ?? seed.album)
+        let candidateAlbum = RecommendationMixer.normalized(
+            candidate.albumId ?? candidate.album
+        )
+        if !seedAlbum.isEmpty, seedAlbum == candidateAlbum {
+            score = max(score, seedCompleted ? 0.94 : 0.62)
+            if seedCompleted,
+               let next = candidate.track,
+               let current = seed.track,
+               next > current,
+               next <= current + 3 {
+                score = max(score, 0.98)
+            }
+        }
+        let seedGenres = Set(RecommendationCandidateMetadata.genreKeys(for: seed))
+        if !seedGenres.isEmpty,
+           RecommendationCandidateMetadata.genreKeys(for: candidate)
+            .contains(where: seedGenres.contains) {
+            score = max(score, 0.72)
+        }
+        if let left = candidate.bpm, let right = seed.bpm, left > 0, right > 0 {
+            let delta = abs(left - right)
+            if delta <= 8 {
+                score = max(score, 0.74)
+            } else if delta <= 16 {
+                score = max(score, 0.56)
+            }
+        }
+        return min(1, score)
+    }
+}
+
 enum RecommendationScoringPolicy {
     static let scoringCandidateLimit = 360
 
@@ -613,6 +677,7 @@ enum RecommendationMixer {
         weights: RecommendationWeights,
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
+        seed: Song? = nil,
         limit: Int = 30,
         date: Date = Date()
     ) async -> [Song] {
@@ -623,6 +688,7 @@ enum RecommendationMixer {
             weights: weights,
             purpose: purpose,
             behavior: behavior,
+            seed: seed,
             limit: limit,
             date: date
         )
@@ -666,6 +732,7 @@ enum RecommendationMixer {
         weights: RecommendationWeights,
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
+        seed: Song? = nil,
         limit: Int = 30,
         date: Date = Date()
     ) -> [Song] {
@@ -676,6 +743,7 @@ enum RecommendationMixer {
             weights: weights,
             purpose: purpose,
             behavior: behavior,
+            seed: seed,
             limit: limit,
             date: date
         ) else { return [] }
@@ -805,12 +873,20 @@ enum RecommendationMixer {
         let sessionIntent = RecommendationSessionIntent.make(
             from: behavior.recentSongs
         )
+        let resolvedSeed = seed ?? behavior.recentSongs.first
+        let seedBehavior = resolvedSeed.flatMap { behavior.songs[$0.id] }
+        let seedCompleted = seedBehavior.map {
+            $0.averageCompletion >= 0.65 || $0.completedCount > $0.skipCount
+        } ?? false
 
         var ranked: [RankedRecommendation] = []
         ranked.reserveCapacity(candidates.count)
         for (index, song) in candidates.enumerated() {
             if index.isMultiple(of: 32), Task.isCancelled { return [] }
             let songBehavior = behavior.songs[song.id]
+            if RecommendationSuppressionPolicy.shouldDrop(songBehavior) {
+                continue
+            }
             let metadata = RecommendationCandidateMetadata(song: song)
             let shortAffinity = shortProfile.affinity(for: metadata)
             let longAffinity = longProfile.affinity(for: metadata)
@@ -906,10 +982,18 @@ enum RecommendationMixer {
                 for: metadata,
                 songID: song.id
             )
+            let seedScore = resolvedSeed.map {
+                RecommendationSeedAffinity.score(
+                    candidate: song,
+                    seed: $0,
+                    seedCompleted: seedCompleted
+                )
+            } ?? 0
             let contextScore = min(
                 1,
-                contextProfile.affinity(for: metadata) * 0.52
-                    + sessionScore * 0.70
+                contextProfile.affinity(for: metadata) * 0.40
+                    + sessionScore * 0.48
+                    + seedScore * 0.82
             )
             weightedTotal += scoringPlan.contribution(
                 .context,
@@ -1551,6 +1635,7 @@ enum RecommendationMixer {
         weights: RecommendationWeights,
         purpose: RecommendationPurpose,
         behavior: RecommendationBehaviorSnapshot,
+        seed: Song?,
         limit: Int,
         date: Date
     ) -> String? {
@@ -1634,6 +1719,7 @@ enum RecommendationMixer {
             String(limit),
             snapshotIdentity,
             behaviorIdentity,
+            seed?.id ?? "",
             String(weightsFingerprint.value),
             String(temporalBucket(for: purpose, date: date)),
             String(describing: calendar.identifier),

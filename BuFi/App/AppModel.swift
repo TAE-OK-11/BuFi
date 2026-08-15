@@ -739,9 +739,10 @@ final class AppModel: ObservableObject {
             weights: .current(),
             purpose: .autoplay,
             behavior: behavior,
+            seed: seed,
             limit: 32
         )
-        return Self.uniqueSongs(ranked + serverValues + home.randomSongs)
+        return Self.uniqueSongs(ranked + serverValues)
             .filter {
                 !excludedIDs.contains($0.id) &&
                     $0.id != seed.id &&
@@ -2001,6 +2002,7 @@ final class AppModel: ObservableObject {
         weights: RecommendationWeights,
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
+        seed: Song? = nil,
         limit: Int = 30
     ) async -> [Song] {
         await RecommendationMixer.mixConcurrently(
@@ -2009,6 +2011,7 @@ final class AppModel: ObservableObject {
             weights: weights,
             purpose: purpose,
             behavior: behavior,
+            seed: seed,
             limit: limit
         )
     }

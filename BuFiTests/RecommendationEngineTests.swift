@@ -572,6 +572,65 @@ final class RecommendationEngineTests: XCTestCase {
         }
     }
 
+    func testCompletedSeedPrefersTheNextAlbumTrack() {
+        let seed = song(
+            id: "seed-album",
+            title: "Track 1",
+            artist: "Album Artist",
+            genre: "Pop"
+        )
+        var later = song(
+            id: "later-album",
+            title: "Track 3",
+            artist: "Album Artist",
+            genre: "Pop"
+        )
+        later.track = 3
+        later.albumId = seed.albumId
+        var other = song(
+            id: "other-genre",
+            title: "Other",
+            artist: "Other Artist",
+            genre: "Metal"
+        )
+        other.track = 1
+        var seedSong = seed
+        seedSong.track = 1
+
+        XCTAssertGreaterThan(
+            RecommendationSeedAffinity.score(
+                candidate: later,
+                seed: seedSong,
+                seedCompleted: true
+            ),
+            RecommendationSeedAffinity.score(
+                candidate: other,
+                seed: seedSong,
+                seedCompleted: true
+            )
+        )
+    }
+
+    func testRepeatedEarlySkipsAreDroppedFromMixes() {
+        var skipped = SongBehavior(
+            song: song(id: "hated", title: "Hated", artist: "Skip Artist"),
+            at: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        skipped.earlySkipCount = 3
+        skipped.skipCount = 3
+        skipped.playCount = 3
+        XCTAssertTrue(RecommendationSuppressionPolicy.shouldDrop(skipped))
+        XCTAssertFalse(
+            RecommendationSuppressionPolicy.shouldDrop(
+                behavior(
+                    song: song(id: "loved", title: "Loved", artist: "Keep"),
+                    playCount: 4,
+                    lastPlayed: Date(timeIntervalSince1970: 1_800_000_000)
+                )
+            )
+        )
+    }
+
     func testAutoplayFollowsRecentSessionGenre() {
         RecommendationMixer.invalidateCache()
         let date = Date(timeIntervalSince1970: 1_800_000_000)
