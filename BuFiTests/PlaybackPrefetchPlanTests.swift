@@ -271,6 +271,27 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         ))
     }
 
+    func testGaplessStagingWaitsUntilFinalPlaybackWindow() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 170,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertTrue(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 174,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 179,
+            duration: 180,
+            isBuffering: true,
+            isActivelyPlaying: true
+        ))
+    }
+
     func testGaplessPreparationStopsDuringBuffering() {
         XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
             elapsed: 175,

@@ -800,6 +800,25 @@ enum PlaybackGaplessPreparationPolicy {
         let leadTime = min(20, max(6, duration * 0.12))
         return remaining <= leadTime
     }
+
+    static func shouldStage(
+        elapsed: TimeInterval,
+        duration: TimeInterval,
+        isBuffering: Bool,
+        isActivelyPlaying: Bool
+    ) -> Bool {
+        guard isActivelyPlaying,
+              !isBuffering,
+              elapsed.isFinite,
+              duration.isFinite,
+              duration > 0 else {
+            return false
+        }
+        let position = min(max(0, elapsed), duration)
+        let remaining = max(0, duration - position)
+        let leadTime = min(8, max(3, duration * 0.04))
+        return remaining <= leadTime
+    }
 }
 
 struct PlaybackResourceRequest: Sendable {
@@ -2406,6 +2425,12 @@ final class AudioEngine: NSObject, ObservableObject {
               !isShuffleEnabled,
               repeatMode != .one,
               wantsPlayback,
+              PlaybackGaplessPreparationPolicy.shouldStage(
+                elapsed: currentPlayerPosition(),
+                duration: duration,
+                isBuffering: isBuffering,
+                isActivelyPlaying: player.timeControlStatus == .playing
+              ),
               let currentItem = player.currentItem,
               queue.indices.contains(queueIndex),
               currentSong?.id == queue[queueIndex].id else {
@@ -2996,8 +3021,10 @@ final class AudioEngine: NSObject, ObservableObject {
                             return
                         }
                         Self.logger.warning(
-                            "Playback stalled; scheduling bounded recovery"
+                            "Playback stalled; prioritizing active stream recovery"
                         )
+                        self.invalidateStagedSuccessor(removeFromPlayer: true)
+                        self.suspendSpeculativePrefetch()
                         self.schedulePlaybackRecovery()
                     }
                 },
