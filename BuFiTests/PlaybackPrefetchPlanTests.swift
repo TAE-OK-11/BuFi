@@ -229,6 +229,51 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         )
     }
 
+    func testGaplessPreparationDoesNotOpenSecondStreamEarly() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 30,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertTrue(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 162,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+    }
+
+    func testGaplessPreparationStopsDuringBuffering() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 175,
+            duration: 180,
+            isBuffering: true,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 175,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: false
+        ))
+    }
+
+    func testGaplessPreparationRequiresKnownFiniteDuration() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 10,
+            duration: 0,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 10,
+            duration: .infinity,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+    }
+
     private func song(
         id: String,
         externalStreamURL: String? = nil
