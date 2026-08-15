@@ -145,6 +145,8 @@ struct LyricSignature: Codable, Equatable, Sendable {
             String(localized: "Apple Intelligence")
         case "apple-privacy-cloud":
             String(localized: "Apple Privacy Cloud")
+        case "apple-intelligence-3b":
+            String(localized: "Apple Intelligence 3B (로컬)")
         case "gemma-3-270m":
             "Gemma 3 270M"
         case "openai":
@@ -970,7 +972,9 @@ enum LyricIntelligenceBackend {
         lyrics: String,
         settings: LyricIntelligenceSettings
     ) async -> Analysis? {
-        if let apple = await AppleFoundationLyricClient.analyzePrivateCloud(lyrics: lyrics) {
+        if let apple = await AppleFoundationLyricClient.analyzePrivateCloudOrLocal3B(
+            lyrics: lyrics
+        ) {
             return Analysis(
                 moods: apple.moods,
                 themes: apple.themes,
@@ -1106,7 +1110,9 @@ enum LyricIntelligenceBackend {
                 model: "google/gemma-3-270m-it"
             )
         case .applePrivateCloud:
-            if let text = await AppleFoundationLyricClient.completePrivateCloud(prompt) {
+            if let text = await AppleFoundationLyricClient.completePrivateCloudOrLocal3B(
+                prompt
+            ) {
                 return text
             }
             return await complete(prompt: prompt, settings: LyricIntelligenceSettings(

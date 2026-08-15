@@ -45,10 +45,14 @@ enum ApplePrivateCloudStatus: Equatable, Sendable {
         case .quotaReached:
             String(localized: "오늘 Apple Privacy Cloud 사용량을 모두 썼습니다. 지금은 기기 모델로 분석합니다.")
         case .available:
-            String(localized: "가사를 Apple Private Cloud Compute로 분석합니다. 가사는 기기를 떠나 Apple 프라이버시 클라우드에서만 처리되며, 하루 사용량 제한이 있습니다. 쓸 수 없으면 기기 분석으로 넘어갑니다.")
+            String(localized: "가사를 Apple Private Cloud Compute로 분석합니다. 가사는 기기를 떠나 Apple 프라이버시 클라우드에서만 처리되며, 하루 사용량 제한이 있습니다. 쓸 수 없으면 Apple 3B 로컬로 넘어갑니다.")
         case .unavailable:
-            String(localized: "지금은 Apple Privacy Cloud를 쓸 수 없습니다. 기기 분석으로 대체합니다.")
+            String(localized: "지금은 Apple Privacy Cloud를 쓸 수 없습니다. Apple 3B 로컬로 대체합니다.")
         }
+    }
+
+    var usesLocal3BFallback: Bool {
+        self != .available
     }
 }
 
@@ -116,6 +120,24 @@ enum AppleFoundationLyricClient {
         return nil
     }
 
+    static func analyzeLocal3B(lyrics: String) async -> Analysis? {
+        if #available(iOS 26.0, *) {
+            return await FoundationModelsBridge.analyzeDefault3B(lyrics: lyrics)
+        }
+        return nil
+    }
+
+    static func analyzePrivateCloudOrLocal3B(lyrics: String) async -> Analysis? {
+        if !privateCloudStatus().usesLocal3BFallback,
+           let cloud = await analyzePrivateCloud(lyrics: lyrics) {
+            return cloud
+        }
+        if let local = await analyzeLocal3B(lyrics: lyrics) {
+            return local
+        }
+        return await analyze(lyrics: lyrics)
+    }
+
     static func complete(_ prompt: String) async -> String? {
         if #available(iOS 26.0, *) {
             return await FoundationModelsBridge.complete(prompt)
@@ -128,6 +150,14 @@ enum AppleFoundationLyricClient {
             return await PrivateCloudBridge.complete(prompt)
         }
         return nil
+    }
+
+    static func completePrivateCloudOrLocal3B(_ prompt: String) async -> String? {
+        if !privateCloudStatus().usesLocal3BFallback,
+           let cloud = await completePrivateCloud(prompt) {
+            return cloud
+        }
+        return await complete(prompt)
     }
 }
 
@@ -186,6 +216,23 @@ private enum FoundationModelsBridge {
         )
     }
 
+    static func analyzeDefault3B(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        guard let text = await respond(
+            to: LyricIntelligencePrompt.moodAnalysis(lyrics: lyrics),
+            useCase: nil
+        ), let parsed = LyricIntelligencePrompt.parse(text) else {
+            return nil
+        }
+        return AppleFoundationLyricClient.Analysis(
+            moods: parsed.moods.isEmpty ? ["neutral"] : parsed.moods,
+            themes: parsed.themes,
+            energy: parsed.energy,
+            valence: parsed.valence,
+            summary: parsed.summary,
+            source: "apple-intelligence-3b"
+        )
+    }
+
     static func complete(_ prompt: String) async -> String? {
         await respond(to: prompt, useCase: nil)
     }
@@ -213,6 +260,11 @@ private enum FoundationModelsBridge {
     }
 
     static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        _ = lyrics
+        return nil
+    }
+
+    static func analyzeDefault3B(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
         _ = lyrics
         return nil
     }

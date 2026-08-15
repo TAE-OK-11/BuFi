@@ -215,6 +215,28 @@ final class LyricIntelligenceTests: XCTestCase {
         )
     }
 
+    func testPrivateCloudFallsBackToLocal3BWhenUnavailable() {
+        XCTAssertTrue(ApplePrivateCloudStatus.needsIOS27.usesLocal3BFallback)
+        XCTAssertTrue(ApplePrivateCloudStatus.deviceNotEligible.usesLocal3BFallback)
+        XCTAssertTrue(ApplePrivateCloudStatus.systemNotReady.usesLocal3BFallback)
+        XCTAssertTrue(ApplePrivateCloudStatus.quotaReached.usesLocal3BFallback)
+        XCTAssertTrue(ApplePrivateCloudStatus.unavailable.usesLocal3BFallback)
+        XCTAssertFalse(ApplePrivateCloudStatus.available.usesLocal3BFallback)
+        XCTAssertEqual(
+            LyricSignature(
+                songID: "one",
+                lyricsHash: "h",
+                moods: ["calm"],
+                themes: [],
+                energy: 0.2,
+                valence: 0.2,
+                embedding: [],
+                source: "apple-intelligence-3b"
+            ).sourceTitle,
+            String(localized: "Apple Intelligence 3B (로컬)")
+        )
+    }
+
     func testApplePrivateCloudIsAnOptInProvider() {
         XCTAssertEqual(
             LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
