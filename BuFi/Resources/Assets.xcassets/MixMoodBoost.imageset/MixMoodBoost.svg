@@ -1,9 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3A1A10"/>
-      <stop offset="1" stop-color="#D46A2A"/>
+      <stop offset="0" stop-color="#3A1808"/>
+      <stop offset="1" stop-color="#FF7A1A"/>
     </linearGradient>
+    <radialGradient id="b" cx="84%" cy="88%" r="48%">
+      <stop offset="0" stop-color="#FFD36A"/>
+      <stop offset="1" stop-color="#FFD36A" stop-opacity="0"/>
+    </radialGradient>
   </defs>
   <rect width="512" height="512" fill="url(#g)"/>
+  <rect width="512" height="512" fill="url(#b)"/>
 </svg>
