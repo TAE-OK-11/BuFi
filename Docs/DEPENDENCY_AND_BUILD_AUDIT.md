@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-08-01
+Audit date: 2026-08-13
 
 ## Decisions
 
@@ -26,10 +26,13 @@ background playback, route recovery, and compatibility fallback paths.
 
 ## Reproducibility
 
-The four linked packages use `exactVersion` constraints in `project.yml`.
-XcodeGen generates a new project in CI, so unconstrained `from` requirements
-would otherwise allow a new dependency release to enter a build without a BuFi
-source change. Updates should be deliberate and validated by both CI jobs.
+The four linked packages use `exactVersion` constraints in `project.yml` and
+their exact Git revisions are recorded in the repository-level
+`Package.resolved`. After XcodeGen creates the project,
+`Scripts/apply-package-lock.sh` installs that lock into the generated workspace
+before dependency resolution. This prevents a moved tag from silently changing
+a local or CI build. Updates must change both files deliberately and pass both
+toolchain jobs.
 
 ## Distribution notices
 
@@ -56,14 +59,16 @@ a build-time project generator.
   [2.45.4 ProjectSpec](https://github.com/yonaskolb/XcodeGen/blob/2.45.4/Docs/ProjectSpec.md))
   while recording Xcode 26.6 as the last-upgrade version. Xcode 27 can open and
   build this format without a source migration.
-- The BuFi app and test targets use `SWIFT_VERSION = 5.0`. Swift 6 build 18
-  passed Xcode 26.6 and Xcode 27 compilation but still terminated at launch on
-  an iOS 27 beta device, while the equivalent Swift 5 build launched successfully.
-  Release 1.0.0 therefore uses the proven Swift 5 language mode until the device-only
-  incompatibility can be isolated with an actionable crash report.
-- `SWIFT_STRICT_CONCURRENCY = complete` remains enabled so potential data races
-  continue to be diagnosed without making Swift 6 language mode a deployment
-  requirement.
+- The BuFi app and test targets use `SWIFT_VERSION = 6.0` with
+  `SWIFT_STRICT_CONCURRENCY = complete`. CI verifies both settings for Debug and
+  Release before compiling, testing, or packaging either target.
+- The iOS 27 beta playback crash was isolated to a `MPMediaItemArtwork` callback
+  inheriting main-actor isolation while MediaPlayer invoked it on its private
+  access queue. The callback now has an explicit Sendable boundary and the
+  exact Swift 6 build passes the Xcode 26.6 test/launch job and Xcode 27/iOS 27
+  Release launch job.
+- Swift warnings are treated as errors for BuFi-owned targets so new migration
+  regressions cannot silently enter CI.
 - Release retains speed optimization, whole-module compilation, documented
   LLVM link-time optimization, dead-code stripping, dSYMs, disabled assertions,
   and disabled testability. `-Ounchecked` is

@@ -72,6 +72,38 @@ final class BackendMetadataTests: XCTestCase {
         XCTAssertEqual(first.artwork.id, first.song.artworkID)
     }
 
+    func testPlaybackMetadataPreservesSelectedArtworkWhileRefreshingTransport() {
+        var provisional = song(id: "same", coverArt: "selected-cover")
+        provisional.starred = "favorite"
+        var canonical = song(id: "same", coverArt: "cached-old-cover")
+        canonical.title = "Canonical Title"
+        canonical.suffix = "flac"
+        canonical.contentType = "audio/flac"
+
+        let resolved = PlaybackMetadataResolver.resolve(
+            canonical: canonical,
+            provisional: provisional
+        )
+
+        XCTAssertEqual(resolved.title, "Canonical Title")
+        XCTAssertEqual(resolved.suffix, "flac")
+        XCTAssertEqual(resolved.contentType, "audio/flac")
+        XCTAssertEqual(resolved.artworkID, "selected-cover")
+        XCTAssertEqual(resolved.starred, "favorite")
+    }
+
+    func testPlaybackMetadataUsesCanonicalArtworkWhenSelectionHasNone() {
+        let provisional = song(id: "same", coverArt: nil)
+        let canonical = song(id: "same", coverArt: "canonical-cover")
+
+        let resolved = PlaybackMetadataResolver.resolve(
+            canonical: canonical,
+            provisional: provisional
+        )
+
+        XCTAssertEqual(resolved.artworkID, "canonical-cover")
+    }
+
     func testArtworkRevisionChangesWithCoverButNotFavoriteState() {
         let original = song(id: "song", coverArt: "cover-a")
         var favorite = original
@@ -88,6 +120,32 @@ final class BackendMetadataTests: XCTestCase {
         XCTAssertNotEqual(
             original.playbackMetadataRevision,
             changedCover.playbackMetadataRevision
+        )
+        XCTAssertEqual(
+            original.audioResourceRevision,
+            changedCover.audioResourceRevision
+        )
+
+        var changedResource = original
+        changedResource.suffix = "aac"
+        XCTAssertNotEqual(
+            original.audioResourceRevision,
+            changedResource.audioResourceRevision
+        )
+
+        var datedResource = original
+        datedResource.created = "2026-08-11T00:00:00Z"
+        var renamedResource = datedResource
+        renamedResource.title = "Renamed"
+        var replacedResource = datedResource
+        replacedResource.created = "2026-08-12T00:00:00Z"
+        XCTAssertEqual(
+            datedResource.offlineMediaRevision,
+            renamedResource.offlineMediaRevision
+        )
+        XCTAssertNotEqual(
+            datedResource.offlineMediaRevision,
+            replacedResource.offlineMediaRevision
         )
     }
 

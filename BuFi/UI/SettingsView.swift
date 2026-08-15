@@ -642,14 +642,16 @@ private struct RecommendationSettingsView: View {
                         )
                         .settingsTextField()
                         Button(session.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
-                            model.saveLastFMAPIKey(lastFMAPIKey)
-                            lastFMAPIKey = ""
+                            Task { @MainActor in
+                                await model.saveLastFMAPIKey(lastFMAPIKey)
+                                lastFMAPIKey = ""
+                            }
                         }
                         .buttonStyle(SettingsActionButtonStyle())
                         .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         if session.hasLastFMAPIKey {
                             Button("Last.fm 연동 해제", role: .destructive) {
-                                model.saveLastFMAPIKey("")
+                                Task { await model.saveLastFMAPIKey("") }
                             }
                         }
                         settingsDescription("track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
@@ -669,11 +671,15 @@ private struct RecommendationSettingsView: View {
                         )
                         .settingsTextField()
                         Button("ListenBrainz 설정 저장") {
-                            model.saveListenBrainz(
-                                username: listenBrainzUsername,
-                                token: listenBrainzToken
-                            )
-                            listenBrainzToken = ""
+                            let username = listenBrainzUsername
+                            let token = listenBrainzToken
+                            Task { @MainActor in
+                                let saved = await model.saveListenBrainz(
+                                    username: username,
+                                    token: token
+                                )
+                                if saved { listenBrainzToken = "" }
+                            }
                         }
                         .buttonStyle(SettingsActionButtonStyle())
                         .disabled(
@@ -683,9 +689,12 @@ private struct RecommendationSettingsView: View {
                         )
                         if session.hasListenBrainzToken || !session.listenBrainzUsername.isEmpty {
                             Button("ListenBrainz 연동 해제", role: .destructive) {
-                                model.removeListenBrainz()
-                                listenBrainzUsername = ""
-                                listenBrainzToken = ""
+                                Task { @MainActor in
+                                    if await model.removeListenBrainz() {
+                                        listenBrainzUsername = ""
+                                        listenBrainzToken = ""
+                                    }
+                                }
                             }
                         }
                         settingsDescription("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 있는 곡만 매칭합니다.")

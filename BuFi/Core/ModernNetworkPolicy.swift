@@ -54,7 +54,7 @@ enum ModernNetworkPolicy {
             allowsExpensiveNetworkAccess: allowsExpensiveNetworkAccess,
             allowsConstrainedNetworkAccess: allowsConstrainedNetworkAccess
         )
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.requestCachePolicy = .useProtocolCachePolicy
         configuration.urlCache = URLCache(
             memoryCapacity: memoryCapacity,
             diskCapacity: diskCapacity
@@ -84,7 +84,7 @@ enum ModernNetworkPolicy {
         prepareJSONRequest(
             &request,
             acceptsZstandard: acceptsZstandard,
-            cachePolicy: .returnCacheDataElseLoad
+            cachePolicy: .useProtocolCachePolicy
         )
     }
 

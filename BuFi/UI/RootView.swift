@@ -9,7 +9,7 @@ enum AppTab: Hashable {
 }
 
 private struct MiniPlayerPlacementPreferenceKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
+    static let defaultValue: Anchor<CGRect>? = nil
 
     static func reduce(
         value: inout Anchor<CGRect>?,
@@ -21,15 +21,22 @@ private struct MiniPlayerPlacementPreferenceKey: PreferenceKey {
 
 private struct PlayerPresentationSession: Identifiable {
     let id: UUID
-    let initialArtworkPage: PlayerArtworkPageID?
+}
+
+private struct RootSyncTaskIdentity: Hashable, Sendable {
+    let isReady: Bool
+    let isSceneActive: Bool
+    let syncInterval: TimeInterval
+    let lowPowerMode: Bool
+    let thermalKey: String
+    let isPlaying: Bool
 }
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
-    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @EnvironmentObject private var playbackActivity: PlaybackActivityState
-    @EnvironmentObject private var playbackQueue: PlaybackQueueState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -80,43 +87,19 @@ struct RootView: View {
         .task(id: syncTaskID) {
             await runAutomaticSync()
         }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { return }
-            Task(priority: .utility) {
-                await OfflineStore.shared.flushPendingWrites()
-                await ListeningHistoryStore.shared.flushPendingWrites()
-            }
+        .task(id: scenePhase == .active) {
+            guard scenePhase != .active else { return }
+            await OfflineStore.shared.flushPendingWrites()
+            await ListeningHistoryStore.shared.flushPendingWrites()
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
-            let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
-            lowPowerMode = currentLowPowerMode
-            model.handleEnergyConstraints(
-                lowPowerMode: currentLowPowerMode,
-                thermalState: thermalState
-            )
-            audio.handleEnergyConstraints(
-                lowPowerMode: currentLowPowerMode,
-                thermalState: thermalState
-            )
+        .task {
+            await observePowerStateChanges()
         }
-        .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
-            let currentThermalState = ProcessInfo.processInfo.thermalState
-            thermalState = currentThermalState
-            model.handleEnergyConstraints(
-                lowPowerMode: lowPowerMode,
-                thermalState: currentThermalState
-            )
-            audio.handleEnergyConstraints(
-                lowPowerMode: lowPowerMode,
-                thermalState: currentThermalState
-            )
+        .task {
+            await observeThermalStateChanges()
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-            model.handleMemoryPressure()
-            audio.handleMemoryPressure()
-            Task(priority: .utility) {
-                await ArtworkStore.shared.clearMemory()
-            }
+        .task {
+            await observeMemoryWarnings()
         }
         .alert(
             "오류",
@@ -142,9 +125,7 @@ struct RootView: View {
         }
         .fullScreenCover(item: playerPresentationSession) { presentation in
             NavigationStack {
-                PlayerView(
-                    initialArtworkPage: presentation.initialArtworkPage
-                )
+                PlayerView()
                     .navigationDestination(for: MusicRoute.self) { route in
                         MusicDetailView(route: route)
                     }
@@ -161,8 +142,7 @@ struct RootView: View {
             get: {
                 guard playerPresentation.showPlayer else { return nil }
                 return PlayerPresentationSession(
-                    id: playerPresentation.presentationID,
-                    initialArtworkPage: currentArtworkPageID
+                    id: playerPresentation.presentationID
                 )
             },
             set: { presentation in
@@ -171,16 +151,6 @@ struct RootView: View {
                 }
             }
         )
-    }
-
-    private var currentArtworkPageID: PlayerArtworkPageID? {
-        guard let song = playbackItem.currentSong else { return nil }
-        return PlayerArtworkPagerSnapshot.make(
-            currentSong: song,
-            queue: playbackQueue.songs,
-            queueIndex: playbackQueue.index,
-            accountScope: playbackItem.currentItem?.accountScope
-        ).currentPage
     }
 
     private var isThermallyConstrained: Bool {
@@ -240,7 +210,7 @@ struct RootView: View {
         tabView
             .overlayPreferenceValue(MiniPlayerPlacementPreferenceKey.self) { anchor in
                 GeometryReader { proxy in
-                    if let anchor, playbackItem.currentSong != nil {
+                    if let anchor, currentPlayback.song != nil {
                         let frame = proxy[anchor]
                         miniPlayer
                             .frame(width: frame.width, height: frame.height)
@@ -251,7 +221,7 @@ struct RootView: View {
             }
             .animation(
                 effectiveMotion ? BuFiMotion.content : .none,
-                value: playbackItem.currentSong != nil
+                value: currentPlayback.song != nil
             )
     }
 
@@ -261,7 +231,7 @@ struct RootView: View {
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
             .safeAreaInset(edge: .bottom, spacing: 10) {
-                if playbackItem.currentSong != nil {
+                if currentPlayback.song != nil {
                     Color.clear
                         .frame(maxWidth: .infinity)
                         .frame(height: 60)
@@ -285,8 +255,15 @@ struct RootView: View {
             )
     }
 
-    private var syncTaskID: String {
-        "\(session.phase)-\(scenePhase)-\(syncInterval)-\(lowPowerMode)-\(thermalKey)-\(playbackActivity.isPlaying)"
+    private var syncTaskID: RootSyncTaskIdentity {
+        RootSyncTaskIdentity(
+            isReady: session.phase == .ready,
+            isSceneActive: scenePhase == .active,
+            syncInterval: syncInterval,
+            lowPowerMode: lowPowerMode,
+            thermalKey: thermalKey,
+            isPlaying: playbackActivity.isPlaying
+        )
     }
 
     private var thermalKey: String {
@@ -317,6 +294,56 @@ struct RootView: View {
             return max(selected, 180)
         }
         return selected
+    }
+
+    @MainActor
+    private func observePowerStateChanges() async {
+        for await _ in NotificationCenter.default.notifications(
+            named: Notification.Name.NSProcessInfoPowerStateDidChange
+        ) {
+            guard !Task.isCancelled else { return }
+            let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            lowPowerMode = currentLowPowerMode
+            model.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: currentLowPowerMode,
+                thermalState: thermalState
+            )
+        }
+    }
+
+    @MainActor
+    private func observeThermalStateChanges() async {
+        for await _ in NotificationCenter.default.notifications(
+            named: ProcessInfo.thermalStateDidChangeNotification
+        ) {
+            guard !Task.isCancelled else { return }
+            let currentThermalState = ProcessInfo.processInfo.thermalState
+            thermalState = currentThermalState
+            model.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
+            audio.handleEnergyConstraints(
+                lowPowerMode: lowPowerMode,
+                thermalState: currentThermalState
+            )
+        }
+    }
+
+    @MainActor
+    private func observeMemoryWarnings() async {
+        for await _ in NotificationCenter.default.notifications(
+            named: UIApplication.didReceiveMemoryWarningNotification
+        ) {
+            guard !Task.isCancelled else { return }
+            model.handleMemoryPressure()
+            audio.handleMemoryPressure()
+            await ArtworkStore.shared.clearMemory()
+        }
     }
 
     private func runAutomaticSync() async {

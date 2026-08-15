@@ -114,6 +114,28 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
         ])
     }
 
+    /// Identifies the playable bytes without coupling transport caches to
+    /// mutable display metadata such as title, artist, or cover art.
+    var audioResourceRevision: String {
+        stableMediaRevision([
+            id,
+            duration.map { String($0) } ?? "",
+            suffix ?? "",
+            contentType ?? "",
+            created ?? ""
+        ])
+    }
+
+    /// Server creation metadata is the only stable signal available for a
+    /// durable downloaded resource. Missing hints remain compatible with a
+    /// legacy cache instead of treating an incomplete search row as a change.
+    var offlineMediaRevision: String? {
+        guard let created = created?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !created.isEmpty else { return nil }
+        return stableMediaRevision([id, created])
+    }
+
     /// Artwork deliberately excludes mutable social state such as `starred`
     /// so liking a song never invalidates an otherwise identical image.
     var artworkRevision: String {
@@ -143,6 +165,18 @@ struct PlaybackArtworkReference: Equatable, Hashable, Sendable {
     let revision: String
 }
 
+/// Exact visual identity for one committed now-playing occurrence. Views use
+/// this value as both their async-result gate and SwiftUI identity so artwork
+/// from another play attempt can never be reused as the current cover.
+struct PlayerArtworkIdentity: Equatable, Hashable, Sendable {
+    let playbackGenerationID: UUID
+    let queueEntryID: UUID
+    let songID: String
+    let coverArtID: String?
+    let artworkRevision: String
+    let accountScope: String?
+}
+
 struct PlaybackStreamReference: Equatable, Hashable, Sendable {
     let songID: String
     let externalURL: String?
@@ -150,21 +184,41 @@ struct PlaybackStreamReference: Equatable, Hashable, Sendable {
     let contentType: String?
 }
 
+/// One logical queue occurrence. Duplicate server song IDs remain distinct so
+/// late artwork, metadata, and transport work can be validated against the
+/// exact queue entry that requested it.
+struct PlaybackQueueEntry: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    var song: Song
+
+    init(song: Song, queueEntryID: UUID = UUID()) {
+        id = queueEntryID
+        self.song = song
+    }
+}
+
 /// One atomic now-playing value. The occurrence ID distinguishes two
 /// consecutive plays of the same server song, while the nested references
 /// guarantee that artwork and stream work are derived from the same metadata
 /// snapshot rather than independently sampled mutable state.
 struct PlaybackMediaItem: Identifiable, Equatable, Sendable {
+    /// Changes for every concrete playback attempt, even when the same durable
+    /// queue entry is replayed.
     let id: UUID
+    /// Stable identity of the queue row. This is persisted and survives
+    /// reordering independently of the active playback generation above.
+    let queueEntryID: UUID
     let accountScope: String?
     var song: Song
 
     init(
         song: Song,
         accountScope: String?,
-        occurrenceID: UUID = UUID()
+        queueEntryID: UUID = UUID(),
+        playbackGenerationID: UUID = UUID()
     ) {
-        id = occurrenceID
+        id = playbackGenerationID
+        self.queueEntryID = queueEntryID
         self.accountScope = accountScope
         self.song = song
     }
@@ -175,6 +229,17 @@ struct PlaybackMediaItem: Identifiable, Equatable, Sendable {
         PlaybackArtworkReference(
             id: song.artworkID,
             revision: song.artworkRevision
+        )
+    }
+
+    var artworkIdentity: PlayerArtworkIdentity {
+        PlayerArtworkIdentity(
+            playbackGenerationID: id,
+            queueEntryID: queueEntryID,
+            songID: song.id,
+            coverArtID: artwork.id,
+            artworkRevision: artwork.revision,
+            accountScope: accountScope
         )
     }
 
@@ -326,6 +391,23 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
     static let empty = HomeSnapshot()
 }
 
+/// Collision-safe identity for an in-memory home snapshot. The generation is
+/// monotonic within one HomeLibraryState, while the epoch prevents static
+/// presentation/recommendation caches from reusing a prior model instance.
+struct HomeSnapshotRevision: Hashable, Sendable {
+    let epoch: UUID
+    let generation: UInt64
+
+    init(epoch: UUID = UUID(), generation: UInt64 = 0) {
+        self.epoch = epoch
+        self.generation = generation
+    }
+
+    func advanced() -> HomeSnapshotRevision {
+        HomeSnapshotRevision(epoch: epoch, generation: generation &+ 1)
+    }
+}
+
 struct HomeLoadResult: Sendable {
     var snapshot: HomeSnapshot
     var hasAuthoritativeStarredState: Bool
@@ -363,7 +445,7 @@ struct LyricLine: Identifiable, Hashable, Sendable {
     let text: String
 }
 
-struct LyricsDocument: Sendable {
+struct LyricsDocument: Equatable, Sendable {
     var synced: Bool
     var lines: [LyricLine]
 
@@ -381,7 +463,7 @@ struct APIErrorBody: Decodable, Sendable {
     let message: String?
 }
 
-struct StatusEnvelope: Decodable {
+struct StatusEnvelope: Decodable, Sendable {
     let response: StatusBody
 
     enum CodingKeys: String, CodingKey {
@@ -389,14 +471,14 @@ struct StatusEnvelope: Decodable {
     }
 }
 
-struct StatusBody: Decodable {
+struct StatusBody: Decodable, Sendable {
     let status: String
     let version: String?
     let serverVersion: String?
     let error: APIErrorBody?
 }
 
-struct APIEnvelope<Payload: Decodable>: Decodable {
+struct APIEnvelope<Payload: Decodable & Sendable>: Decodable, Sendable {
     let response: Payload
 
     enum CodingKeys: String, CodingKey {
@@ -404,33 +486,33 @@ struct APIEnvelope<Payload: Decodable>: Decodable {
     }
 }
 
-struct EmptyPayload: Decodable {}
+struct EmptyPayload: Decodable, Sendable {}
 
-struct AlbumListPayload: Decodable {
+struct AlbumListPayload: Decodable, Sendable {
     let albumList2: AlbumListContainer?
 }
 
-struct AlbumListContainer: Decodable {
+struct AlbumListContainer: Decodable, Sendable {
     let album: [Album]?
 }
 
-struct RandomSongsPayload: Decodable {
+struct RandomSongsPayload: Decodable, Sendable {
     let randomSongs: SongContainer?
 }
 
-struct SongPayload: Decodable {
+struct SongPayload: Decodable, Sendable {
     let song: Song?
 }
 
-struct SongsByGenrePayload: Decodable {
+struct SongsByGenrePayload: Decodable, Sendable {
     let songsByGenre: SongContainer?
 }
 
-struct GenresPayload: Decodable {
+struct GenresPayload: Decodable, Sendable {
     let genres: GenreContainer?
 }
 
-struct GenreContainer: Decodable {
+struct GenreContainer: Decodable, Sendable {
     let genre: [ServerGenre]?
 }
 
@@ -440,7 +522,7 @@ struct ServerGenre: Decodable, Sendable {
     let albumCount: Int?
 }
 
-struct OpenSubsonicExtensionsPayload: Decodable {
+struct OpenSubsonicExtensionsPayload: Decodable, Sendable {
     let openSubsonicExtensions: [OpenSubsonicExtension]?
 }
 
@@ -449,55 +531,55 @@ struct OpenSubsonicExtension: Decodable, Sendable {
     let versions: [Int]
 }
 
-struct SimilarSongsPayload: Decodable {
+struct SimilarSongsPayload: Decodable, Sendable {
     let similarSongs2: SongContainer?
     let similarSongs: SongContainer?
 }
 
-struct SonicSimilarPayload: Decodable {
+struct SonicSimilarPayload: Decodable, Sendable {
     let sonicMatch: [SonicMatch]?
 }
 
-struct SonicMatch: Decodable {
+struct SonicMatch: Decodable, Sendable {
     let entry: Song
     let similarity: Double?
 }
 
-struct InternetRadioStationsPayload: Decodable {
+struct InternetRadioStationsPayload: Decodable, Sendable {
     let internetRadioStations: InternetRadioStationContainer?
 }
 
-struct InternetRadioStationContainer: Decodable {
+struct InternetRadioStationContainer: Decodable, Sendable {
     let internetRadioStation: [InternetRadioStation]?
 }
 
-struct SongContainer: Decodable {
+struct SongContainer: Decodable, Sendable {
     let song: [Song]?
 }
 
-struct StarredPayload: Decodable {
+struct StarredPayload: Decodable, Sendable {
     let starred2: StarredContainer?
 }
 
-struct StarredContainer: Decodable {
+struct StarredContainer: Decodable, Sendable {
     let artist: [Artist]?
     let album: [Album]?
     let song: [Song]?
 }
 
-struct PlaylistsPayload: Decodable {
+struct PlaylistsPayload: Decodable, Sendable {
     let playlists: PlaylistContainer?
 }
 
-struct PlaylistContainer: Decodable {
+struct PlaylistContainer: Decodable, Sendable {
     let playlist: [Playlist]?
 }
 
-struct AlbumPayload: Decodable {
+struct AlbumPayload: Decodable, Sendable {
     let album: AlbumWithSongs?
 }
 
-struct AlbumWithSongs: Decodable {
+struct AlbumWithSongs: Decodable, Sendable {
     let id: String?
     let name: String?
     let artist: String?
@@ -508,11 +590,11 @@ struct AlbumWithSongs: Decodable {
     let song: [Song]?
 }
 
-struct PlaylistPayload: Decodable {
+struct PlaylistPayload: Decodable, Sendable {
     let playlist: PlaylistWithSongs?
 }
 
-struct PlaylistWithSongs: Decodable {
+struct PlaylistWithSongs: Decodable, Sendable {
     let id: String?
     let name: String?
     let owner: String?
@@ -521,19 +603,19 @@ struct PlaylistWithSongs: Decodable {
     let entry: [Song]?
 }
 
-struct SearchPayload: Decodable {
+struct SearchPayload: Decodable, Sendable {
     let searchResult3: SearchContainer?
     let searchResult2: SearchContainer?
 }
 
-struct SearchContainer: Decodable {
+struct SearchContainer: Decodable, Sendable {
     let artist: [Artist]?
     let album: [Album]?
     let song: [Song]?
 }
 
 
-struct ArtistInfoPayload: Decodable {
+struct ArtistInfoPayload: Decodable, Sendable {
     let artistInfo2: ArtistInfo?
 }
 
@@ -542,23 +624,23 @@ struct ArtistInfo: Decodable, Sendable {
     let similarArtist: [Artist]?
 }
 
-struct ArtistAlbumsPayload: Decodable {
+struct ArtistAlbumsPayload: Decodable, Sendable {
     let artist: ArtistWithAlbums?
 }
 
-struct ArtistsPayload: Decodable {
+struct ArtistsPayload: Decodable, Sendable {
     let artists: ArtistsContainer?
 }
 
-struct ArtistsContainer: Decodable {
+struct ArtistsContainer: Decodable, Sendable {
     let index: [ArtistIndex]?
 }
 
-struct ArtistIndex: Decodable {
+struct ArtistIndex: Decodable, Sendable {
     let artist: [Artist]?
 }
 
-struct ArtistWithAlbums: Decodable {
+struct ArtistWithAlbums: Decodable, Sendable {
     let id: String
     let name: String
     let coverArt: String?
@@ -577,34 +659,45 @@ struct ArtistWithAlbums: Decodable {
     }
 }
 
-struct TopSongsPayload: Decodable {
+struct TopSongsPayload: Decodable, Sendable {
     let topSongs: SongContainer?
 }
 
-struct LyricsPayload: Decodable {
+struct LyricsPayload: Decodable, Sendable {
     let lyricsList: LyricsList?
 }
 
-struct LyricsList: Decodable {
+struct LegacyLyricsPayload: Decodable, Sendable {
+    let lyrics: LegacyLyrics?
+}
+
+struct LegacyLyrics: Decodable, Sendable {
+    let artist: String?
+    let title: String?
+    let value: String?
+}
+
+struct LyricsList: Decodable, Sendable {
     let structuredLyrics: [StructuredLyrics]?
 }
 
-struct StructuredLyrics: Decodable {
+struct StructuredLyrics: Decodable, Sendable {
+    let lang: String?
     let offset: Int?
     let synced: Bool?
     let line: [StructuredLyricLine]?
 }
 
-struct StructuredLyricLine: Decodable {
+struct StructuredLyricLine: Decodable, Sendable {
     let start: Int?
     let value: String?
 }
 
-struct PlayQueuePayload: Decodable {
+struct PlayQueuePayload: Decodable, Sendable {
     let playQueue: PlayQueueContainer?
 }
 
-struct PlayQueueContainer: Decodable {
+struct PlayQueueContainer: Decodable, Sendable {
     let current: String?
     let position: Int?
     let entry: [Song]?

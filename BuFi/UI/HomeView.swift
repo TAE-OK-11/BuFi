@@ -14,9 +14,7 @@ struct HomeView: View {
     private var selectedArtistMixes = "[]"
     @State private var filter = HomeFilter.all
     @State private var presentation = HomePresentation.empty
-    @State private var presentationInput: HomePresentationInput?
-    @State private var presentationGeneration: UInt64 = 0
-    @State private var presentationTask: Task<Void, Never>?
+    @State private var hasLoadedPresentation = false
 
     var body: some View {
         NavigationStack {
@@ -39,17 +37,8 @@ struct HomeView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .onAppear { updatePresentationIfNeeded() }
-        .onChange(of: library.snapshot) { _, _ in
-            updatePresentationIfNeeded()
-        }
-        .onChange(of: selectedArtistMixes) { _, _ in
-            updatePresentationIfNeeded()
-        }
-        .onDisappear {
-            presentationTask?.cancel()
-            presentationTask = nil
-            presentationInput = nil
+        .task(id: presentationTaskIdentity) {
+            await updatePresentation()
         }
     }
 
@@ -343,42 +332,42 @@ struct HomeView: View {
         }
     }
 
-    private func updatePresentationIfNeeded() {
-        let input = HomePresentationInput(
-            snapshot: library.snapshot,
-            selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
+    private var presentationTaskIdentity: HomePresentationTaskIdentity {
+        HomePresentationTaskIdentity(
+            revision: library.revision,
+            selectedArtists: selectedArtistMixes
         )
-        guard input != presentationInput else { return }
-        if presentationInput == nil {
-            presentationInput = input
-            presentation = HomePresentation.make(input: input)
-            return
-        }
+    }
 
-        presentationInput = input
-        presentationGeneration &+= 1
-        let generation = presentationGeneration
-        presentationTask?.cancel()
-        presentationTask = Task {
+    @MainActor
+    private func updatePresentation() async {
+        let revision = library.revision
+        let snapshot = library.snapshot
+        let selectedArtistsStorage = selectedArtistMixes
+        guard revision == library.revision else { return }
+
+        let input = HomePresentationInput(
+            snapshot: snapshot,
+            revision: revision,
+            selectedArtists: ArtistMixPreferences.decode(selectedArtistsStorage)
+        )
+
+        if hasLoadedPresentation {
             do {
-                try await Task.sleep(nanoseconds: 120_000_000)
+                try await Task.sleep(for: .milliseconds(120))
             } catch {
                 return
             }
-            let work = Task.detached(priority: .userInitiated) {
-                HomePresentation.make(input: input)
-            }
-            let next = await withTaskCancellationHandler {
-                await work.value
-            } onCancel: {
-                work.cancel()
-            }
-            guard !Task.isCancelled,
-                  generation == presentationGeneration,
-                  input == presentationInput else { return }
-            presentation = next
-            presentationTask = nil
+            guard revision == library.revision,
+                  selectedArtistsStorage == selectedArtistMixes else { return }
         }
+
+        let next = await HomePresentation.makeConcurrently(input: input)
+        guard !Task.isCancelled,
+              revision == library.revision,
+              selectedArtistsStorage == selectedArtistMixes else { return }
+        presentation = next
+        hasLoadedPresentation = true
     }
 
     private func countText(_ count: Int) -> String {
@@ -386,9 +375,30 @@ struct HomeView: View {
     }
 }
 
+private struct HomePresentationTaskIdentity: Hashable, Sendable {
+    let revision: HomeSnapshotRevision
+    let selectedArtists: String
+}
+
 struct HomePresentationInput: Equatable, Sendable {
     let snapshot: HomeSnapshot
+    let revision: HomeSnapshotRevision
     let selectedArtists: [String]
+
+    init(
+        snapshot: HomeSnapshot,
+        revision: HomeSnapshotRevision = HomeSnapshotRevision(),
+        selectedArtists: [String]
+    ) {
+        self.snapshot = snapshot
+        self.revision = revision
+        self.selectedArtists = selectedArtists
+    }
+
+    static func == (lhs: HomePresentationInput, rhs: HomePresentationInput) -> Bool {
+        lhs.revision == rhs.revision
+            && lhs.selectedArtists == rhs.selectedArtists
+    }
 }
 
 struct HomePresentation: Sendable {
@@ -408,11 +418,21 @@ struct HomePresentation: Sendable {
         featuredArtists: []
     )
 
+    @concurrent
+    static func makeConcurrently(
+        input: HomePresentationInput
+    ) async -> HomePresentation {
+        guard !Task.isCancelled else { return .empty }
+        let value = make(input: input)
+        return Task.isCancelled ? .empty : value
+    }
+
     static func make(input: HomePresentationInput) -> HomePresentation {
         let snapshot = input.snapshot
         return HomePresentation(
             personalizedMixes: PersonalizedMixBuilder.make(
                 snapshot: snapshot,
+                snapshotRevision: input.revision,
                 selectedArtists: input.selectedArtists
             ),
             favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),

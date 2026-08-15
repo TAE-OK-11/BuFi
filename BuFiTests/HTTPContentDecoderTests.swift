@@ -43,4 +43,25 @@ final class HTTPContentDecoderTests: XCTestCase {
             Data()
         )
     }
+
+    func testCancelledDecodeStopsBeforeStreamingWork() async {
+        let data = Data([0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x01, 0x02, 0x03])
+        let task = Task { () throws -> Data in
+            while !Task.isCancelled {
+                await Task.yield()
+            }
+            return try HTTPContentDecoder.decode(
+                data,
+                contentEncoding: "zstd"
+            )
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled decode must not enter zstd streaming work")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
 }

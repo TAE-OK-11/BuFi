@@ -148,6 +148,33 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         ))
     }
 
+    func testAutomaticBufferingWaitIsNotForcedImmediately() {
+        XCTAssertTrue(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .toMinimizeStalls
+        ))
+        XCTAssertTrue(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .evaluatingBufferingRate
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .toMinimizeStalls
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .evaluatingBufferingRate
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: .paused,
+            waitingReason: nil
+        ))
+        XCTAssertTrue(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .paused,
+            waitingReason: nil
+        ))
+    }
+
     func testNetworkRecoverySkipsRawBeforeTryingLowerBandwidthFormat() {
         let originalQualityFallbacks = ["aac", "mp3"]
         let opusQualityFallbacks = ["aac", "mp3", "raw"]
@@ -227,6 +254,150 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
             )?.queueIndex,
             0
         )
+    }
+
+    func testStableSuccessorWarmupRequiresHealthyPlayback() {
+        XCTAssertTrue(PlaybackSuccessorWarmupPolicy.shouldWarm(
+            isBuffering: false,
+            isActivelyPlaying: true,
+            isLikelyToKeepUp: true
+        ))
+        XCTAssertFalse(PlaybackSuccessorWarmupPolicy.shouldWarm(
+            isBuffering: true,
+            isActivelyPlaying: true,
+            isLikelyToKeepUp: true
+        ))
+        XCTAssertFalse(PlaybackSuccessorWarmupPolicy.shouldWarm(
+            isBuffering: false,
+            isActivelyPlaying: true,
+            isLikelyToKeepUp: false
+        ))
+    }
+
+    func testGaplessPreparationDoesNotOpenSecondStreamEarly() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 30,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertTrue(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 162,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+    }
+
+    func testGaplessStagingWaitsUntilFinalPlaybackWindow() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 170,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertTrue(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 174,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: 179,
+            duration: 180,
+            isBuffering: true,
+            isActivelyPlaying: true
+        ))
+    }
+
+    func testGaplessPreparationStopsDuringBuffering() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 175,
+            duration: 180,
+            isBuffering: true,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 175,
+            duration: 180,
+            isBuffering: false,
+            isActivelyPlaying: false
+        ))
+    }
+
+    func testGaplessPreparationRequiresKnownFiniteDuration() {
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 10,
+            duration: 0,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+        XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
+            elapsed: 10,
+            duration: .infinity,
+            isBuffering: false,
+            isActivelyPlaying: true
+        ))
+    }
+
+    func testShuffleFreshPartitionMovesRecentSongsBehindFreshCandidates() {
+        var entries = [
+            PlaybackQueueEntry(song: song(id: "recent-a")),
+            PlaybackQueueEntry(song: song(id: "fresh-a")),
+            PlaybackQueueEntry(song: song(id: "recent-b")),
+            PlaybackQueueEntry(song: song(id: "fresh-b"))
+        ]
+        let recent: Set<String> = ["recent-a", "recent-b"]
+
+        PlaybackShufflePolicy.prioritizeFresh(
+            &entries,
+            recentSongIDs: recent
+        )
+
+        let firstRecent = entries.firstIndex { recent.contains($0.song.id) }
+        XCTAssertNotNil(firstRecent)
+        let boundary = firstRecent ?? entries.endIndex
+        XCTAssertTrue(entries[..<boundary].allSatisfy {
+            !recent.contains($0.song.id)
+        })
+        XCTAssertTrue(entries[boundary...].allSatisfy {
+            recent.contains($0.song.id)
+        })
+    }
+
+    func testShuffleFastCandidatePathOnlyActivatesForLargeQueues() {
+        XCTAssertFalse(PlaybackShufflePolicy.shouldUseFastCandidatePath(
+            queueCount: PlaybackShufflePolicy.recentWindowLimit * 2
+        ))
+        XCTAssertTrue(PlaybackShufflePolicy.shouldUseFastCandidatePath(
+            queueCount: PlaybackShufflePolicy.recentWindowLimit * 2 + 1
+        ))
+        XCTAssertEqual(PlaybackShufflePolicy.fastCandidateAttemptLimit, 4)
+    }
+
+    func testPlaybackSnapshotSelectionKeepsCurrentSongSemantics() {
+        let entries = [
+            PlaybackQueueEntry(song: song(id: "first")),
+            PlaybackQueueEntry(song: song(id: "second"))
+        ]
+        let generation = UUID()
+        let first = PlaybackSnapshot(
+            entries: entries,
+            index: 0,
+            accountScope: "account",
+            playbackGenerationID: generation
+        )
+        let second = PlaybackSnapshot(
+            entries: entries,
+            index: 1,
+            accountScope: "account",
+            playbackGenerationID: generation
+        )
+
+        XCTAssertEqual(first.currentSong?.id, "first")
+        XCTAssertEqual(second.currentSong?.id, "second")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(first.songs.map(\.id), second.songs.map(\.id))
     }
 
     private func song(

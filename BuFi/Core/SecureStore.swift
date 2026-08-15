@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-enum SecureStoreError: LocalizedError {
+enum SecureStoreError: LocalizedError, Sendable {
     case encoding
     case keychain(OSStatus)
 
@@ -18,7 +18,16 @@ enum SecureStoreError: LocalizedError {
     }
 }
 
-struct SecureStore {
+struct SecureBootstrapState: Sendable {
+    let credentials: ServerCredentials?
+    let hasLastFMKey: Bool
+    let hasListenBrainzToken: Bool
+}
+
+/// Serializes Security.framework calls away from MainActor. Keychain queries
+/// are synchronous and can involve IPC, so UI state owners await this actor
+/// instead of performing those calls during view-driven mutations.
+actor SecureStore {
     private let service = "cloud.tae00217.BuFi"
     private let account = "server-credentials"
 
@@ -65,13 +74,24 @@ struct SecureStore {
         return try? JSONDecoder().decode(ServerCredentials.self, from: data)
     }
 
-    func delete() {
+    func loadBootstrapState(
+        lastFMAccount: String,
+        listenBrainzAccount: String
+    ) -> SecureBootstrapState {
+        SecureBootstrapState(
+            credentials: load(),
+            hasLastFMKey: loadSecret(account: lastFMAccount)?.isEmpty == false,
+            hasListenBrainzToken: loadSecret(account: listenBrainzAccount)?.isEmpty == false
+        )
+    }
+
+    func delete() throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        try deleteItem(query)
     }
 
     func saveSecret(_ value: String, account: String) throws {
@@ -86,13 +106,13 @@ struct SecureStore {
         return String(data: data, encoding: .utf8)
     }
 
-    func deleteSecret(account: String) {
+    func deleteSecret(account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(query as CFDictionary)
+        try deleteItem(query)
     }
 
     private func saveData(_ data: Data, account: String) throws {
@@ -131,5 +151,12 @@ struct SecureStore {
             return nil
         }
         return item as? Data
+    }
+
+    private func deleteItem(_ query: [String: Any]) throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw SecureStoreError.keychain(status)
+        }
     }
 }

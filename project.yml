@@ -9,13 +9,17 @@ options:
     - ja
   deploymentTarget:
     iOS: "17.0"
-  xcodeVersion: "26.6"
+  xcodeVersion: "27.0"
   projectFormat: xcode16_3
   createIntermediateGroups: true
 settings:
   base:
-    SWIFT_VERSION: "5.0"
+    # Swift 6 language mode makes the complete-concurrency diagnostics below
+    # enforceable instead of advisory. Keep this at the project level so the
+    # app and its tests cannot silently drift onto different language modes.
+    SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     TARGETED_DEVICE_FAMILY: "1"
     SUPPORTS_MACCATALYST: false
@@ -29,15 +33,20 @@ settings:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
       SWIFT_COMPILATION_MODE: incremental
+      OTHER_SWIFT_FLAGS: "$(inherited) -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-actor-data-race-checks"
       LLVM_LTO: NO
       ONLY_ACTIVE_ARCH: YES
     Release:
       SWIFT_OPTIMIZATION_LEVEL: "-O"
       SWIFT_COMPILATION_MODE: wholemodule
       SWIFT_SERIALIZE_DEBUGGING_OPTIONS: NO
+      OTHER_SWIFT_FLAGS: "$(inherited) -enable-upcoming-feature NonisolatedNonsendingByDefault"
+      # Release favors final runtime/code-size optimization over build
+      # latency. Monolithic LLVM LTO complements Swift whole-module -O and lets
+      # the linker optimize across object-file boundaries.
       LLVM_LTO: YES
       DEAD_CODE_STRIPPING: YES
-      DEPLOYMENT_POSTPROCESSING: YES
+      DEPLOYMENT_POSTPROCESSING: NO
       ENABLE_NS_ASSERTIONS: NO
       ENABLE_TESTABILITY: NO
       ENABLE_PREVIEWS: NO
@@ -45,12 +54,11 @@ settings:
       ONLY_ACTIVE_ARCH: NO
       DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
       ASSETCATALOG_COMPILER_OPTIMIZATION: space
-      COPY_PHASE_STRIP: YES
-      # Xcode 26.3-27 beta strip -S -T can corrupt dyld chained fixups in
-      # Swift 6 binaries (FB23528109). Keep safe non-global stripping until
-      # the affected toolchains are retired.
+      COPY_PHASE_STRIP: NO
+      # Keep unsigned CI artifacts free from aggressive post-link stripping;
+      # normal Swift optimization and dead-code stripping remain enabled.
       STRIP_STYLE: non-global
-      STRIP_INSTALLED_PRODUCT: YES
+      STRIP_INSTALLED_PRODUCT: NO
       STRIP_SWIFT_SYMBOLS: NO
       VALIDATE_PRODUCT: YES
 packages:
@@ -59,7 +67,7 @@ packages:
     exactVersion: 0.9.0
   Nuke:
     url: https://github.com/kean/Nuke.git
-    exactVersion: 13.0.6
+    exactVersion: 13.1.0
   Zstandard:
     url: https://github.com/facebook/zstd.git
     exactVersion: 1.5.7
@@ -93,8 +101,8 @@ targets:
       path: BuFi/Resources/Info.plist
       properties:
         CFBundleDisplayName: BuFi
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleLocalizations:
           - ko
           - en

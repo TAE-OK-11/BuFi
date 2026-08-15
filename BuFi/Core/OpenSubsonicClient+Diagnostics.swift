@@ -65,6 +65,12 @@ extension OpenSubsonicClient {
         return ordered[middle]
     }
 
+    static func milliseconds(from duration: Duration) -> Double {
+        let components = duration.components
+        return Double(components.seconds) * 1_000
+            + Double(components.attoseconds) / 1_000_000_000_000_000
+    }
+
     private static func isRetryableDiagnosticFailure(_ error: Error) -> Bool {
         if NetworkResiliencePolicy.shouldRetry(error) { return true }
         guard let subsonicError = error as? OpenSubsonicError else { return false }
@@ -91,9 +97,10 @@ extension OpenSubsonicClient {
                 acceptsZstandard: acceptsZstandard
             )
 
-            let startedAt = Date()
+            let clock = ContinuousClock()
+            let startedAt = clock.now
             let (encodedData, response) = try await session.data(for: request)
-            let elapsed = Date().timeIntervalSince(startedAt) * 1_000
+            let elapsed = Self.milliseconds(from: startedAt.duration(to: clock.now))
             try Task.checkCancellation()
 
             guard encodedData.count <= 2 * 1_024 * 1_024 else {

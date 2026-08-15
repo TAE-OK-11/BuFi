@@ -19,7 +19,7 @@ final class HTTPSOnlyURLSessionDelegate: NSObject, URLSessionTaskDelegate, @unch
         task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
         guard request.url?.scheme?.lowercased() == "https" else {
             completionHandler(nil)

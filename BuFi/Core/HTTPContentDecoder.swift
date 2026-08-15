@@ -5,7 +5,17 @@ enum HTTPContentDecoder {
     private static let zstandardMagic: [UInt8] = [0x28, 0xB5, 0x2F, 0xFD]
     private static let maximumDecodedBytes = 64 * 1_024 * 1_024
 
+    @concurrent
+    static func decodeAsync(
+        _ data: Data,
+        contentEncoding: String?
+    ) async throws -> Data {
+        try Task.checkCancellation()
+        return try decode(data, contentEncoding: contentEncoding)
+    }
+
     static func decode(_ data: Data, contentEncoding: String?) throws -> Data {
+        try Task.checkCancellation()
         guard isZstandardFrame(data) else {
             // URLSession expands gzip and Brotli, and newer CFNetwork versions
             // may also expand zstd before returning the body.
@@ -65,6 +75,7 @@ enum HTTPContentDecoder {
             var remaining = 1
 
             while input.pos < input.size {
+                try Task.checkCancellation()
                 let previousInputPosition = input.pos
                 var produced = 0
                 let result = chunk.withUnsafeMutableBytes { destination -> Int in
@@ -85,7 +96,14 @@ enum HTTPContentDecoder {
                     throw URLError(.cannotDecodeContentData)
                 }
                 if produced > 0 {
-                    output.append(contentsOf: chunk.prefix(produced))
+                    try Task.checkCancellation()
+                    chunk.withUnsafeBytes { bytes in
+                        guard let baseAddress = bytes.baseAddress else { return }
+                        output.append(
+                            baseAddress.assumingMemoryBound(to: UInt8.self),
+                            count: produced
+                        )
+                    }
                 }
                 guard output.count <= maximumDecodedBytes else {
                     throw URLError(.dataLengthExceedsMaximum)

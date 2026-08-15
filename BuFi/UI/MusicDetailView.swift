@@ -1,8 +1,70 @@
 import SwiftUI
 
+private struct MusicDetailFavoriteButton: View {
+    @EnvironmentObject private var model: AppModel
+
+    let route: MusicRoute
+
+    @ViewBuilder
+    var body: some View {
+        switch route {
+        case .album(let album):
+            MusicDetailFavoriteButtonContent(
+                overrideState: model.favoriteOverrideState(for: album),
+                originalState: album.isStarred,
+                action: { await model.toggleStar(album: album) }
+            )
+        case .artist(let artist):
+            MusicDetailFavoriteButtonContent(
+                overrideState: model.favoriteOverrideState(for: artist),
+                originalState: artist.isStarred,
+                action: { await model.toggleStar(artist: artist) }
+            )
+        case .playlist:
+            EmptyView()
+        }
+    }
+}
+
+private struct MusicDetailFavoriteButtonContent: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var overrideState: FavoriteOverrideValueState
+    let originalState: Bool
+    let action: @MainActor @Sendable () async -> Void
+
+    private var isFavorite: Bool {
+        overrideState.value ?? originalState
+    }
+
+    var body: some View {
+        Button {
+            Task { await action() }
+        } label: {
+            Image(systemName: isFavorite ? "checkmark" : "plus")
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(
+                    colorScheme == .dark
+                        ? Color.white.opacity(0.92)
+                        : Color.black.opacity(0.78)
+                )
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 42, height: 42)
+                .shadow(
+                    color: .black.opacity(colorScheme == .dark ? 0.12 : 0.045),
+                    radius: 8,
+                    y: 4
+                )
+                .buFiGlass(cornerRadius: 21, interactive: true)
+        }
+        .buttonStyle(BuFiPressStyle())
+        .accessibilityLabel(
+            isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가"
+        )
+    }
+}
+
 struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
@@ -22,9 +84,10 @@ struct MusicDetailView: View {
     @State private var artistBiography = ""
     @State private var artistAlbumCount = 0
     @State private var discography = ArtistDiscographyPresentation.empty
+    @State private var downloadAllTask: Task<Void, Never>?
+    @State private var isDownloadingAll = false
 
     var body: some View {
-        let _ = favoriteOverrides.values
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
@@ -54,13 +117,15 @@ struct MusicDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .onChange(of: route) { _, _ in
-            resetRoutePresentation()
-        }
         .onChange(of: coverArt) { _, _ in
             palette = .fallback
         }
         .task(id: route) { await load() }
+        .onDisappear {
+            downloadAllTask?.cancel()
+            downloadAllTask = nil
+            isDownloadingAll = false
+        }
         .sheet(item: $selectedSong) { song in
             SongActionsSheet(song: song)
                 .presentationDetents([.height(335)])
@@ -177,26 +242,24 @@ struct MusicDetailView: View {
         HStack(spacing: 12) {
             HStack(spacing: 8) {
                 if canFavorite {
-                    Button(action: toggleFavorite) {
-                        secondaryControl(
-                            Image(systemName: isFavorite ? "checkmark" : "plus")
-                                .font(.system(size: 19, weight: .semibold)),
-                            diameter: 42
-                        )
-                    }
-                    .buttonStyle(BuFiPressStyle())
-                    .accessibilityLabel(isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가")
+                    MusicDetailFavoriteButton(route: route)
                 }
 
                 Button { downloadAll() } label: {
                     secondaryControl(
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: 19, weight: .semibold)),
+                        Group {
+                            if isDownloadingAll {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "arrow.down.circle")
+                                    .font(.system(size: 19, weight: .semibold))
+                            }
+                        },
                         diameter: 42
                     )
                 }
                 .buttonStyle(BuFiPressStyle())
-                .disabled(songs.isEmpty)
+                .disabled(songs.isEmpty || isDownloadingAll)
                 .accessibilityLabel("모두 오프라인 저장")
 
                 Menu {
@@ -227,6 +290,7 @@ struct MusicDetailView: View {
                     Button { downloadAll() } label: {
                         Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
                     }
+                    .disabled(songs.isEmpty || isDownloadingAll)
                 } label: {
                     secondaryControl(
                         Image(systemName: "ellipsis")
@@ -540,40 +604,15 @@ struct MusicDetailView: View {
         }
     }
 
-    private var isFavorite: Bool {
-        switch route {
-        case .album(let album):
-            model.isStarred(album)
-        case .artist(let artist):
-            model.isStarred(artist)
-        case .playlist:
-            false
-        }
-    }
-
-    private func toggleFavorite() {
-        guard canFavorite else { return }
-        switch route {
-        case .album(let album):
-            Task {
-                await model.toggleStar(album: album)
-            }
-        case .artist(let artist):
-            Task {
-                await model.toggleStar(artist: artist)
-            }
-        case .playlist:
-            break
-        }
-    }
-
     private func downloadAll() {
-        guard !songs.isEmpty else { return }
+        guard !songs.isEmpty, downloadAllTask == nil else { return }
         let items = songs
-        // 순차 다운로드 → 동시 3개까지 병렬 다운로드로 변경.
-        // 곡이 많은 앨범/플레이리스트일수록 체감 속도 개선이 큼.
-        // 서버가 감당 가능한 수준에 맞춰 maxConcurrent 조절 가능.
-        Task {
+        isDownloadingAll = true
+        downloadAllTask = Task {
+            defer {
+                downloadAllTask = nil
+                isDownloadingAll = false
+            }
             let maxConcurrent = 3
             await withTaskGroup(of: Void.self) { group in
                 var iterator = items.makeIterator()
@@ -589,20 +628,6 @@ struct MusicDetailView: View {
                 }
             }
         }
-    }
-
-    @MainActor
-    private func resetRoutePresentation() {
-        isLoading = true
-        title = ""
-        subtitle = ""
-        coverArt = nil
-        songs = []
-        albums = []
-        artistBiography = ""
-        artistAlbumCount = 0
-        discography = .empty
-        palette = .fallback
     }
 
     /// `.task(id: route)`는 라우트가 바뀌면 이전 로드 작업을 자동으로 취소한다.
@@ -693,22 +718,13 @@ struct MusicDetailView: View {
                 songs = detail.topSongs
                 albums = detail.albums
                 artistAlbumCount = detail.artist.albumCount ?? detail.albums.count
-                let rawBiography = detail.info?.biography ?? ""
-                let artistAlbums = detail.albums
-                let work = Task.detached(priority: .utility) {
-                    (
-                        ArtistBiographySanitizer.sanitize(rawBiography),
-                        ArtistDiscographyPresentation.make(artistAlbums)
-                    )
-                }
-                let preparedArtistContent = await withTaskCancellationHandler {
-                    await work.value
-                } onCancel: {
-                    work.cancel()
-                }
+                let preparedArtistContent = await ArtistDetailPresentation.make(
+                    biography: detail.info?.biography ?? "",
+                    albums: detail.albums
+                )
                 guard !Task.isCancelled, route == loadingRoute else { return }
-                artistBiography = preparedArtistContent.0
-                discography = preparedArtistContent.1
+                artistBiography = preparedArtistContent.biography
+                discography = preparedArtistContent.discography
             }
         } catch {
             guard !Task.isCancelled else { return }
@@ -743,6 +759,35 @@ struct MusicDetailArtworkIdentity: Hashable, Sendable {
         case .playlist(let playlist):
             "playlist-\(playlist.id)-\(coverArtID ?? "")"
         }
+    }
+}
+
+private struct ArtistDetailPresentation: Sendable {
+    let biography: String
+    let discography: ArtistDiscographyPresentation
+
+    @concurrent
+    static func make(
+        biography: String,
+        albums: [Album]
+    ) async -> ArtistDetailPresentation {
+        guard !Task.isCancelled else {
+            return ArtistDetailPresentation(
+                biography: "",
+                discography: .empty
+            )
+        }
+        let value = ArtistDetailPresentation(
+            biography: ArtistBiographySanitizer.sanitize(biography),
+            discography: ArtistDiscographyPresentation.make(albums)
+        )
+        if Task.isCancelled {
+            return ArtistDetailPresentation(
+                biography: "",
+                discography: .empty
+            )
+        }
+        return value
     }
 }
 
@@ -826,14 +871,12 @@ private struct ArtistDiscographyPresentation: Sendable {
 
 private struct SongActionsSheet: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var favoriteOverrides: FavoriteOverrideState
     @Environment(\.dismiss) private var dismiss
 
     let song: Song
     private let audio = AudioEngine.shared
 
     var body: some View {
-        let _ = favoriteOverrides.values
         VStack(spacing: 4) {
             Capsule()
                 .fill(.secondary.opacity(0.45))

@@ -228,6 +228,13 @@ struct RecommendationBehaviorSnapshot: Sendable {
 actor ListeningHistoryStore {
     static let shared = ListeningHistoryStore()
 
+    private struct PersistenceBatch: Sendable {
+        let scope: String
+        let generation: UInt64
+        let dirty: [String: SongBehavior]
+        let deleted: Set<String>
+    }
+
     private let storagePrefix = "listening-history-v2"
     private let legacyStoragePrefix = "listening-history-v1"
     private var activeScope: String?
@@ -241,8 +248,14 @@ actor ListeningHistoryStore {
 
     private init() {}
 
-    func activate(accountScope: String) async {
-        guard activeScope != accountScope else { return }
+    func activate(accountScope: String) async -> AccountSessionToken? {
+        if activeScope == accountScope {
+            scopeGeneration &+= 1
+            return AccountSessionToken(
+                accountScope: accountScope,
+                generation: scopeGeneration
+            )
+        }
         let previousScope = activeScope
         persistenceTask?.cancel()
         persistenceTask = nil
@@ -257,11 +270,11 @@ actor ListeningHistoryStore {
                 generation: generation,
                 permitsInactiveScope: true
             )
-            guard generation == scopeGeneration, activeScope == nil else { return }
+            guard generation == scopeGeneration, activeScope == nil else { return nil }
         }
 
         var loaded = await AppDatabase.shared.loadListeningHistory(scope: accountScope)
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         if loaded.isEmpty,
            let legacyEntries = loadLegacyEntries(accountScope: accountScope) {
             loaded = legacyEntries
@@ -269,45 +282,58 @@ actor ListeningHistoryStore {
                 legacyEntries,
                 scope: accountScope
             ) {
-                guard generation == scopeGeneration, activeScope == nil else { return }
+                guard generation == scopeGeneration, activeScope == nil else { return nil }
                 removeLegacyStorage(accountScope: accountScope)
             }
         }
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         activeScope = accountScope
         entries = loaded
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
         revision &+= 1
         lastStartedSongID = nil
+        return AccountSessionToken(
+            accountScope: accountScope,
+            generation: generation
+        )
     }
 
-    func deactivate(accountScope: String) async {
-        guard activeScope == accountScope else { return }
+    @discardableResult
+    func deactivate(session: AccountSessionToken) async -> Bool {
+        guard session.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ) else { return false }
         persistenceTask?.cancel()
         persistenceTask = nil
         scopeGeneration &+= 1
         let generation = scopeGeneration
         activeScope = nil
         await persist(
-            scope: accountScope,
+            scope: session.accountScope,
             generation: generation,
             permitsInactiveScope: true
         )
-        guard generation == scopeGeneration, activeScope == nil else { return }
+        guard generation == scopeGeneration, activeScope == nil else { return true }
         entries.removeAll(keepingCapacity: false)
         dirtySongIDs.removeAll(keepingCapacity: false)
         deletedSongIDs.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
         revision &+= 1
+        return true
     }
 
     func recordStart(
         _ song: Song,
         origin: PlaybackOrigin,
+        session: AccountSessionToken,
         at date: Date = Date()
     ) {
-        guard activeScope != nil, song.externalStreamURL == nil else { return }
+        guard session.matches(
+            accountScope: activeScope,
+            generation: scopeGeneration
+        ), song.externalStreamURL == nil else { return }
         var value = entries[song.id] ?? SongBehavior(song: song, at: date)
         // A list/recommendation row is provisional until playback's getSong
         // resolver calls refreshMetadata. Never let a later stale row
@@ -346,8 +372,14 @@ actor ListeningHistoryStore {
     /// Refreshes persisted display metadata without changing listening counts.
     /// Playback calls this after resolving a cached list item through getSong,
     /// so an old cover-art ID cannot re-enter future mixes through local history.
-    func refreshMetadata(_ song: Song) {
-        guard activeScope != nil,
+    func refreshMetadata(
+        _ song: Song,
+        session: AccountSessionToken
+    ) {
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil,
               var value = entries[song.id],
               value.song != song else {
@@ -363,9 +395,13 @@ actor ListeningHistoryStore {
         _ song: Song,
         playedSeconds: TimeInterval,
         duration: TimeInterval,
-        reason: PlaybackEndReason
+        reason: PlaybackEndReason,
+        session: AccountSessionToken
     ) {
-        guard activeScope != nil,
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil,
               var value = entries[song.id] else {
             return
@@ -406,8 +442,14 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
-    func recordQueueRemoval(_ song: Song) {
-        guard activeScope != nil,
+    func recordQueueRemoval(
+        _ song: Song,
+        session: AccountSessionToken
+    ) {
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil else {
             return
         }
@@ -421,8 +463,15 @@ actor ListeningHistoryStore {
         didMutate()
     }
 
-    func recordFavorite(_ song: Song, enabled: Bool) {
-        guard activeScope != nil,
+    func recordFavorite(
+        _ song: Song,
+        enabled: Bool,
+        session: AccountSessionToken
+    ) {
+        guard session.matches(
+                  accountScope: activeScope,
+                  generation: scopeGeneration
+              ),
               song.externalStreamURL == nil else {
             return
         }
@@ -467,6 +516,13 @@ actor ListeningHistoryStore {
             recentSongs: Array(recent),
             revision: revision
         )
+    }
+
+    /// Lightweight validation for work that already captured the full
+    /// recommendation snapshot. Avoids sorting and copying all entries merely
+    /// to learn whether an awaited calculation became stale.
+    func recommendationRevision() -> UInt64 {
+        revision
     }
 
     func clear() async {
@@ -567,14 +623,20 @@ actor ListeningHistoryStore {
                     generation: scopeGeneration
                 )),
               !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty else { return }
-        let dirty = Dictionary(uniqueKeysWithValues: dirtySongIDs.compactMap { id in
-            entries[id].map { (id, $0) }
-        })
-        let deleted = deletedSongIDs
+        let batch = PersistenceBatch(
+            scope: scope,
+            generation: generation,
+            dirty: Dictionary(
+                uniqueKeysWithValues: dirtySongIDs.compactMap { id in
+                    entries[id].map { (id, $0) }
+                }
+            ),
+            deleted: deletedSongIDs
+        )
         guard await AppDatabase.shared.applyListeningHistory(
-            dirty,
-            deletedIDs: deleted,
-            scope: scope
+            batch.dirty,
+            deletedIDs: batch.deleted,
+            scope: batch.scope
         ) else { return }
         guard permitsInactiveScope
                 ? activeScope == nil && scopeGeneration == generation
@@ -585,10 +647,11 @@ actor ListeningHistoryStore {
         // The actor can accept a newer playback event while the database write
         // is suspended. Only acknowledge the exact values that were written;
         // otherwise the newer mutation must remain dirty for the next flush.
-        for (id, savedValue) in dirty where entries[id] == savedValue {
+        guard batch.generation == generation else { return }
+        for (id, savedValue) in batch.dirty where entries[id] == savedValue {
             dirtySongIDs.remove(id)
         }
-        for id in deleted where entries[id] == nil {
+        for id in batch.deleted where entries[id] == nil {
             deletedSongIDs.remove(id)
         }
     }

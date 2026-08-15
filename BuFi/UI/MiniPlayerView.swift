@@ -1,25 +1,20 @@
 import SwiftUI
 
 struct MiniPlayerView: View {
-    @EnvironmentObject private var playbackItem: PlaybackItemState
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
-    @State private var paletteArtworkIdentity: MiniPlayerArtworkIdentity?
+    @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
     private let audio = AudioEngine.shared
 
     var body: some View {
-        if let song = playbackItem.currentSong {
-            let artworkIdentity = MiniPlayerArtworkIdentity(
-                occurrenceID: playbackItem.currentItem?.id,
-                songID: song.id,
-                coverArtID: song.artworkID,
-                artworkRevision: song.artworkRevision,
-                accountScope: playbackItem.currentItem?.accountScope
-            )
+        if let item = currentPlayback.item {
+            let song = item.song
+            let artworkIdentity = item.artworkIdentity
             ZStack {
                 Button {
                     audio.showPlayer = true
@@ -43,9 +38,7 @@ struct MiniPlayerView: View {
                             cornerRadius: 5,
                             cacheRevision: artworkIdentity.artworkRevision,
                             onPalette: { nextPalette in
-                                guard playbackItem.currentSong?.id == artworkIdentity.songID,
-                                      playbackItem.currentSong?.artworkID == artworkIdentity.coverArtID,
-                                      playbackItem.currentItem?.id == artworkIdentity.occurrenceID else {
+                                guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
                                     return
                                 }
                                 if nextPalette == .fallback {
@@ -62,24 +55,25 @@ struct MiniPlayerView: View {
 
                         ZStack(alignment: .leading) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(song.title)
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.82)
+                                OverflowMarqueeText(
+                                    text: song.title,
+                                    font: .system(size: 15, weight: .semibold)
+                                )
                                 Text(song.artist)
                                     .font(.system(size: 13))
                                     .foregroundStyle(miniPlayerForeground.opacity(0.72))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.76)
                             }
-                            .id(playbackItem.currentItem?.id)
+                            .id(item.id)
                             .transition(trackTextTransition)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .layoutPriority(1)
                         .allowsHitTesting(false)
                         .animation(
                             motionEnabled ? BuFiMotion.trackText : .none,
-                            value: song.id
+                            value: item.id
                         )
 
                         AirPlayButton(lightContent: !usesDarkForeground)
@@ -143,15 +137,8 @@ struct MiniPlayerView: View {
         return palette
     }
 
-    private var currentArtworkIdentity: MiniPlayerArtworkIdentity? {
-        guard let song = playbackItem.currentSong else { return nil }
-        return MiniPlayerArtworkIdentity(
-            occurrenceID: playbackItem.currentItem?.id,
-            songID: song.id,
-            coverArtID: song.artworkID,
-            artworkRevision: song.artworkRevision,
-            accountScope: playbackItem.currentItem?.accountScope
-        )
+    private var currentArtworkIdentity: PlayerArtworkIdentity? {
+        currentPlayback.item?.artworkIdentity
     }
 
     private func relativeLuminance(_ color: RGBAColor) -> Double {
@@ -189,14 +176,6 @@ private struct MiniPlayerPlaybackButton: View {
         .buttonStyle(BuFiPressStyle())
         .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
-}
-
-private struct MiniPlayerArtworkIdentity: Hashable {
-    let occurrenceID: UUID?
-    let songID: String
-    let coverArtID: String?
-    let artworkRevision: String
-    let accountScope: String?
 }
 
 private struct MiniPlayerProgressView: View {

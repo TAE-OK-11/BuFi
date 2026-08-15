@@ -1,2 +1,4 @@
 BuFi/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png
 BuFi/Resources/Fonts/Unbounded.ttf
+__pycache__/
+*.py[cod]

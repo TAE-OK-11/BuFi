@@ -11,6 +11,7 @@ struct SearchView: View {
 
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
+    @State private var personalizedMixes: [PersonalizedMix] = []
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -57,6 +58,9 @@ struct SearchView: View {
                     browseMode = .main
                 }
                 model.search(value)
+            }
+            .task(id: personalizedMixTaskIdentity) {
+                await updatePersonalizedMixesIfNeeded()
             }
         }
     }
@@ -121,12 +125,13 @@ struct SearchView: View {
 
     @ViewBuilder
     private var browse: some View {
+        let snapshot = library.snapshot
         switch browseMode {
         case .main:
             browseMain
         case .favoriteSongs:
             browseCollectionHeader("좋아요 곡")
-            if library.snapshot.starredSongs.isEmpty {
+            if snapshot.starredSongs.isEmpty {
                 ContentUnavailableView(
                     "좋아요 표시한 곡이 없습니다",
                     systemImage: "heart"
@@ -135,15 +140,15 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(library.snapshot.starredSongs.indices, id: \.self) { index in
-                            let song = library.snapshot.starredSongs[index]
+                        ForEach(snapshot.starredSongs.indices, id: \.self) { index in
+                            let song = snapshot.starredSongs[index]
                             SongRow(
                                 song: song,
-                                queue: library.snapshot.starredSongs,
+                                queue: snapshot.starredSongs,
                                 queueIndex: index
                             )
                                 .padding(.horizontal, 14)
-                            if index < library.snapshot.starredSongs.count - 1 {
+                            if index < snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
                         }
@@ -153,7 +158,7 @@ struct SearchView: View {
             }
         case .favoriteAlbums:
             browseCollectionHeader("좋아요 앨범")
-            if library.snapshot.starredAlbums.isEmpty {
+            if snapshot.starredAlbums.isEmpty {
                 ContentUnavailableView(
                     "저장한 앨범이 없습니다",
                     systemImage: "square.stack"
@@ -168,7 +173,7 @@ struct SearchView: View {
                     alignment: .leading,
                     spacing: 20
                 ) {
-                    ForEach(library.snapshot.starredAlbums) { album in
+                    ForEach(snapshot.starredAlbums) { album in
                         NavigationLink(value: MusicRoute.album(album)) {
                             AlbumCard(
                                 album: album,
@@ -182,14 +187,7 @@ struct SearchView: View {
                 .padding(.horizontal, 16)
             }
         case .algorithmPlaylists:
-            algorithmPlaylists(
-                PersonalizedMixBuilder.make(
-                    snapshot: library.snapshot,
-                    selectedArtists: ArtistMixPreferences.decode(
-                        selectedArtistMixes
-                    )
-                )
-            )
+            algorithmPlaylists(personalizedMixes)
         case .mostPlayed:
             browseCollectionHeader("자주 들은 곡")
             rankedSongs
@@ -197,7 +195,8 @@ struct SearchView: View {
     }
 
     private var browseMain: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        let snapshot = library.snapshot
+        return VStack(alignment: .leading, spacing: 22) {
             LazyVGrid(
                 columns: [
                     GridItem(.flexible(), spacing: 10),
@@ -222,15 +221,14 @@ struct SearchView: View {
             }
             .padding(.horizontal, 16)
 
-            if !library.snapshot.recommendedArtists.isEmpty {
+            if !snapshot.recommendedArtists.isEmpty {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionTitle(title: "추천 아티스트")
                         .padding(.horizontal, 16)
                         .padding(.top, 2)
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: 16) {
-                            ForEach(library.snapshot.recommendedArtists.prefix(12)) {
-                                artist in
+                            ForEach(snapshot.recommendedArtists.prefix(12)) { artist in
                                 NavigationLink(value: MusicRoute.artist(artist)) {
                                     VStack(spacing: 8) {
                                         ArtworkView(
@@ -291,6 +289,7 @@ struct SearchView: View {
 
     @ViewBuilder
     private var results: some View {
+        let result = searchContent.results
         if searchContent.isSearching {
             HStack {
                 Spacer()
@@ -298,14 +297,14 @@ struct SearchView: View {
                 Spacer()
             }
             .padding(.top, 48)
-        } else if searchContent.results.isEmpty {
+        } else if result.isEmpty {
             ContentUnavailableView.search(text: query)
                 .padding(.top, 42)
         } else {
             VStack(alignment: .leading, spacing: 22) {
-                if !searchContent.results.artists.isEmpty {
+                if !result.artists.isEmpty {
                     resultSection("아티스트") {
-                        ForEach(searchContent.results.artists) { artist in
+                        ForEach(result.artists) { artist in
                             NavigationLink(value: MusicRoute.artist(artist)) {
                                 HStack(spacing: 13) {
                                     ArtworkView(
@@ -328,15 +327,15 @@ struct SearchView: View {
                                 .padding(.vertical, 7)
                             }
                             .buttonStyle(.plain)
-                            if artist.id != searchContent.results.artists.last?.id {
+                            if artist.id != result.artists.last?.id {
                                 rowSeparator
                             }
                         }
                     }
                 }
-                if !searchContent.results.albums.isEmpty {
+                if !result.albums.isEmpty {
                     resultSection("앨범") {
-                        ForEach(searchContent.results.albums) { album in
+                        ForEach(result.albums) { album in
                             NavigationLink(value: MusicRoute.album(album)) {
                                 HStack(spacing: 13) {
                                     ArtworkView(
@@ -363,25 +362,25 @@ struct SearchView: View {
                                 .padding(.vertical, 7)
                             }
                             .buttonStyle(.plain)
-                            if album.id != searchContent.results.albums.last?.id {
+                            if album.id != result.albums.last?.id {
                                 rowSeparator
                             }
                         }
                     }
                 }
-                if !searchContent.results.songs.isEmpty {
+                if !result.songs.isEmpty {
                     resultSection("곡") {
-                        ForEach(searchContent.results.songs.indices, id: \.self) { index in
-                            let song = searchContent.results.songs[index]
+                        ForEach(result.songs.indices, id: \.self) { index in
+                            let song = result.songs[index]
                             SongRow(
                                 song: song,
-                                queue: searchContent.results.songs,
+                                queue: result.songs,
                                 queueIndex: index,
                                 playbackOrigin: .search,
                                 textLineLimit: 2
                             )
                             .padding(.horizontal, 14)
-                            if index < searchContent.results.songs.count - 1 {
+                            if index < result.songs.count - 1 {
                                 rowSeparator
                             }
                         }
@@ -460,8 +459,9 @@ struct SearchView: View {
     }
 
     private var rankedSongs: some View {
-        Group {
-            if library.snapshot.mostPlayedSongs.isEmpty {
+        let songs = library.snapshot.mostPlayedSongs
+        return Group {
+            if songs.isEmpty {
                 ContentUnavailableView(
                     "청취 순위가 아직 없습니다",
                     systemImage: "chart.bar"
@@ -470,10 +470,8 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(
-                            Array(library.snapshot.mostPlayedSongs.enumerated()),
-                            id: \.offset
-                        ) { index, song in
+                        ForEach(songs.indices, id: \.self) { index in
+                            let song = songs[index]
                             HStack(spacing: 10) {
                                 Text("\(index + 1)")
                                     .font(
@@ -492,14 +490,14 @@ struct SearchView: View {
                                     .frame(width: 24, alignment: .trailing)
                                 SongRow(
                                     song: song,
-                                    queue: library.snapshot.mostPlayedSongs,
+                                    queue: songs,
                                     queueIndex: index,
                                     artworkSize: 52,
                                     textLineLimit: 2
                                 )
                             }
                             .padding(.horizontal, 12)
-                            if index < library.snapshot.mostPlayedSongs.count - 1 {
+                            if index < songs.count - 1 {
                                 Divider()
                                     .padding(.leading, 112)
                                     .opacity(0.50)
@@ -519,11 +517,41 @@ struct SearchView: View {
         VStack(alignment: .leading, spacing: 11) {
             SectionTitle(title: title)
             BuFiGroupedSurface {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     content()
                 }
             }
         }
+    }
+
+    private var personalizedMixTaskIdentity: SearchMixTaskIdentity {
+        SearchMixTaskIdentity(
+            revision: library.revision,
+            selectedArtists: selectedArtistMixes,
+            isVisible: browseMode == .algorithmPlaylists
+        )
+    }
+
+    @MainActor
+    private func updatePersonalizedMixesIfNeeded() async {
+        guard browseMode == .algorithmPlaylists else { return }
+        let revision = library.revision
+        let snapshot = library.snapshot
+        let selectedArtistsStorage = selectedArtistMixes
+        guard revision == library.revision else { return }
+        let selectedArtists = ArtistMixPreferences.decode(selectedArtistsStorage)
+        let next = await SearchPersonalizedMixWork.make(
+            snapshot: snapshot,
+            revision: revision,
+            selectedArtists: selectedArtists
+        )
+        guard !Task.isCancelled,
+              browseMode == .algorithmPlaylists,
+              revision == library.revision,
+              selectedArtistsStorage == selectedArtistMixes else {
+            return
+        }
+        personalizedMixes = next
     }
 
     private var rowSeparator: some View {
@@ -553,4 +581,27 @@ private struct SearchShortcut: Identifiable {
 
 private enum SearchScrollAnchor: Hashable {
     case top
+}
+
+private enum SearchPersonalizedMixWork {
+    @concurrent
+    static func make(
+        snapshot: HomeSnapshot,
+        revision: HomeSnapshotRevision,
+        selectedArtists: [String]
+    ) async -> [PersonalizedMix] {
+        guard !Task.isCancelled else { return [] }
+        let value = PersonalizedMixBuilder.make(
+            snapshot: snapshot,
+            snapshotRevision: revision,
+            selectedArtists: selectedArtists
+        )
+        return Task.isCancelled ? [] : value
+    }
+}
+
+private struct SearchMixTaskIdentity: Hashable, Sendable {
+    let revision: HomeSnapshotRevision
+    let selectedArtists: String
+    let isVisible: Bool
 }

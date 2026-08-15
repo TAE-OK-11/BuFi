@@ -1,79 +1,108 @@
 import XCTest
+import CoreGraphics
 @testable import BuFi
 
+@MainActor
 final class UIOptimizationTests: XCTestCase {
-    func testProgrammaticPagerSelectionDoesNotRequestPlayback() {
-        let current = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: "cover-a"
-        )
-        let destination = PlayerArtworkPageID(
-            queueIndex: 1,
-            songID: "song-b",
-            coverArtID: "cover-b"
-        )
-        var gate = PlayerPagerSelectionGate()
+    func testFavoriteOverridePublishesOnlyChangedIdentity() {
+        let state = FavoriteOverrideState()
+        let first = state.valueState(for: "song:first")
+        let second = state.valueState(for: "song:second")
 
-        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
-        XCTAssertFalse(gate.prepareProgrammaticChange(from: destination, to: destination))
-        XCTAssertFalse(gate.shouldStartPlayback(for: destination))
-        XCTAssertTrue(gate.shouldStartPlayback(for: current))
+        state.setValue(true, for: "song:first")
+
+        XCTAssertEqual(first.value, true)
+        XCTAssertNil(second.value)
     }
 
-    func testProgrammaticPagerAnimationIgnoresIntermediatePages() {
-        let current = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: "cover-a"
+    func testArtworkRequestIdentityKeepsFieldsStructurallyDistinct() {
+        let first = ArtworkLoadRequestIdentity(
+            context: ArtworkContextIdentity(
+                sessionGeneration: 7,
+                accountScope: "scope-part"
+            ),
+            coverArtID: "cover",
+            cacheRevision: "revision",
+            pixelSize: 600
         )
-        let intermediate = PlayerArtworkPageID(
-            queueIndex: 1,
-            songID: "song-b",
-            coverArtID: "cover-b"
+        let second = ArtworkLoadRequestIdentity(
+            context: ArtworkContextIdentity(
+                sessionGeneration: 7,
+                accountScope: "scope"
+            ),
+            coverArtID: "part-cover",
+            cacheRevision: "revision",
+            pixelSize: 600
         )
-        let destination = PlayerArtworkPageID(
-            queueIndex: 2,
-            songID: "song-c",
-            coverArtID: "cover-c"
-        )
-        var gate = PlayerPagerSelectionGate()
 
-        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
-        XCTAssertFalse(gate.shouldStartPlayback(for: intermediate))
-        XCTAssertEqual(gate.programmaticDestination, destination)
-        XCTAssertFalse(gate.shouldStartPlayback(for: destination))
-        XCTAssertNil(gate.programmaticDestination)
+        XCTAssertNotEqual(first, second)
     }
 
-    func testUserGestureInterruptsProgrammaticPagerGate() {
-        let current = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: nil
+    func testArtworkRequestSizingUsesStableBoundedPixelBuckets() {
+        XCTAssertEqual(
+            ArtworkRequestSizing.pixelSize(pointSize: 50, displayScale: 3),
+            192
         )
-        let destination = PlayerArtworkPageID(
-            queueIndex: 1,
-            songID: "song-b",
-            coverArtID: nil
+        XCTAssertEqual(
+            ArtworkRequestSizing.pixelSize(pointSize: 349, displayScale: 3),
+            1_200
         )
-        var gate = PlayerPagerSelectionGate()
-
-        XCTAssertTrue(gate.prepareProgrammaticChange(from: current, to: destination))
-        gate.beginUserInteraction()
-        XCTAssertTrue(gate.shouldStartPlayback(for: destination))
+        XCTAssertEqual(
+            ArtworkRequestSizing.pixelSize(pointSize: 2_000, displayScale: 3),
+            1_536
+        )
     }
 
-    func testPagerDoesNotArmWhenAlreadyAtDestination() {
-        let page = PlayerArtworkPageID(
-            queueIndex: 0,
-            songID: "song-a",
-            coverArtID: nil
+    func testArtworkSwipeRequestsNextQueueOccurrence() {
+        let destination = PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -70, height: 4),
+            predictedEndTranslation: CGSize(width: -130, height: 8),
+            currentIndex: 1,
+            queueCount: 4
         )
-        var gate = PlayerPagerSelectionGate()
 
-        XCTAssertFalse(gate.prepareProgrammaticChange(from: page, to: page))
-        XCTAssertNil(gate.programmaticDestination)
+        XCTAssertEqual(destination, 2)
+    }
+
+    func testArtworkSwipeRequestsPreviousQueueOccurrence() {
+        let destination = PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: 72, height: 3),
+            predictedEndTranslation: CGSize(width: 120, height: 5),
+            currentIndex: 2,
+            queueCount: 4
+        )
+
+        XCTAssertEqual(destination, 1)
+    }
+
+    func testArtworkSwipeIgnoresShortAndVerticalGestures() {
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -20, height: 2),
+            predictedEndTranslation: CGSize(width: -30, height: 3),
+            currentIndex: 1,
+            queueCount: 3
+        ))
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -80, height: 100),
+            predictedEndTranslation: CGSize(width: -110, height: 150),
+            currentIndex: 1,
+            queueCount: 3
+        ))
+    }
+
+    func testArtworkSwipeDoesNotLeaveQueueBoundaries() {
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: 90, height: 0),
+            predictedEndTranslation: CGSize(width: 120, height: 0),
+            currentIndex: 0,
+            queueCount: 2
+        ))
+        XCTAssertNil(PlayerArtworkSwipeNavigation.destinationIndex(
+            translation: CGSize(width: -90, height: 0),
+            predictedEndTranslation: CGSize(width: -120, height: 0),
+            currentIndex: 1,
+            queueCount: 2
+        ))
     }
 
     func testBiographySanitizationRemovesMarkupAndCollapsesWhitespace() {
@@ -103,6 +132,28 @@ final class UIOptimizationTests: XCTestCase {
         XCTAssertEqual(presentation.recommendedAlbums.map(\.id), ["album-a", "album-b"])
     }
 
+    func testHomePresentationInputUsesRevisionInsteadOfSnapshotTraversal() {
+        let revision = HomeSnapshotRevision()
+        let first = HomePresentationInput(
+            snapshot: HomeSnapshot(randomSongs: [song(id: "first", albumID: "a")]),
+            revision: revision,
+            selectedArtists: ["artist"]
+        )
+        let sameRevision = HomePresentationInput(
+            snapshot: HomeSnapshot(randomSongs: [song(id: "second", albumID: "b")]),
+            revision: revision,
+            selectedArtists: ["artist"]
+        )
+        let nextRevision = HomePresentationInput(
+            snapshot: first.snapshot,
+            revision: revision.advanced(),
+            selectedArtists: ["artist"]
+        )
+
+        XCTAssertEqual(first, sameRevision)
+        XCTAssertNotEqual(first, nextRevision)
+    }
+
     func testLibraryArtistPresentationUsesStableFavoriteMarker() {
         let favorite = Artist(
             id: "favorite",
@@ -121,6 +172,24 @@ final class UIOptimizationTests: XCTestCase {
 
         XCTAssertEqual(first.favorites, second.favorites)
         XCTAssertTrue(first.favorites.first?.isStarred == true)
+    }
+
+    func testLibraryArtistPresentationClearsStaleFavoriteOutsideAuthoritativeList() {
+        let stale = Artist(
+            id: "stale",
+            name: "Stale",
+            coverArt: nil,
+            albumCount: nil,
+            starred: "old"
+        )
+
+        let presentation = LibraryArtistPresentation.make(input: .init(
+            artists: [stale],
+            starredArtists: []
+        ))
+
+        XCTAssertTrue(presentation.favorites.isEmpty)
+        XCTAssertFalse(presentation.allArtists[0].isStarred)
     }
 
     private func album(id: String, name: String) -> Album {

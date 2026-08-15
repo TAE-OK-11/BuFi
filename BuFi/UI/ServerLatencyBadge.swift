@@ -8,10 +8,11 @@ struct ServerLatencyBadge: View {
     @State private var measurementFailed = false
     @State private var measurementGeneration: UInt64 = 0
     @State private var measurementTask: Task<Void, Never>?
+    @State private var lastMeasuredAt: ContinuousClock.Instant?
 
     var body: some View {
         Button {
-            startMeasurement()
+            startMeasurement(force: true)
         } label: {
             VStack(alignment: .trailing, spacing: 5) {
                 statusIcon
@@ -39,6 +40,9 @@ struct ServerLatencyBadge: View {
             startMeasurement()
         }
         .onChange(of: clientIdentifier) { _, _ in
+            latencyMilliseconds = nil
+            measurementFailed = false
+            lastMeasuredAt = nil
             startMeasurement()
         }
         .onDisappear {
@@ -72,19 +76,30 @@ struct ServerLatencyBadge: View {
         client.map { ObjectIdentifier($0) }
     }
 
-    private func startMeasurement() {
-        measurementTask?.cancel()
-        measurementTask = nil
-        measurementGeneration &+= 1
-        let generation = measurementGeneration
-
+    private func startMeasurement(force: Bool = false) {
         guard let client else {
+            measurementTask?.cancel()
+            measurementTask = nil
             latencyMilliseconds = nil
             measurementFailed = false
+            lastMeasuredAt = nil
             isMeasuring = false
             return
         }
 
+        let now = ContinuousClock().now
+        if !force,
+           latencyMilliseconds != nil,
+           !measurementFailed,
+           let lastMeasuredAt,
+           lastMeasuredAt.duration(to: now) < .seconds(60) {
+            return
+        }
+
+        measurementTask?.cancel()
+        measurementTask = nil
+        measurementGeneration &+= 1
+        let generation = measurementGeneration
         isMeasuring = true
         measurementFailed = false
         measurementTask = Task {
@@ -94,6 +109,7 @@ struct ServerLatencyBadge: View {
                       measurementGeneration == generation else { return }
                 latencyMilliseconds = latency
                 measurementFailed = false
+                lastMeasuredAt = ContinuousClock().now
                 isMeasuring = false
                 measurementTask = nil
             } catch is CancellationError {
@@ -106,6 +122,7 @@ struct ServerLatencyBadge: View {
                       measurementGeneration == generation else { return }
                 latencyMilliseconds = nil
                 measurementFailed = true
+                lastMeasuredAt = nil
                 isMeasuring = false
                 measurementTask = nil
             }
