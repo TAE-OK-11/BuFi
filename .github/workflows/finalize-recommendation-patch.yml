@@ -1,0 +1,30 @@
+name: Finalize Recommendation Patch
+
+on:
+  push:
+    branches:
+      - agent/recommendation-accuracy-speed
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Apply final recommendation fixes
+        run: python3 .github/scripts/finalize_recommendation_patch.py
+      - name: Commit final recommendation fixes
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add BuFi/Core/RecommendationEngine.swift
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Use current favorite metadata in recommendations'
+          git push origin HEAD:agent/recommendation-accuracy-speed
