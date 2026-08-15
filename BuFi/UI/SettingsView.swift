@@ -978,7 +978,7 @@ private struct RecommendationSettingsView: View {
 
     private func refreshCoverage() async {
         let catalog = await model.intelligenceCatalog()
-        if let scope = await model.client?.accountScope {
+        if let scope = model.client?.accountScope {
             await LyricIntelligence.shared.activate(accountScope: scope)
         }
         coverage = await LyricIntelligence.shared.coverage(catalog: catalog)
@@ -990,11 +990,11 @@ private struct RecommendationSettingsView: View {
         batchProgress.isRunning = true
         batchTask = Task {
             let catalog = await model.intelligenceCatalog()
-            guard let client = model.client,
-                  let scope = await client.accountScope else {
+            guard let client = model.client else {
                 batchProgress.isRunning = false
                 return
             }
+            let scope = client.accountScope
             let progress = await LyricIntelligence.shared.analyzePending(
                 catalog: catalog,
                 accountScope: scope,
@@ -1042,7 +1042,7 @@ private struct RecommendationSettingsView: View {
 
     private func currentSongSignature() async -> LyricSignature? {
         guard let songID = playbackState.currentSong?.id else { return nil }
-        if let scope = await model.client?.accountScope {
+        if let scope = model.client?.accountScope {
             await LyricIntelligence.shared.activate(accountScope: scope)
         }
         return await LyricIntelligence.shared.signature(for: songID)
@@ -1051,7 +1051,7 @@ private struct RecommendationSettingsView: View {
     private func runLyricProbe() async {
         isProbing = true
         defer { isProbing = false }
-        let scope = await model.client?.accountScope
+        let scope = model.client?.accountScope
         probe = await LyricIntelligence.shared.probeSample(accountScope: scope)
         currentSignature = await currentSongSignature()
     }
