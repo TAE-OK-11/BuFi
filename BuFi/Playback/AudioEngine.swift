@@ -864,7 +864,8 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
 }
 
 enum PlaybackSuccessorWarmupPolicy {
-    static let stablePlaybackDelay: Duration = .milliseconds(900)
+    static let readinessCheckDelay: Duration = .milliseconds(450)
+    static let maximumReadinessChecks = 3
 
     static func shouldWarm(
         isBuffering: Bool,
@@ -2492,7 +2493,12 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: compatibilityFormat
         )
         if let prepared = preparedPlaybackAssets[key] {
-            stagePreparedSuccessorIfPossible(prepared)
+            // Active playback may consume an in-flight asset immediately, but
+            // gapless staging waits until the speculative isPlayable load has
+            // completed so AVQueuePlayer never advances into an unvalidated item.
+            if preparedPlaybackWarmupTasks[key] == nil {
+                stagePreparedSuccessorIfPossible(prepared)
+            }
             return
         }
         guard preparedPlaybackWarmupTasks[key] == nil else {
@@ -2786,25 +2792,29 @@ final class AudioEngine: NSObject, ObservableObject {
         entry: PlaybackQueueEntry?
     ) async {
         guard let currentPlaybackID, let entry else { return }
-        do {
-            try await Task.sleep(
-                for: PlaybackSuccessorWarmupPolicy.stablePlaybackDelay
-            )
-        } catch {
-            return
-        }
-        guard !Task.isCancelled,
-              allowsSpeculativeNetworkPrefetch,
-              currentPlaybackItem?.id == currentPlaybackID,
-              PlaybackSuccessorWarmupPolicy.shouldWarm(
+        for _ in 0..<PlaybackSuccessorWarmupPolicy.maximumReadinessChecks {
+            do {
+                try await Task.sleep(
+                    for: PlaybackSuccessorWarmupPolicy.readinessCheckDelay
+                )
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  allowsSpeculativeNetworkPrefetch,
+                  currentPlaybackItem?.id == currentPlaybackID,
+                  wantsPlayback else {
+                return
+            }
+            if PlaybackSuccessorWarmupPolicy.shouldWarm(
                 isBuffering: isBuffering,
-                isActivelyPlaying: wantsPlayback
-                    && player.timeControlStatus == .playing,
+                isActivelyPlaying: player.timeControlStatus == .playing,
                 isLikelyToKeepUp: player.currentItem?.isPlaybackLikelyToKeepUp == true
-              ) else {
-            return
+            ) {
+                preparePlaybackAsset(for: entry)
+                return
+            }
         }
-        preparePlaybackAsset(for: entry)
     }
 
     private func scheduleNetworkPrefetch() {
@@ -2995,7 +3005,7 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
 
-        itemLoadTask = Task { [weak self] in
+        itemLoadTask = Task(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             defer {
                 if self.itemLoadGeneration == generation {
