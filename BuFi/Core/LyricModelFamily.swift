@@ -33,10 +33,10 @@ enum LyricModelFamily: String, Sendable {
 
     var lyricCharacterLimit: Int {
         switch self {
-        case .appleFoundation: 1_800
-        case .llama70B: 4_000
-        case .gptOSS: 6_000
-        case .generic: 2_800
+        case .appleFoundation: 1_500
+        case .llama70B: 3_600
+        case .gptOSS: 5_000
+        case .generic: 2_400
         }
     }
 
@@ -47,6 +47,72 @@ enum LyricModelFamily: String, Sendable {
         case .gptOSS: 18
         case .generic: 12
         }
+    }
+}
+
+/// Keeps the beginning, middle and ending of long lyrics inside a fixed model
+/// budget instead of feeding only the first verse. This improves narrative
+/// coverage while reducing prompt size for the on-device model.
+enum LyricTextSampler {
+    static func normalized(_ text: String) -> String {
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        var result: [String] = []
+        result.reserveCapacity(lines.count)
+        var previousWasBlank = true
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if !previousWasBlank {
+                    result.append("")
+                }
+                previousWasBlank = true
+            } else {
+                result.append(trimmed)
+                previousWasBlank = false
+            }
+        }
+        while result.last?.isEmpty == true {
+            result.removeLast()
+        }
+        return result.joined(separator: "\n")
+    }
+
+    static func sample(_ text: String, limit: Int) -> String {
+        guard limit > 0 else { return "" }
+        let clean = normalized(text)
+        let characters = Array(clean)
+        guard characters.count > limit else { return clean }
+
+        let divider = Array("\n[…]\n")
+        let dividerCost = divider.count * 2
+        guard limit > dividerCost + 24 else {
+            return String(characters.prefix(limit))
+        }
+
+        let usable = limit - dividerCost
+        let headCount = max(1, usable * 45 / 100)
+        let middleCount = max(1, usable * 20 / 100)
+        let tailCount = max(1, usable - headCount - middleCount)
+        let middleStart = max(
+            headCount,
+            min(
+                characters.count - tailCount - middleCount,
+                characters.count / 2 - middleCount / 2
+            )
+        )
+        let tailStart = characters.count - tailCount
+
+        var sampled: [Character] = []
+        sampled.reserveCapacity(limit)
+        sampled.append(contentsOf: characters.prefix(headCount))
+        sampled.append(contentsOf: divider)
+        sampled.append(contentsOf: characters[middleStart..<(middleStart + middleCount)])
+        sampled.append(contentsOf: divider)
+        sampled.append(contentsOf: characters[tailStart..<characters.count])
+        return String(sampled.prefix(limit))
     }
 }
 
@@ -65,40 +131,39 @@ extension LyricIntelligenceSettings {
 
 enum LyricModelPrompts {
     static func lyricAnalysis(lyrics: String, family: LyricModelFamily) -> String {
-        let body = String(lyrics.prefix(family.lyricCharacterLimit))
+        let body = LyricTextSampler.sample(lyrics, limit: family.lyricCharacterLimit)
         switch family {
         case .appleFoundation:
             return """
-            Extract tags for a music app. JSON only. Short values.
-            {"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 그 이름을 부른다.\\n빗소리가 방을 채운다.","season":"autumn","dayparts":["night"],"style":"ballad","content":"그리움","vocal":"soft","vocalGender":"female","genre":"ballad"}
-            summary = what happens in the lyrics, never language or "two sentences".
+            Analyze lyric meaning for music recommendations. Return one JSON object only.
+            {"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 그 이름을 부른다.\\n빗소리가 방을 채운다.","season":"autumn","dayparts":["night"],"style":"","content":"그리움","setting":"","tempo":0.3,"intimacy":0.8,"narrative":"confession","weather":"rain","social":"alone","color":"blue","vocal":"","vocalGender":"","genre":"","language":"ko","emotion":0.7,"context":"late night"}
+            Use 1-4 short moods/themes. energy=lyrical intensity; valence=emotional positivity. summary=the lyric story, not metadata.
+            Use season/daypart/weather only when the words support them. Do not invent audio facts: vocal, vocalGender and genre stay empty unless explicit in the text.
             Lyrics:
             \(body)
             """
         case .llama70B:
             return """
-            You are a cataloguer for a personal music library. Return one JSON object, no markdown.
-            Schema:
-            {"moods":["<=5"],"themes":["<=5"],"energy":0-1,"valence":0-1,"summary":"full lyric retelling","season":"spring|summer|autumn|winter|any","dayparts":["morning|afternoon|evening|night"],"style":"","content":"","setting":"","tempo":0-1,"intimacy":0-1,"narrative":"","weather":"","social":"","color":"","vocal":"soft|powerful|rap|choir","vocalGender":"female|male|mixed|instrumental","genre":"","language":"ko|en|ja|other","emotion":0-1,"context":""}
-            summary retells the lyric story in the singer's language. Do not mention language, genre, or the word sentence.
-            vocalGender is who is singing. genre is the musical lane, not the language.
+            You catalogue lyrics for a personal recommender. Return exactly one JSON object, no markdown.
+            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"spring|summer|autumn|winter|any","dayparts":[],"style":"","content":"","setting":"","tempo":0.0,"intimacy":0.0,"narrative":"","weather":"","social":"","color":"","vocal":"","vocalGender":"","genre":"","language":"ko|en|ja|other","emotion":0.0,"context":""}
+            Ground every field in the lyrics. energy is lyrical intensity, tempo is narrative pace, valence is emotional positivity. summary retells who feels or does what and how it changes or ends, in the lyric language.
+            Never write language commentary. Do not guess singer gender, production, or genre from lyrics; leave audio-only fields empty unless the text itself proves them.
             Lyrics:
             \(body)
             """
         case .gptOSS:
             return """
-            Role: senior music editor writing library cards.
-            Decide the song's inner story, then emit JSON only — no analysis text, no markdown.
-            {"moods":[],"themes":[],"energy":0,"valence":0,"summary":"","season":"","dayparts":[],"style":"","content":"","setting":"","tempo":0,"intimacy":0,"narrative":"","weather":"","social":"","color":"","vocal":"","vocalGender":"female|male|mixed|instrumental","genre":"","language":"","emotion":0,"context":""}
-            summary is the lyric narrative itself, as long as needed. Never write "two sentences in korean" or name the language.
+            Role: senior lyric editor for a recommender. Understand the whole excerpt, then output one JSON object only.
+            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"","dayparts":[],"style":"","content":"","setting":"","tempo":0.0,"intimacy":0.0,"narrative":"","weather":"","social":"","color":"","vocal":"","vocalGender":"","genre":"","language":"","emotion":0.0,"context":""}
+            Prefer evidence over guesses. summary is the actual lyric narrative, including its emotional turn or ending. energy and tempo describe the words, not the recording. Never infer singer gender or musical genre only from lyric text.
             Lyrics:
             \(body)
             """
         case .generic:
             return """
-            Score these lyrics for a recommender. JSON only:
-            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"any","dayparts":[],"style":"","content":"","vocal":"soft","vocalGender":"","genre":""}
-            summary retells the lyric story. Never mention language.
+            Analyze these lyrics for recommendations. JSON only:
+            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"any","dayparts":[],"style":"","content":"","setting":"","weather":"","language":"","emotion":0.0,"context":""}
+            Use only evidence in the lyrics. summary retells the lyric story. Never describe the task or language.
             Lyrics:
             \(body)
             """
@@ -106,12 +171,13 @@ enum LyricModelPrompts {
     }
 
     static func tagging(lyrics: String, family: LyricModelFamily) -> String {
-        let body = String(lyrics.prefix(family.lyricCharacterLimit))
+        let body = LyricTextSampler.sample(lyrics, limit: family.lyricCharacterLimit)
         switch family {
         case .appleFoundation:
             return """
-            Tags only. JSON:
-            {"moods":["calm"],"themes":["night"],"summary":"창가에서 기다린다.\\n비가 이름을 적신다.","vocalGender":"female","genre":"ballad"}
+            Extract grounded lyric meaning for recommendations. One JSON object only:
+            {"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 기다린다.\\n비가 이름을 적신다.","season":"autumn","dayparts":["night"],"content":"그리움","setting":"city","weather":"rain","language":"ko","emotion":0.7,"context":"late night"}
+            Use only evidence in the words. energy=lyrical intensity, valence=emotional positivity. summary is story only.
             Lyrics:
             \(body)
             """
@@ -121,35 +187,35 @@ enum LyricModelPrompts {
     }
 
     static func summaryOnly(lyrics: String, family: LyricModelFamily) -> String {
-        let body = String(lyrics.prefix(family.lyricCharacterLimit))
+        let body = LyricTextSampler.sample(lyrics, limit: family.lyricCharacterLimit)
         switch family {
         case .appleFoundation:
             return """
-            Retell the lyric story. JSON only:
+            Retell the lyric story accurately. JSON only:
             {"summary":"창가에서 그 이름을 부른다.\\n빗소리가 방을 채운다."}
-            Do not write language names.
+            Include the emotional turn or ending when present. No language or task commentary.
             Lyrics:
             \(body)
             """
         case .llama70B:
             return """
-            Write a complete lyric synopsis in the singer's language. JSON only:
+            Write an accurate lyric synopsis in the lyric language. JSON only:
             {"summary":"..."}
-            Cover who speaks, what they want, and how it ends. No length cap. Never mention language.
+            Cover the speaker, desire or conflict, important turn, and ending when present. Story only; no metadata commentary.
             Lyrics:
             \(body)
             """
         case .gptOSS:
             return """
-            Music editor task. After you understand the lyrics, output JSON only:
-            {"summary":"full story of the lyrics"}
-            Unlimited length. Story only — never "two sentences" or a language label.
+            Music editor task. Understand the full excerpt and output JSON only:
+            {"summary":"..."}
+            Preserve the lyric's narrative and emotional change. Never mention the task, sentence count, or language label.
             Lyrics:
             \(body)
             """
         case .generic:
             return """
-            {"summary":"lyric story"}
+            {"summary":"accurate lyric story"}
             Lyrics:
             \(body)
             """
