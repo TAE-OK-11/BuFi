@@ -488,23 +488,27 @@ enum RecommendationMixer {
         }
         let shortCutoff = evaluationDate.addingTimeInterval(-14 * 86_400)
         let longCutoff = evaluationDate.addingTimeInterval(-365 * 86_400)
-        let temporalProfiles = temporalProfiles(
+        let profiles = temporalProfiles(
             from: allBehaviors,
             shortCutoff: shortCutoff,
             longCutoff: longCutoff,
             date: evaluationDate
         )
-        let shortProfile = temporalProfiles.short
-        let longProfile = temporalProfiles.long
+        let shortProfile = profiles.short
+        let longProfile = profiles.long
         let contextProfile = profile(
             from: behavior.recentSongs.compactMap { behavior.songs[$0.id] },
             date: evaluationDate,
             appliesDecay: false
         )
         let favoriteProfile = profile(
-            from: snapshot.starredSongs.map {
-                behavior.songs[$0.id]
-                    ?? SongBehavior(song: $0, at: evaluationDate)
+            from: snapshot.starredSongs.map { song in
+                var value = behavior.songs[song.id]
+                    ?? SongBehavior(song: song, at: evaluationDate)
+                // Preserve behavioral evidence but always derive preference
+                // dimensions from the authoritative current starred metadata.
+                value.song = song
+                return value
             },
             date: evaluationDate,
             appliesDecay: false
