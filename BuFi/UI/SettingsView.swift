@@ -560,6 +560,7 @@ private struct RecommendationSettingsView: View {
     @State private var coverage = LyricAnalysisCoverage.empty
     @State private var batchProgress = LyricBatchProgress.idle
     @State private var batchTask: Task<Void, Never>?
+    @State private var confirmFullLyricReanalysis = false
     @State private var lastFMAPIKey = ""
     @State private var listenBrainzUsername = ""
     @State private var listenBrainzToken = ""
@@ -888,6 +889,18 @@ private struct RecommendationSettingsView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .tint(BuFiTheme.accent)
+        .confirmationDialog(
+            "기존 분석을 모두 지우고 새로 분석할까요?",
+            isPresented: $confirmFullLyricReanalysis,
+            titleVisibility: .visible
+        ) {
+            Button("모두 지우고 새로 분석", role: .destructive) {
+                startFullLyricReanalysis()
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("저장된 가사 요약·분위기·임베딩·음향 분석을 초기화하고 현재 라이브러리를 선택한 엔진으로 처음부터 다시 분석합니다. 원격 엔진은 API 사용량이 발생할 수 있습니다.")
+        }
         .onAppear {
             listenBrainzUsername = session.listenBrainzUsername
             if lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
@@ -975,8 +988,15 @@ private struct RecommendationSettingsView: View {
                     coverage.workQueue.isEmpty
                         || !session.hasGroqKey
                 )
+                Button("기존 분석 지우고 전체 새로 분석", role: .destructive) {
+                    confirmFullLyricReanalysis = true
+                }
+                .disabled(
+                    coverage.known == 0
+                        || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
+                )
             }
-            settingsDescription("지금 곡은 저장된 결과를 지우고 다시 돌립니다. 안 된 곡·요약이 비거나 이상한 곡·음향 없는 곡을 이어서 돌립니다. Groq 키가 있으면 실패한 분석은 Groq로 이어집니다.")
+            settingsDescription("지금 곡은 저장된 결과를 지우고 다시 돌립니다. 안 된 곡·요약이 비거나 이상한 곡·음향 없는 곡은 이어서 분석합니다. ‘전체 새로 분석’은 저장된 가사·요약·임베딩·음향 결과를 비운 뒤 현재 엔진으로 모든 곡을 처음부터 다시 돌립니다.")
         }
     }
 
@@ -1111,6 +1131,70 @@ private struct RecommendationSettingsView: View {
         watchBatchProgress()
     }
 
+    private func startFullLyricReanalysis() {
+        batchTask?.cancel()
+        batchProgress = LyricBatchProgress.idle
+        batchProgress.total = coverage.known
+        batchProgress.isRunning = true
+        batchProgress.currentTitle = String(localized: "기존 분석 초기화 중")
+        batchTask = Task {
+            let catalog = await model.intelligenceCatalog()
+            guard let client = model.client else {
+                batchProgress.isRunning = false
+                batchProgress.currentTitle = ""
+                return
+            }
+            let scope = client.accountScope
+
+            await LyricIntelligence.shared.activate(accountScope: scope)
+            let previousIndex = await LyricIntelligence.shared.index()
+            await LyricIntelligence.shared.cancelBatch()
+            await LyricIntelligence.shared.deactivate()
+
+            let songIDs = Set(previousIndex.bySongID.keys)
+                .union(catalog.map(\.id))
+            for songID in songIDs {
+                guard !Task.isCancelled else { return }
+                let cleared = LyricSignature(
+                    songID: songID,
+                    lyricsHash: "",
+                    moods: [],
+                    themes: [],
+                    energy: 0.5,
+                    valence: 0.5,
+                    embedding: [],
+                    source: ""
+                )
+                _ = await AppDatabase.shared.saveTrackIntelligence(
+                    cleared,
+                    scope: scope
+                )
+            }
+
+            guard !Task.isCancelled else { return }
+            await LyricIntelligence.shared.activate(accountScope: scope)
+            let settings = await LyricIntelligenceSettings.load()
+            let progress = await LyricIntelligence.shared.analyzePending(
+                catalog: catalog,
+                accountScope: scope,
+                lyricsProvider: { song in
+                    await Self.lyricsText(for: song, client: client)
+                },
+                fileProvider: { song in
+                    await SoundAnalysisSample.resolve(for: song, client: client)
+                },
+                force: true,
+                settings: settings
+            )
+            guard !Task.isCancelled else { return }
+            batchProgress = progress
+            await refreshCoverage()
+            currentSignature = await currentSongSignature()
+            model.rebuildRecommendations()
+        }
+        watchBatchProgress()
+    }
+
     private func startCurrentSongReanalysis() {
         batchTask?.cancel()
         batchTask = Task {
@@ -1163,12 +1247,16 @@ private struct RecommendationSettingsView: View {
         Task {
             while !Task.isCancelled {
                 let latest = await LyricIntelligence.shared.currentBatchProgress()
-                await MainActor.run {
-                    if latest.isRunning || latest.processed > 0 {
+                let waitingForBatchStart = await MainActor.run {
+                    if latest.isRunning || latest.processed > 0 || latest.isCancelled {
                         batchProgress = latest
                     }
+                    return batchProgress.isRunning
+                        && !latest.isRunning
+                        && latest.processed == 0
+                        && !latest.isCancelled
                 }
-                if !latest.isRunning {
+                if !latest.isRunning && !waitingForBatchStart {
                     await refreshCoverage()
                     break
                 }
