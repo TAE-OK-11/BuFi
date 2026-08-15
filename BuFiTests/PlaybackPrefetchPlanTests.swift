@@ -322,6 +322,66 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         ))
     }
 
+    func testShuffleFreshPartitionMovesRecentSongsBehindFreshCandidates() {
+        var entries = [
+            PlaybackQueueEntry(song: song(id: "recent-a")),
+            PlaybackQueueEntry(song: song(id: "fresh-a")),
+            PlaybackQueueEntry(song: song(id: "recent-b")),
+            PlaybackQueueEntry(song: song(id: "fresh-b"))
+        ]
+        let recent: Set<String> = ["recent-a", "recent-b"]
+
+        PlaybackShufflePolicy.prioritizeFresh(
+            &entries,
+            recentSongIDs: recent
+        )
+
+        let firstRecent = entries.firstIndex { recent.contains($0.song.id) }
+        XCTAssertNotNil(firstRecent)
+        let boundary = firstRecent ?? entries.endIndex
+        XCTAssertTrue(entries[..<boundary].allSatisfy {
+            !recent.contains($0.song.id)
+        })
+        XCTAssertTrue(entries[boundary...].allSatisfy {
+            recent.contains($0.song.id)
+        })
+    }
+
+    func testShuffleFastCandidatePathOnlyActivatesForLargeQueues() {
+        XCTAssertFalse(PlaybackShufflePolicy.shouldUseFastCandidatePath(
+            queueCount: PlaybackShufflePolicy.recentWindowLimit * 2
+        ))
+        XCTAssertTrue(PlaybackShufflePolicy.shouldUseFastCandidatePath(
+            queueCount: PlaybackShufflePolicy.recentWindowLimit * 2 + 1
+        ))
+        XCTAssertEqual(PlaybackShufflePolicy.fastCandidateAttemptLimit, 4)
+    }
+
+    func testPlaybackSnapshotSelectionKeepsCurrentSongSemantics() {
+        let entries = [
+            PlaybackQueueEntry(song: song(id: "first")),
+            PlaybackQueueEntry(song: song(id: "second"))
+        ]
+        let generation = UUID()
+        let first = PlaybackSnapshot(
+            entries: entries,
+            index: 0,
+            accountScope: "account",
+            playbackGenerationID: generation
+        )
+        let second = PlaybackSnapshot(
+            entries: entries,
+            index: 1,
+            accountScope: "account",
+            playbackGenerationID: generation
+        )
+
+        XCTAssertEqual(first.currentSong?.id, "first")
+        XCTAssertEqual(second.currentSong?.id, "second")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(first.songs.map(\.id), second.songs.map(\.id))
+    }
+
     private func song(
         id: String,
         externalStreamURL: String? = nil
