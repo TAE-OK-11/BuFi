@@ -599,11 +599,17 @@ private struct RecommendationSettingsView: View {
     @AppStorage("lyric-intelligence-provider")
     private var lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
     @AppStorage("lyric-intelligence-openrouter-model")
-    private var openRouterModel = "google/gemma-3-270m-it"
+    private var openRouterModel = LyricIntelligenceSettings.defaultOpenRouterModel
+    @AppStorage("lyric-intelligence-groq-model")
+    private var groqModel = LyricIntelligenceSettings.defaultGroqModel
+    @AppStorage("lyric-intelligence-cerebras-model")
+    private var cerebrasModel = LyricIntelligenceSettings.defaultCerebrasModel
     @AppStorage("recommendation-llm-review-enabled")
     private var llmReviewEnabled = false
     @State private var openAIKey = ""
     @State private var openRouterKey = ""
+    @State private var groqKey = ""
+    @State private var cerebrasKey = ""
 
     var body: some View {
         ScrollView {
@@ -800,6 +806,55 @@ private struct RecommendationSettingsView: View {
                             .buttonStyle(SettingsActionButtonStyle())
                             .disabled(
                                 openRouterKey
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .isEmpty
+                            )
+                        }
+                        if lyricProviderRaw == LyricIntelligenceProviderKind.groq.rawValue {
+                            TextField("Groq 모델", text: $groqModel)
+                                .settingsTextField()
+                            SecureField(
+                                session.hasGroqKey
+                                    ? "저장된 Groq 키 교체"
+                                    : "Groq API 키",
+                                text: $groqKey
+                            )
+                            .settingsTextField()
+                            Button(session.hasGroqKey ? "Groq 키 갱신" : "Groq 키 저장") {
+                                Task {
+                                    await model.saveLyricAPIKey(groqKey, provider: .groq)
+                                    groqKey = ""
+                                }
+                            }
+                            .buttonStyle(SettingsActionButtonStyle())
+                            .disabled(
+                                groqKey
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .isEmpty
+                            )
+                        }
+                        if lyricProviderRaw == LyricIntelligenceProviderKind.cerebras.rawValue {
+                            TextField("Cerebras 모델", text: $cerebrasModel)
+                                .settingsTextField()
+                            SecureField(
+                                session.hasCerebrasKey
+                                    ? "저장된 Cerebras 키 교체"
+                                    : "Cerebras API 키",
+                                text: $cerebrasKey
+                            )
+                            .settingsTextField()
+                            Button(session.hasCerebrasKey ? "Cerebras 키 갱신" : "Cerebras 키 저장") {
+                                Task {
+                                    await model.saveLyricAPIKey(
+                                        cerebrasKey,
+                                        provider: .cerebras
+                                    )
+                                    cerebrasKey = ""
+                                }
+                            }
+                            .buttonStyle(SettingsActionButtonStyle())
+                            .disabled(
+                                cerebrasKey
                                     .trimmingCharacters(in: .whitespacesAndNewlines)
                                     .isEmpty
                             )
@@ -1129,6 +1184,10 @@ private struct RecommendationSettingsView: View {
             String(localized: "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         case .openRouter:
             String(localized: "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
+        case .groq:
+            String(localized: "Groq로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
+        case .cerebras:
+            String(localized: "Cerebras로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         }
     }
 

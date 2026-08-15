@@ -26,6 +26,8 @@ final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var listenBrainzUsername = ""
     @Published fileprivate(set) var hasOpenAIKey = false
     @Published fileprivate(set) var hasOpenRouterKey = false
+    @Published fileprivate(set) var hasGroqKey = false
+    @Published fileprivate(set) var hasCerebrasKey = false
     @Published var errorMessage: String?
 
     fileprivate func setPhase(_ value: AppModel.SessionState) {
@@ -71,6 +73,16 @@ final class AppSessionState: ObservableObject {
     fileprivate func setHasOpenRouterKey(_ value: Bool) {
         guard hasOpenRouterKey != value else { return }
         hasOpenRouterKey = value
+    }
+
+    fileprivate func setHasGroqKey(_ value: Bool) {
+        guard hasGroqKey != value else { return }
+        hasGroqKey = value
+    }
+
+    fileprivate func setHasCerebrasKey(_ value: Bool) {
+        guard hasCerebrasKey != value else { return }
+        hasCerebrasKey = value
     }
 
     fileprivate func setErrorMessage(_ value: String?) {
@@ -341,6 +353,16 @@ final class AppModel: ObservableObject {
         set { session.setHasOpenRouterKey(newValue) }
     }
 
+    private(set) var hasGroqKey: Bool {
+        get { session.hasGroqKey }
+        set { session.setHasGroqKey(newValue) }
+    }
+
+    private(set) var hasCerebrasKey: Bool {
+        get { session.hasCerebrasKey }
+        set { session.setHasCerebrasKey(newValue) }
+    }
+
     var errorMessage: String? {
         get { session.errorMessage }
         set { session.setErrorMessage(newValue) }
@@ -390,6 +412,8 @@ final class AppModel: ObservableObject {
     private static let lastFMKeyAccount = "lastfm-api-key"
     private static let openAIKeyAccount = LyricIntelligenceSettings.openAIAccount
     private static let openRouterKeyAccount = LyricIntelligenceSettings.openRouterAccount
+    private static let groqKeyAccount = LyricIntelligenceSettings.groqAccount
+    private static let cerebrasKeyAccount = LyricIntelligenceSettings.cerebrasAccount
     private static let listenBrainzTokenAccount = "listenbrainz-token"
     private static let listenBrainzUsernameKey = "listenbrainz-username"
 
@@ -422,6 +446,12 @@ final class AppModel: ObservableObject {
         )?.isEmpty == false
         hasOpenRouterKey = await secureStore.loadSecret(
             account: Self.openRouterKeyAccount
+        )?.isEmpty == false
+        hasGroqKey = await secureStore.loadSecret(
+            account: Self.groqKeyAccount
+        )?.isEmpty == false
+        hasCerebrasKey = await secureStore.loadSecret(
+            account: Self.cerebrasKeyAccount
         )?.isEmpty == false
         LaunchDiagnostics.mark("credential-bootstrap-loaded")
         if let credentials = stored.credentials {
@@ -833,18 +863,23 @@ final class AppModel: ObservableObject {
 
     func saveLyricAPIKey(_ value: String, provider: LyricIntelligenceProviderKind) async {
         let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let account = provider == .openRouter
-            ? Self.openRouterKeyAccount
-            : Self.openAIKeyAccount
+        guard let account = LyricIntelligenceSettings.keychainAccount(for: provider) else {
+            return
+        }
         do {
             if key.isEmpty {
                 try await secureStore.deleteSecret(account: account)
             } else {
                 try await secureStore.saveSecret(key, account: account)
             }
-            if provider == .openRouter {
+            switch provider {
+            case .openRouter:
                 hasOpenRouterKey = !key.isEmpty
-            } else {
+            case .groq:
+                hasGroqKey = !key.isEmpty
+            case .cerebras:
+                hasCerebrasKey = !key.isEmpty
+            default:
                 hasOpenAIKey = !key.isEmpty
             }
         } catch {

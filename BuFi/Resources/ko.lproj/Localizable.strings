@@ -109,6 +109,8 @@
 "자동은 Apple Intelligence 태깅 모델로 분위기·주제를 뽑고, 기본 AFM으로 에너지·감정을 뽑습니다. 둘 다 안 되면 Gemma 3 270M을 씁니다. 결과는 SQLite에 저장되어 같은 가사는 다시 돌리지 않습니다. 다운로드된 곡은 Sound Analysis 내장 classifier로 음향도 한 번만 분석합니다." = "자동은 Apple Intelligence 태깅 모델로 분위기·주제를 뽑고, 기본 AFM으로 에너지·감정을 뽑습니다. 둘 다 안 되면 Gemma 3 270M을 씁니다. 결과는 SQLite에 저장되어 같은 가사는 다시 돌리지 않습니다. 다운로드된 곡은 Sound Analysis 내장 classifier로 음향도 한 번만 분석합니다.";
 "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다." = "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.";
 "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다." = "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.";
+"Groq로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다." = "Groq로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.";
+"Cerebras로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다." = "Cerebras로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.";
 "Apple Privacy Cloud는 iOS 27 이상이 필요합니다." = "Apple Privacy Cloud는 iOS 27 이상이 필요합니다.";
 "이 기기는 Apple Privacy Cloud를 지원하지 않습니다." = "이 기기는 Apple Privacy Cloud를 지원하지 않습니다.";
 "Apple Privacy Cloud가 아직 준비되지 않았습니다. 네트워크와 Apple Intelligence 설정을 확인하세요." = "Apple Privacy Cloud가 아직 준비되지 않았습니다. 네트워크와 Apple Intelligence 설정을 확인하세요.";

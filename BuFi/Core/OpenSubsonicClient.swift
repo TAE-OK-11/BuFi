@@ -2562,6 +2562,79 @@ actor OpenSubsonicClient {
         return url
     }
 
+    func writeStreamSample(
+        from url: URL,
+        songID: String,
+        maxBytes: Int = 1_600_000
+    ) async -> URL? {
+        guard url.scheme?.lowercased() == "https" else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("bytes=0-\(maxBytes - 1)", forHTTPHeaderField: "Range")
+        request.timeoutInterval = 24
+        ModernNetworkPolicy.prepareMediaRequest(&request)
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                return nil
+            }
+            var data = Data()
+            data.reserveCapacity(min(maxBytes, 256_000))
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= maxBytes { break }
+            }
+            guard data.count > 8_000 else { return nil }
+            return Self.writeTemporaryAudioSample(
+                data,
+                songID: songID,
+                contentType: http.value(forHTTPHeaderField: "Content-Type")
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private static func writeTemporaryAudioSample(
+        _ data: Data,
+        songID: String,
+        contentType: String?
+    ) -> URL? {
+        let type = (contentType ?? "").lowercased()
+        let ext: String
+        if type.contains("mpeg") || type.contains("mp3") {
+            ext = "mp3"
+        } else if type.contains("mp4") || type.contains("m4a") {
+            ext = "m4a"
+        } else if type.contains("aac") {
+            ext = "aac"
+        } else if type.contains("ogg") || type.contains("opus") {
+            ext = "ogg"
+        } else {
+            ext = "m4a"
+        }
+        let name = String(
+            songID.unicodeScalars
+                .filter { CharacterSet.alphanumerics.contains($0) }
+                .prefix(48)
+                .map(Character.init)
+        )
+        let fileName = name.isEmpty ? "sample" : name
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BuFiSound", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true
+        )
+        let file = folder.appendingPathComponent("\(fileName).\(ext)")
+        do {
+            try data.write(to: file, options: .atomic)
+            return file
+        } catch {
+            return nil
+        }
+    }
+
     static func compatibilityBitRate(
         for quality: StreamQuality,
         format: String

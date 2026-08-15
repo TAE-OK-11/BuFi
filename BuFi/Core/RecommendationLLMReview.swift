@@ -136,15 +136,7 @@ enum RecommendationLLMReview {
     }
 
     private static func currentSettings() async -> LyricIntelligenceSettings {
-        let store = SecureStore()
-        return LyricIntelligenceSettings.current(
-            openAIKey: await store.loadSecret(
-                account: LyricIntelligenceSettings.openAIAccount
-            ) ?? "",
-            openRouterKey: await store.loadSecret(
-                account: LyricIntelligenceSettings.openRouterAccount
-            ) ?? ""
-        )
+        await LyricIntelligenceSettings.load()
     }
 
     private static let cacheLock = NSLock()

@@ -6,6 +6,8 @@ enum LyricIntelligenceProviderKind: String, CaseIterable, Identifiable, Sendable
     case applePrivateCloud
     case openAI
     case openRouter
+    case groq
+    case cerebras
 
     var id: String { rawValue }
 
@@ -16,6 +18,8 @@ enum LyricIntelligenceProviderKind: String, CaseIterable, Identifiable, Sendable
         case .applePrivateCloud: String(localized: "Apple Privacy Cloud")
         case .openAI: "OpenAI"
         case .openRouter: "OpenRouter"
+        case .groq: "Groq"
+        case .cerebras: "Cerebras"
         }
     }
 
@@ -148,7 +152,7 @@ struct LyricSignature: Codable, Equatable, Sendable {
     }
 
     var hasStoredSummary: Bool {
-        !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        LyricIntelligencePrompt.isContentSummary(summary)
     }
 
     var themeKeys: [String] {
@@ -173,6 +177,10 @@ struct LyricSignature: Codable, Equatable, Sendable {
             "OpenAI"
         case "openrouter":
             "OpenRouter"
+        case "groq":
+            "Groq"
+        case "cerebras":
+            "Cerebras"
         case "lexical":
             String(localized: "로컬 어휘 (모델 없음)")
         default:
@@ -379,8 +387,9 @@ enum LyricIntelligencePrompt {
     static func moodAnalysis(lyrics: String, characterLimit: Int = 2_400) -> String {
         """
         Score these lyrics for a personal music recommender. JSON only, 20 fields, no markdown:
-        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"energy":0.0,"valence":0.0,"summary":"two short lines","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what the song is about","setting":"place","tempo":0.0,"intimacy":0.0,"narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color word","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","emotion":0.0,"context":"sleep|commute|workout|date|focus"}
-        energy/tempo/intimacy/emotion are 0-1. valence 0 sad to 1 joyful. summary two sentences in the lyric language.
+        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"energy":0.0,"valence":0.0,"summary":"two short lines about the lyric story","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what the song is about","setting":"place","tempo":0.0,"intimacy":0.0,"narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color word","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","emotion":0.0,"context":"sleep|commute|workout|date|focus"}
+        energy/tempo/intimacy/emotion are 0-1. valence 0 sad to 1 joyful.
+        \(summaryRules)
         Lyrics:
         \(lyrics.prefix(characterLimit))
         """
@@ -389,7 +398,8 @@ enum LyricIntelligencePrompt {
     static func tagging(lyrics: String) -> String {
         """
         Tag these lyrics for recommendation matching. JSON only:
-        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"summary":"two short lines","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what it is about","setting":"place","narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","context":"sleep|commute|workout|date|focus"}
+        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"summary":"two short lines about the lyric story","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what it is about","setting":"place","narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","context":"sleep|commute|workout|date|focus"}
+        \(summaryRules)
         Lyrics:
         \(lyrics.prefix(2_400))
         """
@@ -408,13 +418,21 @@ enum LyricIntelligencePrompt {
 
     static func summaryOnly(lyrics: String) -> String {
         """
-        Summarize these song lyrics in exactly two short sentences.
+        Retell what happens or is felt in these lyrics in exactly two short sentences.
         JSON only: {"summary":"line one\\nline two"}
-        Same language as the lyrics. No title, no quotes, no extra keys.
+        \(summaryRules)
         Lyrics:
         \(lyrics.prefix(2_400))
         """
     }
+
+    private static let summaryRules = """
+        summary retells the lyric content: who is speaking, what they want, and what happens or is felt.
+        Write in the same language the singer uses, but never name that language.
+        language is a separate JSON field. Never put language, nationality, script, genre, artist, or title in summary.
+        Forbidden summary text: "한국어다", "영어 가사", "This is Korean", "The lyrics are in English".
+        No quotes and no extra keys.
+        """
 
     static func parse(_ raw: String) -> ParsedLyricAnalysis? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -490,20 +508,90 @@ enum LyricIntelligencePrompt {
         let lines = cleaned
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && !isMetaCommentary($0) }
             .prefix(2)
             .map { String($0.prefix(90)) }
-        return lines.joined(separator: "\n")
+        let summary = lines.joined(separator: "\n")
+        return isContentSummary(summary) ? summary : ""
+    }
+
+    static func resolvedSummary(_ model: String, lyrics: String) -> String {
+        let cleaned = normalizedSummary(model)
+        return cleaned.isEmpty ? heuristicSummary(from: lyrics) : cleaned
+    }
+
+    static func isContentSummary(_ raw: String) -> Bool {
+        let lines = raw
+            .replacingOccurrences(of: "\\n", with: "\n")
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let first = lines.first, first.count >= 8 else { return false }
+        return lines.contains { $0.count >= 8 && !isMetaCommentary($0) }
     }
 
     static func heuristicSummary(from lyrics: String) -> String {
         let lines = lyrics
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.count >= 8 }
-            .prefix(2)
-            .map { String($0.prefix(90)) }
-        return lines.joined(separator: "\n")
+            .filter { isLyricStoryLine($0) }
+        guard let first = lines.first else { return "" }
+        let rest = lines.dropFirst()
+        let second = rest.first { $0 != first }
+            ?? rest.max { $0.count < $1.count }
+        if let second {
+            return [String(first.prefix(90)), String(second.prefix(90))]
+                .joined(separator: "\n")
+        }
+        return String(first.prefix(90))
+    }
+
+    private static func isLyricStoryLine(_ line: String) -> Bool {
+        guard line.count >= 8, !isMetaCommentary(line) else { return false }
+        let compact = compactText(line)
+        let headers = [
+            "verse", "verse1", "verse2", "chorus", "hook", "intro", "outro",
+            "bridge", "prechorus", "1절", "2절", "3절", "후렴"
+        ]
+        return !headers.contains(compact)
+    }
+
+    static func isMetaCommentary(_ raw: String) -> Bool {
+        let compact = compactText(raw)
+        guard compact.count >= 2 else { return true }
+        let languageOnly: Set<String> = [
+            "korean", "english", "japanese", "chinese",
+            "한국어", "영어", "일본어", "중국어",
+            "ko", "en", "ja", "zh", "kr"
+        ]
+        if languageOnly.contains(compact) { return true }
+        let markers = [
+            "한국어다", "한국어임", "한국어입니다", "한국어로된", "한국어로쓰",
+            "한국어가사", "가사는한국어", "이곡은한국어", "이노래는한국어",
+            "영어다", "영어임", "영어입니다", "영어가사", "가사는영어",
+            "일본어다", "일본어임", "일본어입니다", "일본어가사",
+            "중국어다", "중국어임",
+            "thisiskorean", "thisisenglish", "thisisjapanese",
+            "lyricsarein", "lyricsarewrittenin", "writteninkorean",
+            "writteninenglish", "languageis", "thelanguageis",
+            "sunginkorean", "sunginenglish",
+            "thelyricsarekorean", "thelyricsareenglish",
+            "koreantlyrics", "englishlyrics", "japaneselyrics",
+            "가사언어", "가사의언어",
+            "thisisasong", "이것은노래", "이건노래"
+        ]
+        return markers.contains { compact.contains($0) }
+    }
+
+    private static func compactText(_ raw: String) -> String {
+        raw.lowercased()
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: "!", with: "")
+            .replacingOccurrences(of: "?", with: "")
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "’", with: "")
     }
 
     private static func extractJSONObject(from raw: String) -> String? {
@@ -762,16 +850,8 @@ actor LyricIntelligence {
                 existing.sentenceEmbedding = sentence
                 dirty = true
             }
-            if !existing.details.hasExtendedFields || !existing.hasStoredSummary {
-                let store = SecureStore()
-                let settings = LyricIntelligenceSettings.current(
-                    openAIKey: await store.loadSecret(
-                        account: LyricIntelligenceSettings.openAIAccount
-                    ) ?? "",
-                    openRouterKey: await store.loadSecret(
-                        account: LyricIntelligenceSettings.openRouterAccount
-                    ) ?? ""
-                )
+            if !existing.details.hasExtendedFields {
+                let settings = await LyricIntelligenceSettings.load()
                 if settings.provider != .off,
                    let analyzed = await LyricIntelligenceBackend.analyze(
                     lyrics: lyrics,
@@ -779,7 +859,9 @@ actor LyricIntelligence {
                    ) {
                     if existing.moods.isEmpty { existing.moods = analyzed.moods }
                     if existing.themes.isEmpty { existing.themes = analyzed.themes }
-                    if !analyzed.summary.isEmpty { existing.summary = analyzed.summary }
+                    if LyricIntelligencePrompt.isContentSummary(analyzed.summary) {
+                        existing.summary = analyzed.summary
+                    }
                     existing.details = analyzed.details.withBasics(
                         moods: existing.moods,
                         themes: existing.themes,
@@ -788,12 +870,12 @@ actor LyricIntelligence {
                         summary: existing.summary
                     )
                     dirty = true
-                } else if !existing.hasStoredSummary {
-                    existing.summary = LyricIntelligencePrompt.heuristicSummary(
-                        from: lyrics
-                    )
-                    dirty = !existing.summary.isEmpty
                 }
+            }
+            if !existing.hasStoredSummary {
+                existing.summary = await Self.filledSummary(lyrics: lyrics)
+                existing.details.summary = existing.summary
+                dirty = dirty || existing.hasStoredSummary
             }
             if dirty {
                 signatures[song.id] = existing
@@ -803,15 +885,7 @@ actor LyricIntelligence {
         }
         guard inFlight.insert(song.id).inserted else { return }
         defer { inFlight.remove(song.id) }
-        let store = SecureStore()
-        let settings = LyricIntelligenceSettings.current(
-            openAIKey: await store.loadSecret(
-                account: LyricIntelligenceSettings.openAIAccount
-            ) ?? "",
-            openRouterKey: await store.loadSecret(
-                account: LyricIntelligenceSettings.openRouterAccount
-            ) ?? ""
-        )
+        let settings = await LyricIntelligenceSettings.load()
         guard settings.provider != .off else { return }
         var signature = signatures[song.id] ?? LyricSignature(
             songID: song.id,
@@ -839,7 +913,7 @@ actor LyricIntelligence {
             signature.energy = analyzed.energy
             signature.valence = analyzed.valence
             signature.source = analyzed.source
-            if !analyzed.summary.isEmpty {
+            if LyricIntelligencePrompt.isContentSummary(analyzed.summary) {
                 signature.summary = analyzed.summary
             }
             if analyzed.details.hasExtendedFields || !analyzed.details.moods.isEmpty {
@@ -865,7 +939,7 @@ actor LyricIntelligence {
             signature.source = "lexical"
         }
         if !signature.hasStoredSummary {
-            signature.summary = LyricIntelligencePrompt.heuristicSummary(from: lyrics)
+            signature.summary = await Self.filledSummary(lyrics: lyrics)
         }
         if !signature.hasSentenceEmbedding {
             signature.sentenceEmbedding =
@@ -974,6 +1048,19 @@ actor LyricIntelligence {
         Slow breath, heavy heart, a calm and lonely tune
         """
 
+    private static func filledSummary(lyrics: String) async -> String {
+        let settings = await LyricIntelligenceSettings.load()
+        if settings.provider != .off,
+           let summary = await LyricIntelligenceBackend.summarize(
+            lyrics: lyrics,
+            settings: settings
+           ),
+           LyricIntelligencePrompt.isContentSummary(summary) {
+            return summary
+        }
+        return LyricIntelligencePrompt.heuristicSummary(from: lyrics)
+    }
+
     private static var storageURL: URL {
         let folder = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -990,32 +1077,90 @@ struct LyricIntelligenceSettings: Sendable {
     var openAIKey: String
     var openRouterKey: String
     var openRouterModel: String
+    var groqKey: String = ""
+    var groqModel: String = "llama-3.3-70b-versatile"
+    var cerebrasKey: String = ""
+    var cerebrasModel: String = "llama-3.3-70b"
 
     static let providerKey = "lyric-intelligence-provider"
     static let openRouterModelKey = "lyric-intelligence-openrouter-model"
+    static let groqModelKey = "lyric-intelligence-groq-model"
+    static let cerebrasModelKey = "lyric-intelligence-cerebras-model"
     static let openAIAccount = "openai-api-key"
     static let openRouterAccount = "openrouter-api-key"
+    static let groqAccount = "groq-api-key"
+    static let cerebrasAccount = "cerebras-api-key"
+    static let defaultOpenRouterModel = "google/gemma-3-270m-it"
+    static let defaultGroqModel = "llama-3.3-70b-versatile"
+    static let defaultCerebrasModel = "llama-3.3-70b"
 
     static func current(
         defaults: UserDefaults = .standard,
         openAIKey: String = "",
-        openRouterKey: String = ""
+        openRouterKey: String = "",
+        groqKey: String = "",
+        cerebrasKey: String = ""
     ) -> LyricIntelligenceSettings {
         let raw = defaults.string(forKey: providerKey) ?? ""
         return LyricIntelligenceSettings(
             provider: resolvedProvider(raw),
             openAIKey: openAIKey,
             openRouterKey: openRouterKey,
-            openRouterModel: defaults.string(forKey: openRouterModelKey)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .nilIfEmpty
-                ?? "google/gemma-3-270m-it"
+            openRouterModel: storedModel(
+                defaults: defaults,
+                key: openRouterModelKey,
+                fallback: defaultOpenRouterModel
+            ),
+            groqKey: groqKey,
+            groqModel: storedModel(
+                defaults: defaults,
+                key: groqModelKey,
+                fallback: defaultGroqModel
+            ),
+            cerebrasKey: cerebrasKey,
+            cerebrasModel: storedModel(
+                defaults: defaults,
+                key: cerebrasModelKey,
+                fallback: defaultCerebrasModel
+            )
+        )
+    }
+
+    static func load(defaults: UserDefaults = .standard) async -> LyricIntelligenceSettings {
+        let store = SecureStore()
+        return current(
+            defaults: defaults,
+            openAIKey: await store.loadSecret(account: openAIAccount) ?? "",
+            openRouterKey: await store.loadSecret(account: openRouterAccount) ?? "",
+            groqKey: await store.loadSecret(account: groqAccount) ?? "",
+            cerebrasKey: await store.loadSecret(account: cerebrasAccount) ?? ""
         )
     }
 
     static func resolvedProvider(_ raw: String) -> LyricIntelligenceProviderKind {
         let provider = LyricIntelligenceProviderKind(rawValue: raw) ?? .onDevice
         return provider == .applePrivateCloud ? .onDevice : provider
+    }
+
+    static func keychainAccount(for provider: LyricIntelligenceProviderKind) -> String? {
+        switch provider {
+        case .openAI: openAIAccount
+        case .openRouter: openRouterAccount
+        case .groq: groqAccount
+        case .cerebras: cerebrasAccount
+        case .off, .onDevice, .applePrivateCloud: nil
+        }
+    }
+
+    private static func storedModel(
+        defaults: UserDefaults,
+        key: String,
+        fallback: String
+    ) -> String {
+        defaults.string(forKey: key)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? fallback
     }
 }
 
@@ -1056,13 +1201,14 @@ enum LyricIntelligenceBackend {
         lyrics: String,
         settings: LyricIntelligenceSettings
     ) async -> Analysis? {
+        let result: Analysis?
         switch settings.provider {
         case .off:
-            return nil
+            result = nil
         case .onDevice, .applePrivateCloud:
-            return await onDevice(lyrics: lyrics, settings: settings)
+            result = await onDevice(lyrics: lyrics, settings: settings)
         case .openAI:
-            return await remote(
+            result = await remote(
                 lyrics: lyrics,
                 endpoint: URL(string: "https://api.openai.com/v1/chat/completions"),
                 embeddingEndpoint: URL(string: "https://api.openai.com/v1/embeddings"),
@@ -1072,7 +1218,7 @@ enum LyricIntelligenceBackend {
                 source: "openai"
             )
         case .openRouter:
-            return await remote(
+            result = await remote(
                 lyrics: lyrics,
                 endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
                 embeddingEndpoint: URL(string: "https://openrouter.ai/api/v1/embeddings"),
@@ -1081,7 +1227,34 @@ enum LyricIntelligenceBackend {
                 embeddingModel: "openai/text-embedding-3-small",
                 source: "openrouter"
             )
+        case .groq:
+            result = await remote(
+                lyrics: lyrics,
+                endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
+                embeddingEndpoint: nil,
+                key: settings.groqKey,
+                model: settings.groqModel,
+                embeddingModel: "",
+                source: "groq"
+            )
+        case .cerebras:
+            result = await remote(
+                lyrics: lyrics,
+                endpoint: URL(string: "https://api.cerebras.ai/v1/chat/completions"),
+                embeddingEndpoint: nil,
+                key: settings.cerebrasKey,
+                model: settings.cerebrasModel,
+                embeddingModel: "",
+                source: "cerebras"
+            )
         }
+        guard var analysis = result else { return nil }
+        analysis.summary = LyricIntelligencePrompt.resolvedSummary(
+            analysis.summary,
+            lyrics: lyrics
+        )
+        analysis.details.summary = analysis.summary
+        return analysis
     }
 
     private static func onDevice(
@@ -1214,6 +1387,20 @@ enum LyricIntelligenceBackend {
                 endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
                 key: settings.openRouterKey,
                 model: settings.openRouterModel
+            )
+        case .groq:
+            return await remoteText(
+                prompt: prompt,
+                endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
+                key: settings.groqKey,
+                model: settings.groqModel
+            )
+        case .cerebras:
+            return await remoteText(
+                prompt: prompt,
+                endpoint: URL(string: "https://api.cerebras.ai/v1/chat/completions"),
+                key: settings.cerebrasKey,
+                model: settings.cerebrasModel
             )
         }
     }

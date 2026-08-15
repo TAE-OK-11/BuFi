@@ -3801,12 +3801,19 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func scheduleTrackSoundAnalysis(for song: Song) {
         let accountScope = currentAccountScope
+        let client = self.client
         Task {
-            guard let local = await OfflineStore.shared.localURL(for: song) else { return }
+            guard let fileURL = await SoundAnalysisSample.resolve(
+                for: song,
+                client: client
+            ) else { return }
+            let revision = song.audioResourceRevision.isEmpty
+                ? song.id
+                : song.audioResourceRevision
             await LyricIntelligence.shared.scheduleSoundAnalysis(
                 song: song,
-                fileURL: local,
-                audioRevision: song.audioResourceRevision,
+                fileURL: fileURL,
+                audioRevision: revision,
                 accountScope: accountScope
             )
         }

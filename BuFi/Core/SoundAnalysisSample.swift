@@ -8,6 +8,9 @@ enum SoundAnalysisSample {
         guard let client else { return nil }
         let stream = await transcodedStream(for: song, client: client)
         guard let stream else { return nil }
+        if let file = await client.writeStreamSample(from: stream, songID: song.id) {
+            return file
+        }
         return await downloadPrefix(from: stream, songID: song.id)
     }
 
@@ -34,10 +37,7 @@ enum SoundAnalysisSample {
         var request = URLRequest(url: url)
         request.setValue("bytes=0-1600000", forHTTPHeaderField: "Range")
         request.timeoutInterval = 20
-        ModernNetworkPolicy.prepareExternalAPIRequest(
-            &request,
-            acceptsZstandard: false
-        )
+        ModernNetworkPolicy.prepareMediaRequest(&request)
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),

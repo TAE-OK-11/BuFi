@@ -49,8 +49,86 @@ final class LyricIntelligenceTests: XCTestCase {
         )
         XCTAssertEqual(parsed?.summary, "Walking alone after midnight.\nThe rain keeps your name.")
         XCTAssertEqual(
-            LyricIntelligencePrompt.normalizedSummary("one\n\ntwo\nthree"),
-            "one\ntwo"
+            LyricIntelligencePrompt.normalizedSummary(
+                "Walking alone after midnight.\n\nThe rain keeps your name.\nA third leftover line."
+            ),
+            "Walking alone after midnight.\nThe rain keeps your name."
+        )
+    }
+
+    func testSummaryRejectsLanguageCommentaryAndKeepsLyricContent() {
+        XCTAssertEqual(LyricIntelligencePrompt.normalizedSummary("한국어다"), "")
+        XCTAssertEqual(
+            LyricIntelligencePrompt.normalizedSummary(
+                "This is Korean.\nThe lyrics are in English."
+            ),
+            ""
+        )
+        XCTAssertFalse(LyricIntelligencePrompt.isContentSummary("영어 가사"))
+        XCTAssertEqual(
+            LyricIntelligencePrompt.heuristicSummary(
+                from: """
+                Chorus
+                밤새 창가에서 네 이름을 부른다
+                빗소리가 방을 채우고 나는 잠들지 못한다
+                """
+            ),
+            "밤새 창가에서 네 이름을 부른다\n빗소리가 방을 채우고 나는 잠들지 못한다"
+        )
+        XCTAssertFalse(
+            LyricSignature(
+                songID: "one",
+                lyricsHash: "h",
+                moods: ["calm"],
+                themes: [],
+                energy: 0.2,
+                valence: 0.2,
+                embedding: [],
+                source: "groq",
+                summary: "한국어다"
+            ).hasStoredSummary
+        )
+    }
+
+    func testGroqAndCerebrasAreSelectableProviders() {
+        XCTAssertEqual(LyricIntelligenceProviderKind.groq.title, "Groq")
+        XCTAssertEqual(LyricIntelligenceProviderKind.cerebras.title, "Cerebras")
+        XCTAssertTrue(LyricIntelligenceProviderKind.groq.isVisibleInSettings)
+        XCTAssertTrue(LyricIntelligenceProviderKind.cerebras.isVisibleInSettings)
+        XCTAssertEqual(
+            LyricIntelligenceSettings.keychainAccount(for: .groq),
+            "groq-api-key"
+        )
+        XCTAssertEqual(
+            LyricIntelligenceSettings.keychainAccount(for: .cerebras),
+            "cerebras-api-key"
+        )
+        let suite = "BuFi.LyricIntelligenceTests.groq.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            XCTFail("defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(
+            LyricIntelligenceProviderKind.groq.rawValue,
+            forKey: LyricIntelligenceSettings.providerKey
+        )
+        defaults.set("llama-3.1-8b-instant", forKey: LyricIntelligenceSettings.groqModelKey)
+        let settings = LyricIntelligenceSettings.current(defaults: defaults)
+        XCTAssertEqual(settings.provider, .groq)
+        XCTAssertEqual(settings.groqModel, "llama-3.1-8b-instant")
+        XCTAssertEqual(
+            LyricSignature(
+                songID: "one",
+                lyricsHash: "h",
+                moods: ["calm"],
+                themes: [],
+                energy: 0.2,
+                valence: 0.2,
+                embedding: [],
+                source: "cerebras"
+            ).sourceTitle,
+            "Cerebras"
         )
     }
 
