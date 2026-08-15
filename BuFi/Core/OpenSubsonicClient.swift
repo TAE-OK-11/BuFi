@@ -893,6 +893,7 @@ actor OpenSubsonicClient {
             case .readOnly:
                 (response, responseWasCached) = try await readResponse(
                     from: url,
+                    endpoint: endpoint,
                     queryItems: queryItems,
                     cacheKey: cacheKey,
                     cachePolicy: cachePolicy,
@@ -1400,6 +1401,7 @@ actor OpenSubsonicClient {
 
     private func readResponse(
         from url: URL,
+        endpoint: String,
         queryItems: [URLQueryItem],
         cacheKey: String,
         cachePolicy: OpenSubsonicResponseCachePolicy,
