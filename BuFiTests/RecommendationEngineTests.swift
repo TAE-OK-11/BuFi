@@ -334,6 +334,36 @@ final class RecommendationEngineTests: XCTestCase {
         XCTAssertEqual(first.map(\.id), second.map(\.id))
     }
 
+    func testLargeStarredCatalogDoesNotDisplaceHigherPrioritySources() {
+        RecommendationMixer.invalidateCache()
+        let preferred = song(
+            id: "server-preferred",
+            title: "Preferred",
+            artist: "Preferred Artist",
+            genre: "Pop"
+        )
+        let starred = (0..<800).map { index in
+            song(
+                id: "starred-\(index)",
+                title: "Starred \(index)",
+                artist: "Starred Artist \(index)",
+                starred: "2026-08-01T00:00:00Z"
+            )
+        }
+        let result = RecommendationMixer.mix(
+            snapshot: HomeSnapshot(
+                starredSongs: starred,
+                serverRecommendedSongs: [preferred]
+            ),
+            weights: weights(),
+            limit: 8,
+            date: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertTrue(result.contains { $0.id == preferred.id })
+        XCTAssertLessThanOrEqual(result.count, 8)
+    }
+
     func testCancelledRecommendationDoesNotPublishPartialResults() async {
         RecommendationMixer.invalidateCache()
         let songs = (0..<10_000).map { index in

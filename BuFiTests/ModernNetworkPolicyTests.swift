@@ -326,6 +326,12 @@ final class ModernNetworkPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getStarred2"
+            ).lifetime,
+            3 * 60
+        )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
                 for: "getAlbumList2",
                 queryItems: [URLQueryItem(name: "type", value: "random")]
             ).lifetime,

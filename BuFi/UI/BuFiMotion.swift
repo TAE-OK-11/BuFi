@@ -17,6 +17,16 @@ extension EnvironmentValues {
     }
 }
 
+/// Artwork views skip a second decode when SwiftUI re-runs the same request.
+enum UIRenderPolicy {
+    static func shouldReloadArtwork(
+        loadedIdentity: ArtworkLoadRequestIdentity?,
+        requestedIdentity: ArtworkLoadRequestIdentity
+    ) -> Bool {
+        loadedIdentity != requestedIdentity
+    }
+}
+
 enum BuFiMotion {
     // Motion is intentionally quantized in 0.05-second steps so related
     // transitions feel consistent instead of each view inventing a spring.

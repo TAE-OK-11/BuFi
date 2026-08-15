@@ -256,6 +256,53 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         )
     }
 
+    func testManualSkipCommitsOnlyTheStagedSuccessorOccurrence() {
+        let occurrence = UUID()
+        XCTAssertTrue(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: 2,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 2,
+                nextOccurrenceID: occurrence
+            )
+        )
+        XCTAssertFalse(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: 2,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 3,
+                nextOccurrenceID: occurrence
+            )
+        )
+        XCTAssertFalse(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: 2,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 2,
+                nextOccurrenceID: UUID()
+            )
+        )
+        XCTAssertFalse(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: nil,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 2,
+                nextOccurrenceID: occurrence
+            )
+        )
+    }
+
+    func testSuccessorWarmupDelayStaysSubSecond() {
+        XCTAssertEqual(
+            PlaybackSuccessorWarmupPolicy.readinessCheckDelay,
+            .milliseconds(280)
+        )
+        XCTAssertEqual(
+            PlaybackSuccessorWarmupPolicy.maximumReadinessChecks,
+            3
+        )
+    }
+
     func testStableSuccessorWarmupRequiresHealthyPlayback() {
         XCTAssertTrue(PlaybackSuccessorWarmupPolicy.shouldWarm(
             isBuffering: false,

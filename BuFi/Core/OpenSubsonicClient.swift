@@ -211,8 +211,11 @@ enum OpenSubsonicRequestPolicy {
         case "getPlaylists":
             return OpenSubsonicResponseCachePolicy(lifetime: 5 * 60)
         case "getStarred2":
+            // Star/unstar already invalidates `.favorites`. The longer TTL
+            // avoids refetching a potentially huge starred catalog on every
+            // incremental home refresh.
             return OpenSubsonicResponseCachePolicy(
-                lifetime: 60,
+                lifetime: 3 * 60,
                 dependencies: [.favorites]
             )
         case "getSong":

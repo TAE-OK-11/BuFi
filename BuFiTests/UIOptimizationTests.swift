@@ -15,6 +15,42 @@ final class UIOptimizationTests: XCTestCase {
         XCTAssertNil(second.value)
     }
 
+    func testArtworkSkipsReloadWhenRequestIdentityIsUnchanged() {
+        let identity = ArtworkLoadRequestIdentity(
+            context: ArtworkContextIdentity(
+                sessionGeneration: 2,
+                accountScope: "scope"
+            ),
+            coverArtID: "cover",
+            cacheRevision: "rev-1",
+            pixelSize: 384
+        )
+
+        XCTAssertFalse(
+            UIRenderPolicy.shouldReloadArtwork(
+                loadedIdentity: identity,
+                requestedIdentity: identity
+            )
+        )
+        XCTAssertTrue(
+            UIRenderPolicy.shouldReloadArtwork(
+                loadedIdentity: nil,
+                requestedIdentity: identity
+            )
+        )
+        XCTAssertTrue(
+            UIRenderPolicy.shouldReloadArtwork(
+                loadedIdentity: identity,
+                requestedIdentity: ArtworkLoadRequestIdentity(
+                    context: identity.context,
+                    coverArtID: "cover",
+                    cacheRevision: "rev-2",
+                    pixelSize: 384
+                )
+            )
+        )
+    }
+
     func testArtworkRequestIdentityKeepsFieldsStructurallyDistinct() {
         let first = ArtworkLoadRequestIdentity(
             context: ArtworkContextIdentity(

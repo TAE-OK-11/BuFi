@@ -6,6 +6,15 @@ struct ArtworkContextIdentity: Hashable, Sendable {
     let accountScope: String?
 }
 
+enum FavoriteOverrideApplicationPolicy {
+    static func canReuseSnapshot(
+        hasOverrides: Bool,
+        hasPendingMutations: Bool
+    ) -> Bool {
+        !hasOverrides && !hasPendingMutations
+    }
+}
+
 @MainActor
 final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var phase: AppModel.SessionState = .signedOut
@@ -322,6 +331,8 @@ final class AppModel: ObservableObject {
     private let runtimeClock = ContinuousClock()
     private var lastFullRefresh: ContinuousClock.Instant?
     private var lastHomeSnapshotSave: ContinuousClock.Instant?
+    private var lastExternalRecommendationIdentity:
+        ExternalRecommendationRefreshIdentity?
     private var sessionGeneration = 0
     private var searchGeneration = 0
     private var homeRevision = 0
@@ -445,6 +456,7 @@ final class AppModel: ObservableObject {
         refreshInFlight = false
         lastFullRefresh = nil
         lastHomeSnapshotSave = nil
+        lastExternalRecommendationIdentity = nil
         connectedServerAddress = ""
         serverVersion = ""
         subsonicAPIVersion = ""
@@ -510,8 +522,7 @@ final class AppModel: ObservableObject {
                 authoritative: loadResult.hasAuthoritativeStarredState
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
-            let snapshotChanged = home != resolvedSnapshot
-            if snapshotChanged { publishHome(resolvedSnapshot) }
+            let snapshotChanged = publishHome(resolvedSnapshot)
             let saveNow = runtimeClock.now
             let snapshotSaveIsDue = lastHomeSnapshotSave.map {
                 $0.duration(to: saveNow) >= .seconds(3_600)
@@ -1340,6 +1351,15 @@ final class AppModel: ObservableObject {
     }
 
     private func applyingFavoriteOverrides(to snapshot: HomeSnapshot) -> HomeSnapshot {
+        // The common refresh path has no optimistic star mutations. Skip
+        // walking every library artist and recommendation list in that case.
+        guard !FavoriteOverrideApplicationPolicy.canReuseSnapshot(
+            hasOverrides: !favoriteOverrides.isEmpty,
+            hasPendingMutations: !starRequests.isEmpty
+                || !awaitingStarConfirmations.isEmpty
+        ) else {
+            return snapshot
+        }
         var value = snapshot
         value.recentAlbums = value.recentAlbums.map(applyingFavoriteOverride)
         value.recentlyPlayedAlbums = value.recentlyPlayedAlbums.map(applyingFavoriteOverride)
@@ -1790,9 +1810,11 @@ final class AppModel: ObservableObject {
 
     private var isHomeEmpty: Bool { home == .empty }
 
-    private func publishHome(_ snapshot: HomeSnapshot) {
-        guard library.setSnapshot(snapshot) else { return }
+    @discardableResult
+    private func publishHome(_ snapshot: HomeSnapshot) -> Bool {
+        guard library.setSnapshot(snapshot) else { return false }
         homeRevision &+= 1
+        return true
     }
 
     private func mergingListeningHistory(
@@ -2013,15 +2035,31 @@ final class AppModel: ObservableObject {
         client: OpenSubsonicClient,
         generation: Int
     ) {
-        recommendationTask?.cancel()
-        recommendationGeneration &+= 1
-        let requestGeneration = recommendationGeneration
         guard hasLastFMAPIKey || !listenBrainzUsername.isEmpty,
               !ProcessInfo.processInfo.isLowPowerModeEnabled,
               ProcessInfo.processInfo.thermalState.rawValue <
                 ProcessInfo.ThermalState.serious.rawValue else {
+            lastExternalRecommendationIdentity = nil
             return
         }
+        let nextIdentity = ExternalRecommendationRefreshIdentity(
+            sessionGeneration: generation,
+            snapshotRevision: library.revision,
+            seedSongID: home.mostPlayedSongs.first?.id
+                ?? home.starredSongs.first?.id
+                ?? home.randomSongs.first?.id,
+            includesLastFM: hasLastFMAPIKey,
+            includesListenBrainz: !listenBrainzUsername.isEmpty
+        )
+        guard ExternalRecommendationRefreshPolicy.shouldRefresh(
+            previous: lastExternalRecommendationIdentity,
+            next: nextIdentity
+        ) else {
+            return
+        }
+        recommendationTask?.cancel()
+        recommendationGeneration &+= 1
+        let requestGeneration = recommendationGeneration
         let source = home
         let sourceRevision = library.revision
         recommendationTask = Task { [weak self] in
@@ -2059,6 +2097,13 @@ final class AppModel: ObservableObject {
             let weights = RecommendationWeights.current()
             let sections = await Self.recommendationSections(
                 snapshot: value,
+                snapshotRevision:
+                    value.lastFMRecommendedSongs
+                        == publicationSource.lastFMRecommendedSongs
+                    && value.listenBrainzRecommendedSongs
+                        == publicationSource.listenBrainzRecommendedSongs
+                    ? publicationRevision
+                    : nil,
                 weights: weights,
                 behavior: behavior
             )
@@ -2089,6 +2134,14 @@ final class AppModel: ObservableObject {
                 )
             }
             if requestGeneration == self.recommendationGeneration {
+                self.lastExternalRecommendationIdentity =
+                    ExternalRecommendationRefreshIdentity(
+                        sessionGeneration: generation,
+                        snapshotRevision: self.library.revision,
+                        seedSongID: nextIdentity.seedSongID,
+                        includesLastFM: nextIdentity.includesLastFM,
+                        includesListenBrainz: nextIdentity.includesListenBrainz
+                    )
                 self.recommendationTask = nil
             }
         }
@@ -2136,6 +2189,7 @@ final class AppModel: ObservableObject {
         searchTask = nil
         recommendationTask?.cancel()
         recommendationTask = nil
+        lastExternalRecommendationIdentity = nil
         cancelAutomaticRefresh()
         let previousLeases = StoreActivationLeases(
             offline: offlineSessionToken,

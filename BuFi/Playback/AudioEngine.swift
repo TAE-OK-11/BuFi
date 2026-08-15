@@ -864,7 +864,7 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
 }
 
 enum PlaybackSuccessorWarmupPolicy {
-    static let readinessCheckDelay: Duration = .milliseconds(450)
+    static let readinessCheckDelay: Duration = .milliseconds(280)
     static let maximumReadinessChecks = 3
 
     static func shouldWarm(
@@ -873,6 +873,26 @@ enum PlaybackSuccessorWarmupPolicy {
         isLikelyToKeepUp: Bool
     ) -> Bool {
         isActivelyPlaying && !isBuffering && isLikelyToKeepUp
+    }
+}
+
+/// Manual next/queue taps must not tear down a successor that AVQueuePlayer
+/// has already staged. Doing so discards the warmed asset and opens a second
+/// stream for the same song.
+enum PlaybackSkipPlan {
+    static func shouldCommitStagedSuccessor(
+        stagedQueueIndex: Int?,
+        stagedOccurrenceID: UUID?,
+        nextQueueIndex: Int,
+        nextOccurrenceID: UUID?
+    ) -> Bool {
+        guard let stagedQueueIndex,
+              let stagedOccurrenceID,
+              let nextOccurrenceID else {
+            return false
+        }
+        return stagedQueueIndex == nextQueueIndex
+            && stagedOccurrenceID == nextOccurrenceID
     }
 }
 
@@ -1273,6 +1293,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var networkPathIsSatisfied = true
     private var runtimeIsActive = false
     private var applicationIsActive = true
+    private let trackChangeHapticGenerator = UIImpactFeedbackGenerator(style: .soft)
 
     override private init() {
         quality = StreamQuality(
@@ -1615,9 +1636,11 @@ final class AudioEngine: NSObject, ObservableObject {
         wantsPlayback = autoplay
         scrobbled = false
         lastMaintenanceSecond = -1
-        let automaticallyOpensPlayer =
-            UserDefaults.standard.object(forKey: "auto-open-player") as? Bool ?? false
-        showPlayer = showPlayer || automaticallyOpensPlayer
+        if !showPlayer {
+            let automaticallyOpensPlayer =
+                UserDefaults.standard.object(forKey: "auto-open-player") as? Bool ?? false
+            showPlayer = automaticallyOpensPlayer
+        }
         if previousSongID != selectedSong.id {
             provideTrackChangeHaptic()
         }
@@ -1829,6 +1852,14 @@ final class AudioEngine: NSObject, ObservableObject {
             requestAutoplayContinuation(advanceWhenReady: true)
             return
         }
+        if !isAutoAdvance,
+           commitStagedSuccessorIfItMatches(
+            queueIndex: nextIndex,
+            origin: .manual,
+            transitionReason: .skipped
+           ) {
+            return
+        }
         startPlayback(
             queue[nextIndex],
             in: playbackState.entries,
@@ -1934,6 +1965,13 @@ final class AudioEngine: NSObject, ObservableObject {
     func playQueueItem(at index: Int) {
         reconcilePendingTransportTransition()
         guard queue.indices.contains(index) else { return }
+        if commitStagedSuccessorIfItMatches(
+            queueIndex: index,
+            origin: .queue,
+            transitionReason: .replaced
+        ) {
+            return
+        }
         startPlayback(
             queue[index],
             in: playbackState.entries,
@@ -2704,6 +2742,37 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
+    @discardableResult
+    private func commitStagedSuccessorIfItMatches(
+        queueIndex: Int,
+        origin: PlaybackOrigin,
+        transitionReason: PlaybackEndReason
+    ) -> Bool {
+        guard queue.indices.contains(queueIndex),
+              PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: stagedSuccessorQueueIndex,
+                stagedOccurrenceID: stagedSuccessorOccurrenceID,
+                nextQueueIndex: queueIndex,
+                nextOccurrenceID: playbackState.entries[queueIndex].id
+              ),
+              let staged = stagedSuccessorItem else {
+            return false
+        }
+        if player.currentItem !== staged {
+            guard player.items().contains(where: { $0 === staged }) else {
+                return false
+            }
+            player.advanceToNextItem()
+        }
+        guard player.currentItem === staged else { return false }
+        activateStagedSuccessor(
+            staged,
+            origin: origin,
+            transitionReason: transitionReason
+        )
+        return stagedSuccessorItem == nil
+    }
+
     private func storePreparedPlaybackAsset(_ prepared: PreparedPlaybackAsset) {
         preparedPlaybackAssets[prepared.key] = prepared
         preparedPlaybackAssetOrder.removeAll { $0 == prepared.key }
@@ -3134,7 +3203,9 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func activateStagedSuccessor(
         _ item: AVPlayerItem,
-        schedulesFollowingSuccessor: Bool = true
+        schedulesFollowingSuccessor: Bool = true,
+        origin: PlaybackOrigin = .autoplay,
+        transitionReason: PlaybackEndReason = .completed
     ) {
         guard item === stagedSuccessorItem,
               let stagedSong = stagedSuccessorSong,
@@ -3152,7 +3223,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
         let previousSongID = currentSong?.id
         if duration > 0 { elapsed = duration }
-        finalizeCurrentPlayback(reason: .completed)
+        finalizeCurrentPlayback(reason: transitionReason)
         removeCurrentItemObservers()
         stagedSuccessorItem = nil
         stagedSuccessorSong = nil
@@ -3161,7 +3232,7 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorObservation = nil
         stagedSuccessorObservationID = nil
         playbackState.setIndex(successorIndex, renewsPlayback: true)
-        recordPlaybackStart(song, origin: .autoplay)
+        recordPlaybackStart(song, origin: origin)
         rememberShuffleSelection(song.id)
         elapsed = 0
         duration = song.safeDuration
@@ -3232,7 +3303,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     object: item,
                     queue: .main
                 ) { @Sendable [weak self] _ in
-                    Task { @MainActor in
+                    MainActor.assumeIsolated {
                         guard let self,
                               self.itemObserverGeneration == generation,
                               let item = self.logicalCurrentItem,
@@ -3252,7 +3323,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     object: item,
                     queue: .main
                 ) { @Sendable [weak self] _ in
-                    Task { @MainActor in
+                    MainActor.assumeIsolated {
                         guard let self,
                               self.itemObserverGeneration == generation,
                               let item = self.logicalCurrentItem,
@@ -3267,7 +3338,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     object: item,
                     queue: .main
                 ) { @Sendable [weak self] _ in
-                    Task { @MainActor in
+                    MainActor.assumeIsolated {
                         guard let self,
                               self.itemObserverGeneration == generation,
                               let item = self.logicalCurrentItem,
@@ -4074,7 +4145,7 @@ final class AudioEngine: NSObject, ObservableObject {
             ) { @Sendable [weak self] notification in
                 let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
                 let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     self?.handleAudioInterruption(
                         typeRawValue: type,
                         optionsRawValue: options
@@ -4087,7 +4158,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 queue: .main
             ) { @Sendable [weak self] notification in
                 let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     self?.handleRouteChange(reasonRawValue: reason)
                 }
             })
@@ -4096,7 +4167,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 object: audioSession,
                 queue: .main
             ) { @Sendable [weak self] _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     guard let self else { return }
                     Self.logger.notice("Audio media services reset; rebuilding playback")
                     self.resetAndConfigureAudioSession()
@@ -4114,7 +4185,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 object: nil,
                 queue: .main
             ) { @Sendable [weak self] _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     guard let self else { return }
                     self.setApplicationActive(false)
                     self.handleDidEnterBackground()
@@ -4125,7 +4196,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 object: nil,
                 queue: .main
             ) { @Sendable [weak self] _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     guard let self else { return }
                     self.setApplicationActive(false)
                     self.preserveActivePlayback()
@@ -4136,7 +4207,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 object: nil,
                 queue: .main
             ) { @Sendable [weak self] _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     guard let self else { return }
                     self.setApplicationActive(true)
                     guard self.wantsPlayback else { return }
@@ -4613,7 +4684,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let enabled =
             UserDefaults.standard.object(forKey: "haptics-enabled") as? Bool ?? true
         guard enabled else { return }
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.62)
+        trackChangeHapticGenerator.impactOccurred(intensity: 0.62)
     }
 
     private func recordPlaybackStart(

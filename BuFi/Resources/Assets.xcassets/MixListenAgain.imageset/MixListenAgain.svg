@@ -1,10 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="48" fill="#FF9A1F"/>
-  <circle cx="275" cy="324" r="138" fill="#72E7D2"/>
-  <circle cx="275" cy="324" r="100" fill="#FFF4D2"/>
-  <path d="M275 260V326L329 361" fill="none" stroke="#15152D" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M133 268C162 203 226 164 298 170" fill="none" stroke="#7B35EF" stroke-width="34" stroke-linecap="round"/>
-  <path d="M250 135L310 169L267 224" fill="none" stroke="#7B35EF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M397 376L431 397L397 418Z" fill="#FFFFFF"/>
-  <path d="M435 376L469 397L435 418Z" fill="#FFFFFF"/>
+  <defs>
+    <linearGradient id="a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFC04A"/>
+      <stop offset="1" stop-color="#FF8A14"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#a)"/>
+  <circle cx="286" cy="318" r="128" fill="#72E7D2"/>
+  <circle cx="286" cy="318" r="92" fill="#FFF6DC"/>
+  <path d="M286 258V322L336 354" fill="none" stroke="#17142C" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M142 258C170 196 232 158 304 164" fill="none" stroke="#6D39EA" stroke-width="28" stroke-linecap="round"/>
+  <path d="M256 132L314 166L272 220" fill="none" stroke="#6D39EA" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M392 372L424 392L392 412Z" fill="#FFF"/>
+  <path d="M430 372L462 392L430 412Z" fill="#FFF"/>
 </svg>

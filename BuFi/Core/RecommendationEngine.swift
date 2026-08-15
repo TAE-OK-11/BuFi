@@ -466,6 +466,38 @@ private final class RecommendationMixCache: @unchecked Sendable {
     }
 }
 
+/// Home snapshots can carry thousands of starred songs. Scoring every
+/// unique ID is wasted work because the mixer only publishes a few dozen
+/// tracks and source lists are already ordered by usefulness.
+enum RecommendationScoringPolicy {
+    static let scoringCandidateLimit = 360
+
+    static func boundedCandidates(_ songs: [Song]) -> [Song] {
+        guard songs.count > scoringCandidateLimit else { return songs }
+        return Array(songs.prefix(scoringCandidateLimit))
+    }
+}
+
+/// Full-home refreshes re-enter the Last.fm / ListenBrainz path even when the
+/// seed and snapshot identity have not changed. Skip that radio work until
+/// one of those inputs actually moves.
+struct ExternalRecommendationRefreshIdentity: Equatable, Sendable {
+    let sessionGeneration: Int
+    let snapshotRevision: HomeSnapshotRevision
+    let seedSongID: String?
+    let includesLastFM: Bool
+    let includesListenBrainz: Bool
+}
+
+enum ExternalRecommendationRefreshPolicy {
+    static func shouldRefresh(
+        previous: ExternalRecommendationRefreshIdentity?,
+        next: ExternalRecommendationRefreshIdentity
+    ) -> Bool {
+        previous != next
+    }
+}
+
 enum RecommendationMixer {
     private static let cache = RecommendationMixCache()
 
@@ -628,7 +660,12 @@ enum RecommendationMixer {
             snapshot.recommendedSongs
         ]
         // Deduplicate while streaming sources; avoid a second flattened corpus.
-        let candidates = unique(sourceLists)
+        // High-priority recommendation lists come first, so a bounded prefix
+        // keeps server/external signals and drops only surplus starred rows.
+        let candidates = unique(
+            sourceLists,
+            limit: RecommendationScoringPolicy.scoringCandidateLimit
+        )
         guard !candidates.isEmpty else { return [] }
 
         let sourceIndex = RecommendationSourceIndex(snapshot: snapshot)
@@ -1329,8 +1366,15 @@ enum RecommendationMixer {
         return result
     }
 
-    private static func unique(_ sources: [[Song]]) -> [Song] {
-        let capacity = sources.reduce(into: 0) { $0 += $1.count }
+    private static func unique(
+        _ sources: [[Song]],
+        limit: Int = .max
+    ) -> [Song] {
+        guard limit > 0 else { return [] }
+        let capacity = min(
+            limit,
+            sources.reduce(into: 0) { $0 += $1.count }
+        )
         var ids = Set<String>()
         ids.reserveCapacity(capacity)
         var result: [Song] = []
@@ -1340,7 +1384,10 @@ enum RecommendationMixer {
             for song in source {
                 if visited.isMultiple(of: 64), Task.isCancelled { return [] }
                 visited += 1
-                if ids.insert(song.id).inserted { result.append(song) }
+                if ids.insert(song.id).inserted {
+                    result.append(song)
+                    if result.count == limit { return result }
+                }
             }
         }
         return result

@@ -1,9 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="48" fill="#086BE8"/>
-  <path d="M124 244C155 195 207 168 267 168C339 168 399 209 422 269" fill="none" stroke="#FFEA59" stroke-width="38" stroke-linecap="round"/>
-  <path d="M391 213L428 275L361 295" fill="none" stroke="#FFEA59" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M387 375C354 417 306 440 252 440C180 440 118 397 96 337" fill="none" stroke="#72E7D2" stroke-width="38" stroke-linecap="round"/>
-  <path d="M126 393L89 331L156 311" fill="none" stroke="#72E7D2" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="258" cy="304" r="75" fill="#FF668F"/>
-  <path d="M238 265L305 304L238 343Z" fill="#11142D"/>
+  <defs>
+    <linearGradient id="r" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2B86FF"/>
+      <stop offset="1" stop-color="#0654D6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#r)"/>
+  <path d="M146 232C172 186 220 158 280 158C348 158 404 198 426 256" fill="none" stroke="#FFE657" stroke-width="32" stroke-linecap="round"/>
+  <path d="M392 204L430 264L360 282" fill="none" stroke="#FFE657" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M368 368C342 412 296 436 242 436C174 436 116 396 94 338" fill="none" stroke="#72E7D2" stroke-width="32" stroke-linecap="round"/>
+  <path d="M122 388L84 328L154 310" fill="none" stroke="#72E7D2" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="256" cy="298" r="70" fill="#FF668F"/>
+  <path d="M238 264L300 298L238 332Z" fill="#0F1638"/>
 </svg>
