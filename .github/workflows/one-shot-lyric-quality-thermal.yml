@@ -1,0 +1,450 @@
+name: One-shot lyric intelligence optimization patch
+
+on:
+  push:
+    branches:
+      - agent/smarter-recommendations
+    paths:
+      - .github/workflows/one-shot-lyric-quality-thermal.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/smarter-recommendations
+          fetch-depth: 0
+
+      - name: Apply lyric intelligence quality and thermal optimizations
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, got {count}")
+              return text.replace(old, new, 1)
+
+          # 1) Better representative lyric sampling and stricter semantic prompts.
+          path = Path("BuFi/Core/LyricModelFamily.swift")
+          text = path.read_text()
+          text = text.replace("case .appleFoundation: 1_800", "case .appleFoundation: 1_500")
+          text = text.replace("case .llama70B: 4_000", "case .llama70B: 3_600")
+          text = text.replace("case .gptOSS: 6_000", "case .gptOSS: 5_000")
+          text = text.replace("case .generic: 2_800", "case .generic: 2_400")
+          marker = """}\n\nextension LyricIntelligenceSettings {"""
+          sampler = r''' }
+
+enum LyricTextSampler {
+    static func normalized(_ text: String) -> String {
+        let lines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        var result: [String] = []
+        result.reserveCapacity(lines.count)
+        var previousWasBlank = true
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if !previousWasBlank { result.append("") }
+                previousWasBlank = true
+            } else {
+                result.append(trimmed)
+                previousWasBlank = false
+            }
+        }
+        while result.last?.isEmpty == true { result.removeLast() }
+        return result.joined(separator: "\n")
+    }
+
+    static func sample(_ text: String, limit: Int) -> String {
+        guard limit > 0 else { return "" }
+        let clean = normalized(text)
+        let characters = Array(clean)
+        guard characters.count > limit else { return clean }
+        let divider = Array("\n[…]\n")
+        let dividerCost = divider.count * 2
+        guard limit > dividerCost + 24 else {
+            return String(characters.prefix(limit))
+        }
+        let usable = limit - dividerCost
+        let headCount = max(1, usable * 45 / 100)
+        let middleCount = max(1, usable * 20 / 100)
+        let tailCount = max(1, usable - headCount - middleCount)
+        let middleStart = max(
+            headCount,
+            min(
+                characters.count - tailCount - middleCount,
+                characters.count / 2 - middleCount / 2
+            )
+        )
+        let tailStart = characters.count - tailCount
+        var sampled: [Character] = []
+        sampled.reserveCapacity(limit)
+        sampled.append(contentsOf: characters.prefix(headCount))
+        sampled.append(contentsOf: divider)
+        sampled.append(contentsOf: characters[middleStart..<(middleStart + middleCount)])
+        sampled.append(contentsOf: divider)
+        sampled.append(contentsOf: characters[tailStart..<characters.count])
+        return String(sampled.prefix(limit))
+    }
+}
+
+extension LyricIntelligenceSettings {'''
+          text = replace_once(text, marker, sampler, "insert lyric sampler")
+          text = text.replace(
+              "let body = String(lyrics.prefix(family.lyricCharacterLimit))",
+              "let body = LyricTextSampler.sample(lyrics, limit: family.lyricCharacterLimit)"
+          )
+          text = text.replace(
+              "Extract tags for a music app. JSON only. Short values.",
+              "Analyze lyric meaning for music recommendations. Return one JSON object only."
+          )
+          text = text.replace(
+              '{"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 그 이름을 부른다.\\\\n빗소리가 방을 채운다.","season":"autumn","dayparts":["night"],"style":"ballad","content":"그리움","vocal":"soft","vocalGender":"female","genre":"ballad"}',
+              '{"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 그 이름을 부른다.\\\\n빗소리가 방을 채운다.","season":"autumn","dayparts":["night"],"style":"","content":"그리움","setting":"","tempo":0.3,"intimacy":0.8,"narrative":"confession","weather":"rain","social":"alone","color":"blue","vocal":"","vocalGender":"","genre":"","language":"ko","emotion":0.7,"context":"late night"}'
+          )
+          text = text.replace(
+              'summary = what happens in the lyrics, never language or "two sentences".',
+              'Use 1-4 short moods/themes. energy=lyrical intensity; valence=emotional positivity. summary=the lyric story, not metadata.\n            Use season/daypart/weather only when the words support them. Do not invent audio facts: vocal, vocalGender and genre stay empty unless explicit in the text.'
+          )
+          text = text.replace(
+              "summary retells the lyric story in the singer's language. Do not mention language, genre, or the word sentence.\n            vocalGender is who is singing. genre is the musical lane, not the language.",
+              "Ground every field in the lyrics. energy is lyrical intensity, tempo is narrative pace, valence is emotional positivity. summary retells who feels or does what and how it changes or ends, in the lyric language.\n            Never write language commentary. Do not guess singer gender, production, or genre from lyrics; leave audio-only fields empty unless the text itself proves them."
+          )
+          text = text.replace(
+              'summary is the lyric narrative itself, as long as needed. Never write "two sentences in korean" or name the language.',
+              'Prefer evidence over guesses. summary is the actual lyric narrative, including its emotional turn or ending. energy and tempo describe the words, not the recording. Never infer singer gender or musical genre only from lyric text.'
+          )
+          text = text.replace(
+              '{"moods":["calm"],"themes":["night"],"summary":"창가에서 기다린다.\\\\n비가 이름을 적신다.","vocalGender":"female","genre":"ballad"}',
+              '{"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 기다린다.\\\\n비가 이름을 적신다.","season":"autumn","dayparts":["night"],"content":"그리움","setting":"city","weather":"rain","language":"ko","emotion":0.7,"context":"late night"}'
+          )
+          text = text.replace(
+              "Tags only. JSON:",
+              "Extract grounded lyric meaning for recommendations. One JSON object only:"
+          )
+          path.write_text(text)
+
+          # 2) Apple Foundation Models: exactly one disposable session per inference.
+          path = Path("BuFi/Core/AppleFoundationLyricClient.swift")
+          text = path.read_text()
+          old_analyze = '''    static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        async let tagged = respond(
+            to: LyricIntelligencePrompt.tagging(
+                lyrics: lyrics,
+                family: .appleFoundation
+            ),
+            useCase: .contentTagging
+        )
+        async let scored = respond(
+            to: LyricIntelligencePrompt.scales(lyrics: lyrics),
+            useCase: nil
+        )
+        let parts = await (tagged, scored)
+
+        let tagParse = parts.0.flatMap(LyricIntelligencePrompt.parse)
+        let scoreParse = parts.1.flatMap(LyricIntelligencePrompt.parse)
+
+        let moods = tagParse?.moods ?? scoreParse?.moods ?? []
+        let themes = tagParse?.themes ?? scoreParse?.themes ?? []
+        let energy = scoreParse?.energy ?? tagParse?.energy ?? 0.5
+        let valence = scoreParse?.valence ?? tagParse?.valence ?? 0.5
+        let summary = tagParse?.summary ?? scoreParse?.summary ?? ""
+        guard !moods.isEmpty || parts.1 != nil || !summary.isEmpty else { return nil }
+        let resolvedMoods = moods.isEmpty ? ["neutral"] : moods
+
+        let source: String
+        switch (parts.0 != nil, parts.1 != nil) {
+        case (true, true):
+            source = "apple-intelligence-tagging+default"
+        case (true, false):
+            source = "apple-intelligence-tagging"
+        default:
+            source = "apple-intelligence"
+        }
+        return AppleFoundationLyricClient.Analysis(
+            moods: resolvedMoods,
+            themes: themes,
+            energy: energy,
+            valence: valence,
+            summary: summary,
+            source: source,
+            details: tagParse?.details ?? scoreParse?.details ?? .empty
+        )
+    }'''
+          new_analyze = '''    static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        // This is deliberately one-shot. A song gets a fresh session, one
+        // response, then the session falls out of scope. No prior lyric chat
+        // history can leak into the next track.
+        guard let text = await respondOneShot(
+            to: LyricIntelligencePrompt.tagging(
+                lyrics: lyrics,
+                family: .appleFoundation
+            ),
+            useCase: .contentTagging
+        ), let parsed = LyricIntelligencePrompt.parse(text) else {
+            return nil
+        }
+        return AppleFoundationLyricClient.Analysis(
+            moods: parsed.moods.isEmpty ? ["neutral"] : parsed.moods,
+            themes: parsed.themes,
+            energy: parsed.energy,
+            valence: parsed.valence,
+            summary: parsed.summary,
+            source: "apple-intelligence-tagging",
+            details: parsed.details
+        )
+    }'''
+          text = replace_once(text, old_analyze, new_analyze, "replace apple fallback analysis")
+          text = text.replace("await respond(\n            to:", "await respondOneShot(\n            to:")
+          text = text.replace("await respond(to: prompt, useCase: nil)", "await respondOneShot(to: prompt, useCase: nil)")
+          text = text.replace("    private static func respond(\n", "    private static func respondOneShot(\n")
+          path.write_text(text)
+
+          # 3) Contextual embedding: representative text + one language model attempt.
+          path = Path("BuFi/Core/LyricSentenceEmbedding.swift")
+          text = path.read_text()
+          text = text.replace(
+              "let snippet = String(text.prefix(1_600))",
+              "let snippet = LyricTextSampler.sample(text, limit: 1_200)"
+          )
+          old_lang = '''        let recognized = NLLanguageRecognizer.dominantLanguage(for: text)
+        let languages = [recognized, .english, .korean, .japanese].compactMap { $0 }
+        for language in languages {'''
+          new_lang = '''        let recognized = NLLanguageRecognizer.dominantLanguage(for: text)
+        var languages: [NLLanguage] = []
+        if let recognized { languages.append(recognized) }
+        if recognized != .english { languages.append(.english) }
+        for language in languages {'''
+          text = replace_once(text, old_lang, new_lang, "reduce contextual embedding model loads")
+          path.write_text(text)
+
+          # 4) Sound Analysis: sample intro/middle/outro instead of burning on one continuous head block.
+          path = Path("BuFi/Core/SoundAnalysisClassifier.swift")
+          text = path.read_text()
+          text = text.replace(
+              "private static let analysisDuration: Double = 20",
+              "private static let segmentDuration: Double = 6"
+          )
+          old_sound = '''    private static func analyzeFileSync(at url: URL) -> Analysis? {
+        do {
+            let file = try AVAudioFile(forReading: url)
+            let format = file.processingFormat
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                return analyzeWholeFile(at: url)
+            }
+            let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
+            let collector = SoundClassificationCollector()
+            let analyzer = SNAudioStreamAnalyzer(format: format)
+            try analyzer.add(request, withObserver: collector)
+
+            let frameCap = AVAudioFrameCount(min(
+                Double(file.length),
+                format.sampleRate * analysisDuration
+            ))
+            guard frameCap > 0 else { return nil }
+            let bufferSize: AVAudioFrameCount = 4_096
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: bufferSize
+            ) else {
+                return nil
+            }
+
+            var remaining = frameCap
+            var position: AVAudioFramePosition = 0
+            while remaining > 0 {
+                let frames = min(bufferSize, remaining)
+                try file.read(into: buffer, frameCount: frames)
+                guard buffer.frameLength > 0 else { break }
+                analyzer.analyze(buffer, atAudioFramePosition: position)
+                position += AVAudioFramePosition(buffer.frameLength)
+                remaining -= buffer.frameLength
+            }
+            analyzer.completeAnalysis()
+            return finished(collector.scores()) ?? analyzeWholeFile(at: url)
+        } catch {
+            return analyzeWholeFile(at: url)
+        }
+    }'''
+          new_sound = '''    private static func analyzeFileSync(at url: URL) -> Analysis? {
+        do {
+            let file = try AVAudioFile(forReading: url)
+            let format = file.processingFormat
+            guard format.sampleRate > 0, format.channelCount > 0, file.length > 0 else {
+                return nil
+            }
+            let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
+            let collector = SoundClassificationCollector()
+            let analyzer = SNAudioStreamAnalyzer(format: format)
+            try analyzer.add(request, withObserver: collector)
+
+            let segmentFrames = AVAudioFramePosition(format.sampleRate * segmentDuration)
+            guard segmentFrames > 0 else { return nil }
+            let starts: [AVAudioFramePosition]
+            if file.length <= segmentFrames * 3 {
+                starts = [0]
+            } else {
+                starts = [
+                    0,
+                    max(0, file.length / 2 - segmentFrames / 2),
+                    max(0, file.length - segmentFrames)
+                ]
+            }
+
+            let bufferSize: AVAudioFrameCount = 4_096
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: bufferSize
+            ) else {
+                return nil
+            }
+
+            var analysisPosition: AVAudioFramePosition = 0
+            for start in starts {
+                file.framePosition = start
+                let available = file.length - start
+                let target = starts.count == 1
+                    ? available
+                    : min(segmentFrames, available)
+                var remaining = AVAudioFrameCount(max(0, target))
+                while remaining > 0 {
+                    let frames = min(bufferSize, remaining)
+                    try file.read(into: buffer, frameCount: frames)
+                    guard buffer.frameLength > 0 else { break }
+                    analyzer.analyze(buffer, atAudioFramePosition: analysisPosition)
+                    analysisPosition += AVAudioFramePosition(buffer.frameLength)
+                    remaining -= buffer.frameLength
+                }
+            }
+            analyzer.completeAnalysis()
+            return finished(collector.scores())
+        } catch {
+            return nil
+        }
+    }'''
+          text = replace_once(text, old_sound, new_sound, "replace sound sampling")
+          path.write_text(text)
+
+          # 5) Thermal/low-power aware batch scheduling.
+          path = Path("BuFi/Core/LyricIntelligence.swift")
+          text = path.read_text()
+          old_loop = '''        for song in queue {
+            guard generation == batchGeneration else {'''
+          new_loop = '''        for song in queue {
+            await LyricAnalysisWorkloadPolicy.pauseBetweenSongs()
+            guard generation == batchGeneration else {'''
+          text = replace_once(text, old_loop, new_loop, "batch thermal pacing")
+          old_file = '''            if let fileURL = await fileProvider(song) {
+                let before = signatures[song.id]?.hasStoredSoundAnalysis ?? false'''
+          new_file = '''            if !LyricAnalysisWorkloadPolicy.shouldDeferSoundAnalysis,
+               let fileURL = await fileProvider(song) {
+                let before = signatures[song.id]?.hasStoredSoundAnalysis ?? false'''
+          text = replace_once(text, old_file, new_file, "defer sound under heat")
+          text = text.replace(
+              "try? await Task.sleep(for: .seconds(2))",
+              "try? await Task.sleep(for: LyricAnalysisWorkloadPolicy.backgroundSweepDelay)"
+          )
+          path.write_text(text)
+
+          # 6) Regression tests for whole-song sampling and session-friendly budgets.
+          path = Path("BuFiTests/LyricIntelligenceTests.swift")
+          text = path.read_text()
+          insertion = r'''
+    func testLyricSamplerPreservesBeginningMiddleAndEnding() {
+        let head = "HEAD-UNIQUE " + String(repeating: "a", count: 800)
+        let middle = " MIDDLE-UNIQUE " + String(repeating: "b", count: 800)
+        let tail = " TAIL-UNIQUE " + String(repeating: "c", count: 800)
+        let sampled = LyricTextSampler.sample(head + middle + tail, limit: 900)
+        XCTAssertLessThanOrEqual(sampled.count, 900)
+        XCTAssertTrue(sampled.contains("HEAD-UNIQUE"))
+        XCTAssertTrue(sampled.contains("MIDDLE-UNIQUE"))
+        XCTAssertTrue(sampled.contains("TAIL-UNIQUE"))
+    }
+
+    func testApplePromptDoesNotAskModelToInventAudioFacts() {
+        let prompt = LyricModelPrompts.lyricAnalysis(
+            lyrics: "밤새 창가에서 네 이름을 부른다",
+            family: .appleFoundation
+        )
+        XCTAssertTrue(prompt.contains("Do not invent audio facts"))
+        XCTAssertTrue(prompt.contains("vocalGender"))
+    }
+'''
+          anchor = "\n    func testBackendOffDoesNotCallAModel() async {"
+          text = replace_once(text, anchor, insertion + anchor, "insert lyric optimization tests")
+          path.write_text(text)
+          PY
+
+      - name: Add thermal workload policy
+        shell: bash
+        run: |
+          cat > BuFi/Core/LyricAnalysisWorkloadPolicy.swift <<'SWIFT'
+          import Foundation
+
+          enum LyricAnalysisWorkloadPolicy {
+              static var shouldDeferSoundAnalysis: Bool {
+                  if ProcessInfo.processInfo.isLowPowerModeEnabled { return true }
+                  switch ProcessInfo.processInfo.thermalState {
+                  case .serious, .critical:
+                      return true
+                  case .nominal, .fair:
+                      return false
+                  @unknown default:
+                      return true
+                  }
+              }
+
+              static var backgroundSweepDelay: Duration {
+                  if ProcessInfo.processInfo.isLowPowerModeEnabled { return .seconds(12) }
+                  switch ProcessInfo.processInfo.thermalState {
+                  case .nominal: return .seconds(4)
+                  case .fair: return .seconds(7)
+                  case .serious: return .seconds(12)
+                  case .critical: return .seconds(20)
+                  @unknown default: return .seconds(12)
+                  }
+              }
+
+              static func pauseBetweenSongs() async {
+                  let milliseconds: Int
+                  if ProcessInfo.processInfo.isLowPowerModeEnabled {
+                      milliseconds = 260
+                  } else {
+                      switch ProcessInfo.processInfo.thermalState {
+                      case .nominal: milliseconds = 40
+                      case .fair: milliseconds = 140
+                      case .serious: milliseconds = 500
+                      case .critical: milliseconds = 1_000
+                      @unknown default: milliseconds = 500
+                      }
+                  }
+                  try? await Task.sleep(for: .milliseconds(milliseconds))
+              }
+          }
+          SWIFT
+
+      - name: Commit optimized implementation and remove one-shot workflow
+        shell: bash
+        run: |
+          rm .github/workflows/one-shot-lyric-quality-thermal.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Core/LyricModelFamily.swift \
+                  BuFi/Core/AppleFoundationLyricClient.swift \
+                  BuFi/Core/LyricSentenceEmbedding.swift \
+                  BuFi/Core/SoundAnalysisClassifier.swift \
+                  BuFi/Core/LyricIntelligence.swift \
+                  BuFi/Core/LyricAnalysisWorkloadPolicy.swift \
+                  BuFiTests/LyricIntelligenceTests.swift \
+                  .github/workflows/one-shot-lyric-quality-thermal.yml
+          git commit -m "Optimize lyric intelligence quality and thermals"
+          git push origin HEAD:agent/smarter-recommendations
