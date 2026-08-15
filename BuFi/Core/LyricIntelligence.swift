@@ -1270,7 +1270,7 @@ enum LyricIntelligenceBackend {
         lyrics: String,
         settings: LyricIntelligenceSettings
     ) async -> Analysis? {
-        let result: Analysis?
+        var result: Analysis?
         switch settings.provider {
         case .off:
             result = nil
