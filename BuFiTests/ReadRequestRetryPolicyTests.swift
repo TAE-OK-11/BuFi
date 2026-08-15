@@ -21,6 +21,9 @@ final class ReadRequestRetryPolicyTests: XCTestCase {
         XCTAssertTrue(policy.shouldRetry(error: URLError(.timedOut)))
         XCTAssertTrue(policy.shouldRetry(error: URLError(.networkConnectionLost)))
         XCTAssertTrue(policy.shouldRetry(error: URLError(.notConnectedToInternet)))
+        XCTAssertTrue(policy.shouldRetry(error: URLError(.secureConnectionFailed)))
+        XCTAssertTrue(policy.shouldRetry(error: OpenSubsonicError.http(503)))
+        XCTAssertFalse(policy.shouldRetry(error: OpenSubsonicError.http(404)))
 
         XCTAssertFalse(policy.shouldRetry(error: CancellationError()))
         XCTAssertFalse(policy.shouldRetry(error: URLError(.cancelled)))
@@ -114,6 +117,23 @@ final class ReadRequestRetryPolicyTests: XCTestCase {
 
     func testRetryBudgetIsTwoRetries() {
         XCTAssertEqual(ReadRequestRetryPolicy.maximumRetryCount, 2)
+    }
+
+    func testCoreClassifierMatchesReadPolicyAndRejectsPermanentFailures() {
+        XCTAssertTrue(CoreRequestClassifier.shouldRetry(statusCode: 429))
+        XCTAssertTrue(CoreRequestClassifier.shouldRetry(statusCode: 503))
+        XCTAssertFalse(CoreRequestClassifier.shouldRetry(statusCode: 404))
+        XCTAssertTrue(
+            CoreRequestClassifier.shouldRetryImageFetch(URLError(.timedOut))
+        )
+        XCTAssertFalse(
+            CoreRequestClassifier.shouldRetryImageFetch(CancellationError())
+        )
+        XCTAssertFalse(
+            CoreRequestClassifier.shouldRetry(
+                error: OpenSubsonicError.invalidResponse
+            )
+        )
     }
 
     private func httpDate(_ value: String) -> Date? {
