@@ -1455,26 +1455,11 @@ actor OpenSubsonicClient {
     }
 
     func home(from previous: HomeSnapshot? = nil) async throws -> HomeLoadResult {
-        async let recent: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "newest", "size": "16"]
-        )
-        async let recentlyPlayed: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "recent", "size": "16"]
-        )
-        async let frequent: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "frequent", "size": "16"]
-        )
-        async let randomAlbums: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "random", "size": "16"]
-        )
-        async let popularAlbumsRequest: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "highest", "size": "12"]
-        )
+        async let recent: AlbumListPayload? = albumList("newest", size: "16")
+        async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
+        async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
+        async let randomAlbums: AlbumListPayload? = albumList("random", size: "16")
+        async let popularAlbumsRequest: AlbumListPayload? = albumList("highest", size: "12")
         async let starred: StarredPayload? = bestEffortRequest("getStarred2")
         async let artists: ArtistsPayload? = bestEffortRequest("getArtists")
         async let randomSongs: RandomSongsPayload? = bestEffortRequest(
@@ -1537,20 +1522,13 @@ actor OpenSubsonicClient {
 
         let randomSongValues = randomSongsValue.map {
             $0.randomSongs?.song ?? []
-        }
-            ?? fallback.randomSongs
-        let allArtists =
-            artistsValue.map {
-                $0.artists?.index?.flatMap { $0.artist ?? [] } ?? []
-            }
-            ?? fallback.artists
-        let frequentAlbums = frequentValue.map { $0.albumList2?.album ?? [] }
-            ?? fallback.frequentAlbums
-        let recentAlbums = recentValue.map { $0.albumList2?.album ?? [] }
-            ?? fallback.recentAlbums
-        let popularAlbumValues = popularAlbumsValue.map {
-            $0.albumList2?.album ?? []
-        } ?? []
+        } ?? fallback.randomSongs
+        let allArtists = artistsValue.map {
+            $0.artists?.index?.flatMap { $0.artist ?? [] } ?? []
+        } ?? fallback.artists
+        let frequentAlbums = albums(from: frequentValue, fallback: fallback.frequentAlbums)
+        let recentAlbums = albums(from: recentValue, fallback: fallback.recentAlbums)
+        let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
         let playlistValues = playlistsValue.map {
             $0.playlists?.playlist ?? []
         } ?? fallback.playlists
@@ -1636,15 +1614,15 @@ actor OpenSubsonicClient {
 
         var snapshot = HomeSnapshot(
             recentAlbums: recentAlbums,
-            recentlyPlayedAlbums: recentlyPlayedValue.map {
-                $0.albumList2?.album ?? []
-            }
-                ?? fallback.recentlyPlayedAlbums,
+            recentlyPlayedAlbums: albums(
+                from: recentlyPlayedValue,
+                fallback: fallback.recentlyPlayedAlbums
+            ),
             frequentAlbums: frequentAlbums,
-            randomAlbums: randomAlbumsValue.map {
-                $0.albumList2?.album ?? []
-            }
-                ?? fallback.randomAlbums,
+            randomAlbums: albums(
+                from: randomAlbumsValue,
+                fallback: fallback.randomAlbums
+            ),
             starredAlbums: starredAlbums,
             starredSongs: starredSongs,
             starredArtists: starredArtists,
@@ -1676,18 +1654,9 @@ actor OpenSubsonicClient {
     }
 
     func incrementalHome(from previous: HomeSnapshot) async throws -> HomeLoadResult {
-        async let recent: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "newest", "size": "16"]
-        )
-        async let recentlyPlayed: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "recent", "size": "16"]
-        )
-        async let frequent: AlbumListPayload? = bestEffortRequest(
-            "getAlbumList2",
-            parameters: ["type": "frequent", "size": "16"]
-        )
+        async let recent: AlbumListPayload? = albumList("newest", size: "16")
+        async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
+        async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
         async let starred: StarredPayload? = bestEffortRequest("getStarred2")
         async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
 
@@ -2206,9 +2175,25 @@ actor OpenSubsonicClient {
         return result.isEmpty ? fallback : Array(result.prefix(12))
     }
 
+    private func albumList(
+        _ type: String,
+        size: String
+    ) async throws -> AlbumListPayload? {
+        try await bestEffortRequest(
+            "getAlbumList2",
+            parameters: ["type": type, "size": size]
+        )
+    }
+
+    private func albums(
+        from payload: AlbumListPayload?,
+        fallback: [Album]
+    ) -> [Album] {
+        payload.map { $0.albumList2?.album ?? [] } ?? fallback
+    }
+
     private static func uniqueSongs(_ songs: [Song]) -> [Song] {
-        var ids = Set<String>()
-        return songs.filter { ids.insert($0.id).inserted }
+        MediaIdentity.uniqueSongs(songs)
     }
 
     private static func uniqueStrings(_ values: [String]) -> [String] {
@@ -2264,8 +2249,7 @@ actor OpenSubsonicClient {
     }
 
     private static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
-        var ids = Set<String>()
-        return artists.filter { ids.insert($0.id).inserted }
+        MediaIdentity.uniqueArtists(artists)
     }
 
     private static func normalized(_ value: String) -> String {

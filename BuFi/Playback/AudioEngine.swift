@@ -1691,36 +1691,21 @@ final class AudioEngine: NSObject, ObservableObject {
         player.pause()
         isPlaying = false
         seekGeneration &+= 1
-        isSeekInFlight = false
-        pendingSeekPosition = nil
         removeCurrentItemObservers()
         invalidateStagedSuccessor(removeFromPlayer: true)
         player.replaceCurrentItem(with: nil)
-        recordPlaybackStart(selectedSong, origin: origin)
-        rememberShuffleSelection(selectedSong.id)
-        elapsed = 0
-        duration = selectedSong.safeDuration
-        applyLyricsDocument(.empty)
-        fallbackIndex = 0
-        fallbackFormats = Self.fallbackFormats(for: quality, song: selectedSong)
-        recoveryAttempt = 0
+        resetTrackPresentation(
+            for: selectedSong,
+            origin: origin,
+            previousSongID: previousSongID
+        )
         recoveryStabilityTask?.cancel()
         recoveryStabilityTask = nil
-        activeCompatibilityFormat = Self.initialCompatibilityFormat(
-            for: quality,
-            song: selectedSong
-        )
-        playbackError = nil
         wantsPlayback = autoplay
-        scrobbled = false
-        lastMaintenanceSecond = -1
         if !showPlayer {
             let automaticallyOpensPlayer =
                 UserDefaults.standard.object(forKey: "auto-open-player") as? Bool ?? false
             showPlayer = automaticallyOpensPlayer
-        }
-        if previousSongID != selectedSong.id {
-            provideTrackChangeHaptic()
         }
         loadCurrentItem(
             compatibilityFormat: activeCompatibilityFormat,
@@ -3310,6 +3295,25 @@ final class AudioEngine: NSObject, ObservableObject {
         stagedSuccessorObservation = nil
         stagedSuccessorObservationID = nil
         playbackState.setIndex(successorIndex, renewsPlayback: true)
+        resetTrackPresentation(
+            for: song,
+            origin: origin,
+            previousSongID: previousSongID
+        )
+        observeActiveItem(item, resumePosition: 0)
+        refreshCanonicalMetadata(for: song)
+        loadLyrics(for: song)
+        scheduleQueueSave(immediate: true)
+        updateNowPlaying()
+        scheduleAutoplayContinuationIfNeeded()
+        if schedulesFollowingSuccessor { scheduleGaplessSuccessor() }
+    }
+
+    private func resetTrackPresentation(
+        for song: Song,
+        origin: PlaybackOrigin,
+        previousSongID: String?
+    ) {
         recordPlaybackStart(song, origin: origin)
         rememberShuffleSelection(song.id)
         elapsed = 0
@@ -3328,14 +3332,9 @@ final class AudioEngine: NSObject, ObservableObject {
         scrobbled = false
         lastMaintenanceSecond = -1
         handledFailedItem = nil
-        observeActiveItem(item, resumePosition: 0)
-        refreshCanonicalMetadata(for: song)
-        loadLyrics(for: song)
-        scheduleQueueSave(immediate: true)
-        updateNowPlaying()
-        scheduleAutoplayContinuationIfNeeded()
-        if previousSongID != song.id { provideTrackChangeHaptic() }
-        if schedulesFollowingSuccessor { scheduleGaplessSuccessor() }
+        if previousSongID != song.id {
+            provideTrackChangeHaptic()
+        }
     }
 
     private func updateDuration(using playerDuration: TimeInterval) {

@@ -389,6 +389,114 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
     var radioStations: [InternetRadioStation] = []
 
     static let empty = HomeSnapshot()
+
+    static let songCollections: [WritableKeyPath<HomeSnapshot, [Song]>] = [
+        \.starredSongs,
+        \.randomSongs,
+        \.sonicRecommendedSongs,
+        \.similarArtistSongs,
+        \.genreRecommendedSongs,
+        \.topArtistSongs,
+        \.recentlyAddedSongs,
+        \.popularSongs,
+        \.playlistAffinitySongs,
+        \.serverRecommendedSongs,
+        \.lastFMRecommendedSongs,
+        \.listenBrainzRecommendedSongs,
+        \.recommendedSongs,
+        \.daylistSongs,
+        \.offlineBackupSongs,
+        \.mostPlayedSongs
+    ]
+
+    static let albumCollections: [WritableKeyPath<HomeSnapshot, [Album]>] = [
+        \.recentAlbums,
+        \.recentlyPlayedAlbums,
+        \.frequentAlbums,
+        \.randomAlbums,
+        \.starredAlbums
+    ]
+
+    static let artistCollections: [WritableKeyPath<HomeSnapshot, [Artist]>] = [
+        \.starredArtists,
+        \.artists,
+        \.recommendedArtists
+    ]
+
+    mutating func mapSongs(_ transform: (Song) -> Song) {
+        for path in Self.songCollections {
+            self[keyPath: path] = self[keyPath: path].map(transform)
+        }
+    }
+
+    mutating func mapAlbums(_ transform: (Album) -> Album) {
+        for path in Self.albumCollections {
+            self[keyPath: path] = self[keyPath: path].map(transform)
+        }
+    }
+
+    mutating func mapArtists(_ transform: (Artist) -> Artist) {
+        for path in Self.artistCollections {
+            self[keyPath: path] = self[keyPath: path].map(transform)
+        }
+    }
+}
+
+enum MediaIdentity {
+    static func uniqueSongs(
+        _ songs: [Song],
+        limit: Int = .max
+    ) -> [Song] {
+        unique(songs, id: \.id, limit: limit)
+    }
+
+    static func uniqueSongs(
+        from sources: [[Song]],
+        limit: Int = .max
+    ) -> [Song] {
+        guard limit > 0 else { return [] }
+        let capacity = min(limit, sources.reduce(into: 0) { $0 += $1.count })
+        var ids = Set<String>()
+        ids.reserveCapacity(capacity)
+        var result: [Song] = []
+        result.reserveCapacity(capacity)
+        var visited = 0
+        for source in sources {
+            for song in source {
+                if visited.isMultiple(of: 64), Task.isCancelled { return [] }
+                visited += 1
+                if ids.insert(song.id).inserted {
+                    result.append(song)
+                    if result.count == limit { return result }
+                }
+            }
+        }
+        return result
+    }
+
+    static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
+        unique(artists, id: \.id)
+    }
+
+    static func unique<Value, ID: Hashable>(
+        _ values: [Value],
+        id: (Value) -> ID,
+        limit: Int = .max
+    ) -> [Value] {
+        guard limit > 0 else { return [] }
+        var seen = Set<ID>()
+        seen.reserveCapacity(min(limit, values.count))
+        var result: [Value] = []
+        result.reserveCapacity(min(limit, values.count))
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { return [] }
+            if seen.insert(id(value)).inserted {
+                result.append(value)
+                if result.count == limit { return result }
+            }
+        }
+        return result
+    }
 }
 
 /// Collision-safe identity for an in-memory home snapshot. The generation is

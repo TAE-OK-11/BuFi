@@ -662,8 +662,8 @@ enum RecommendationMixer {
         // Deduplicate while streaming sources; avoid a second flattened corpus.
         // High-priority recommendation lists come first, so a bounded prefix
         // keeps server/external signals and drops only surplus starred rows.
-        let candidates = unique(
-            sourceLists,
+        let candidates = MediaIdentity.uniqueSongs(
+            from: sourceLists,
             limit: RecommendationScoringPolicy.scoringCandidateLimit
         )
         guard !candidates.isEmpty else { return [] }
@@ -1356,41 +1356,7 @@ enum RecommendationMixer {
     }
 
     private static func unique(_ values: [Song]) -> [Song] {
-        var ids = Set<String>()
-        var result: [Song] = []
-        result.reserveCapacity(values.count)
-        for (index, value) in values.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { return [] }
-            if ids.insert(value.id).inserted { result.append(value) }
-        }
-        return result
-    }
-
-    private static func unique(
-        _ sources: [[Song]],
-        limit: Int = .max
-    ) -> [Song] {
-        guard limit > 0 else { return [] }
-        let capacity = min(
-            limit,
-            sources.reduce(into: 0) { $0 += $1.count }
-        )
-        var ids = Set<String>()
-        ids.reserveCapacity(capacity)
-        var result: [Song] = []
-        result.reserveCapacity(capacity)
-        var visited = 0
-        for source in sources {
-            for song in source {
-                if visited.isMultiple(of: 64), Task.isCancelled { return [] }
-                visited += 1
-                if ids.insert(song.id).inserted {
-                    result.append(song)
-                    if result.count == limit { return result }
-                }
-            }
-        }
-        return result
+        MediaIdentity.uniqueSongs(values)
     }
 
     fileprivate static func normalized(_ value: String) -> String {
@@ -1704,8 +1670,7 @@ enum DaylistBuilder {
     }
 
     private static func unique(_ songs: [Song]) -> [Song] {
-        var ids = Set<String>()
-        return songs.filter { ids.insert($0.id).inserted }
+        MediaIdentity.uniqueSongs(songs)
     }
 
     private static func normalized(_ value: String) -> String {
@@ -2398,14 +2363,7 @@ enum PersonalizedMixBuilder {
     }
 
     fileprivate static func unique(_ songs: [Song]) -> [Song] {
-        var ids = Set<String>()
-        var result: [Song] = []
-        result.reserveCapacity(songs.count)
-        for (index, song) in songs.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { return [] }
-            if ids.insert(song.id).inserted { result.append(song) }
-        }
-        return result
+        MediaIdentity.uniqueSongs(songs)
     }
 
     static func searchableText(_ song: Song) -> String {

@@ -1361,83 +1361,48 @@ final class AppModel: ObservableObject {
             return snapshot
         }
         var value = snapshot
-        value.recentAlbums = value.recentAlbums.map(applyingFavoriteOverride)
-        value.recentlyPlayedAlbums = value.recentlyPlayedAlbums.map(applyingFavoriteOverride)
-        value.frequentAlbums = value.frequentAlbums.map(applyingFavoriteOverride)
-        value.randomAlbums = value.randomAlbums.map(applyingFavoriteOverride)
-        let resolvedAlbums = value.starredAlbums
-            .map(applyingFavoriteOverride)
-            .filter(\.isStarred)
-        let resolvedAlbumIDs = Set(resolvedAlbums.map(\.id))
-        let retainedAlbums = home.starredAlbums
-            .map(applyingFavoriteOverride)
-            .filter(\.isStarred)
-            .filter {
-                shouldRetainMissingFavorite(id: $0.id, target: .album)
-            }
-            .filter { !resolvedAlbumIDs.contains($0.id) }
-        value.starredAlbums = resolvedAlbums + retainedAlbums
-
-        let resolvedSongs = value.starredSongs
-            .map(applyingFavoriteOverride)
-            .filter(\.isStarred)
-        let resolvedSongIDs = Set(resolvedSongs.map(\.id))
-        let retainedSongs = home.starredSongs
-            .map(applyingFavoriteOverride)
-            .filter(\.isStarred)
-            .filter {
-                shouldRetainMissingFavorite(id: $0.id, target: .song)
-            }
-            .filter { !resolvedSongIDs.contains($0.id) }
-        value.starredSongs = resolvedSongs + retainedSongs
-
-        let resolvedArtists = value.starredArtists
-            .map(applyingFavoriteOverride)
-            .filter(\.isStarred)
-        let resolvedArtistIDs = Set(resolvedArtists.map(\.id))
-        let retainedArtists = home.starredArtists
-            .map(applyingFavoriteOverride)
-            .filter(\.isStarred)
-            .filter {
-                shouldRetainMissingFavorite(id: $0.id, target: .artist)
-            }
-            .filter { !resolvedArtistIDs.contains($0.id) }
-        value.starredArtists = resolvedArtists + retainedArtists
-
-        value.artists = value.artists.map(applyingFavoriteOverride)
-        value.randomSongs = value.randomSongs.map(applyingFavoriteOverride)
-        value.sonicRecommendedSongs = value.sonicRecommendedSongs.map(
-            applyingFavoriteOverride
+        value.mapSongs(applyingFavoriteOverride)
+        value.mapAlbums(applyingFavoriteOverride)
+        value.mapArtists(applyingFavoriteOverride)
+        value.starredSongs = retainingOptimisticFavorites(
+            incoming: value.starredSongs,
+            previous: home.starredSongs,
+            isStarred: \.isStarred,
+            apply: applyingFavoriteOverride,
+            target: .song
         )
-        value.similarArtistSongs = value.similarArtistSongs.map(
-            applyingFavoriteOverride
+        value.starredAlbums = retainingOptimisticFavorites(
+            incoming: value.starredAlbums,
+            previous: home.starredAlbums,
+            isStarred: \.isStarred,
+            apply: applyingFavoriteOverride,
+            target: .album
         )
-        value.genreRecommendedSongs = value.genreRecommendedSongs.map(
-            applyingFavoriteOverride
-        )
-        value.topArtistSongs = value.topArtistSongs.map(applyingFavoriteOverride)
-        value.recentlyAddedSongs = value.recentlyAddedSongs.map(
-            applyingFavoriteOverride
-        )
-        value.popularSongs = value.popularSongs.map(applyingFavoriteOverride)
-        value.playlistAffinitySongs = value.playlistAffinitySongs.map(
-            applyingFavoriteOverride
-        )
-        value.serverRecommendedSongs = value.serverRecommendedSongs.map(applyingFavoriteOverride)
-        value.lastFMRecommendedSongs = value.lastFMRecommendedSongs.map(applyingFavoriteOverride)
-        value.listenBrainzRecommendedSongs = value.listenBrainzRecommendedSongs.map(
-            applyingFavoriteOverride
-        )
-        value.recommendedSongs = value.recommendedSongs.map(applyingFavoriteOverride)
-        value.daylistSongs = value.daylistSongs.map(applyingFavoriteOverride)
-        value.offlineBackupSongs = value.offlineBackupSongs.map(
-            applyingFavoriteOverride
-        )
-        value.mostPlayedSongs = value.mostPlayedSongs.map(applyingFavoriteOverride)
-        value.recommendedArtists = value.recommendedArtists.map(
-            applyingFavoriteOverride
+        value.starredArtists = retainingOptimisticFavorites(
+            incoming: value.starredArtists,
+            previous: home.starredArtists,
+            isStarred: \.isStarred,
+            apply: applyingFavoriteOverride,
+            target: .artist
         )
         return value
+    }
+
+    private func retainingOptimisticFavorites<Item: Identifiable>(
+        incoming: [Item],
+        previous: [Item],
+        isStarred: (Item) -> Bool,
+        apply: (Item) -> Item,
+        target: OpenSubsonicClient.StarTarget
+    ) -> [Item] where Item.ID == String {
+        let resolved = incoming.filter(isStarred)
+        var ids = Set(resolved.map(\.id))
+        let retained = previous.map(apply).filter { item in
+            isStarred(item)
+                && shouldRetainMissingFavorite(id: item.id, target: target)
+                && ids.insert(item.id).inserted
+        }
+        return resolved + retained
     }
 
     private func shouldRetainMissingFavorite(
@@ -1959,13 +1924,11 @@ final class AppModel: ObservableObject {
     }
 
     private static func uniqueSongs(_ values: [Song]) -> [Song] {
-        var ids = Set<String>()
-        return values.filter { ids.insert($0.id).inserted }
+        MediaIdentity.uniqueSongs(values)
     }
 
     private static func uniqueArtists(_ values: [Artist]) -> [Artist] {
-        var ids = Set<String>()
-        return values.filter { ids.insert($0.id).inserted }
+        MediaIdentity.uniqueArtists(values)
     }
 
     private func enrichingExternalRecommendations(
