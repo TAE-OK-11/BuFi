@@ -184,17 +184,17 @@ enum LyricLexicalEmbedding {
     }
 
     static func merge(moods: [String], energy: Double, valence: Double, lyrics: String) -> [Float] {
-        var vector = vector(from: lyrics)
-        guard vector.count == dimensions else { return vector }
-        let moodVector = vector(from: moods.joined(separator: " "))
-        for index in vector.indices {
-            vector[index] = vector[index] * 0.72 + moodVector[index] * 0.20
+        var merged = Self.vector(from: lyrics)
+        guard merged.count == dimensions else { return merged }
+        let moodVector = Self.vector(from: moods.joined(separator: " "))
+        for index in merged.indices {
+            merged[index] = merged[index] * 0.72 + moodVector[index] * 0.20
         }
         if dimensions > 2 {
-            vector[0] += Float(min(max(energy, 0), 1) - 0.5)
-            vector[1] += Float(min(max(valence, 0), 1) - 0.5)
+            merged[0] += Float(min(max(energy, 0), 1) - 0.5)
+            merged[1] += Float(min(max(valence, 0), 1) - 0.5)
         }
-        return l2Normalized(vector)
+        return l2Normalized(merged)
     }
 
     static func similarity(_ left: LyricSignature, _ right: LyricSignature) -> Double {
