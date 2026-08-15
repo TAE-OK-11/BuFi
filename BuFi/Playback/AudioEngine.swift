@@ -1026,6 +1026,34 @@ struct PlaybackResourceDescriptor: Sendable {
     let mimeType: String?
 }
 
+/// TIDAL PE source selection, adapted to OpenSubsonic. An offlined file is
+/// authoritative on the first attempt so playback does not wait on a stream
+/// URL. Transcode retries stay remote unless no client is available.
+enum PlaybackSourcePolicy {
+    enum Source: Equatable, Sendable {
+        case localFile
+        case remoteStream
+        case unavailable
+    }
+
+    static func source(
+        hasLocalFile: Bool,
+        allowLocalSource: Bool,
+        canRequestStream: Bool
+    ) -> Source {
+        if hasLocalFile, allowLocalSource {
+            return .localFile
+        }
+        if canRequestStream {
+            return .remoteStream
+        }
+        if hasLocalFile {
+            return .localFile
+        }
+        return .unavailable
+    }
+}
+
 enum PlaybackResourceResolver {
     @concurrent
     static func resolve(
@@ -1042,8 +1070,12 @@ enum PlaybackResourceResolver {
                 mimeType: song.contentType
             )
         }
-        if request.allowLocalSource,
-           request.compatibilityFormat?.lowercased() == "raw",
+        let considerLocal = PlaybackSourcePolicy.source(
+            hasLocalFile: true,
+            allowLocalSource: request.allowLocalSource,
+            canRequestStream: client != nil
+        ) == .localFile
+        if considerLocal,
            let local = await OfflineStore.shared.localURL(for: song) {
             try Task.checkCancellation()
             return PlaybackResourceDescriptor(

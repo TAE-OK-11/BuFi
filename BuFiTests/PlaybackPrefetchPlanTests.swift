@@ -62,6 +62,49 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         ))
     }
 
+    func testOfflinedFirstAttemptUsesLocalFileWithoutAStream() {
+        XCTAssertEqual(
+            PlaybackSourcePolicy.source(
+                hasLocalFile: true,
+                allowLocalSource: true,
+                canRequestStream: true
+            ),
+            .localFile
+        )
+        XCTAssertEqual(
+            PlaybackSourcePolicy.source(
+                hasLocalFile: true,
+                allowLocalSource: false,
+                canRequestStream: true
+            ),
+            .remoteStream
+        )
+        XCTAssertEqual(
+            PlaybackSourcePolicy.source(
+                hasLocalFile: true,
+                allowLocalSource: false,
+                canRequestStream: false
+            ),
+            .localFile
+        )
+        XCTAssertEqual(
+            PlaybackSourcePolicy.source(
+                hasLocalFile: false,
+                allowLocalSource: true,
+                canRequestStream: true
+            ),
+            .remoteStream
+        )
+        XCTAssertEqual(
+            PlaybackSourcePolicy.source(
+                hasLocalFile: false,
+                allowLocalSource: true,
+                canRequestStream: false
+            ),
+            .unavailable
+        )
+    }
+
     func testHTTPClientErrorFailsInsteadOfCyclingCodecs() {
         let notFound = NSError(
             domain: AVFoundationErrorDomain,
