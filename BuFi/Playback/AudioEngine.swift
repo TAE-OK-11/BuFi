@@ -725,6 +725,17 @@ enum PlaybackRecoveryPolicy {
         start.isFinite && end.isFinite && end >= start + 0.1
     }
 
+    static func shouldForceImmediatePlayback(
+        timeControlStatus: AVPlayer.TimeControlStatus,
+        waitingReason: AVPlayer.WaitingReason?
+    ) -> Bool {
+        guard timeControlStatus == .waitingToPlayAtSpecifiedRate else {
+            return true
+        }
+        return waitingReason != .toMinimizeStalls
+            && waitingReason != .evaluatingBufferingRate
+    }
+
     static func nextCompatibilityIndex(
         in formats: [String],
         from startIndex: Int,
@@ -1523,7 +1534,7 @@ final class AudioEngine: NSObject, ObservableObject {
         player.volume = 1
         activateNowPlayingSession()
         if !needsReload {
-            player.playImmediately(atRate: 1)
+            player.play()
         }
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
@@ -1629,7 +1640,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     if finished {
                         self.isBuffering = false
                         self.configureAudioSession()
-                        self.player.playImmediately(atRate: 1)
+                        self.player.play()
                         self.schedulePlaybackRecovery()
                     } else {
                         self.isBuffering = true
@@ -2240,7 +2251,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else {
                     guard self.player.timeControlStatus != .playing else { return }
                     self.configureAudioSession()
-                    self.player.playImmediately(atRate: 1)
+                    self.player.play()
                     self.schedulePlaybackRecovery()
                 }
             }
@@ -2854,7 +2865,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         self.player.isMuted = false
                         self.player.volume = 1
                         self.activateNowPlayingSession()
-                        self.player.playImmediately(atRate: 1)
+                        self.player.play()
                         self.schedulePlaybackRecovery()
                     }
                 case .failed:
@@ -3061,7 +3072,7 @@ final class AudioEngine: NSObject, ObservableObject {
                       self.pendingSeekPosition == nil else { return }
                 if self.wantsPlayback, self.player.timeControlStatus != .playing {
                     self.configureAudioSession()
-                    self.player.playImmediately(atRate: 1)
+                    self.player.play()
                     self.recomputeTimelineFromPlayer()
                     self.installNextLyricBoundary(after: self.elapsed)
                     self.schedulePlaybackRecovery()
@@ -3236,10 +3247,15 @@ final class AudioEngine: NSObject, ObservableObject {
                 return
             }
 
-            self.configureAudioSession()
-            self.player.playImmediately(atRate: 1)
-            self.recomputeTimelineFromPlayer()
-            self.installNextLyricBoundary(after: self.elapsed)
+            if PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+                timeControlStatus: self.player.timeControlStatus,
+                waitingReason: self.player.reasonForWaitingToPlay
+            ) {
+                self.configureAudioSession()
+                self.player.playImmediately(atRate: 1)
+                self.recomputeTimelineFromPlayer()
+                self.installNextLyricBoundary(after: self.elapsed)
+            }
 
             if item.status == .readyToPlay,
                self.currentSong?.externalStreamURL == nil,
@@ -3881,7 +3897,7 @@ final class AudioEngine: NSObject, ObservableObject {
         configureAudioSession()
         player.isMuted = false
         player.volume = 1
-        player.playImmediately(atRate: 1)
+        player.play()
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
         updateNowPlaying()

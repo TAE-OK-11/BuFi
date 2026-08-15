@@ -148,6 +148,21 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         ))
     }
 
+    func testAutomaticBufferingWaitIsNotForcedImmediately() {
+        XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .toMinimizeStalls
+        ))
+        XCTAssertFalse(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .waitingToPlayAtSpecifiedRate,
+            waitingReason: .evaluatingBufferingRate
+        ))
+        XCTAssertTrue(PlaybackRecoveryPolicy.shouldForceImmediatePlayback(
+            timeControlStatus: .paused,
+            waitingReason: nil
+        ))
+    }
+
     func testNetworkRecoverySkipsRawBeforeTryingLowerBandwidthFormat() {
         let originalQualityFallbacks = ["aac", "mp3"]
         let opusQualityFallbacks = ["aac", "mp3", "raw"]
