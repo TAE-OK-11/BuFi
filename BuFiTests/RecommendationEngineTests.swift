@@ -572,6 +572,46 @@ final class RecommendationEngineTests: XCTestCase {
         }
     }
 
+    func testAutoplayFollowsRecentSessionGenre() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let seed = song(
+            id: "seed",
+            title: "Seed",
+            artist: "Seed Artist",
+            genre: "Jazz"
+        )
+        let jazz = song(
+            id: "jazz-next",
+            title: "Jazz Next",
+            artist: "Other Jazz",
+            genre: "Jazz"
+        )
+        let metal = song(
+            id: "metal-next",
+            title: "Metal Next",
+            artist: "Other Metal",
+            genre: "Metal"
+        )
+        var recommendationWeights = isolatedWeights()
+        recommendationWeights.context = 1
+        recommendationWeights.discoveryRatio = 1
+        let result = RecommendationMixer.mix(
+            snapshot: HomeSnapshot(randomSongs: [metal, jazz]),
+            weights: recommendationWeights,
+            purpose: .autoplay,
+            behavior: RecommendationBehaviorSnapshot(
+                songs: [seed.id: behavior(song: seed, playCount: 4, lastPlayed: date)],
+                recentSongs: [seed],
+                revision: 3
+            ),
+            limit: 2,
+            date: date
+        )
+
+        XCTAssertEqual(result.first?.id, jazz.id)
+    }
+
     func testPersonalizedSearchableTextIncludesSecondaryGenresAndMoods() {
         var value = song(
             id: "secondary-metadata",

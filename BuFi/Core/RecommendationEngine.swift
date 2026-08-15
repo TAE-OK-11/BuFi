@@ -323,10 +323,112 @@ private struct RankedRecommendation {
     var score: Double
     let artistKey: String
     let albumKey: String
+    let genreKeys: [String]
     let deduplicationKey: String
     let isDiscovery: Bool
     let isNewArtist: Bool
     let isHiddenGem: Bool
+}
+
+/// First-order session model from the latest plays. Spotify-style radio
+/// continues the current lane (artist / genre / observed transitions)
+/// without a second pass over the library.
+private struct RecommendationSessionIntent {
+    let lastArtist: String
+    let lastGenres: Set<String>
+    let lastAlbum: String
+    let lastIDs: Set<String>
+    let artistTransitions: [String: Double]
+    let genreTransitions: [String: Double]
+
+    static let empty = RecommendationSessionIntent(
+        lastArtist: "",
+        lastGenres: [],
+        lastAlbum: "",
+        lastIDs: [],
+        artistTransitions: [:],
+        genreTransitions: [:]
+    )
+
+    static func make(from recentSongs: [Song]) -> RecommendationSessionIntent {
+        let window = Array(recentSongs.prefix(24))
+        guard let latest = window.first else { return .empty }
+
+        var artistWeights: [String: Double] = [:]
+        var genreWeights: [String: Double] = [:]
+        // recentSongs is newest-first. Playback order is older -> newer.
+        for index in 0..<(window.count - 1) {
+            let newer = window[index]
+            let older = window[index + 1]
+            let recency = 1 - Double(index) / Double(max(window.count, 2))
+            let destArtist = RecommendationCandidateMetadata.artistKey(for: newer)
+            if !destArtist.isEmpty {
+                artistWeights[destArtist, default: 0] += recency
+            }
+            let destGenres = RecommendationCandidateMetadata.genreKeys(for: newer)
+            let sourceGenres = Set(
+                RecommendationCandidateMetadata.genreKeys(for: older)
+            )
+            for genre in destGenres where !genre.isEmpty {
+                if sourceGenres.contains(genre) {
+                    genreWeights[genre, default: 0] += recency
+                } else {
+                    genreWeights[genre, default: 0] += recency * 0.45
+                }
+            }
+        }
+        normalize(&artistWeights)
+        normalize(&genreWeights)
+        return RecommendationSessionIntent(
+            lastArtist: RecommendationCandidateMetadata.artistKey(for: latest),
+            lastGenres: Set(RecommendationCandidateMetadata.genreKeys(for: latest)),
+            lastAlbum: RecommendationMixer.normalized(latest.albumId ?? latest.album),
+            lastIDs: Set(window.prefix(3).map(\.id)),
+            artistTransitions: artistWeights,
+            genreTransitions: genreWeights
+        )
+    }
+
+    func continuationScore(
+        for metadata: RecommendationCandidateMetadata,
+        songID: String
+    ) -> Double {
+        if lastArtist.isEmpty, lastGenres.isEmpty {
+            return 0
+        }
+        // The just-played tracks already occupy the session. Do not let them
+        // crowd out the next-up recommendation.
+        if lastIDs.contains(songID) { return 0.08 }
+
+        var score = 0.0
+        if !metadata.artistKey.isEmpty, metadata.artistKey == lastArtist {
+            score = max(score, 0.78)
+        } else if let transition = artistTransitions[metadata.artistKey] {
+            score = max(score, 0.22 + 0.58 * transition)
+        }
+        if !metadata.albumKey.isEmpty, metadata.albumKey == lastAlbum {
+            score = max(score, 0.52)
+        }
+        var genreMatch = 0.0
+        for key in metadata.genreKeys {
+            if lastGenres.contains(key) {
+                genreMatch = max(genreMatch, 0.70)
+            }
+            if let transition = genreTransitions[key] {
+                genreMatch = max(genreMatch, 0.28 + 0.50 * transition)
+            }
+        }
+        score = max(score, genreMatch)
+        return min(1, score)
+    }
+
+    private static func normalize(_ values: inout [String: Double]) {
+        let peak = values.values.max() ?? 0
+        guard peak > 0 else { return }
+        for key in values.keys {
+            values[key] = (values[key] ?? 0) / peak
+        }
+    }
 }
 
 private struct RecommendationScoringPlan {
@@ -700,6 +802,9 @@ enum RecommendationMixer {
         )
         let currentHour = Calendar.current.component(.hour, from: evaluationDate)
         let rankingSeed = temporalBucket(for: purpose, date: date)
+        let sessionIntent = RecommendationSessionIntent.make(
+            from: behavior.recentSongs
+        )
 
         var ranked: [RankedRecommendation] = []
         ranked.reserveCapacity(candidates.count)
@@ -797,9 +902,18 @@ enum RecommendationMixer {
             weightedTotal += scoringPlan.contribution(.completion, score: completionScore)
             weightedTotal += scoringPlan.contribution(.repeatListening, score: repeatScore)
             weightedTotal += scoringPlan.contribution(.recency, score: recencyScore)
+            let sessionScore = sessionIntent.continuationScore(
+                for: metadata,
+                songID: song.id
+            )
+            let contextScore = min(
+                1,
+                contextProfile.affinity(for: metadata) * 0.52
+                    + sessionScore * 0.70
+            )
             weightedTotal += scoringPlan.contribution(
                 .context,
-                score: contextProfile.affinity(for: metadata)
+                score: contextScore
             )
             weightedTotal += scoringPlan.contribution(.localMetadata, score: metadataScore)
             weightedTotal += scoringPlan.contribution(.playlistAffinity, score: playlistScore)
@@ -839,6 +953,7 @@ enum RecommendationMixer {
                 score: finalScore,
                 artistKey: metadata.artistKey,
                 albumKey: metadata.albumKey,
+                genreKeys: metadata.genreKeys,
                 deduplicationKey: metadata.deduplicationKey,
                 isDiscovery: isDiscovery,
                 isNewArtist: isNewArtist,
@@ -857,7 +972,11 @@ enum RecommendationMixer {
             limit: limit
         )
         guard !Task.isCancelled else { return [] }
-        let result = diversityReranked(ranked, limit: limit).map(\.song)
+        let result = diversityReranked(
+            ranked,
+            limit: limit,
+            purpose: purpose
+        ).map(\.song)
         guard !Task.isCancelled else { return [] }
         cache.insert(result, for: key, now: date)
         return result
@@ -1238,13 +1357,17 @@ enum RecommendationMixer {
 
     private static func diversityReranked(
         _ values: [RankedRecommendation],
-        limit: Int
+        limit: Int,
+        purpose: RecommendationPurpose
     ) -> [RankedRecommendation] {
         var result: [RankedRecommendation] = []
         var artistCounts: [String: Int] = [:]
         var albumCounts: [String: Int] = [:]
+        var genreCounts: [String: Int] = [:]
         var isRemaining = Array(repeating: true, count: values.count)
         var remainingCount = values.count
+        // Daylist / autoplay stay in a lane. Home and discovery spread genres.
+        let applyGenreSpread = purpose != .daylist && purpose != .autoplay
         result.reserveCapacity(min(values.count, limit))
         while remainingCount > 0, result.count < limit {
             if Task.isCancelled { return [] }
@@ -1258,9 +1381,15 @@ enum RecommendationMixer {
                 if bestIndex != nil, value.score <= bestAdjustedScore { break }
                 let artistCount = artistCounts[value.artistKey, default: 0]
                 let albumCount = albumCounts[value.albumKey, default: 0]
-                let adjusted = value.score
+                var adjusted = value.score
                     * diversityFactor(for: artistCount)
                     * diversityFactor(for: albumCount)
+                if applyGenreSpread {
+                    let genreLoad = value.genreKeys.reduce(0) {
+                        max($0, genreCounts[$1, default: 0])
+                    }
+                    adjusted *= genreDiversityFactor(for: genreLoad)
+                }
                 if bestIndex == nil || adjusted > bestAdjustedScore {
                     bestAdjustedScore = adjusted
                     bestIndex = index
@@ -1273,6 +1402,9 @@ enum RecommendationMixer {
             result.append(selected)
             artistCounts[selected.artistKey, default: 0] += 1
             albumCounts[selected.albumKey, default: 0] += 1
+            for genre in selected.genreKeys {
+                genreCounts[genre, default: 0] += 1
+            }
         }
         return result
     }
@@ -1283,6 +1415,15 @@ enum RecommendationMixer {
         case 1: 0.90
         case 2: 0.75
         default: 0.55
+        }
+    }
+
+    private static func genreDiversityFactor(for existingCount: Int) -> Double {
+        switch existingCount {
+        case 0, 1: 1.0
+        case 2: 0.88
+        case 3: 0.76
+        default: 0.62
         }
     }
 
