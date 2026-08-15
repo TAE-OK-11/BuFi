@@ -4,8 +4,10 @@ import XCTest
 final class LyricOptimizationTests: XCTestCase {
     func testLongLyricSamplingKeepsBeginningMiddleAndEnding() {
         let beginning = "BEGIN-UNIQUE " + String(repeating: "a", count: 900)
-        let middle = " MIDDLE-UNIQUE " + String(repeating: "b", count: 900)
-        let ending = " END-UNIQUE " + String(repeating: "c", count: 900)
+        let middle = String(repeating: "b", count: 420)
+            + " MIDDLE-UNIQUE "
+            + String(repeating: "b", count: 420)
+        let ending = String(repeating: "c", count: 900) + " END-UNIQUE"
 
         let sampled = LyricTextSampler.sample(
             beginning + middle + ending,
