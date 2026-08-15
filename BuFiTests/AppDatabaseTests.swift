@@ -711,6 +711,51 @@ final class AppDatabaseTests: XCTestCase {
         XCTAssertNotNil(new)
     }
 
+    func testTrackIntelligenceIsAccountIsolatedAndRoundTripsEmbeddings() async throws {
+        let context = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: context.directory) }
+        let signature = LyricSignature(
+            songID: "track-one",
+            lyricsHash: "lyrics-a",
+            moods: ["calm"],
+            themes: ["night"],
+            energy: 0.2,
+            valence: 0.3,
+            embedding: [0.1, 0.2, 0.3],
+            source: "apple-intelligence",
+            sentenceEmbedding: [0.4, 0.5],
+            soundLabels: ["singing", "music"],
+            soundEmbedding: [0.6, 0.7],
+            audioRevision: "audio-a",
+            soundSource: "coreml-sound-analysis"
+        )
+        let saved = await context.database.saveTrackIntelligence(
+            signature,
+            scope: "account-a"
+        )
+        XCTAssertTrue(saved)
+
+        let loaded = await context.database.loadTrackIntelligence(scope: "account-a")
+        XCTAssertEqual(loaded["track-one"], signature)
+        let otherAccount = await context.database.loadTrackIntelligence(
+            scope: "account-b"
+        )
+        XCTAssertTrue(otherAccount.isEmpty)
+
+        var updated = signature
+        updated.moods = ["sad"]
+        updated.source = "apple-privacy-cloud"
+        let savedAgain = await context.database.saveTrackIntelligence(
+            updated,
+            scope: "account-a"
+        )
+        XCTAssertTrue(savedAgain)
+        let reloaded = await context.database.loadTrackIntelligence(scope: "account-a")
+        XCTAssertEqual(reloaded["track-one"]?.moods, ["sad"])
+        XCTAssertEqual(reloaded["track-one"]?.source, "apple-privacy-cloud")
+        XCTAssertEqual(reloaded["track-one"]?.soundLabels, ["singing", "music"])
+    }
+
     private func makeDatabase() throws -> (
         database: AppDatabase,
         directory: URL

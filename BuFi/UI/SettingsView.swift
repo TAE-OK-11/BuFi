@@ -714,13 +714,13 @@ private struct RecommendationSettingsView: View {
                 SettingsGroup(title: "가사 지능") {
                     VStack(alignment: .leading, spacing: 14) {
                         Picker("분석 엔진", selection: $lyricProviderRaw) {
-                            ForEach(LyricIntelligenceProviderKind.allCases) { kind in
+                            ForEach(LyricIntelligenceProviderKind.visibleCases) { kind in
                                 Text(kind.title).tag(kind.rawValue)
                             }
                         }
                         .pickerStyle(.menu)
-                        settingsDescription("자동은 Apple Intelligence가 있으면 기기에서 분석하고, 없으면 Gemma 3 270M을 씁니다. Gemma는 앱에 넣지 않고 OpenRouter 키가 있을 때 호출합니다.")
-                        if lyricProviderRaw == LyricIntelligenceProviderKind.onDevice.rawValue {
+                        settingsDescription(lyricEngineDescription)
+                        if usesOnDeviceFallback {
                             SecureField(
                                 session.hasOpenRouterKey
                                     ? "Gemma 3 대체용 OpenRouter 키 유지/교체"
@@ -799,6 +799,30 @@ private struct RecommendationSettingsView: View {
         .tint(BuFiTheme.accent)
         .onAppear {
             listenBrainzUsername = session.listenBrainzUsername
+            if lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
+               !LyricIntelligenceProviderKind.applePrivateCloud.isVisibleInSettings {
+                lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
+            }
+        }
+    }
+
+    private var usesOnDeviceFallback: Bool {
+        lyricProviderRaw == LyricIntelligenceProviderKind.onDevice.rawValue
+            || lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue
+    }
+
+    private var lyricEngineDescription: String {
+        switch LyricIntelligenceProviderKind(rawValue: lyricProviderRaw) ?? .onDevice {
+        case .off:
+            String(localized: "가사 분석을 하지 않습니다. 이미 저장한 결과는 로컬 DB에 남습니다.")
+        case .onDevice:
+            String(localized: "자동은 Apple Intelligence 태깅 모델로 분위기·주제를 뽑고, 기본 AFM으로 에너지·감정을 뽑습니다. 둘 다 안 되면 Gemma 3 270M을 씁니다. 결과는 SQLite에 저장되어 같은 가사는 다시 돌리지 않습니다. 다운로드된 곡은 Sound Analysis 내장 classifier로 음향도 한 번만 분석합니다.")
+        case .applePrivateCloud:
+            AppleFoundationLyricClient.privateCloudStatus().settingsNote
+        case .openAI:
+            String(localized: "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
+        case .openRouter:
+            String(localized: "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         }
     }
 
@@ -828,6 +852,14 @@ private struct RecommendationSettingsView: View {
     }
 
     private func settingsDescription(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.system(size: 12.5))
+            .foregroundStyle(.secondary)
+            .lineSpacing(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func settingsDescription(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 12.5))
             .foregroundStyle(.secondary)

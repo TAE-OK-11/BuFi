@@ -2418,11 +2418,15 @@ final class AppModel: ObservableObject {
             async let historyRequest = ListeningHistoryStore.shared.activate(
                 accountScope: accountScope
             )
+            async let intelligenceRequest = LyricIntelligence.shared.activate(
+                accountScope: accountScope
+            )
 
             let cachedSnapshot = await cachedSnapshotRequest
             let offlineSession = await offlineRequest
             let artworkSession = await artworkRequest
             let historySession = await historyRequest
+            await intelligenceRequest
             let ping = await statusRequest
             try Task.checkCancellation()
             guard generation == sessionGeneration else {
@@ -2637,5 +2641,6 @@ final class AppModel: ObservableObject {
         if let history = leases.history {
             await ListeningHistoryStore.shared.deactivate(session: history)
         }
+        await LyricIntelligence.shared.deactivate()
     }
 }

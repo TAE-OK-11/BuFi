@@ -1,11 +1,75 @@
 import Foundation
 
-/// Device-first lyric analysis. Apple Intelligence runs when the
-/// system model is present; otherwise the caller falls back to Gemma 3 270M.
+enum ApplePrivateCloudStatus: Equatable, Sendable {
+    case needsIOS27
+    case deviceNotEligible
+    case systemNotReady
+    case quotaReached
+    case available
+    case unavailable
+
+    var showsInSettings: Bool {
+        switch self {
+        case .needsIOS27, .deviceNotEligible:
+            return false
+        case .systemNotReady, .quotaReached, .available, .unavailable:
+            return true
+        }
+    }
+
+    var settingsNote: String {
+        switch self {
+        case .needsIOS27:
+            String(localized: "Apple Privacy Cloud는 iOS 27 이상이 필요합니다.")
+        case .deviceNotEligible:
+            String(localized: "이 기기는 Apple Privacy Cloud를 지원하지 않습니다.")
+        case .systemNotReady:
+            String(localized: "Apple Privacy Cloud가 아직 준비되지 않았습니다. 네트워크와 Apple Intelligence 설정을 확인하세요.")
+        case .quotaReached:
+            String(localized: "오늘 Apple Privacy Cloud 사용량을 모두 썼습니다. 지금은 기기 모델로 분석합니다.")
+        case .available:
+            String(localized: "가사를 Apple Private Cloud Compute로 분석합니다. 가사는 기기를 떠나 Apple 프라이버시 클라우드에서만 처리되며, 하루 사용량 제한이 있습니다. 쓸 수 없으면 기기 분석으로 넘어갑니다.")
+        case .unavailable:
+            String(localized: "지금은 Apple Privacy Cloud를 쓸 수 없습니다. 기기 분석으로 대체합니다.")
+        }
+    }
+}
+
+/// Uses every on-device Apple Intelligence adapter that fits lyrics:
+/// content tagging for moods/themes, then the default AFM for energy/valence.
+/// Gemma 3 270M is only the fallback when both adapters fail.
+/// Apple Privacy Cloud (Private Cloud Compute) is opt-in from Settings
+/// on iOS 27+ devices that expose the server model.
 enum AppleFoundationLyricClient {
-    static func complete(_ prompt: String) async -> String? {
+    struct Analysis: Sendable {
+        var moods: [String]
+        var themes: [String]
+        var energy: Double
+        var valence: Double
+        var source: String
+    }
+
+    static func privateCloudStatus() -> ApplePrivateCloudStatus {
+        if #available(iOS 27.0, *) {
+            return PrivateCloudBridge.status()
+        }
+        return .needsIOS27
+    }
+
+    static var showsPrivateCloudSetting: Bool {
+        privateCloudStatus().showsInSettings
+    }
+
+    static func analyze(lyrics: String) async -> Analysis? {
         if #available(iOS 26.0, *) {
-            return await FoundationModelsBridge.complete(prompt)
+            return await FoundationModelsBridge.analyze(lyrics: lyrics)
+        }
+        return nil
+    }
+
+    static func analyzePrivateCloud(lyrics: String) async -> Analysis? {
+        if #available(iOS 27.0, *) {
+            return await PrivateCloudBridge.analyze(lyrics: lyrics)
         }
         return nil
     }
@@ -16,9 +80,53 @@ import FoundationModels
 
 @available(iOS 26.0, *)
 private enum FoundationModelsBridge {
-    static func complete(_ prompt: String) async -> String? {
+    static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        async let tagged = respond(
+            to: LyricIntelligencePrompt.tagging(lyrics: lyrics),
+            useCase: .contentTagging
+        )
+        async let scored = respond(
+            to: LyricIntelligencePrompt.scales(lyrics: lyrics),
+            useCase: nil
+        )
+        let parts = await (tagged, scored)
+
+        let tagParse = parts.0.flatMap(LyricIntelligencePrompt.parse)
+        let scoreParse = parts.1.flatMap(LyricIntelligencePrompt.parse)
+
+        let moods = tagParse?.moods ?? scoreParse?.moods ?? []
+        let themes = tagParse?.themes ?? scoreParse?.themes ?? []
+        let energy = scoreParse?.energy ?? tagParse?.energy ?? 0.5
+        let valence = scoreParse?.valence ?? tagParse?.valence ?? 0.5
+        guard !moods.isEmpty || parts.1 != nil else { return nil }
+        let resolvedMoods = moods.isEmpty ? ["neutral"] : moods
+
+        let source: String
+        switch (parts.0 != nil, parts.1 != nil) {
+        case (true, true):
+            source = "apple-intelligence-tagging+default"
+        case (true, false):
+            source = "apple-intelligence-tagging"
+        default:
+            source = "apple-intelligence"
+        }
+        return AppleFoundationLyricClient.Analysis(
+            moods: resolvedMoods,
+            themes: themes,
+            energy: energy,
+            valence: valence,
+            source: source
+        )
+    }
+
+    private static func respond(
+        to prompt: String,
+        useCase: SystemLanguageModel.UseCase?
+    ) async -> String? {
         do {
-            let session = LanguageModelSession()
+            let model = useCase.map { SystemLanguageModel(useCase: $0) }
+                ?? SystemLanguageModel.default
+            let session = LanguageModelSession(model: model)
             let response = try await session.respond(to: prompt)
             return response.content
         } catch {
@@ -29,8 +137,76 @@ private enum FoundationModelsBridge {
 #else
 @available(iOS 26.0, *)
 private enum FoundationModelsBridge {
-    static func complete(_ prompt: String) async -> String? {
-        _ = prompt
+    static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        _ = lyrics
+        return nil
+    }
+}
+#endif
+
+#if canImport(FoundationModels)
+@available(iOS 27.0, *)
+private enum PrivateCloudBridge {
+    static func status() -> ApplePrivateCloudStatus {
+        let model = PrivateCloudComputeLanguageModel()
+        switch model.availability {
+        case .available:
+            if model.quotaUsage.isLimitReached {
+                return .quotaReached
+            }
+            return .available
+        case .unavailable(.deviceNotEligible):
+            return .deviceNotEligible
+        case .unavailable(.systemNotReady):
+            return .systemNotReady
+        default:
+            return .unavailable
+        }
+    }
+
+    static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        let model = PrivateCloudComputeLanguageModel()
+        switch model.availability {
+        case .available:
+            break
+        default:
+            return nil
+        }
+        if model.quotaUsage.isLimitReached {
+            return nil
+        }
+        do {
+            let session = LanguageModelSession(model: model)
+            let response = try await session.respond(
+                to: LyricIntelligencePrompt.moodAnalysis(
+                    lyrics: lyrics,
+                    characterLimit: 12_000
+                )
+            )
+            guard let parsed = LyricIntelligencePrompt.parse(response.content) else {
+                return nil
+            }
+            return AppleFoundationLyricClient.Analysis(
+                moods: parsed.moods.isEmpty ? ["neutral"] : parsed.moods,
+                themes: parsed.themes,
+                energy: parsed.energy,
+                valence: parsed.valence,
+                source: "apple-privacy-cloud"
+            )
+        } catch {
+            return nil
+        }
+    }
+}
+#else
+@available(iOS 27.0, *)
+private enum PrivateCloudBridge {
+    static func status() -> ApplePrivateCloudStatus {
+        .unavailable
+    }
+
+    static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
+        _ = lyrics
         return nil
     }
 }

@@ -3799,6 +3799,19 @@ final class AudioEngine: NSObject, ObservableObject {
         loadLyrics(for: song, forceRefresh: true)
     }
 
+    private func scheduleTrackSoundAnalysis(for song: Song) {
+        let accountScope = currentAccountScope
+        Task {
+            guard let local = await OfflineStore.shared.localURL(for: song) else { return }
+            await LyricIntelligence.shared.scheduleSoundAnalysis(
+                song: song,
+                fileURL: local,
+                audioRevision: song.audioResourceRevision,
+                accountScope: accountScope
+            )
+        }
+    }
+
     private func loadLyrics(
         for song: Song,
         forceRefresh: Bool = false
@@ -3807,6 +3820,7 @@ final class AudioEngine: NSObject, ObservableObject {
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
         let playbackItemID = currentPlaybackItem?.id
+        scheduleTrackSoundAnalysis(for: song)
         guard song.externalStreamURL == nil else {
             applyLyricsDocument(.empty, status: .unavailable)
             return
@@ -3846,10 +3860,12 @@ final class AudioEngine: NSObject, ObservableObject {
                         status: document.lines.isEmpty ? .unavailable : .available
                     )
                     if !document.lines.isEmpty {
+                        let accountScope = self.currentAccountScope
                         Task {
                             await LyricIntelligence.shared.scheduleAnalysis(
                                 song: song,
-                                document: document
+                                document: document,
+                                accountScope: accountScope
                             )
                         }
                     }

@@ -3,6 +3,7 @@ import Foundation
 enum LyricIntelligenceProviderKind: String, CaseIterable, Identifiable, Sendable {
     case off
     case onDevice
+    case applePrivateCloud
     case openAI
     case openRouter
 
@@ -12,9 +13,18 @@ enum LyricIntelligenceProviderKind: String, CaseIterable, Identifiable, Sendable
         switch self {
         case .off: String(localized: "끄기")
         case .onDevice: String(localized: "자동 (기기 → Gemma 3)")
+        case .applePrivateCloud: String(localized: "Apple Privacy Cloud")
         case .openAI: "OpenAI"
         case .openRouter: "OpenRouter"
         }
+    }
+
+    var isVisibleInSettings: Bool {
+        self != .applePrivateCloud || AppleFoundationLyricClient.showsPrivateCloudSetting
+    }
+
+    static var visibleCases: [LyricIntelligenceProviderKind] {
+        allCases.filter(\.isVisibleInSettings)
     }
 }
 
@@ -27,10 +37,90 @@ struct LyricSignature: Codable, Equatable, Sendable {
     var valence: Double
     var embedding: [Float]
     var source: String
+    var sentenceEmbedding: [Float]
+    var soundLabels: [String]
+    var soundEmbedding: [Float]
+    var audioRevision: String
+    var soundSource: String
+
+    init(
+        songID: String,
+        lyricsHash: String,
+        moods: [String],
+        themes: [String],
+        energy: Double,
+        valence: Double,
+        embedding: [Float],
+        source: String,
+        sentenceEmbedding: [Float] = [],
+        soundLabels: [String] = [],
+        soundEmbedding: [Float] = [],
+        audioRevision: String = "",
+        soundSource: String = ""
+    ) {
+        self.songID = songID
+        self.lyricsHash = lyricsHash
+        self.moods = moods
+        self.themes = themes
+        self.energy = energy
+        self.valence = valence
+        self.embedding = embedding
+        self.source = source
+        self.sentenceEmbedding = sentenceEmbedding
+        self.soundLabels = soundLabels
+        self.soundEmbedding = soundEmbedding
+        self.audioRevision = audioRevision
+        self.soundSource = soundSource
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        songID = try container.decode(String.self, forKey: .songID)
+        lyricsHash = try container.decode(String.self, forKey: .lyricsHash)
+        moods = try container.decode([String].self, forKey: .moods)
+        themes = try container.decode([String].self, forKey: .themes)
+        energy = try container.decode(Double.self, forKey: .energy)
+        valence = try container.decode(Double.self, forKey: .valence)
+        embedding = try container.decode([Float].self, forKey: .embedding)
+        source = try container.decode(String.self, forKey: .source)
+        sentenceEmbedding = try container.decodeIfPresent(
+            [Float].self,
+            forKey: .sentenceEmbedding
+        ) ?? []
+        soundLabels = try container.decodeIfPresent(
+            [String].self,
+            forKey: .soundLabels
+        ) ?? []
+        soundEmbedding = try container.decodeIfPresent(
+            [Float].self,
+            forKey: .soundEmbedding
+        ) ?? []
+        audioRevision = try container.decodeIfPresent(
+            String.self,
+            forKey: .audioRevision
+        ) ?? ""
+        soundSource = try container.decodeIfPresent(
+            String.self,
+            forKey: .soundSource
+        ) ?? ""
+    }
 
     var moodKeys: [String] {
         moods.map(LyricLexicalEmbedding.normalized)
             .filter { !$0.isEmpty }
+    }
+
+    var hasStoredLyricAnalysis: Bool {
+        !lyricsHash.isEmpty && !source.isEmpty
+    }
+
+    var hasStoredSoundAnalysis: Bool {
+        !audioRevision.isEmpty
+            && (!soundLabels.isEmpty || soundEmbedding.contains { $0 != 0 })
+    }
+
+    var hasSentenceEmbedding: Bool {
+        sentenceEmbedding.count >= 8
     }
 }
 
@@ -108,11 +198,33 @@ enum LyricLexicalEmbedding {
     }
 
     static func similarity(_ left: LyricSignature, _ right: LyricSignature) -> Double {
-        let cosine = cosine(left.embedding, right.embedding)
+        let lexical = cosine(left.embedding, right.embedding)
         let mood = jaccard(left.moodKeys, right.moodKeys)
         let energy = 1 - min(1, abs(left.energy - right.energy))
         let valence = 1 - min(1, abs(left.valence - right.valence))
-        return min(1, cosine * 0.58 + mood * 0.24 + energy * 0.09 + valence * 0.09)
+        let hasSentence = left.hasSentenceEmbedding && right.hasSentenceEmbedding
+        let hasSound = left.hasStoredSoundAnalysis && right.hasStoredSoundAnalysis
+        if !hasSentence && !hasSound {
+            return min(1, lexical * 0.58 + mood * 0.24 + energy * 0.09 + valence * 0.09)
+        }
+        let sentence = hasSentence
+            ? cosine(left.sentenceEmbedding, right.sentenceEmbedding)
+            : 0
+        let sound = cosine(left.soundEmbedding, right.soundEmbedding)
+        let soundLabels = jaccard(
+            left.soundLabels.map(normalized),
+            right.soundLabels.map(normalized)
+        )
+        return min(
+            1,
+            lexical * 0.32
+                + sentence * 0.22
+                + sound * 0.12
+                + mood * 0.16
+                + soundLabels * 0.06
+                + energy * 0.06
+                + valence * 0.06
+        )
     }
 
     static func cosine(_ left: [Float], _ right: [Float]) -> Double {
@@ -145,7 +257,7 @@ enum LyricLexicalEmbedding {
         return Double(a.intersection(b).count) / Double(a.union(b).count)
     }
 
-    private static func l2Normalized(_ values: [Float]) -> [Float] {
+    static func l2Normalized(_ values: [Float]) -> [Float] {
         let norm = values.reduce(0) { $0 + $1 * $1 }.squareRoot()
         guard norm > 0 else { return values }
         return values.map { $0 / norm }
@@ -153,10 +265,29 @@ enum LyricLexicalEmbedding {
 }
 
 enum LyricIntelligencePrompt {
-    static func moodAnalysis(lyrics: String) -> String {
+    static func moodAnalysis(lyrics: String, characterLimit: Int = 2_400) -> String {
         """
         Analyze these song lyrics. Reply with JSON only, no markdown:
         {"moods":["up to 5 lowercase mood words"],"themes":["up to 5 short themes"],"energy":0.0,"valence":0.0}
+        energy is 0 calm to 1 intense. valence is 0 sad to 1 joyful.
+        Lyrics:
+        \(lyrics.prefix(characterLimit))
+        """
+    }
+
+    static func tagging(lyrics: String) -> String {
+        """
+        Tag moods and themes in these song lyrics. JSON only:
+        {"moods":["up to 5 lowercase mood words"],"themes":["up to 5 short themes"]}
+        Lyrics:
+        \(lyrics.prefix(2_400))
+        """
+    }
+
+    static func scales(lyrics: String) -> String {
+        """
+        Score these song lyrics. JSON only:
+        {"energy":0.0,"valence":0.0}
         energy is 0 calm to 1 intense. valence is 0 sad to 1 joyful.
         Lyrics:
         \(lyrics.prefix(2_400))
@@ -177,7 +308,9 @@ enum LyricIntelligencePrompt {
         let themes = stringList(dictionary["themes"]).prefix(5)
         let energy = numeric(dictionary["energy"]) ?? 0.5
         let valence = numeric(dictionary["valence"]) ?? 0.5
-        guard !moods.isEmpty else { return nil }
+        if moods.isEmpty, dictionary["energy"] == nil, dictionary["valence"] == nil {
+            return nil
+        }
         return (
             Array(moods),
             Array(themes),
@@ -214,34 +347,89 @@ actor LyricIntelligence {
 
     private var signatures: [String: LyricSignature] = [:]
     private var inFlight: Set<String> = []
+    private var soundInFlight: Set<String> = []
     private var loaded = false
+    private var scope = ""
 
-    func index() -> LyricSignatureIndex {
-        loadIfNeeded()
+    func activate(accountScope: String) async {
+        if loaded, scope == accountScope { return }
+        if scope != accountScope {
+            signatures = [:]
+            inFlight = []
+            soundInFlight = []
+            loaded = false
+        }
+        scope = accountScope
+        signatures = await AppDatabase.shared.loadTrackIntelligence(scope: accountScope)
+        await migrateLegacyJSONIfNeeded()
+        loaded = true
+    }
+
+    func deactivate() {
+        signatures = [:]
+        inFlight = []
+        soundInFlight = []
+        loaded = false
+        scope = ""
+    }
+
+    func index() async -> LyricSignatureIndex {
+        await loadIfNeeded()
         return LyricSignatureIndex(bySongID: signatures)
     }
 
-    func signature(for songID: String) -> LyricSignature? {
-        loadIfNeeded()
-        return signatures[songID]
-    }
-
-    func scheduleAnalysis(song: Song, document: LyricsDocument) {
+    func scheduleAnalysis(song: Song, document: LyricsDocument, accountScope: String? = nil) {
         let lyrics = document.lines
             .map(\.text)
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard lyrics.count >= 24 else { return }
         let hash = LyricLexicalEmbedding.hash(lyrics)
-        loadIfNeeded()
-        if signatures[song.id]?.lyricsHash == hash { return }
-        guard inFlight.insert(song.id).inserted else { return }
-        Task { [song, lyrics, hash] in
+        Task { [song, lyrics, hash, accountScope] in
+            if let accountScope {
+                await self.activate(accountScope: accountScope)
+            } else {
+                await self.loadIfNeeded()
+            }
             await self.analyze(song: song, lyrics: lyrics, hash: hash)
         }
     }
 
+    func scheduleSoundAnalysis(
+        song: Song,
+        fileURL: URL,
+        audioRevision: String,
+        accountScope: String? = nil
+    ) {
+        guard !audioRevision.isEmpty, fileURL.isFileURL else { return }
+        Task { [song, fileURL, audioRevision, accountScope] in
+            if let accountScope {
+                await self.activate(accountScope: accountScope)
+            } else {
+                await self.loadIfNeeded()
+            }
+            await self.analyzeSound(
+                song: song,
+                fileURL: fileURL,
+                audioRevision: audioRevision
+            )
+        }
+    }
+
     private func analyze(song: Song, lyrics: String, hash: String) async {
+        if var existing = signatures[song.id],
+           existing.lyricsHash == hash,
+           existing.hasStoredLyricAnalysis {
+            if !existing.hasSentenceEmbedding {
+                if let sentence = await LyricSentenceEmbedding.vector(from: lyrics) {
+                    existing.sentenceEmbedding = sentence
+                    signatures[song.id] = existing
+                    await persist(existing)
+                }
+            }
+            return
+        }
+        guard inFlight.insert(song.id).inserted else { return }
         defer { inFlight.remove(song.id) }
         let store = SecureStore()
         let settings = LyricIntelligenceSettings.current(
@@ -253,21 +441,22 @@ actor LyricIntelligence {
             ) ?? ""
         )
         guard settings.provider != .off else { return }
-        let lexical = LyricLexicalEmbedding.merge(
-            moods: [],
-            energy: 0.5,
-            valence: 0.5,
-            lyrics: lyrics
-        )
-        var signature = LyricSignature(
+        var signature = signatures[song.id] ?? LyricSignature(
             songID: song.id,
             lyricsHash: hash,
             moods: [],
             themes: [],
             energy: 0.5,
             valence: 0.5,
-            embedding: lexical,
+            embedding: [],
             source: "lexical"
+        )
+        signature.lyricsHash = hash
+        signature.embedding = LyricLexicalEmbedding.merge(
+            moods: signature.moods,
+            energy: signature.energy,
+            valence: signature.valence,
+            lyrics: lyrics
         )
         if let analyzed = await LyricIntelligenceBackend.analyze(
             lyrics: lyrics,
@@ -288,34 +477,102 @@ actor LyricIntelligence {
                     lyrics: lyrics
                 )
             }
+        } else {
+            signature.source = "lexical"
+        }
+        if !signature.hasSentenceEmbedding {
+            signature.sentenceEmbedding =
+                await LyricSentenceEmbedding.vector(from: lyrics) ?? []
+        }
+        if let current = signatures[song.id] {
+            if signature.soundLabels.isEmpty {
+                signature.soundLabels = current.soundLabels
+                signature.soundEmbedding = current.soundEmbedding
+                signature.audioRevision = current.audioRevision
+                signature.soundSource = current.soundSource
+            }
+            if signature.sentenceEmbedding.count < 8 {
+                signature.sentenceEmbedding = current.sentenceEmbedding
+            }
         }
         signatures[song.id] = signature
-        persist()
+        await persist(signature)
     }
 
-    private func loadIfNeeded() {
+    private func analyzeSound(
+        song: Song,
+        fileURL: URL,
+        audioRevision: String
+    ) async {
+        if let existing = signatures[song.id],
+           existing.audioRevision == audioRevision,
+           existing.hasStoredSoundAnalysis {
+            return
+        }
+        guard soundInFlight.insert(song.id).inserted else { return }
+        defer { soundInFlight.remove(song.id) }
+        guard let analyzed = await SoundAnalysisClassifier.analyzeFile(at: fileURL) else {
+            return
+        }
+        var signature = signatures[song.id] ?? LyricSignature(
+            songID: song.id,
+            lyricsHash: "",
+            moods: [],
+            themes: [],
+            energy: 0.5,
+            valence: 0.5,
+            embedding: [],
+            source: ""
+        )
+        signature.soundLabels = analyzed.labels
+        signature.soundEmbedding = analyzed.embedding
+        signature.audioRevision = audioRevision
+        signature.soundSource = analyzed.source
+        if let current = signatures[song.id] {
+            if signature.lyricsHash.isEmpty {
+                signature.lyricsHash = current.lyricsHash
+                signature.moods = current.moods
+                signature.themes = current.themes
+                signature.energy = current.energy
+                signature.valence = current.valence
+                signature.embedding = current.embedding
+                signature.source = current.source
+                signature.sentenceEmbedding = current.sentenceEmbedding
+            }
+        }
+        signatures[song.id] = signature
+        await persist(signature)
+    }
+
+    private func loadIfNeeded() async {
         guard !loaded else { return }
+        if !scope.isEmpty {
+            signatures = await AppDatabase.shared.loadTrackIntelligence(scope: scope)
+        }
+        await migrateLegacyJSONIfNeeded()
         loaded = true
+    }
+
+    private func persist(_ signature: LyricSignature) async {
+        guard !scope.isEmpty else { return }
+        _ = await AppDatabase.shared.saveTrackIntelligence(signature, scope: scope)
+    }
+
+    private func migrateLegacyJSONIfNeeded() async {
         let url = Self.storageURL
-        guard let data = try? Data(contentsOf: url),
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode(
                 [String: LyricSignature].self,
                 from: data
               ) else {
             return
         }
-        signatures = decoded
-    }
-
-    private func persist() {
-        let url = Self.storageURL
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        if let data = try? JSONEncoder().encode(signatures) {
-            try? data.write(to: url, options: .atomic)
+        for (id, signature) in decoded where signatures[id] == nil {
+            signatures[id] = signature
+            await persist(signature)
         }
+        try? FileManager.default.removeItem(at: url)
     }
 
     private static var storageURL: URL {
@@ -383,6 +640,8 @@ enum LyricIntelligenceBackend {
             return nil
         case .onDevice:
             return await onDevice(lyrics: lyrics, settings: settings)
+        case .applePrivateCloud:
+            return await privateCloud(lyrics: lyrics, settings: settings)
         case .openAI:
             return await remote(
                 lyrics: lyrics,
@@ -406,20 +665,35 @@ enum LyricIntelligenceBackend {
         }
     }
 
+    private static func privateCloud(
+        lyrics: String,
+        settings: LyricIntelligenceSettings
+    ) async -> Analysis? {
+        if let apple = await AppleFoundationLyricClient.analyzePrivateCloud(lyrics: lyrics) {
+            return Analysis(
+                moods: apple.moods,
+                themes: apple.themes,
+                energy: apple.energy,
+                valence: apple.valence,
+                embedding: nil,
+                source: apple.source
+            )
+        }
+        return await onDevice(lyrics: lyrics, settings: settings)
+    }
+
     private static func onDevice(
         lyrics: String,
         settings: LyricIntelligenceSettings
     ) async -> Analysis? {
-        if let text = await AppleFoundationLyricClient.complete(
-            LyricIntelligencePrompt.moodAnalysis(lyrics: lyrics)
-        ), let parsed = LyricIntelligencePrompt.parse(text) {
+        if let apple = await AppleFoundationLyricClient.analyze(lyrics: lyrics) {
             return Analysis(
-                moods: parsed.moods,
-                themes: parsed.themes,
-                energy: parsed.energy,
-                valence: parsed.valence,
+                moods: apple.moods,
+                themes: apple.themes,
+                energy: apple.energy,
+                valence: apple.valence,
                 embedding: nil,
-                source: "apple-intelligence"
+                source: apple.source
             )
         }
         if !settings.openRouterKey.isEmpty,
