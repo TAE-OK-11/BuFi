@@ -316,14 +316,20 @@ private final class PlaybackObserverCoordinator {
 
     func replacePeriodicTimeObserver(
         interval: CMTime,
-        handler: @escaping @Sendable (CMTime) -> Void
+        handler: @escaping @MainActor @Sendable (CMTime) -> Void
     ) {
         removePeriodicTimeObserver()
         periodicTimeObserver = player.addPeriodicTimeObserver(
             forInterval: interval,
-            queue: .main,
-            using: handler
-        )
+            queue: .main
+        ) { time in
+            // AVPlayer guarantees this callback is enqueued on the main queue.
+            // Bridge that dispatch guarantee directly into MainActor instead
+            // of allocating a new Task for every playback progress tick.
+            MainActor.assumeIsolated {
+                handler(time)
+            }
+        }
     }
 
     func removePeriodicTimeObserver() {
@@ -334,15 +340,18 @@ private final class PlaybackObserverCoordinator {
 
     func replaceLyricBoundaryObserver(
         time: CMTime?,
-        handler: @escaping @Sendable () -> Void
+        handler: @escaping @MainActor @Sendable () -> Void
     ) {
         removeLyricBoundaryObserver()
         guard let time else { return }
         lyricBoundaryObserver = player.addBoundaryTimeObserver(
             forTimes: [NSValue(time: time)],
-            queue: .main,
-            using: handler
-        )
+            queue: .main
+        ) {
+            MainActor.assumeIsolated {
+                handler()
+            }
+        }
     }
 
     func removeLyricBoundaryObserver() {
@@ -442,8 +451,25 @@ struct PlaybackSnapshot: Equatable, Sendable {
         accountScope: String?,
         playbackGenerationID: UUID? = nil
     ) {
+        self.init(
+            entries: entries,
+            songs: entries.map(\.song),
+            index: index,
+            accountScope: accountScope,
+            playbackGenerationID: playbackGenerationID
+        )
+    }
+
+    fileprivate init(
+        entries: [PlaybackQueueEntry],
+        songs: [Song],
+        index: Int,
+        accountScope: String?,
+        playbackGenerationID: UUID?
+    ) {
+        precondition(entries.count == songs.count)
         self.entries = entries
-        songs = entries.map(\.song)
+        self.songs = songs
         self.accountScope = accountScope
         if entries.isEmpty {
             self.index = -1
@@ -466,7 +492,19 @@ struct PlaybackSnapshot: Equatable, Sendable {
         )
     }
 
-    var currentSong: Song? { currentItem?.song }
+    var currentSong: Song? {
+        guard entries.indices.contains(index) else { return nil }
+        return entries[index].song
+    }
+
+    static func == (lhs: PlaybackSnapshot, rhs: PlaybackSnapshot) -> Bool {
+        // Cheap transition identity comes first. `songs` is derived from
+        // `entries`, so comparing both arrays would scan the same queue twice.
+        lhs.index == rhs.index
+            && lhs.accountScope == rhs.accountScope
+            && lhs.playbackGenerationID == rhs.playbackGenerationID
+            && lhs.entries == rhs.entries
+    }
 }
 
 struct CurrentPlaybackSnapshot: Equatable, Sendable {
@@ -529,27 +567,31 @@ final class PlaybackState: ObservableObject {
         _ value: Int,
         renewsPlayback: Bool = true
     ) {
-        let entries = snapshot.entries
+        let previous = snapshot
+        let entries = previous.entries
         let resolvedIndex = entries.isEmpty
             ? -1
             : min(max(value, 0), entries.count - 1)
         publish(PlaybackSnapshot(
             entries: entries,
+            songs: previous.songs,
             index: resolvedIndex,
-            accountScope: snapshot.accountScope,
+            accountScope: previous.accountScope,
             playbackGenerationID: renewsPlayback
                 ? UUID()
-                : snapshot.playbackGenerationID
-        ))
+                : previous.playbackGenerationID
+        ), entriesChanged: false)
     }
 
     fileprivate func setAccountScope(_ value: String?) {
+        let previous = snapshot
         publish(PlaybackSnapshot(
-            entries: snapshot.entries,
-            index: snapshot.index,
+            entries: previous.entries,
+            songs: previous.songs,
+            index: previous.index,
             accountScope: value,
-            playbackGenerationID: snapshot.playbackGenerationID
-        ))
+            playbackGenerationID: previous.playbackGenerationID
+        ), entriesChanged: false)
     }
 
     fileprivate func replace(
@@ -557,12 +599,15 @@ final class PlaybackState: ObservableObject {
         index: Int,
         accountScope: String?
     ) {
+        let entries = songs.map { PlaybackQueueEntry(song: $0) }
+        let entriesChanged = snapshot.entries != entries
         publish(PlaybackSnapshot(
-            entries: songs.map { PlaybackQueueEntry(song: $0) },
+            entries: entries,
+            songs: songs,
             index: index,
             accountScope: accountScope,
             playbackGenerationID: UUID()
-        ))
+        ), entriesChanged: entriesChanged)
     }
 
     fileprivate func replace(
@@ -571,20 +616,34 @@ final class PlaybackState: ObservableObject {
         accountScope: String?,
         renewsPlayback: Bool = false
     ) {
+        let previous = snapshot
+        let entriesChanged = previous.entries != entries
+        let songs = entriesChanged ? entries.map(\.song) : previous.songs
         publish(PlaybackSnapshot(
             entries: entries,
+            songs: songs,
             index: index,
             accountScope: accountScope,
             playbackGenerationID: renewsPlayback
                 ? UUID()
-                : snapshot.playbackGenerationID
-        ))
+                : previous.playbackGenerationID
+        ), entriesChanged: entriesChanged)
     }
 
-    private func publish(_ value: PlaybackSnapshot) {
-        guard snapshot != value else { return }
-        if snapshot.entries != value.entries {
+    private func publish(
+        _ value: PlaybackSnapshot,
+        entriesChanged: Bool
+    ) {
+        if entriesChanged {
             entriesRevision &+= 1
+        } else {
+            // Queue storage is shared by construction on this path. Compare
+            // only transition scalars and avoid an O(n) queue equality scan.
+            guard snapshot.index != value.index
+                    || snapshot.accountScope != value.accountScope
+                    || snapshot.playbackGenerationID != value.playbackGenerationID else {
+                return
+            }
         }
         snapshot = value
         current.publish(CurrentPlaybackSnapshot(snapshot: value))
@@ -608,6 +667,25 @@ final class PlayerPresentationState: ObservableObject {
             showFullLyrics = false
         }
         showPlayer = value
+    }
+}
+
+enum PlaybackShufflePolicy {
+    static let recentWindowLimit = 8
+    static let fastCandidateAttemptLimit = 4
+
+    static func shouldUseFastCandidatePath(queueCount: Int) -> Bool {
+        queueCount > recentWindowLimit * 2
+    }
+
+    static func prioritizeFresh(
+        _ entries: inout [PlaybackQueueEntry],
+        recentSongIDs: Set<String>
+    ) {
+        guard !recentSongIDs.isEmpty else { return }
+        // The input is already shuffled. A linear in-place partition preserves
+        // random ordering while moving recent songs behind fresh candidates.
+        _ = entries.partition { recentSongIDs.contains($0.song.id) }
     }
 }
 
@@ -1905,18 +1983,21 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let entries = playbackState.entries
-        let prefix = Array(entries[...queueIndex])
+        var reordered = Array(entries[...queueIndex])
+        reordered.reserveCapacity(entries.count)
         var upcoming = Array(entries[(queueIndex + 1)...])
         upcoming.shuffle()
         if shuffleStyle == .fewerRepeats {
-            let recent = Set(recentShuffleIDs.suffix(8))
-            upcoming.sort {
-                let lhsRecent = recent.contains($0.song.id)
-                let rhsRecent = recent.contains($1.song.id)
-                return lhsRecent == rhsRecent ? false : !lhsRecent
-            }
+            let recent = Set(
+                recentShuffleIDs.suffix(PlaybackShufflePolicy.recentWindowLimit)
+            )
+            PlaybackShufflePolicy.prioritizeFresh(
+                &upcoming,
+                recentSongIDs: recent
+            )
         }
-        replaceQueue(prefix + upcoming, index: queueIndex)
+        reordered.append(contentsOf: upcoming)
+        replaceQueue(reordered, index: queueIndex)
         queueDidChange()
     }
 
@@ -1994,35 +2075,70 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func nextShuffleIndex() -> Int {
-        guard queue.count > 1,
-              queue.indices.contains(queueIndex) else {
-            return queueIndex
+        let songs = playbackState.songs
+        let currentIndex = queueIndex
+        guard songs.count > 1,
+              songs.indices.contains(currentIndex) else {
+            return currentIndex
         }
         guard shuffleStyle == .fewerRepeats else {
-            return randomNonCurrentQueueIndex()
+            return Self.randomNonCurrentQueueIndex(
+                queueCount: songs.count,
+                currentIndex: currentIndex
+            )
         }
         let recent = Set(
-            recentShuffleIDs.suffix(min(8, max(1, queue.count - 1)))
+            recentShuffleIDs.suffix(
+                min(
+                    PlaybackShufflePolicy.recentWindowLimit,
+                    max(1, songs.count - 1)
+                )
+            )
         )
+
+        if PlaybackShufflePolicy.shouldUseFastCandidatePath(
+            queueCount: songs.count
+        ) {
+            // Rejection sampling is uniform over fresh candidates and makes
+            // the common large-queue path O(1) on average. If recent songs
+            // dominate unexpectedly, the reservoir scan below is the bounded
+            // correctness fallback.
+            for _ in 0..<PlaybackShufflePolicy.fastCandidateAttemptLimit {
+                let candidate = Self.randomNonCurrentQueueIndex(
+                    queueCount: songs.count,
+                    currentIndex: currentIndex
+                )
+                if !recent.contains(songs[candidate].id) {
+                    return candidate
+                }
+            }
+        }
+
         var freshSelection: Int?
         var freshCount = 0
-        for index in queue.indices
-            where index != queueIndex && !recent.contains(queue[index].id) {
+        for index in songs.indices
+            where index != currentIndex && !recent.contains(songs[index].id) {
             freshCount += 1
             if Int.random(in: 0..<freshCount) == 0 {
                 freshSelection = index
             }
         }
-        return freshSelection ?? randomNonCurrentQueueIndex()
+        return freshSelection ?? Self.randomNonCurrentQueueIndex(
+            queueCount: songs.count,
+            currentIndex: currentIndex
+        )
     }
 
-    private func randomNonCurrentQueueIndex() -> Int {
-        guard queue.count > 1,
-              queue.indices.contains(queueIndex) else {
-            return queueIndex
+    private static func randomNonCurrentQueueIndex(
+        queueCount: Int,
+        currentIndex: Int
+    ) -> Int {
+        guard queueCount > 1,
+              (0..<queueCount).contains(currentIndex) else {
+            return currentIndex
         }
-        let compressedIndex = Int.random(in: 0..<(queue.count - 1))
-        return compressedIndex >= queueIndex
+        let compressedIndex = Int.random(in: 0..<(queueCount - 1))
+        return compressedIndex >= currentIndex
             ? compressedIndex + 1
             : compressedIndex
     }
@@ -3550,52 +3666,51 @@ final class AudioEngine: NSObject, ObservableObject {
                 preferredTimescale: 600
             )
         ) { [weak self] time in
-            Task { @MainActor in
-                guard let self,
-                      self.timelineObserverGeneration == generation else {
-                    return
-                }
-                guard let logicalCurrentItem = self.logicalCurrentItem,
-                      self.player.currentItem === logicalCurrentItem else { return }
-                let seconds = time.seconds
-                let lyricPosition = seconds.isFinite
-                    ? max(0, seconds)
-                    : self.elapsed
-                if !self.isSeekInFlight,
-                   self.pendingSeekPosition == nil,
-                   seconds.isFinite {
-                    self.elapsed = max(0, seconds)
-                }
-                if self.duration > 0 {
-                    self.elapsed = min(self.elapsed, self.duration)
-                }
-                self.updateActiveLyric(at: lyricPosition)
+            guard let self,
+                  self.timelineObserverGeneration == generation else {
+                return
+            }
+            guard let logicalCurrentItem = self.logicalCurrentItem,
+                  self.player.currentItem === logicalCurrentItem else { return }
+            let seconds = time.seconds
+            let lyricPosition = seconds.isFinite
+                ? max(0, seconds)
+                : self.elapsed
+            if !self.isSeekInFlight,
+               self.pendingSeekPosition == nil,
+               seconds.isFinite {
+                self.elapsed = max(0, seconds)
+            }
+            if self.duration > 0 {
+                self.elapsed = min(self.elapsed, self.duration)
+            }
+            self.updateActiveLyric(at: lyricPosition)
 
-                // UI progress may need four updates per second while the full
-                // player is visible, but duration checks, scrobbling, and
-                // persistence do not. Batch those operations to one wakeup per
-                // playback second.
-                let maintenanceSecond = Int(self.elapsed.rounded(.down))
-                if maintenanceSecond != self.lastMaintenanceSecond {
-                    self.lastMaintenanceSecond = maintenanceSecond
-                    if let itemDuration = self.player.currentItem?.duration.seconds {
-                        self.updateDuration(using: itemDuration)
-                    }
-                    // Re-evaluate once per playback second. The policy keeps
-                    // the next media transport closed until the final window,
-                    // then preserves gapless hand-off without long-lived dual
-                    // stream contention.
-                    self.scheduleGaplessSuccessor()
-                    self.submitScrobbleIfNeeded()
-                    if Date().timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
-                        let shouldSyncServer = Date().timeIntervalSince(
-                            self.lastServerQueueSaveRequest
-                        ) >= 180
-                        self.scheduleQueueSave(
-                            immediate: true,
-                            syncServer: shouldSyncServer
-                        )
-                    }
+            // UI progress may need four updates per second while the full
+            // player is visible, but duration checks, scrobbling, and
+            // persistence do not. Batch those operations to one wakeup per
+            // playback second.
+            let maintenanceSecond = Int(self.elapsed.rounded(.down))
+            if maintenanceSecond != self.lastMaintenanceSecond {
+                self.lastMaintenanceSecond = maintenanceSecond
+                if let itemDuration = self.player.currentItem?.duration.seconds {
+                    self.updateDuration(using: itemDuration)
+                }
+                // Re-evaluate once per playback second. The policy keeps
+                // the next media transport closed until the final window,
+                // then preserves gapless hand-off without long-lived dual
+                // stream contention.
+                self.scheduleGaplessSuccessor()
+                self.submitScrobbleIfNeeded()
+                let now = Date()
+                if now.timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
+                    let shouldSyncServer = now.timeIntervalSince(
+                        self.lastServerQueueSaveRequest
+                    ) >= 180
+                    self.scheduleQueueSave(
+                        immediate: true,
+                        syncServer: shouldSyncServer
+                    )
                 }
             }
         }
@@ -3661,7 +3776,8 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         let nextIndex = Self.lastIndex(
             in: lyrics.lines,
-            notAfter: position
+            notAfter: position,
+            hint: activeLyricIndex
         ) + 1
         guard lyrics.lines.indices.contains(nextIndex) else {
             return
@@ -3674,25 +3790,23 @@ final class AudioEngine: NSObject, ObservableObject {
         playbackObservers.replaceLyricBoundaryObserver(
             time: CMTime(seconds: boundary, preferredTimescale: 600)
         ) { [weak self] in
-            Task { @MainActor in
-                guard let self,
-                      self.lyricBoundaryGeneration == generation,
-                      self.currentSong?.id == songID,
-                      self.player.currentItem != nil,
-                      !self.isSeekInFlight,
-                      self.pendingSeekPosition == nil else {
-                    return
-                }
-                let playerTime = self.player.currentTime().seconds
-                let resolved = playerTime.isFinite
-                    ? max(boundary, playerTime)
-                    : boundary
-                self.elapsed = self.duration > 0
-                    ? min(max(0, resolved), self.duration)
-                    : max(0, resolved)
-                self.updateActiveLyric(at: resolved)
-                self.installNextLyricBoundary(after: resolved)
+            guard let self,
+                  self.lyricBoundaryGeneration == generation,
+                  self.currentSong?.id == songID,
+                  self.player.currentItem != nil,
+                  !self.isSeekInFlight,
+                  self.pendingSeekPosition == nil else {
+                return
             }
+            let playerTime = self.player.currentTime().seconds
+            let resolved = playerTime.isFinite
+                ? max(boundary, playerTime)
+                : boundary
+            self.elapsed = self.duration > 0
+                ? min(max(0, resolved), self.duration)
+                : max(0, resolved)
+            self.updateActiveLyric(at: resolved)
+            self.installNextLyricBoundary(after: resolved)
         }
     }
 
@@ -3715,20 +3829,41 @@ final class AudioEngine: NSObject, ObservableObject {
         let resolvedPosition = position.isFinite ? max(0, position) : 0
         let index = Self.lastIndex(
             in: lyrics.lines,
-            notAfter: resolvedPosition
+            notAfter: resolvedPosition,
+            hint: activeLyricIndex
         )
         if activeLyricIndex != index { activeLyricIndex = index }
     }
 
-    /// `lyrics.lines`는 OpenSubsonicClient.lyrics(songID:)에서 항상 시작 시간
-    /// 기준으로 정렬되어 반환된다. 경계 observer와 주기적 보정 양쪽에서
-    /// 사용하는 탐색을 선형(O(n)) 대신 이진 탐색(O(log n))으로 처리한다.
-    private static func lastIndex(in lines: [LyricLine], notAfter elapsed: TimeInterval) -> Int {
+    /// Normal playback stays on one lyric line for many progress callbacks.
+    /// Resolve that common case in O(1); seeks and skipped boundaries retain
+    /// the O(log n) binary-search fallback.
+    private static func lastIndex(
+        in lines: [LyricLine],
+        notAfter elapsed: TimeInterval,
+        hint: Int? = nil
+    ) -> Int {
+        guard !lines.isEmpty else { return -1 }
+        if let hint {
+            if hint == -1, elapsed < lines[0].start {
+                return -1
+            }
+            if lines.indices.contains(hint) {
+                let lowerBound = lines[hint].start
+                let upperBound = lines.indices.contains(hint + 1)
+                    ? lines[hint + 1].start
+                    : .infinity
+                if elapsed >= lowerBound, elapsed < upperBound {
+                    return hint
+                }
+            }
+        }
+
         var low = 0
         var high = lines.count - 1
         var result = -1
         while low <= high {
-            let mid = (low + high) / 2
+            let mid = low + (high - low) / 2
             if lines[mid].start <= elapsed {
                 result = mid
                 low = mid + 1
