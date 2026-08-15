@@ -56,11 +56,9 @@ enum ApplePrivateCloudStatus: Equatable, Sendable {
     }
 }
 
-/// Uses every on-device Apple Intelligence adapter that fits lyrics:
-/// content tagging for moods/themes, then the default AFM for energy/valence.
-/// Gemma 3 270M is only the fallback when both adapters fail.
-/// Apple Privacy Cloud (Private Cloud Compute) is opt-in from Settings
-/// on iOS 27+ devices that expose the server model.
+/// Apple lyric inference is deliberately stateless across tracks. Every model
+/// call creates a fresh LanguageModelSession, receives one response, and then
+/// releases the session. A previous song's lyric context is never reused.
 enum AppleOnDeviceModelStatus: Equatable, Sendable {
     case needsIOS26
     case available
@@ -177,52 +175,31 @@ private enum FoundationModelsBridge {
     }
 
     static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
-        async let tagged = respond(
+        // Fallback use-case path: still exactly one disposable session for this
+        // song. The old two-session tag+scale fan-out cost more power and could
+        // produce internally inconsistent fields.
+        guard let text = await respondOneShot(
             to: LyricIntelligencePrompt.tagging(
                 lyrics: lyrics,
                 family: .appleFoundation
             ),
             useCase: .contentTagging
-        )
-        async let scored = respond(
-            to: LyricIntelligencePrompt.scales(lyrics: lyrics),
-            useCase: nil
-        )
-        let parts = await (tagged, scored)
-
-        let tagParse = parts.0.flatMap(LyricIntelligencePrompt.parse)
-        let scoreParse = parts.1.flatMap(LyricIntelligencePrompt.parse)
-
-        let moods = tagParse?.moods ?? scoreParse?.moods ?? []
-        let themes = tagParse?.themes ?? scoreParse?.themes ?? []
-        let energy = scoreParse?.energy ?? tagParse?.energy ?? 0.5
-        let valence = scoreParse?.valence ?? tagParse?.valence ?? 0.5
-        let summary = tagParse?.summary ?? scoreParse?.summary ?? ""
-        guard !moods.isEmpty || parts.1 != nil || !summary.isEmpty else { return nil }
-        let resolvedMoods = moods.isEmpty ? ["neutral"] : moods
-
-        let source: String
-        switch (parts.0 != nil, parts.1 != nil) {
-        case (true, true):
-            source = "apple-intelligence-tagging+default"
-        case (true, false):
-            source = "apple-intelligence-tagging"
-        default:
-            source = "apple-intelligence"
+        ), let parsed = LyricIntelligencePrompt.parse(text) else {
+            return nil
         }
         return AppleFoundationLyricClient.Analysis(
-            moods: resolvedMoods,
-            themes: themes,
-            energy: energy,
-            valence: valence,
-            summary: summary,
-            source: source,
-            details: tagParse?.details ?? scoreParse?.details ?? .empty
+            moods: parsed.moods.isEmpty ? ["neutral"] : parsed.moods,
+            themes: parsed.themes,
+            energy: parsed.energy,
+            valence: parsed.valence,
+            summary: parsed.summary,
+            source: "apple-intelligence-tagging",
+            details: parsed.details
         )
     }
 
     static func analyzeDefault3B(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
-        guard let text = await respond(
+        guard let text = await respondOneShot(
             to: LyricIntelligencePrompt.moodAnalysis(
                 lyrics: lyrics,
                 family: .appleFoundation
@@ -243,10 +220,12 @@ private enum FoundationModelsBridge {
     }
 
     static func complete(_ prompt: String) async -> String? {
-        await respond(to: prompt, useCase: nil)
+        await respondOneShot(to: prompt, useCase: nil)
     }
 
-    private static func respond(
+    /// Never cache this session. Keeping it local is an intentional isolation
+    /// boundary between songs: one request in, one response out, then discard.
+    private static func respondOneShot(
         to prompt: String,
         useCase: SystemLanguageModel.UseCase?
     ) async -> String? {
@@ -317,6 +296,7 @@ private enum PrivateCloudBridge {
             return nil
         }
         do {
+            // Private Cloud follows the same isolation rule: fresh session per song.
             let session = LanguageModelSession(model: model)
             let response = try await session.respond(
                 to: LyricIntelligencePrompt.moodAnalysis(
