@@ -1514,7 +1514,8 @@ final class AudioEngine: NSObject, ObservableObject {
         preferredIndex: Int?,
         autoplay: Bool = true,
         origin: PlaybackOrigin = .manual,
-        transitionReason: PlaybackEndReason = .replaced
+        transitionReason: PlaybackEndReason = .replaced,
+        reusesCurrentQueue: Bool = false
     ) {
         activateRuntimeIfNeeded()
         reconcilePendingTransportTransition()
@@ -1536,7 +1537,14 @@ final class AudioEngine: NSObject, ObservableObject {
             ? [PlaybackQueueEntry(song: song)]
             : sourceEntries
         let resolvedIndex: Int
-        if let preferredIndex, normalizedEntries.indices.contains(preferredIndex) {
+        if reusesCurrentQueue,
+           let preferredIndex,
+           normalizedEntries.indices.contains(preferredIndex) {
+            // Internal next/previous/queue-selection calls already carry the
+            // authoritative queue occurrence. Trust that stable index instead
+            // of scanning the queue for the same song again.
+            resolvedIndex = preferredIndex
+        } else if let preferredIndex, normalizedEntries.indices.contains(preferredIndex) {
             resolvedIndex = preferredIndex
         } else if let visualMatch = normalizedEntries.firstIndex(where: {
             $0.song.id == song.id && $0.song.artworkID == song.artworkID
@@ -1547,7 +1555,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 $0.song.id == song.id
             }) ?? 0
         }
-        if normalizedEntries[resolvedIndex].song.id == song.id {
+        if !reusesCurrentQueue,
+           normalizedEntries[resolvedIndex].song.id == song.id {
             // The tapped row is the freshest metadata source. Replacing the
             // matching queue entry atomically prevents an older coverArt value
             // from becoming the visual now-playing source for this transition.
@@ -1555,9 +1564,13 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         let selectedSong = normalizedEntries[resolvedIndex].song
         // Current media, queue entries, selection, and account scope publish as
-        // one snapshot. A fresh playback generation invalidates late artwork
-        // and transport work without changing the durable queue-row identity.
-        replacePlayback(normalizedEntries, index: resolvedIndex)
+        // one snapshot. Existing-queue transitions can renew playback identity
+        // without copy-on-write or queue equality scans.
+        if reusesCurrentQueue {
+            playbackState.setIndex(resolvedIndex, renewsPlayback: true)
+        } else {
+            replacePlayback(normalizedEntries, index: resolvedIndex)
+        }
         queueMutationGeneration &+= 1
         player.pause()
         isPlaying = false
@@ -1774,7 +1787,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 in: playbackState.entries,
                 preferredIndex: queueIndex,
                 origin: .autoplay,
-                transitionReason: .completed
+                transitionReason: .completed,
+                reusesCurrentQueue: true
             )
             return
         }
@@ -1795,7 +1809,8 @@ final class AudioEngine: NSObject, ObservableObject {
             in: playbackState.entries,
             preferredIndex: nextIndex,
             origin: isAutoAdvance ? .autoplay : .manual,
-            transitionReason: isAutoAdvance ? .completed : .skipped
+            transitionReason: isAutoAdvance ? .completed : .skipped,
+            reusesCurrentQueue: true
         )
     }
 
@@ -1886,7 +1901,8 @@ final class AudioEngine: NSObject, ObservableObject {
             in: playbackState.entries,
             preferredIndex: previousIndex,
             origin: .manual,
-            transitionReason: .skipped
+            transitionReason: .skipped,
+            reusesCurrentQueue: true
         )
     }
 
@@ -1898,7 +1914,8 @@ final class AudioEngine: NSObject, ObservableObject {
             in: playbackState.entries,
             preferredIndex: index,
             origin: .queue,
-            transitionReason: .replaced
+            transitionReason: .replaced,
+            reusesCurrentQueue: true
         )
     }
 
