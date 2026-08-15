@@ -739,6 +739,7 @@ struct PlaybackPrefetchPlan: Equatable, Sendable {
 enum PlaybackFailureDisposition: Equatable, Sendable {
     case retryTransport
     case tryCompatibilityFormat
+    case failPermanent
 }
 
 enum PlaybackFailureClassifier {
@@ -752,22 +753,99 @@ enum PlaybackFailureClassifier {
     ) -> PlaybackFailureDisposition {
         guard let error else { return .tryCompatibilityFormat }
         let value = error as NSError
-        guard value.domain == NSURLErrorDomain else {
-            if depth < 2,
-               let underlying = value.userInfo[NSUnderlyingErrorKey] as? Error {
-                return disposition(for: underlying, depth: depth + 1)
+        if let status = httpStatusCode(in: value) {
+            if status == 408 || status == 429 || (500...599).contains(status) {
+                return .retryTransport
             }
-            return .tryCompatibilityFormat
+            if (400...499).contains(status) {
+                return .failPermanent
+            }
         }
-        let code = URLError.Code(rawValue: value.code)
-        switch code {
-        case .timedOut, .cannotFindHost, .cannotConnectToHost,
-             .dnsLookupFailed, .networkConnectionLost, .notConnectedToInternet,
-             .internationalRoamingOff, .callIsActive, .dataNotAllowed,
-             .secureConnectionFailed, .cannotLoadFromNetwork:
-            return .retryTransport
-        default:
-            return .tryCompatibilityFormat
+        if value.domain == NSURLErrorDomain {
+            let code = URLError.Code(rawValue: value.code)
+            switch code {
+            case .timedOut, .cannotFindHost, .cannotConnectToHost,
+                 .dnsLookupFailed, .networkConnectionLost, .notConnectedToInternet,
+                 .internationalRoamingOff, .callIsActive, .dataNotAllowed,
+                 .secureConnectionFailed, .cannotLoadFromNetwork:
+                return .retryTransport
+            case .fileDoesNotExist, .resourceUnavailable:
+                return .failPermanent
+            default:
+                break
+            }
+        }
+        if value.domain == AVFoundationErrorDomain {
+            switch value.code {
+            case -11_819, -11_847, -11_850:
+                return .retryTransport
+            default:
+                break
+            }
+        }
+        if depth < 3,
+           let underlying = value.userInfo[NSUnderlyingErrorKey] as? Error {
+            return disposition(for: underlying, depth: depth + 1)
+        }
+        return .tryCompatibilityFormat
+    }
+
+    private static func httpStatusCode(in error: NSError) -> Int? {
+        let keys = [
+            "AVErrorHTTPStatusCodeKey",
+            "statusCode",
+            "HTTPStatusCode"
+        ]
+        for key in keys {
+            if let status = error.userInfo[key] as? Int {
+                return status
+            }
+        }
+        return nil
+    }
+}
+
+/// TIDAL-style PE states, adapted to BuFi: the watchdog is only armed for
+/// startup freeze or a genuine stall — never for a healthy playing clock.
+enum PlaybackWatchdogMode: Equatable, Sendable {
+    case startup
+    case stall
+}
+
+enum PlaybackWatchdogDecision: Equatable, Sendable {
+    case ignore
+    case cancelWatchdog
+    case arm(PlaybackWatchdogMode)
+}
+
+enum PlaybackWatchdogPolicy {
+    static let startupArmWindow: TimeInterval = 1.5
+    static let stallGrace: Duration = .milliseconds(1_800)
+    static let maximumTransportRetries = 2
+
+    static func decision(
+        wantsPlayback: Bool,
+        timeControlStatus: AVPlayer.TimeControlStatus,
+        elapsed: TimeInterval,
+        hasCurrentItem: Bool
+    ) -> PlaybackWatchdogDecision {
+        guard wantsPlayback, hasCurrentItem else { return .cancelWatchdog }
+        let inStartupWindow = elapsed.isFinite && elapsed < startupArmWindow
+        switch timeControlStatus {
+        case .playing:
+            return inStartupWindow ? .arm(.startup) : .cancelWatchdog
+        case .waitingToPlayAtSpecifiedRate, .paused:
+            return .arm(inStartupWindow ? .startup : .stall)
+        @unknown default:
+            return .arm(inStartupWindow ? .startup : .stall)
+        }
+    }
+
+    static func transportBackoff(afterFailedAttempt attempt: Int) -> Duration {
+        switch attempt {
+        case 1: .milliseconds(400)
+        case 2: .milliseconds(900)
+        default: .milliseconds(1_600)
         }
     }
 }
@@ -3315,7 +3393,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         )
                         self.invalidateStagedSuccessor(removeFromPlayer: true)
                         self.suspendSpeculativePrefetch()
-                        self.schedulePlaybackRecovery()
+                        self.schedulePlaybackRecovery(mode: .stall)
                     }
                 },
                 center.addObserver(
@@ -3379,7 +3457,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     // recovery so they cannot prolong the underrun.
                     self.invalidateStagedSuccessor(removeFromPlayer: true)
                     self.suspendSpeculativePrefetch()
-                    self.schedulePlaybackRecovery()
+                    self.schedulePlaybackRecovery(mode: .stall)
                 }
             }
         }
@@ -3429,15 +3507,24 @@ final class AudioEngine: NSObject, ObservableObject {
             isBuffering = wantsPlayback
             return
         }
-        if PlaybackFailureClassifier.disposition(for: resolvedError) == .retryTransport {
+        let disposition = PlaybackFailureClassifier.disposition(for: resolvedError)
+        if disposition == .failPermanent {
+            finishPlaybackFailure(
+                message: String(
+                    localized: "이 음악을 재생하지 못했습니다. 서버의 스트리밍 형식과 네트워크 상태를 확인해 주세요."
+                )
+            )
+            return
+        }
+        if disposition == .retryTransport {
             recoveryAttempt += 1
-            if recoveryAttempt <= 2 {
+            if recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries {
                 Self.logger.warning(
                     "Playback transport failed; retrying the active format"
                 )
-                loadCurrentItem(
-                    compatibilityFormat: activeCompatibilityFormat,
-                    resumeFrom: elapsed
+                reloadCurrentItemAfterBackoff(
+                    attempt: recoveryAttempt,
+                    compatibilityFormat: activeCompatibilityFormat
                 )
                 return
             }
@@ -3472,7 +3559,37 @@ final class AudioEngine: NSObject, ObservableObject {
             "Playback failed; trying compatibility fallback \(format, privacy: .public)"
         )
         activeCompatibilityFormat = format
-        loadCurrentItem(compatibilityFormat: format, resumeFrom: elapsed)
+        reloadCurrentItemAfterBackoff(
+            attempt: 1,
+            compatibilityFormat: format
+        )
+    }
+
+    private func reloadCurrentItemAfterBackoff(
+        attempt: Int,
+        compatibilityFormat: String?
+    ) {
+        let generation = itemLoadGeneration
+        let delay = PlaybackWatchdogPolicy.transportBackoff(
+            afterFailedAttempt: attempt
+        )
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.itemLoadGeneration == generation,
+                  self.wantsPlayback,
+                  self.currentSong != nil else {
+                return
+            }
+            self.loadCurrentItem(
+                compatibilityFormat: compatibilityFormat,
+                resumeFrom: self.elapsed
+            )
+        }
     }
 
     private func takeNextCompatibilityFormat(allowsRaw: Bool) -> String? {
@@ -3534,7 +3651,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func schedulePlaybackRecovery() {
+    private func schedulePlaybackRecovery(mode: PlaybackWatchdogMode = .startup) {
         guard wantsPlayback,
               currentSong != nil,
               recoveryTask == nil,
@@ -3580,13 +3697,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 timeControlStatus: self.player.timeControlStatus,
                 waitingReason: self.player.reasonForWaitingToPlay
             )
-            if wasManagedBuffering {
-                // Managed buffering gets a short chance to fill, not the old
-                // multi-second startup penalty. If it still has not progressed,
-                // switch to the latency-first path before considering a reload.
+            if wasManagedBuffering || mode == .stall {
+                // Managed buffering and mid-stream stalls get a short chance
+                // to refill. Startup freeze still uses the tighter grace.
                 do {
                     try await Task.sleep(
-                        for: PlaybackRecoveryPolicy.managedBufferingGrace
+                        for: mode == .stall
+                            ? PlaybackWatchdogPolicy.stallGrace
+                            : PlaybackRecoveryPolicy.managedBufferingGrace
                     )
                 } catch {
                     return
@@ -3610,7 +3728,8 @@ final class AudioEngine: NSObject, ObservableObject {
             self.recomputeTimelineFromPlayer()
             self.installNextLyricBoundary(after: self.elapsed)
 
-            if item.status == .readyToPlay,
+            if mode == .startup,
+               item.status == .readyToPlay,
                self.currentSong?.externalStreamURL == nil,
                !self.isSeekInFlight,
                self.pendingSeekPosition == nil,
@@ -3651,10 +3770,10 @@ final class AudioEngine: NSObject, ObservableObject {
             }
 
             self.recoveryAttempt += 1
-            if self.recoveryAttempt <= 2 {
-                self.loadCurrentItem(
-                    compatibilityFormat: self.activeCompatibilityFormat,
-                    resumeFrom: self.elapsed
+            if self.recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries {
+                self.reloadCurrentItemAfterBackoff(
+                    attempt: self.recoveryAttempt,
+                    compatibilityFormat: self.activeCompatibilityFormat
                 )
             } else if let format = self.takeNextCompatibilityFormat(allowsRaw: false) {
                 Self.logger.warning(
@@ -3787,9 +3906,20 @@ final class AudioEngine: NSObject, ObservableObject {
                     )
                 if player.timeControlStatus == .playing {
                     // A player can claim `.playing` while its media clock is
-                    // frozen. Let the watchdog confirm real time progress
-                    // before it clears itself.
-                    self.schedulePlaybackRecovery()
+                    // frozen at 0:00. Past the startup window a healthy clock
+                    // must not keep the watchdog armed — that reload loop is
+                    // the main intermittent playback failure.
+                    switch PlaybackWatchdogPolicy.decision(
+                        wantsPlayback: self.wantsPlayback,
+                        timeControlStatus: player.timeControlStatus,
+                        elapsed: self.currentPlayerPosition(),
+                        hasCurrentItem: player.currentItem != nil
+                    ) {
+                    case .arm(let mode):
+                        self.schedulePlaybackRecovery(mode: mode)
+                    case .cancelWatchdog, .ignore:
+                        self.cancelPlaybackRecovery()
+                    }
                     self.scheduleRecoveryAttemptReset(for: player.currentItem)
                     self.endBackgroundBridge()
                     self.reportPlaybackState("playing")
@@ -3799,6 +3929,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else if !self.wantsPlayback {
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
+                    self.cancelPlaybackRecovery()
                     self.reportPlaybackState("paused")
                     self.suspendSpeculativePrefetch()
                 } else {
@@ -3810,7 +3941,19 @@ final class AudioEngine: NSObject, ObservableObject {
                     // alive, so remove it until the current stream is healthy.
                     self.invalidateStagedSuccessor(removeFromPlayer: true)
                     self.suspendSpeculativePrefetch()
-                    self.schedulePlaybackRecovery()
+                    switch PlaybackWatchdogPolicy.decision(
+                        wantsPlayback: true,
+                        timeControlStatus: player.timeControlStatus,
+                        elapsed: self.currentPlayerPosition(),
+                        hasCurrentItem: player.currentItem != nil
+                    ) {
+                    case .arm(let mode):
+                        self.schedulePlaybackRecovery(mode: mode)
+                    case .cancelWatchdog:
+                        self.cancelPlaybackRecovery()
+                    case .ignore:
+                        break
+                    }
                 }
                 self.refreshIdleTimerPreference()
                 self.updateRemoteCommands()

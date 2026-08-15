@@ -36,9 +36,12 @@ references; no source was copied into BuFi.
   mismatch therefore renders the current song directly instead of exposing the
   previous queue entry's cover.
 - Every AVPlayer waiting transition starts one bounded watchdog. The watchdog
-  forces an immediate-rate retry, performs one exact near-zero seek nudge for a
-  stream that never leaves `0:00`, reloads the active format at most twice, then
-  tries a bandwidth-bounded compatibility format before surfacing an error.
+  is armed only for startup freeze (elapsed under 1.5s) or a genuine stall.
+  A healthy playing clock cancels it. HTTP 4xx stream failures fail closed
+  instead of cycling codecs. Transport retries use 400/900ms backoff. The
+  watchdog still forces an immediate-rate retry, performs one exact near-zero
+  seek nudge for a stream that never leaves `0:00`, reloads the active format
+  at most twice, then tries a bandwidth-bounded compatibility format.
 - Network-path loss pauses speculative work and leaves playback intent intact;
   path restoration immediately resumes AVPlayer and re-arms the watchdog. A
   confirmed playing state cancels recovery and resets its budget only after an
