@@ -692,7 +692,7 @@ enum RecommendationMixer {
         date: Date = Date()
     ) async -> [Song] {
         guard !Task.isCancelled else { return [] }
-        return mix(
+        let songs = mix(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
@@ -702,6 +702,15 @@ enum RecommendationMixer {
             lyricIndex: lyricIndex,
             limit: limit,
             date: date
+        )
+        return await RecommendationLLMReview.refine(
+            songs: songs,
+            seed: seed,
+            recent: behavior.recentSongs,
+            favorites: snapshot.starredSongs,
+            lyricIndex: lyricIndex,
+            purpose: purpose,
+            limit: limit
         )
     }
 
@@ -718,7 +727,7 @@ enum RecommendationMixer {
         date: Date = Date()
     ) async -> (recommended: [Song], daylist: [Song]) {
         guard !Task.isCancelled else { return ([], []) }
-        let recommended = mix(
+        let recommended = await mixConcurrently(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
@@ -727,7 +736,7 @@ enum RecommendationMixer {
             date: date
         )
         guard !Task.isCancelled else { return (recommended, []) }
-        let daylist = mix(
+        let daylist = await mixConcurrently(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
@@ -1747,6 +1756,10 @@ enum RecommendationMixer {
             behaviorIdentity,
             seed?.id ?? "",
             String(lyricIndex.bySongID.count),
+            RecommendationLLMReview.isEnabled() ? "llm-review" : "score-only",
+            String(
+                lyricIndex.bySongID.values.filter(\.hasStoredSummary).count
+            ),
             String(weightsFingerprint.value),
             String(temporalBucket(for: purpose, date: date)),
             String(describing: calendar.identifier),

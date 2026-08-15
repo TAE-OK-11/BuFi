@@ -80,6 +80,7 @@ enum AppleFoundationLyricClient {
         var themes: [String]
         var energy: Double
         var valence: Double
+        var summary: String
         var source: String
     }
 
@@ -111,6 +112,20 @@ enum AppleFoundationLyricClient {
     static func analyzePrivateCloud(lyrics: String) async -> Analysis? {
         if #available(iOS 27.0, *) {
             return await PrivateCloudBridge.analyze(lyrics: lyrics)
+        }
+        return nil
+    }
+
+    static func complete(_ prompt: String) async -> String? {
+        if #available(iOS 26.0, *) {
+            return await FoundationModelsBridge.complete(prompt)
+        }
+        return nil
+    }
+
+    static func completePrivateCloud(_ prompt: String) async -> String? {
+        if #available(iOS 27.0, *) {
+            return await PrivateCloudBridge.complete(prompt)
         }
         return nil
     }
@@ -148,7 +163,8 @@ private enum FoundationModelsBridge {
         let themes = tagParse?.themes ?? scoreParse?.themes ?? []
         let energy = scoreParse?.energy ?? tagParse?.energy ?? 0.5
         let valence = scoreParse?.valence ?? tagParse?.valence ?? 0.5
-        guard !moods.isEmpty || parts.1 != nil else { return nil }
+        let summary = tagParse?.summary ?? scoreParse?.summary ?? ""
+        guard !moods.isEmpty || parts.1 != nil || !summary.isEmpty else { return nil }
         let resolvedMoods = moods.isEmpty ? ["neutral"] : moods
 
         let source: String
@@ -165,8 +181,13 @@ private enum FoundationModelsBridge {
             themes: themes,
             energy: energy,
             valence: valence,
+            summary: summary,
             source: source
         )
+    }
+
+    static func complete(_ prompt: String) async -> String? {
+        await respond(to: prompt, useCase: nil)
     }
 
     private static func respond(
@@ -193,6 +214,11 @@ private enum FoundationModelsBridge {
 
     static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
         _ = lyrics
+        return nil
+    }
+
+    static func complete(_ prompt: String) async -> String? {
+        _ = prompt
         return nil
     }
 }
@@ -245,8 +271,29 @@ private enum PrivateCloudBridge {
                 themes: parsed.themes,
                 energy: parsed.energy,
                 valence: parsed.valence,
+                summary: parsed.summary,
                 source: "apple-privacy-cloud"
             )
+        } catch {
+            return nil
+        }
+    }
+
+    static func complete(_ prompt: String) async -> String? {
+        let model = PrivateCloudComputeLanguageModel()
+        switch model.availability {
+        case .available:
+            break
+        default:
+            return nil
+        }
+        if model.quotaUsage.isLimitReached {
+            return nil
+        }
+        do {
+            let session = LanguageModelSession(model: model)
+            let response = try await session.respond(to: prompt)
+            return response.content
         } catch {
             return nil
         }
@@ -261,6 +308,11 @@ private enum PrivateCloudBridge {
 
     static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
         _ = lyrics
+        return nil
+    }
+
+    static func complete(_ prompt: String) async -> String? {
+        _ = prompt
         return nil
     }
 }

@@ -444,8 +444,8 @@ actor AppDatabase {
                         account_scope, song_id, lyrics_hash, audio_revision,
                         moods_json, themes_json, energy, valence, lyric_source,
                         sound_source, sound_labels_json, lexical_embedding,
-                        sentence_embedding, sound_embedding, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        sentence_embedding, sound_embedding, summary, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(account_scope, song_id) DO UPDATE SET
                         lyrics_hash = excluded.lyrics_hash,
                         audio_revision = excluded.audio_revision,
@@ -459,6 +459,7 @@ actor AppDatabase {
                         lexical_embedding = excluded.lexical_embedding,
                         sentence_embedding = excluded.sentence_embedding,
                         sound_embedding = excluded.sound_embedding,
+                        summary = excluded.summary,
                         updated_at = excluded.updated_at
                     """,
                     arguments: [
@@ -476,6 +477,7 @@ actor AppDatabase {
                         Self.encodeFloats(signature.embedding),
                         Self.encodeFloats(signature.sentenceEmbedding),
                         Self.encodeFloats(signature.soundEmbedding),
+                        signature.summary,
                         currentDate().timeIntervalSince1970
                     ]
                 )
@@ -1389,6 +1391,12 @@ actor AppDatabase {
                     ON track_intelligence(account_scope, lyrics_hash);
                 """)
         }
+        migrator.registerMigration("track-intelligence-summary-v8") { db in
+            try db.execute(sql: """
+                ALTER TABLE track_intelligence
+                    ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+                """)
+        }
         return migrator
     }
 
@@ -1407,6 +1415,7 @@ actor AppDatabase {
         let sentence: Data = row["sentence_embedding"]
         let sound: Data = row["sound_embedding"]
         let audioRevision: String = row["audio_revision"]
+        let summary: String = row["summary"]
         return LyricSignature(
             songID: songID,
             lyricsHash: lyricsHash,
@@ -1420,7 +1429,8 @@ actor AppDatabase {
             soundLabels: decodeJSONList(soundLabelsJSON),
             soundEmbedding: decodeFloats(sound),
             audioRevision: audioRevision,
-            soundSource: soundSource
+            soundSource: soundSource,
+            summary: summary
         )
     }
 

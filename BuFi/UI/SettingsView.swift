@@ -600,6 +600,8 @@ private struct RecommendationSettingsView: View {
     private var lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
     @AppStorage("lyric-intelligence-openrouter-model")
     private var openRouterModel = "google/gemma-3-270m-it"
+    @AppStorage("recommendation-llm-review-enabled")
+    private var llmReviewEnabled = false
     @State private var openAIKey = ""
     @State private var openRouterKey = ""
 
@@ -729,6 +731,13 @@ private struct RecommendationSettingsView: View {
                             }
                         }
                         .pickerStyle(.menu)
+                        Toggle("LLM 추천 검수", isOn: $llmReviewEnabled)
+                            .font(.system(size: 15, weight: .semibold))
+                            .onChange(of: llmReviewEnabled) { _, _ in
+                                RecommendationMixer.invalidateCache()
+                                model.rebuildRecommendations()
+                            }
+                        settingsDescription("켜면 알고리즘이 후보를 줄인 뒤, 가사 요약·분위기·음향 분석을 LLM이 한 번 더 보고 순서를 다듬습니다. 꺼두면 점수만 씁니다.")
                         settingsDescription(lyricEngineDescription)
                         if usesOnDeviceFallback {
                             SecureField(
@@ -1055,6 +1064,9 @@ private struct RecommendationSettingsView: View {
         if !signature.moods.isEmpty {
             parts.append(String(localized: "분위기: \(signature.moods.joined(separator: ", "))"))
         }
+        if signature.hasStoredSummary {
+            parts.append(String(localized: "요약: \(signature.summary.replacingOccurrences(of: "\n", with: " / "))"))
+        }
         if signature.hasSentenceEmbedding {
             parts.append(
                 String(
@@ -1088,6 +1100,9 @@ private struct RecommendationSettingsView: View {
             String(
                 localized: "에너지 \(Int((signature.energy * 100).rounded()))% · 감정 \(Int((signature.valence * 100).rounded()))%"
             ),
+            signature.hasStoredSummary
+                ? String(localized: "요약: \(signature.summary.replacingOccurrences(of: "\n", with: " / "))")
+                : String(localized: "요약: 없음"),
             signature.hasSentenceEmbedding
                 ? String(localized: "문장 임베딩: \(signature.sentenceEmbedding.count)차원")
                 : String(localized: "문장 임베딩: 없음")

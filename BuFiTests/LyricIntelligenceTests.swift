@@ -23,6 +23,101 @@ final class LyricIntelligenceTests: XCTestCase {
         )
     }
 
+    func testMoodJSONIncludesTwoLineSummary() {
+        let parsed = LyricIntelligencePrompt.parse(
+            """
+            {"moods":["calm"],"themes":["night"],"energy":0.2,"valence":0.1,"summary":"Walking alone after midnight.\\nThe rain keeps your name."}
+            """
+        )
+        XCTAssertEqual(parsed?.summary, "Walking alone after midnight.\nThe rain keeps your name.")
+        XCTAssertEqual(
+            LyricIntelligencePrompt.normalizedSummary("one\n\ntwo\nthree"),
+            "one\ntwo"
+        )
+    }
+
+    func testReviewKeepsOnlyAllowedIDsAndFillsTheRest() {
+        let order = RecommendationLLMReview.parseIDs(
+            #"{"ids":["b","missing","a","b"]}"#,
+            allowed: ["a", "b", "c"]
+        )
+        XCTAssertEqual(order, ["b", "a"])
+        let songs = [
+            Song(id: "a", title: "A", artist: "X", album: "L"),
+            Song(id: "b", title: "B", artist: "Y", album: "L"),
+            Song(id: "c", title: "C", artist: "Z", album: "L")
+        ]
+        XCTAssertEqual(
+            RecommendationLLMReview.parseIDs(
+                #"["c","a"]"#,
+                allowed: Set(songs.map(\.id))
+            ),
+            ["c", "a"]
+        )
+        XCTAssertNil(
+            RecommendationLLMReview.parseIDs(
+                #"{"ids":["nope"]}"#,
+                allowed: ["a"]
+            )
+        )
+    }
+
+    func testUnifiedEmbeddingUsesSummaryAndSoundTogether() {
+        let left = LyricSignature(
+            songID: "left",
+            lyricsHash: "a",
+            moods: ["calm"],
+            themes: ["night"],
+            energy: 0.2,
+            valence: 0.2,
+            embedding: LyricLexicalEmbedding.vector(from: "quiet night rain"),
+            source: "test",
+            sentenceEmbedding: [1, 0, 0, 0, 0, 0, 0, 0],
+            soundLabels: ["singing"],
+            soundEmbedding: [1, 0, 0, 0, 0, 0, 0, 0],
+            audioRevision: "r",
+            soundSource: "coreml-sound-analysis",
+            summary: "Alone in the rain.\nThe city is quiet."
+        )
+        let close = LyricSignature(
+            songID: "close",
+            lyricsHash: "b",
+            moods: ["calm"],
+            themes: ["rain"],
+            energy: 0.22,
+            valence: 0.18,
+            embedding: LyricLexicalEmbedding.vector(from: "quiet rain"),
+            source: "test",
+            sentenceEmbedding: [0.9, 0.1, 0, 0, 0, 0, 0, 0],
+            soundLabels: ["singing"],
+            soundEmbedding: [0.9, 0.1, 0, 0, 0, 0, 0, 0],
+            audioRevision: "r",
+            soundSource: "coreml-sound-analysis",
+            summary: "Walking through rain.\nThe streets stay quiet."
+        )
+        let far = LyricSignature(
+            songID: "far",
+            lyricsHash: "c",
+            moods: ["happy"],
+            themes: ["dance"],
+            energy: 0.9,
+            valence: 0.9,
+            embedding: LyricLexicalEmbedding.vector(from: "dance party neon"),
+            source: "test",
+            sentenceEmbedding: [0, 1, 0, 0, 0, 0, 0, 0],
+            soundLabels: ["speech"],
+            soundEmbedding: [0, 1, 0, 0, 0, 0, 0, 0],
+            audioRevision: "r",
+            soundSource: "coreml-sound-analysis",
+            summary: "Everybody jump.\nThe club is loud."
+        )
+        XCTAssertGreaterThan(
+            LyricLexicalEmbedding.similarity(left, close),
+            LyricLexicalEmbedding.similarity(left, far)
+        )
+        XCTAssertFalse(LyricLexicalEmbedding.unified(left).isEmpty)
+    }
+
     func testTaggingJSONCanOmitEnergy() {
         let parsed = LyricIntelligencePrompt.parse(
             #"{"moods":["calm"],"themes":["night"]}"#

@@ -42,6 +42,7 @@ struct LyricSignature: Codable, Equatable, Sendable {
     var soundEmbedding: [Float]
     var audioRevision: String
     var soundSource: String
+    var summary: String
 
     init(
         songID: String,
@@ -56,7 +57,8 @@ struct LyricSignature: Codable, Equatable, Sendable {
         soundLabels: [String] = [],
         soundEmbedding: [Float] = [],
         audioRevision: String = "",
-        soundSource: String = ""
+        soundSource: String = "",
+        summary: String = ""
     ) {
         self.songID = songID
         self.lyricsHash = lyricsHash
@@ -71,6 +73,7 @@ struct LyricSignature: Codable, Equatable, Sendable {
         self.soundEmbedding = soundEmbedding
         self.audioRevision = audioRevision
         self.soundSource = soundSource
+        self.summary = summary
     }
 
     init(from decoder: Decoder) throws {
@@ -103,6 +106,7 @@ struct LyricSignature: Codable, Equatable, Sendable {
             String.self,
             forKey: .soundSource
         ) ?? ""
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
     }
 
     var moodKeys: [String] {
@@ -121,6 +125,14 @@ struct LyricSignature: Codable, Equatable, Sendable {
 
     var hasSentenceEmbedding: Bool {
         sentenceEmbedding.count >= 8
+    }
+
+    var hasStoredSummary: Bool {
+        !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var themeKeys: [String] {
+        themes.map(LyricLexicalEmbedding.normalized).filter { !$0.isEmpty }
     }
 
     var sourceTitle: String {
@@ -240,33 +252,56 @@ enum LyricLexicalEmbedding {
         return l2Normalized(merged)
     }
 
+    static func projected(_ values: [Float], to dimensions: Int) -> [Float] {
+        guard dimensions > 0 else { return [] }
+        guard !values.isEmpty else { return [Float](repeating: 0, count: dimensions) }
+        if values.count == dimensions { return values }
+        var buckets = [Float](repeating: 0, count: dimensions)
+        for (offset, value) in values.enumerated() {
+            buckets[offset % dimensions] += value
+        }
+        return l2Normalized(buckets)
+    }
+
+    static func unified(_ signature: LyricSignature) -> [Float] {
+        var merged = signature.embedding
+        if merged.count != dimensions {
+            merged = projected(merged, to: dimensions)
+        }
+        if signature.hasSentenceEmbedding {
+            let sentence = projected(signature.sentenceEmbedding, to: dimensions)
+            for index in merged.indices {
+                merged[index] = merged[index] * 0.58 + sentence[index] * 0.42
+            }
+        }
+        if signature.hasStoredSoundAnalysis {
+            let sound = projected(signature.soundEmbedding, to: dimensions)
+            for index in merged.indices {
+                merged[index] = merged[index] * 0.82 + sound[index] * 0.18
+            }
+        }
+        if signature.hasStoredSummary {
+            let summary = vector(from: signature.summary)
+            for index in merged.indices {
+                merged[index] = merged[index] * 0.86 + summary[index] * 0.14
+            }
+        }
+        return l2Normalized(merged)
+    }
+
     static func similarity(_ left: LyricSignature, _ right: LyricSignature) -> Double {
-        let lexical = cosine(left.embedding, right.embedding)
+        let fused = cosine(unified(left), unified(right))
         let mood = jaccard(left.moodKeys, right.moodKeys)
+        let theme = jaccard(left.themeKeys, right.themeKeys)
         let energy = 1 - min(1, abs(left.energy - right.energy))
         let valence = 1 - min(1, abs(left.valence - right.valence))
-        let hasSentence = left.hasSentenceEmbedding && right.hasSentenceEmbedding
-        let hasSound = left.hasStoredSoundAnalysis && right.hasStoredSoundAnalysis
-        if !hasSentence && !hasSound {
-            return min(1, lexical * 0.58 + mood * 0.24 + energy * 0.09 + valence * 0.09)
-        }
-        let sentence = hasSentence
-            ? cosine(left.sentenceEmbedding, right.sentenceEmbedding)
-            : 0
-        let sound = cosine(left.soundEmbedding, right.soundEmbedding)
-        let soundLabels = jaccard(
-            left.soundLabels.map(normalized),
-            right.soundLabels.map(normalized)
-        )
         return min(
             1,
-            lexical * 0.32
-                + sentence * 0.22
-                + sound * 0.12
+            fused * 0.60
                 + mood * 0.16
-                + soundLabels * 0.06
-                + energy * 0.06
-                + valence * 0.06
+                + theme * 0.10
+                + energy * 0.07
+                + valence * 0.07
         )
     }
 
@@ -307,12 +342,26 @@ enum LyricLexicalEmbedding {
     }
 }
 
+struct ParsedLyricAnalysis: Equatable, Sendable {
+    var moods: [String]
+    var themes: [String]
+    var energy: Double
+    var valence: Double
+    var summary: String
+}
+
 enum LyricIntelligencePrompt {
     static func moodAnalysis(lyrics: String, characterLimit: Int = 2_400) -> String {
         """
-        Analyze these song lyrics. Reply with JSON only, no markdown:
-        {"moods":["up to 5 lowercase mood words"],"themes":["up to 5 short themes"],"energy":0.0,"valence":0.0}
-        energy is 0 calm to 1 intense. valence is 0 sad to 1 joyful.
+        You score song lyrics for a personal music recommender.
+        Reply with JSON only, no markdown, no extra keys:
+        {"moods":["up to 5 lowercase mood tags"],"themes":["up to 5 short theme tags"],"energy":0.0,"valence":0.0,"summary":"two short lines"}
+        Rules:
+        - moods: narrator feeling (calm, sad, angry, romantic, hopeful, lonely)
+        - themes: concrete subjects (night, rain, breakup, city, youth)
+        - energy: 0.0 still/whisper to 1.0 intense/driving
+        - valence: 0.0 desolate to 1.0 joyful
+        - summary: exactly two short sentences in the lyric language, no title, no quotes, separated by \\n
         Lyrics:
         \(lyrics.prefix(characterLimit))
         """
@@ -320,8 +369,9 @@ enum LyricIntelligencePrompt {
 
     static func tagging(lyrics: String) -> String {
         """
-        Tag moods and themes in these song lyrics. JSON only:
-        {"moods":["up to 5 lowercase mood words"],"themes":["up to 5 short themes"]}
+        Tag these song lyrics for recommendation matching. JSON only:
+        {"moods":["up to 5 lowercase mood tags"],"themes":["up to 5 short theme tags"],"summary":"two short lines"}
+        moods = feeling. themes = subject. summary = two short sentences in the lyric language, no title, separated by \\n.
         Lyrics:
         \(lyrics.prefix(2_400))
         """
@@ -329,15 +379,26 @@ enum LyricIntelligencePrompt {
 
     static func scales(lyrics: String) -> String {
         """
-        Score these song lyrics. JSON only:
+        Score these song lyrics for a recommender. JSON only:
         {"energy":0.0,"valence":0.0}
-        energy is 0 calm to 1 intense. valence is 0 sad to 1 joyful.
+        energy is 0.0 still/whisper to 1.0 intense/driving.
+        valence is 0.0 desolate to 1.0 joyful.
         Lyrics:
         \(lyrics.prefix(2_400))
         """
     }
 
-    static func parse(_ raw: String) -> (moods: [String], themes: [String], energy: Double, valence: Double)? {
+    static func summaryOnly(lyrics: String) -> String {
+        """
+        Summarize these song lyrics in exactly two short sentences.
+        JSON only: {"summary":"line one\\nline two"}
+        Same language as the lyrics. No title, no quotes, no extra keys.
+        Lyrics:
+        \(lyrics.prefix(2_400))
+        """
+    }
+
+    static func parse(_ raw: String) -> ParsedLyricAnalysis? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let json = extractJSONObject(from: trimmed) ?? trimmed
         guard let data = json.data(using: .utf8),
@@ -351,15 +412,43 @@ enum LyricIntelligencePrompt {
         let themes = stringList(dictionary["themes"]).prefix(5)
         let energy = numeric(dictionary["energy"]) ?? 0.5
         let valence = numeric(dictionary["valence"]) ?? 0.5
-        if moods.isEmpty, dictionary["energy"] == nil, dictionary["valence"] == nil {
+        let summary = normalizedSummary(dictionary["summary"] as? String ?? "")
+        if moods.isEmpty,
+           dictionary["energy"] == nil,
+           dictionary["valence"] == nil,
+           summary.isEmpty {
             return nil
         }
-        return (
-            Array(moods),
-            Array(themes),
-            min(max(energy, 0), 1),
-            min(max(valence, 0), 1)
+        return ParsedLyricAnalysis(
+            moods: Array(moods),
+            themes: Array(themes),
+            energy: min(max(energy, 0), 1),
+            valence: min(max(valence, 0), 1),
+            summary: summary
         )
+    }
+
+    static func normalizedSummary(_ raw: String) -> String {
+        let cleaned = raw
+            .replacingOccurrences(of: "\\n", with: "\n")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’"))
+        let lines = cleaned
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .prefix(2)
+            .map { String($0.prefix(90)) }
+        return lines.joined(separator: "\n")
+    }
+
+    static func heuristicSummary(from lyrics: String) -> String {
+        let lines = lyrics
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 8 }
+            .prefix(2)
+            .map { String($0.prefix(90)) }
+        return lines.joined(separator: "\n")
     }
 
     private static func extractJSONObject(from raw: String) -> String? {
@@ -585,12 +674,40 @@ actor LyricIntelligence {
             existing: existing,
             lyricsHash: hash
            ) {
-            if !existing.hasSentenceEmbedding {
-                if let sentence = await LyricSentenceEmbedding.vector(from: lyrics) {
-                    existing.sentenceEmbedding = sentence
-                    signatures[song.id] = existing
-                    await persist(existing)
+            var dirty = false
+            if !existing.hasSentenceEmbedding,
+               let sentence = await LyricSentenceEmbedding.vector(from: lyrics) {
+                existing.sentenceEmbedding = sentence
+                dirty = true
+            }
+            if !existing.hasStoredSummary {
+                let store = SecureStore()
+                let settings = LyricIntelligenceSettings.current(
+                    openAIKey: await store.loadSecret(
+                        account: LyricIntelligenceSettings.openAIAccount
+                    ) ?? "",
+                    openRouterKey: await store.loadSecret(
+                        account: LyricIntelligenceSettings.openRouterAccount
+                    ) ?? ""
+                )
+                if settings.provider != .off,
+                   let summary = await LyricIntelligenceBackend.summarize(
+                    lyrics: lyrics,
+                    settings: settings
+                   ) {
+                    existing.summary = summary
+                    dirty = true
+                } else {
+                    let fallback = LyricIntelligencePrompt.heuristicSummary(from: lyrics)
+                    if !fallback.isEmpty {
+                        existing.summary = fallback
+                        dirty = true
+                    }
                 }
+            }
+            if dirty {
+                signatures[song.id] = existing
+                await persist(existing)
             }
             return
         }
@@ -632,6 +749,9 @@ actor LyricIntelligence {
             signature.energy = analyzed.energy
             signature.valence = analyzed.valence
             signature.source = analyzed.source
+            if !analyzed.summary.isEmpty {
+                signature.summary = analyzed.summary
+            }
             if let remote = analyzed.embedding, remote.count >= 8 {
                 signature.embedding = remote
             } else {
@@ -644,6 +764,9 @@ actor LyricIntelligence {
             }
         } else {
             signature.source = "lexical"
+        }
+        if !signature.hasStoredSummary {
+            signature.summary = LyricIntelligencePrompt.heuristicSummary(from: lyrics)
         }
         if !signature.hasSentenceEmbedding {
             signature.sentenceEmbedding =
@@ -658,6 +781,9 @@ actor LyricIntelligence {
             }
             if signature.sentenceEmbedding.count < 8 {
                 signature.sentenceEmbedding = current.sentenceEmbedding
+            }
+            if !signature.hasStoredSummary {
+                signature.summary = current.summary
             }
         }
         signatures[song.id] = signature
@@ -704,6 +830,7 @@ actor LyricIntelligence {
                 signature.embedding = current.embedding
                 signature.source = current.source
                 signature.sentenceEmbedding = current.sentenceEmbedding
+                signature.summary = current.summary
             }
         }
         signatures[song.id] = signature
@@ -800,6 +927,7 @@ enum LyricIntelligenceBackend {
         var themes: [String]
         var energy: Double
         var valence: Double
+        var summary: String
         var embedding: [Float]?
         var source: String
     }
@@ -848,6 +976,7 @@ enum LyricIntelligenceBackend {
                 themes: apple.themes,
                 energy: apple.energy,
                 valence: apple.valence,
+                summary: apple.summary,
                 embedding: nil,
                 source: apple.source
             )
@@ -865,6 +994,7 @@ enum LyricIntelligenceBackend {
                 themes: apple.themes,
                 energy: apple.energy,
                 valence: apple.valence,
+                summary: apple.summary,
                 embedding: nil,
                 source: apple.source
             )
@@ -886,6 +1016,7 @@ enum LyricIntelligenceBackend {
             themes: [],
             energy: 0.5,
             valence: 0.5,
+            summary: LyricIntelligencePrompt.heuristicSummary(from: lyrics),
             embedding: nil,
             source: "lexical"
         )
@@ -951,9 +1082,92 @@ enum LyricIntelligenceBackend {
             themes: parsed.themes,
             energy: parsed.energy,
             valence: parsed.valence,
+            summary: parsed.summary,
             embedding: embedding,
             source: source
         )
+    }
+
+    static func complete(
+        prompt: String,
+        settings: LyricIntelligenceSettings
+    ) async -> String? {
+        switch settings.provider {
+        case .off:
+            return nil
+        case .onDevice:
+            if let text = await AppleFoundationLyricClient.complete(prompt) {
+                return text
+            }
+            return await remoteText(
+                prompt: prompt,
+                endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
+                key: settings.openRouterKey,
+                model: "google/gemma-3-270m-it"
+            )
+        case .applePrivateCloud:
+            if let text = await AppleFoundationLyricClient.completePrivateCloud(prompt) {
+                return text
+            }
+            return await complete(prompt: prompt, settings: LyricIntelligenceSettings(
+                provider: .onDevice,
+                openAIKey: settings.openAIKey,
+                openRouterKey: settings.openRouterKey,
+                openRouterModel: settings.openRouterModel
+            ))
+        case .openAI:
+            return await remoteText(
+                prompt: prompt,
+                endpoint: URL(string: "https://api.openai.com/v1/chat/completions"),
+                key: settings.openAIKey,
+                model: "gpt-4o-mini"
+            )
+        case .openRouter:
+            return await remoteText(
+                prompt: prompt,
+                endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
+                key: settings.openRouterKey,
+                model: settings.openRouterModel
+            )
+        }
+    }
+
+    static func summarize(
+        lyrics: String,
+        settings: LyricIntelligenceSettings
+    ) async -> String? {
+        guard let text = await complete(
+            prompt: LyricIntelligencePrompt.summaryOnly(lyrics: lyrics),
+            settings: settings
+        ) else {
+            return nil
+        }
+        if let parsed = LyricIntelligencePrompt.parse(text), !parsed.summary.isEmpty {
+            return parsed.summary
+        }
+        let normalized = LyricIntelligencePrompt.normalizedSummary(text)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    private static func remoteText(
+        prompt: String,
+        endpoint: URL?,
+        key: String,
+        model: String
+    ) async -> String? {
+        guard !key.isEmpty, let endpoint else { return nil }
+        let body: [String: Any] = [
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                ["role": "system", "content": "Return JSON only."],
+                ["role": "user", "content": prompt]
+            ]
+        ]
+        guard let text = await postJSON(url: endpoint, key: key, body: body) else {
+            return nil
+        }
+        return chatContent(from: text) ?? text
     }
 
     private static func remoteEmbedding(
