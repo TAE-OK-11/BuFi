@@ -423,17 +423,39 @@ struct HomePresentation: Sendable {
         input: HomePresentationInput
     ) async -> HomePresentation {
         guard !Task.isCancelled else { return .empty }
-        let value = make(input: input)
-        return Task.isCancelled ? .empty : value
+        let lyricIndex = await LyricIntelligence.shared.index()
+        let recent = await ListeningHistoryStore.shared.recommendationSnapshot()
+            .recentSongs
+        guard !Task.isCancelled else { return .empty }
+        let value = make(input: input, lyricIndex: lyricIndex)
+        let mixes = await PersonalizedMixLLM.apply(
+            to: value.personalizedMixes,
+            snapshot: input.snapshot,
+            recent: recent,
+            lyricIndex: lyricIndex
+        )
+        guard !Task.isCancelled else { return .empty }
+        return HomePresentation(
+            personalizedMixes: mixes,
+            favoriteSongsMix: value.favoriteSongsMix,
+            mostPlayedSongsMix: value.mostPlayedSongsMix,
+            recommendedAlbums: value.recommendedAlbums,
+            primaryArtists: value.primaryArtists,
+            featuredArtists: value.featuredArtists
+        )
     }
 
-    static func make(input: HomePresentationInput) -> HomePresentation {
+    static func make(
+        input: HomePresentationInput,
+        lyricIndex: LyricSignatureIndex = .empty
+    ) -> HomePresentation {
         let snapshot = input.snapshot
         return HomePresentation(
             personalizedMixes: PersonalizedMixBuilder.make(
                 snapshot: snapshot,
                 snapshotRevision: input.revision,
-                selectedArtists: input.selectedArtists
+                selectedArtists: input.selectedArtists,
+                lyricIndex: lyricIndex
             ),
             favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),
             mostPlayedSongsMix: PersonalizedMixBuilder.mostPlayedSongs(snapshot.mostPlayedSongs),

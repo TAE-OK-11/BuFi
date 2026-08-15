@@ -110,6 +110,8 @@
 "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다." = "OpenAI analyzes lyric mood. Results are stored locally so the same lyrics are not sent again.";
 "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다." = "The OpenRouter model analyzes lyric mood. Results are stored locally so the same lyrics are not sent again.";
 "Groq로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다." = "Groq analyzes lyric content with Llama 3.3 70B by default. Results are stored locally so the same lyrics are not sent again.";
+"Groq는 모델마다 다른 프롬프트를 씁니다. Llama 3.3 70B는 태그·차선 정리에, GPT-OSS 120B는 긴 요약과 플레이리스트 연출에 맞춥니다." = "Groq uses a different prompt per model. Llama 3.3 70B is tuned for tags and lane ranking; GPT-OSS 120B for long summaries and playlist direction.";
+"Cerebras도 Llama 3.3 70B와 GPT-OSS 120B에 각각 다른 프롬프트를 씁니다. 결과는 로컬에 남습니다." = "Cerebras also uses separate prompts for Llama 3.3 70B and GPT-OSS 120B. Results stay on device.";
 "지금 곡 다시 분석" = "Reanalyze current song";
 "안 된 곡 Groq로 분석" = "Analyze remaining with Groq";
 "요약 다시 할 곡 %lld" = "Needs a new summary %lld";

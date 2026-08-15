@@ -178,7 +178,10 @@ private enum FoundationModelsBridge {
 
     static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
         async let tagged = respond(
-            to: LyricIntelligencePrompt.tagging(lyrics: lyrics),
+            to: LyricIntelligencePrompt.tagging(
+                lyrics: lyrics,
+                family: .appleFoundation
+            ),
             useCase: .contentTagging
         )
         async let scored = respond(
@@ -220,7 +223,10 @@ private enum FoundationModelsBridge {
 
     static func analyzeDefault3B(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
         guard let text = await respond(
-            to: LyricIntelligencePrompt.moodAnalysis(lyrics: lyrics),
+            to: LyricIntelligencePrompt.moodAnalysis(
+                lyrics: lyrics,
+                family: .appleFoundation
+            ),
             useCase: nil
         ), let parsed = LyricIntelligencePrompt.parse(text) else {
             return nil
@@ -315,7 +321,7 @@ private enum PrivateCloudBridge {
             let response = try await session.respond(
                 to: LyricIntelligencePrompt.moodAnalysis(
                     lyrics: lyrics,
-                    characterLimit: 12_000
+                    family: .appleFoundation
                 )
             )
             guard let parsed = LyricIntelligencePrompt.parse(response.content) else {

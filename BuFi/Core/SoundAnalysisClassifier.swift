@@ -36,6 +36,18 @@ enum SoundAnalysisClassifier {
         return LyricLexicalEmbedding.l2Normalized(buckets)
     }
 
+    static func vocalGender(from labels: [String]) -> String {
+        let text = labels.joined(separator: " ").lowercased()
+        let female = text.contains("female") || text.contains("woman")
+        let male = (text.contains("male") && !text.contains("female"))
+            || text.contains("man") && !text.contains("woman")
+        if female, male { return "mixed" }
+        if female { return "female" }
+        if male { return "male" }
+        if text.contains("sing") || text.contains("music") { return "" }
+        return ""
+    }
+
     static func topLabels(from scores: [String: Double], limit: Int = 8) -> [String] {
         scores
             .filter { $0.value >= 0.05 }

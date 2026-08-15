@@ -296,6 +296,13 @@ enum LyricLexicalEmbedding {
             merged[0] += Float(min(max(energy, 0), 1) - 0.5)
             merged[1] += Float(min(max(valence, 0), 1) - 0.5)
         }
+        let extras = LyricLexicalFeatures.extraTokens(from: lyrics)
+        if !extras.isEmpty {
+            let extraVector = Self.vector(from: extras.joined(separator: " "))
+            for index in merged.indices {
+                merged[index] = merged[index] * 0.90 + extraVector[index] * 0.10
+            }
+        }
         return l2Normalized(merged)
     }
 
@@ -333,6 +340,19 @@ enum LyricLexicalEmbedding {
             )
             for index in merged.indices {
                 merged[index] = merged[index] * 0.86 + summary[index] * 0.14
+            }
+        }
+        let voiceAndGenre = [
+            signature.details.vocalGender,
+            signature.details.genre,
+            signature.details.vocal,
+            signature.details.style,
+            signature.soundLabels.joined(separator: " ")
+        ].joined(separator: " ")
+        if !voiceAndGenre.trimmingCharacters(in: .whitespaces).isEmpty {
+            let extra = vector(from: voiceAndGenre)
+            for index in merged.indices {
+                merged[index] = merged[index] * 0.82 + extra[index] * 0.18
             }
         }
         return l2Normalized(merged)
@@ -401,25 +421,18 @@ struct ParsedLyricAnalysis: Equatable, Sendable {
 }
 
 enum LyricIntelligencePrompt {
-    static func moodAnalysis(lyrics: String, characterLimit: Int = 2_400) -> String {
-        """
-        Score these lyrics for a personal music recommender. JSON only, 20 fields, no markdown:
-        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"energy":0.0,"valence":0.0,"summary":"She waits by the window after midnight.\\nThe rain keeps repeating his name.","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what the song is about","setting":"place","tempo":0.0,"intimacy":0.0,"narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color word","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","emotion":0.0,"context":"sleep|commute|workout|date|focus"}
-        energy/tempo/intimacy/emotion are 0-1. valence 0 sad to 1 joyful.
-        \(summaryRules)
-        Lyrics:
-        \(lyrics.prefix(characterLimit))
-        """
+    static func moodAnalysis(
+        lyrics: String,
+        family: LyricModelFamily = .generic
+    ) -> String {
+        LyricModelPrompts.lyricAnalysis(lyrics: lyrics, family: family)
     }
 
-    static func tagging(lyrics: String) -> String {
-        """
-        Tag these lyrics for recommendation matching. JSON only:
-        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"summary":"She waits by the window after midnight.\\nThe rain keeps repeating his name.","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what it is about","setting":"place","narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","context":"sleep|commute|workout|date|focus"}
-        \(summaryRules)
-        Lyrics:
-        \(lyrics.prefix(2_400))
-        """
+    static func tagging(
+        lyrics: String,
+        family: LyricModelFamily = .appleFoundation
+    ) -> String {
+        LyricModelPrompts.tagging(lyrics: lyrics, family: family)
     }
 
     static func scales(lyrics: String) -> String {
@@ -429,27 +442,16 @@ enum LyricIntelligencePrompt {
         energy is 0.0 still/whisper to 1.0 intense/driving.
         valence is 0.0 desolate to 1.0 joyful.
         Lyrics:
-        \(lyrics.prefix(2_400))
+        \(lyrics.prefix(LyricModelFamily.generic.lyricCharacterLimit))
         """
     }
 
-    static func summaryOnly(lyrics: String) -> String {
-        """
-        Retell the lyric story or feeling. JSON only:
-        {"summary":"She waits by the window after midnight.\\nThe rain keeps repeating his name."}
-        \(summaryRules)
-        Lyrics:
-        \(lyrics.prefix(2_400))
-        """
+    static func summaryOnly(
+        lyrics: String,
+        family: LyricModelFamily = .generic
+    ) -> String {
+        LyricModelPrompts.summaryOnly(lyrics: lyrics, family: family)
     }
-
-    private static let summaryRules = """
-        summary retells the lyric content: who is speaking, what they want, and what happens or is felt.
-        Write in the same language the singer uses, but never name that language.
-        language is a separate JSON field. Never put language, nationality, script, genre, artist, or title in summary.
-        Forbidden summary text: "한국어다", "영어 가사", "This is Korean", "The lyrics are in English".
-        No quotes and no extra keys.
-        """
 
     static func parse(_ raw: String) -> ParsedLyricAnalysis? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -501,6 +503,8 @@ enum LyricIntelligencePrompt {
             social: token(dictionary["social"]),
             color: token(dictionary["color"]),
             vocal: token(dictionary["vocal"]),
+            vocalGender: token(dictionary["vocalGender"] ?? dictionary["vocal_gender"]),
+            genre: token(dictionary["genre"]),
             language: token(dictionary["language"]),
             emotionIntensity: min(max(numeric(dictionary["emotion"]) ?? 0.5, 0), 1),
             listenContext: token(dictionary["context"])
@@ -526,8 +530,6 @@ enum LyricIntelligencePrompt {
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && !isMetaCommentary($0) }
-            .prefix(2)
-            .map { String($0.prefix(90)) }
         let summary = lines.joined(separator: "\n")
         return isContentSummary(summary) ? summary : ""
     }
@@ -557,10 +559,9 @@ enum LyricIntelligencePrompt {
         let second = rest.first { $0 != first }
             ?? rest.max { $0.count < $1.count }
         if let second {
-            return [String(first.prefix(90)), String(second.prefix(90))]
-                .joined(separator: "\n")
+            return [first, second].joined(separator: "\n")
         }
-        return String(first.prefix(90))
+        return first
     }
 
     private static func isLyricStoryLine(_ line: String) -> Bool {
@@ -1066,7 +1067,13 @@ actor LyricIntelligence {
                 signature.source = current.source
                 signature.sentenceEmbedding = current.sentenceEmbedding
                 signature.summary = current.summary
+                signature.details = current.details
             }
+        }
+        if signature.details.vocalGender.isEmpty {
+            signature.details.vocalGender = SoundAnalysisClassifier.vocalGender(
+                from: analyzed.labels
+            )
         }
         signatures[song.id] = signature
         await persist(signature)
@@ -1418,7 +1425,10 @@ enum LyricIntelligenceBackend {
         source: String
     ) async -> Analysis? {
         guard !key.isEmpty, let endpoint else { return nil }
-        let prompt = LyricIntelligencePrompt.moodAnalysis(lyrics: lyrics)
+        let prompt = LyricIntelligencePrompt.moodAnalysis(
+            lyrics: lyrics,
+            family: LyricModelFamily.resolve(model: model)
+        )
         let body: [String: Any] = [
             "model": model,
             "temperature": 0,
@@ -1520,7 +1530,10 @@ enum LyricIntelligenceBackend {
         settings: LyricIntelligenceSettings
     ) async -> String? {
         guard let text = await complete(
-            prompt: LyricIntelligencePrompt.summaryOnly(lyrics: lyrics),
+            prompt: LyricIntelligencePrompt.summaryOnly(
+                lyrics: lyrics,
+                family: LyricModelFamily.resolve(settings)
+            ),
             settings: settings
         ) else {
             return nil

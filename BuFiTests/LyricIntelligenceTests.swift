@@ -52,7 +52,7 @@ final class LyricIntelligenceTests: XCTestCase {
             LyricIntelligencePrompt.normalizedSummary(
                 "Walking alone after midnight.\n\nThe rain keeps your name.\nA third leftover line."
             ),
-            "Walking alone after midnight.\nThe rain keeps your name."
+            "Walking alone after midnight.\nThe rain keeps your name.\nA third leftover line."
         )
     }
 
@@ -92,6 +92,50 @@ final class LyricIntelligenceTests: XCTestCase {
                 summary: "한국어다"
             ).hasStoredSummary
         )
+    }
+
+    func testModelFamilyResolvesOSSAndLlamaAndApple() {
+        XCTAssertEqual(
+            LyricModelFamily.resolve(model: "openai/gpt-oss-120b"),
+            .gptOSS
+        )
+        XCTAssertEqual(
+            LyricModelFamily.resolve(model: "llama-3.3-70b-versatile"),
+            .llama70B
+        )
+        let apple = LyricIntelligenceSettings(
+            provider: .onDevice,
+            openAIKey: "",
+            openRouterKey: "",
+            openRouterModel: ""
+        )
+        XCTAssertEqual(LyricModelFamily.resolve(apple), .appleFoundation)
+        XCTAssertTrue(
+            LyricModelPrompts.lyricAnalysis(
+                lyrics: "I wait by the window",
+                family: .appleFoundation
+            ).contains("JSON")
+        )
+    }
+
+    func testSoundLabelsInferVocalGender() {
+        XCTAssertEqual(
+            SoundAnalysisClassifier.vocalGender(from: ["female singing", "music"]),
+            "female"
+        )
+        XCTAssertEqual(
+            SoundAnalysisClassifier.vocalGender(from: ["male speech"]),
+            "male"
+        )
+    }
+
+    func testPlaylistComposerParsesIDsAndSubtitle() {
+        let parsed = PersonalizedMixLLM.parse(
+            #"{"ids":["a","b"],"subtitle":"노을 이후의 여운"}"#,
+            allowed: ["a", "b", "c"]
+        )
+        XCTAssertEqual(parsed.ids, ["a", "b"])
+        XCTAssertEqual(parsed.subtitle, "노을 이후의 여운")
     }
 
     func testGroqAndCerebrasAreSelectableProviders() {

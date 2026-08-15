@@ -18,9 +18,18 @@ struct LyricDetailProfile: Codable, Equatable, Sendable {
     var social: String = ""
     var color: String = ""
     var vocal: String = ""
+    var vocalGender: String = ""
+    var genre: String = ""
     var language: String = ""
     var emotionIntensity: Double = 0.5
     var listenContext: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case moods, themes, energy, valence, summary, season, dayparts
+        case style, content, setting, tempo, intimacy, narrative, weather
+        case social, color, vocal, vocalGender, genre, language
+        case emotionIntensity, listenContext
+    }
 
     static let empty = LyricDetailProfile()
 
@@ -51,7 +60,7 @@ struct LyricDetailProfile: Codable, Equatable, Sendable {
     var tagBlob: String {
         [
             moods, themes, dayparts,
-            [season, style, content, setting, narrative, weather, social, color, vocal, language, listenContext]
+            [season, style, content, setting, narrative, weather, social, color, vocal, vocalGender, genre, language, listenContext]
         ]
         .flatMap { $0 }
         .joined(separator: " ")
@@ -76,5 +85,39 @@ struct LyricDetailProfile: Codable, Equatable, Sendable {
         }
         if season == "any" || season == currentSeason { score += 0.38 }
         return min(1, score)
+    }
+}
+
+extension LyricDetailProfile {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        moods = try container.decodeIfPresent([String].self, forKey: .moods) ?? []
+        themes = try container.decodeIfPresent([String].self, forKey: .themes) ?? []
+        energy = try container.decodeIfPresent(Double.self, forKey: .energy) ?? 0.5
+        valence = try container.decodeIfPresent(Double.self, forKey: .valence) ?? 0.5
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        season = try container.decodeIfPresent(String.self, forKey: .season) ?? ""
+        dayparts = try container.decodeIfPresent([String].self, forKey: .dayparts) ?? []
+        style = try container.decodeIfPresent(String.self, forKey: .style) ?? ""
+        content = try container.decodeIfPresent(String.self, forKey: .content) ?? ""
+        setting = try container.decodeIfPresent(String.self, forKey: .setting) ?? ""
+        tempo = try container.decodeIfPresent(Double.self, forKey: .tempo) ?? 0.5
+        intimacy = try container.decodeIfPresent(Double.self, forKey: .intimacy) ?? 0.5
+        narrative = try container.decodeIfPresent(String.self, forKey: .narrative) ?? ""
+        weather = try container.decodeIfPresent(String.self, forKey: .weather) ?? ""
+        social = try container.decodeIfPresent(String.self, forKey: .social) ?? ""
+        color = try container.decodeIfPresent(String.self, forKey: .color) ?? ""
+        vocal = try container.decodeIfPresent(String.self, forKey: .vocal) ?? ""
+        vocalGender = try container.decodeIfPresent(String.self, forKey: .vocalGender) ?? ""
+        genre = try container.decodeIfPresent(String.self, forKey: .genre) ?? ""
+        language = try container.decodeIfPresent(String.self, forKey: .language) ?? ""
+        emotionIntensity = try container.decodeIfPresent(
+            Double.self,
+            forKey: .emotionIntensity
+        ) ?? 0.5
+        listenContext = try container.decodeIfPresent(
+            String.self,
+            forKey: .listenContext
+        ) ?? ""
     }
 }

@@ -811,7 +811,13 @@ private struct RecommendationSettingsView: View {
                             )
                         }
                         if lyricProviderRaw == LyricIntelligenceProviderKind.groq.rawValue {
-                            TextField("Groq 모델", text: $groqModel)
+                            Picker("Groq 모델", selection: $groqModel) {
+                                Text("Llama 3.3 70B").tag("llama-3.3-70b-versatile")
+                                Text("GPT-OSS 120B").tag("openai/gpt-oss-120b")
+                                Text("Llama 3.1 8B").tag("llama-3.1-8b-instant")
+                            }
+                            .pickerStyle(.menu)
+                            TextField("Groq 모델 ID", text: $groqModel)
                                 .settingsTextField()
                             SecureField(
                                 session.hasGroqKey
@@ -834,7 +840,12 @@ private struct RecommendationSettingsView: View {
                             )
                         }
                         if lyricProviderRaw == LyricIntelligenceProviderKind.cerebras.rawValue {
-                            TextField("Cerebras 모델", text: $cerebrasModel)
+                            Picker("Cerebras 모델", selection: $cerebrasModel) {
+                                Text("Llama 3.3 70B").tag("llama-3.3-70b")
+                                Text("GPT-OSS 120B").tag("gpt-oss-120b")
+                            }
+                            .pickerStyle(.menu)
+                            TextField("Cerebras 모델 ID", text: $cerebrasModel)
                                 .settingsTextField()
                             SecureField(
                                 session.hasCerebrasKey
@@ -1251,9 +1262,9 @@ private struct RecommendationSettingsView: View {
         case .openRouter:
             String(localized: "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         case .groq:
-            String(localized: "Groq로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
+            String(localized: "Groq는 모델마다 다른 프롬프트를 씁니다. Llama 3.3 70B는 태그·차선 정리에, GPT-OSS 120B는 긴 요약과 플레이리스트 연출에 맞춥니다.")
         case .cerebras:
-            String(localized: "Cerebras로 가사 내용을 분석합니다. 기본 모델은 Llama 3.3 70B입니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
+            String(localized: "Cerebras도 Llama 3.3 70B와 GPT-OSS 120B에 각각 다른 프롬프트를 씁니다. 결과는 로컬에 남습니다.")
         }
     }
 

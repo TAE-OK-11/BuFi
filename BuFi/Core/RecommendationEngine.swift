@@ -2112,6 +2112,9 @@ struct PersonalizedMix: Identifiable, Hashable, Sendable {
     let songs: [Song]
     let kind: Kind
     var artworkCoverArt: String? = nil
+    var mood: String = ""
+    var theme: String = ""
+    var audioFeel: String = ""
 
     var showsRanking: Bool { kind == .ranking }
 }
@@ -2178,6 +2181,7 @@ private struct PersonalizedMixCacheKey: Equatable {
     let localeIdentifier: String
     let songLimit: Int
     let selectedArtists: [String]
+    var briefVersion: String = ""
 }
 
 private final class PersonalizedMixResultCache: @unchecked Sendable {
@@ -2288,7 +2292,8 @@ enum PersonalizedMixBuilder {
         date: Date = Date(),
         calendar: Calendar = .current,
         songLimit: Int = 24,
-        selectedArtists: [String] = []
+        selectedArtists: [String] = [],
+        lyricIndex: LyricSignatureIndex = .empty
     ) -> [PersonalizedMix] {
         guard songLimit > 0 else { return [] }
         let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
@@ -2305,7 +2310,8 @@ enum PersonalizedMixBuilder {
             timeZoneIdentifier: calendar.timeZone.identifier,
             localeIdentifier: Locale.current.identifier,
             songLimit: songLimit,
-            selectedArtists: selectedArtists
+            selectedArtists: selectedArtists,
+            briefVersion: "v2"
         )
         if let cached = cache.value(for: cacheKey) { return cached }
 
@@ -2515,13 +2521,26 @@ enum PersonalizedMixBuilder {
         ])
 
         guard !Task.isCancelled else { return [] }
-        let result = mixes.filter { !$0.songs.isEmpty }
+        let hour = calendar.component(.hour, from: date)
+        let month = calendar.component(.month, from: date)
+        let decorated = mixes.compactMap { mix -> PersonalizedMix? in
+            decorate(
+                mix,
+                corpus: corpus,
+                lyricIndex: lyricIndex,
+                hour: hour,
+                month: month,
+                limit: songLimit
+            )
+        }
+        let result = decorated.filter { !$0.songs.isEmpty }
         cache.insert(result, for: cacheKey)
         return result
     }
 
     static func favoriteSongs(_ songs: [Song]) -> PersonalizedMix {
-        PersonalizedMix(
+        let brief = PersonalizedMixCatalog.brief(forKind: .favorites, mixID: "favorite-songs")
+        return PersonalizedMix(
             id: "favorite-songs",
             title: String(localized: "좋아요 표시한 곡"),
             subtitle: String(
@@ -2529,18 +2548,95 @@ enum PersonalizedMixBuilder {
                 songs.count
             ),
             songs: songs,
-            kind: .favorites
+            kind: .favorites,
+            mood: brief.mood,
+            theme: brief.theme,
+            audioFeel: brief.audioFeel
         )
     }
 
     static func mostPlayedSongs(_ songs: [Song]) -> PersonalizedMix {
-        PersonalizedMix(
+        let brief = PersonalizedMixCatalog.brief(forKind: .ranking, mixID: "most-played-ranking")
+        return PersonalizedMix(
             id: "most-played-ranking",
             title: String(localized: "자주 들은 곡"),
             subtitle: String(localized: "서버와 청취 기록을 반영한 순위"),
             songs: songs,
-            kind: .ranking
+            kind: .ranking,
+            mood: brief.mood,
+            theme: brief.theme,
+            audioFeel: brief.audioFeel
         )
+    }
+
+    private static func decorate(
+        _ mix: PersonalizedMix,
+        corpus: PersonalizedSongCorpus,
+        lyricIndex: LyricSignatureIndex,
+        hour: Int,
+        month: Int,
+        limit: Int
+    ) -> PersonalizedMix? {
+        let artist = mix.kind == .artist
+            ? mix.title.replacingOccurrences(of: " Mix", with: "")
+            : ""
+        let brief = PersonalizedMixCatalog.brief(
+            forKind: mix.kind,
+            mixID: mix.id,
+            artist: artist,
+            hour: hour,
+            month: month
+        )
+        let ranked = rank(
+            preferred: mix.songs,
+            pool: corpus.pool,
+            brief: brief,
+            corpus: corpus,
+            lyricIndex: lyricIndex,
+            limit: limit
+        )
+        guard !ranked.isEmpty else { return nil }
+        return PersonalizedMix(
+            id: mix.id,
+            title: mix.title,
+            subtitle: mix.subtitle,
+            songs: ranked,
+            kind: mix.kind,
+            artworkCoverArt: mix.artworkCoverArt,
+            mood: brief.mood,
+            theme: brief.theme,
+            audioFeel: brief.audioFeel
+        )
+    }
+
+    private static func rank(
+        preferred: [Song],
+        pool: [Song],
+        brief: PersonalizedMixBrief,
+        corpus: PersonalizedSongCorpus,
+        lyricIndex: LyricSignatureIndex,
+        limit: Int
+    ) -> [Song] {
+        var seen = Set<String>()
+        var scored: [(Song, Double)] = []
+        scored.reserveCapacity(preferred.count + min(pool.count, 200))
+        func consider(_ song: Song, bonus: Double) {
+            guard seen.insert(song.id).inserted else { return }
+            let text = corpus.searchableTexts[song.id] ?? searchableText(song)
+            let value = brief.score(
+                song: song,
+                signature: lyricIndex.bySongID[song.id],
+                searchableText: text
+            ) + bonus
+            scored.append((song, value))
+        }
+        for song in preferred { consider(song, bonus: 0.08) }
+        for song in pool.prefix(240) { consider(song, bonus: 0) }
+        scored.sort {
+            if $0.1 == $1.1 { return $0.0.id < $1.0.id }
+            return $0.1 > $1.1
+        }
+        return Array(scored.prefix(limit).map(\.0))
     }
 
     private static func artistMix(

@@ -86,3 +86,29 @@ enum LyricSentenceEmbedding {
     }
 #endif
 }
+
+enum LyricLexicalFeatures {
+    static func extraTokens(from text: String) -> [String] {
+#if canImport(NaturalLanguage)
+        let snippet = String(text.prefix(800))
+        let tagger = NLTagger(tagSchemes: [.nameType])
+        tagger.string = snippet
+        var tokens: [String] = []
+        tagger.enumerateTags(
+            in: snippet.startIndex..<snippet.endIndex,
+            unit: .word,
+            scheme: .nameType,
+            options: [.omitWhitespace, .omitPunctuation]
+        ) { tag, range in
+            if tag == .personalName || tag == .placeName {
+                tokens.append(String(snippet[range]))
+            }
+            return tokens.count < 8
+        }
+        return tokens
+#else
+        _ = text
+        return []
+#endif
+    }
+}

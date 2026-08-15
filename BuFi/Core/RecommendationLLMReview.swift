@@ -18,10 +18,13 @@ enum RecommendationLLMReview {
     ) async -> [Song] {
         guard !songs.isEmpty, limit > 0 else { return songs }
         guard isEnabled() else { return Array(songs.prefix(limit)) }
-        let pool = Array(songs.prefix(min(18, max(limit + 6, songs.count))))
-        guard pool.count >= 3 else { return songs }
         let settings = await currentSettings()
-        guard settings.provider != .off else { return songs }
+        guard settings.provider != .off else { return Array(songs.prefix(limit)) }
+        let family = LyricModelFamily.resolve(settings)
+        let pool = Array(
+            songs.prefix(min(family.reviewPoolLimit, max(limit + 6, songs.count)))
+        )
+        guard pool.count >= 3 else { return songs }
         if let cached = cachedOrder(
             songs: pool,
             seed: seed,
@@ -36,7 +39,8 @@ enum RecommendationLLMReview {
             recent: recent,
             favorites: favorites,
             lyricIndex: lyricIndex,
-            purpose: purpose
+            purpose: purpose,
+            family: family
         )
         guard let raw = await LyricIntelligenceBackend.complete(
             prompt: prompt,
@@ -97,7 +101,8 @@ enum RecommendationLLMReview {
         recent: [Song],
         favorites: [Song],
         lyricIndex: LyricSignatureIndex,
-        purpose: RecommendationPurpose
+        purpose: RecommendationPurpose,
+        family: LyricModelFamily
     ) -> String {
         let taste = (recent.prefix(4) + favorites.prefix(4) + [seed].compactMap { $0 })
             .reduce(into: [String: Song]()) { $0[$1.id] = $1 }
@@ -108,17 +113,12 @@ enum RecommendationLLMReview {
         let candidates = pool.enumerated().map { index, song in
             "\(index + 1). \(card(for: song, lyricIndex: lyricIndex))"
         }.joined(separator: "\n")
-        return """
-        You finish a music recommendation ranking. The numeric ranker already chose these library tracks.
-        Goal: \(purpose.rawValue). Keep every listed id, invent none, return JSON only:
-        {"ids":["id in listen-next order"]}
-        Prefer the same emotional lane as taste, then a slight contrast that still matches energy.
-        Demote same-artist spam, clashing valence, and cards with empty analysis.
-        Taste:
-        \(taste.isEmpty ? "(none)" : taste)
-        Candidates:
-        \(candidates)
-        """
+        return LyricModelPrompts.recommendationReview(
+            family: family,
+            purpose: purpose.rawValue,
+            taste: taste.isEmpty ? "(none)" : taste,
+            candidates: candidates
+        )
     }
 
     private static func card(for song: Song, lyricIndex: LyricSignatureIndex) -> String {
@@ -132,7 +132,9 @@ enum RecommendationLLMReview {
         let season = signature?.details.season ?? ""
         let day = signature?.details.dayparts.joined(separator: ",") ?? ""
         let style = signature?.details.style ?? ""
-        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) themes:\(themes) e:\(energy) v:\(valence) season:\(season) day:\(day) style:\(style) sound:\(sound) | \(summary)"
+        let vocal = signature?.details.vocalGender ?? ""
+        let genre = signature?.details.genre ?? song.genre ?? ""
+        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) themes:\(themes) e:\(energy) v:\(valence) season:\(season) day:\(day) style:\(style) vocal:\(vocal) genre:\(genre) sound:\(sound) | \(summary)"
     }
 
     private static func currentSettings() async -> LyricIntelligenceSettings {

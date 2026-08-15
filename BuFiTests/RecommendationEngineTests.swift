@@ -391,6 +391,29 @@ final class RecommendationEngineTests: XCTestCase {
         XCTAssertTrue(result.isEmpty)
     }
 
+    func testEachMixCarriesAMoodThemeAndAudioLane() {
+        let songs = (0..<16).map { index in
+            song(
+                id: "lane-\(index)",
+                title: index.isMultiple(of: 2) ? "Happy Sun" : "Quiet Night",
+                artist: "Artist \(index % 5)",
+                genre: index.isMultiple(of: 2) ? "Pop" : "Jazz"
+            )
+        }
+        let mixes = PersonalizedMixBuilder.make(
+            snapshot: HomeSnapshot(randomSongs: songs),
+            date: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        XCTAssertFalse(mixes.isEmpty)
+        for mix in mixes {
+            XCTAssertFalse(mix.mood.isEmpty, mix.title)
+            XCTAssertFalse(mix.theme.isEmpty, mix.title)
+            XCTAssertFalse(mix.audioFeel.isEmpty, mix.title)
+        }
+        let happy = mixes.first { $0.id.hasPrefix("happy-mix") }
+        XCTAssertEqual(happy?.mood, PersonalizedMixCatalog.happy.mood)
+    }
+
     func testPersonalizedMixesProvideSixDefaultAndFourSelectedArtists() {
         let songs = (0..<12).map { index in
             song(
