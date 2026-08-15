@@ -125,6 +125,11 @@
 "로컬 어휘 (모델 없음)" = "Local lexicon (no model)";
 "캐시에서 읽음 (모델을 다시 호출하지 않음)" = "Read from cache (the model was not called again)";
 "새로 분석함" = "Fresh analysis";
+"가사 분석 진행" = "Lyric analysis progress";
+"안 된 곡 전부 분석" = "Analyze all remaining songs";
+"분석 중단" = "Stop analysis";
+"음향 있음" = "Has sound";
+"음향 없음" = "No sound";
 "가사 분위기" = "Lyric mood";
 "서버에 연결할 수 없어 저장된 라이브러리를 엽니다." = "Couldn't reach the server, so your saved library is opening instead.";
 "OpenSubsonic 응답 형식이 올바르지 않습니다." = "The OpenSubsonic response is invalid.";

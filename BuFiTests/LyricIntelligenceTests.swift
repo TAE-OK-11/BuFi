@@ -243,6 +243,61 @@ final class LyricIntelligenceTests: XCTestCase {
         )
     }
 
+    func testCoverageSeparatesAnalyzedAndPendingSongs() {
+        let done = Song(id: "done", title: "Done", artist: "A", album: "X")
+        let pending = Song(id: "wait", title: "Wait", artist: "B", album: "Y")
+        let radio = Song(
+            id: "radio",
+            title: "Radio",
+            artist: "C",
+            album: "Z",
+            externalStreamURL: "https://example.test/stream"
+        )
+        let probe = Song(
+            id: LyricIntelligence.probeSongID,
+            title: "Probe",
+            artist: "BuFi",
+            album: "Probe"
+        )
+        let report = LyricAnalysisCoverage.make(
+            catalog: [done, pending, radio, probe, done],
+            signatures: [
+                "done": LyricSignature(
+                    songID: "done",
+                    lyricsHash: "hash",
+                    moods: ["calm"],
+                    themes: ["night"],
+                    energy: 0.2,
+                    valence: 0.3,
+                    embedding: [0.1],
+                    source: "apple-intelligence",
+                    soundLabels: ["singing"],
+                    soundEmbedding: [0.2],
+                    audioRevision: "rev",
+                    soundSource: "coreml-sound-analysis"
+                )
+            ]
+        )
+        XCTAssertEqual(report.known, 2)
+        XCTAssertEqual(report.lyricDone, 1)
+        XCTAssertEqual(report.soundDone, 1)
+        XCTAssertEqual(report.done.map(\.song.id), ["done"])
+        XCTAssertEqual(report.pending.map(\.song.id), ["wait"])
+        XCTAssertEqual(report.done.first?.sourceTitle, "Apple Intelligence")
+        XCTAssertTrue(report.done.first?.hasSound ?? false)
+    }
+
+    func testHomeSnapshotKnownSongsDeduplicatesCollections() {
+        var snapshot = HomeSnapshot()
+        let shared = Song(id: "one", title: "One", artist: "A", album: "X")
+        snapshot.starredSongs = [shared]
+        snapshot.randomSongs = [shared]
+        snapshot.mostPlayedSongs = [
+            Song(id: "two", title: "Two", artist: "B", album: "Y")
+        ]
+        XCTAssertEqual(snapshot.knownSongs().map(\.id), ["one", "two"])
+    }
+
     func testCachePolicyReusesMatchingLyricAndSoundOnly() {
         let stored = LyricSignature(
             songID: "one",

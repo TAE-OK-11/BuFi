@@ -390,6 +390,12 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
 
     static let empty = HomeSnapshot()
 
+    func knownSongs() -> [Song] {
+        MediaIdentity.uniqueSongs(
+            from: Self.songCollections.map { self[keyPath: $0] }
+        )
+    }
+
     // WritableKeyPath is a class and is not Sendable. These tables are
     // immutable after initialization and only used as collection indexes.
     nonisolated(unsafe) static let songCollections:

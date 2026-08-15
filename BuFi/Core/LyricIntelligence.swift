@@ -393,6 +393,8 @@ actor LyricIntelligence {
     private var soundInFlight: Set<String> = []
     private var loaded = false
     private var scope = ""
+    private var batchGeneration: UInt64 = 0
+    private var batchProgress = LyricBatchProgress.idle
 
     func activate(accountScope: String) async {
         if loaded, scope == accountScope { return }
@@ -409,11 +411,13 @@ actor LyricIntelligence {
     }
 
     func deactivate() {
+        batchGeneration &+= 1
         signatures = [:]
         inFlight = []
         soundInFlight = []
         loaded = false
         scope = ""
+        batchProgress = .idle
     }
 
     func index() async -> LyricSignatureIndex {
@@ -424,6 +428,89 @@ actor LyricIntelligence {
     func signature(for songID: String) async -> LyricSignature? {
         await loadIfNeeded()
         return signatures[songID]
+    }
+
+    func coverage(catalog: [Song]) async -> LyricAnalysisCoverage {
+        await loadIfNeeded()
+        return LyricAnalysisCoverage.make(
+            catalog: catalog,
+            signatures: signatures
+        )
+    }
+
+    func currentBatchProgress() -> LyricBatchProgress {
+        batchProgress
+    }
+
+    func cancelBatch() {
+        batchGeneration &+= 1
+        batchProgress.isRunning = false
+        batchProgress.isCancelled = true
+        batchProgress.currentTitle = ""
+    }
+
+    func analyzePending(
+        catalog: [Song],
+        accountScope: String,
+        lyricsProvider: @escaping @Sendable (Song) async -> String,
+        fileProvider: @escaping @Sendable (Song) async -> URL?
+    ) async -> LyricBatchProgress {
+        await activate(accountScope: accountScope)
+        batchGeneration &+= 1
+        let generation = batchGeneration
+        let report = LyricAnalysisCoverage.make(
+            catalog: catalog,
+            signatures: signatures
+        )
+        var progress = LyricBatchProgress.idle
+        progress.total = report.pending.count
+        progress.isRunning = true
+        batchProgress = progress
+        for entry in report.pending {
+            guard generation == batchGeneration else {
+                progress.isCancelled = true
+                progress.isRunning = false
+                progress.currentTitle = ""
+                batchProgress = progress
+                return progress
+            }
+            let song = entry.song
+            progress.currentTitle = song.title
+            batchProgress = progress
+            let lyrics = await lyricsProvider(song)
+            if lyrics.count >= 24 {
+                let hash = LyricLexicalEmbedding.hash(lyrics)
+                let reused = LyricAnalysisCachePolicy.shouldReuseLyric(
+                    existing: signatures[song.id],
+                    lyricsHash: hash
+                )
+                await analyze(song: song, lyrics: lyrics, hash: hash)
+                if reused {
+                    progress.cached += 1
+                } else {
+                    progress.analyzed += 1
+                }
+            } else {
+                progress.noLyrics += 1
+            }
+            if let fileURL = await fileProvider(song) {
+                let before = signatures[song.id]?.hasStoredSoundAnalysis ?? false
+                await analyzeSound(
+                    song: song,
+                    fileURL: fileURL,
+                    audioRevision: song.audioResourceRevision
+                )
+                if !before, signatures[song.id]?.hasStoredSoundAnalysis == true {
+                    progress.soundAnalyzed += 1
+                }
+            }
+            progress.processed += 1
+            batchProgress = progress
+        }
+        progress.isRunning = false
+        progress.currentTitle = ""
+        batchProgress = progress
+        return progress
     }
 
     func probeSample(accountScope: String?) async -> LyricIntelligenceProbe {

@@ -943,6 +943,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func intelligenceCatalog() async -> [Song] {
+        MediaIdentity.uniqueSongs(
+            from: [
+                home.knownSongs(),
+                await ListeningHistoryStore.shared.catalogSongs()
+            ]
+        )
+    }
+
     func rebuildRecommendations() {
         recommendationTask?.cancel()
         recommendationGeneration &+= 1

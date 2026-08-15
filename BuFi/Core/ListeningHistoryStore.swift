@@ -228,6 +228,10 @@ struct RecommendationBehaviorSnapshot: Sendable {
 actor ListeningHistoryStore {
     static let shared = ListeningHistoryStore()
 
+    func catalogSongs() -> [Song] {
+        entries.values.map(\.song)
+    }
+
     private struct PersistenceBatch: Sendable {
         let scope: String
         let generation: UInt64

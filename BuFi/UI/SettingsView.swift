@@ -557,6 +557,9 @@ private struct RecommendationSettingsView: View {
     @State private var currentSignature: LyricSignature?
     @State private var probe: LyricIntelligenceProbe?
     @State private var isProbing = false
+    @State private var coverage = LyricAnalysisCoverage.empty
+    @State private var batchProgress = LyricBatchProgress.idle
+    @State private var batchTask: Task<Void, Never>?
     @State private var lastFMAPIKey = ""
     @State private var listenBrainzUsername = ""
     @State private var listenBrainzToken = ""
@@ -796,6 +799,11 @@ private struct RecommendationSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+
+                SettingsGroup(title: "가사 분석 진행") {
+                    lyricAnalysisProgressSection
+                }
+                .padding(.horizontal, 16)
             }
             .padding(.top, 18)
             .buFiMiniPlayerContentClearance()
@@ -815,6 +823,84 @@ private struct RecommendationSettingsView: View {
         .task(id: playbackState.currentSong?.id) {
             currentSignature = await currentSongSignature()
         }
+        .task {
+            await refreshCoverage()
+            let latest = await LyricIntelligence.shared.currentBatchProgress()
+            batchProgress = latest
+            if latest.isRunning {
+                watchBatchProgress()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var lyricAnalysisProgressSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            settingsDescription(
+                String(
+                    localized: "알고 있는 곡 \(coverage.known) · 분석됨 \(coverage.lyricDone) · 남음 \(coverage.pending.count) · 음향 \(coverage.soundDone)"
+                )
+            )
+            if batchProgress.isRunning || batchProgress.processed > 0 {
+                ProgressView(value: batchProgress.fraction)
+                    .tint(BuFiTheme.accent)
+                settingsDescription(batchStatusText)
+            }
+            if !coverage.done.isEmpty {
+                DisclosureGroup("분석된 곡 \(coverage.done.count)") {
+                    songStatusList(coverage.done, pending: false)
+                }
+            }
+            if !coverage.pending.isEmpty {
+                DisclosureGroup("아직 안 된 곡 \(coverage.pending.count)") {
+                    songStatusList(coverage.pending, pending: true)
+                }
+            }
+            if coverage.known == 0 {
+                settingsDescription("홈·청취 기록에 곡이 생기면 여기에 집계됩니다.")
+            }
+            if batchProgress.isRunning {
+                Button("분석 중단") {
+                    batchTask?.cancel()
+                    Task { await LyricIntelligence.shared.cancelBatch() }
+                }
+                .buttonStyle(SettingsActionButtonStyle())
+            } else {
+                Button("안 된 곡 전부 분석") {
+                    startPendingAnalysis()
+                }
+                .buttonStyle(SettingsActionButtonStyle())
+                .disabled(
+                    coverage.pending.isEmpty
+                        || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
+                )
+            }
+            settingsDescription("이미 저장된 곡은 건너뜁니다. 가사가 없는 곡은 남고, 다운로드된 곡만 음향 분석을 합니다.")
+        }
+    }
+
+    @ViewBuilder
+    private func songStatusList(
+        _ entries: [LyricAnalysisEntry],
+        pending: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(entries.prefix(30))) { entry in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.song.title)
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(songStatusDetail(entry, pending: pending))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if entries.count > 30 {
+                Text("외 \(entries.count - 30)곡")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 6)
     }
 
     @ViewBuilder
@@ -846,6 +932,102 @@ private struct RecommendationSettingsView: View {
             .buttonStyle(SettingsActionButtonStyle())
             .disabled(isProbing)
             settingsDescription("한 번 누르면 지금 고른 엔진으로 샘플 가사를 분석합니다. 같은 버튼을 다시 누르면 캐시에서 읽어야 정상입니다.")
+        }
+    }
+
+    private var batchStatusText: String {
+        if batchProgress.isCancelled {
+            return String(
+                localized: "중단됨 · \(batchProgress.processed)/\(batchProgress.total) · 새로 \(batchProgress.analyzed) · 캐시 \(batchProgress.cached) · 가사 없음 \(batchProgress.noLyrics)"
+            )
+        }
+        if batchProgress.isRunning {
+            let current = batchProgress.currentTitle.isEmpty
+                ? String(localized: "준비 중")
+                : batchProgress.currentTitle
+            return String(
+                localized: "\(batchProgress.processed)/\(batchProgress.total) · \(current)"
+            )
+        }
+        return String(
+            localized: "완료 · \(batchProgress.processed)/\(batchProgress.total) · 새로 \(batchProgress.analyzed) · 캐시 \(batchProgress.cached) · 가사 없음 \(batchProgress.noLyrics) · 음향 \(batchProgress.soundAnalyzed)"
+        )
+    }
+
+    private func songStatusDetail(
+        _ entry: LyricAnalysisEntry,
+        pending: Bool
+    ) -> String {
+        if pending {
+            return entry.song.artist
+        }
+        let sound = entry.hasSound
+            ? String(localized: "음향 있음")
+            : String(localized: "음향 없음")
+        return "\(entry.sourceTitle) · \(entry.song.artist) · \(sound)"
+    }
+
+    private func refreshCoverage() async {
+        let catalog = await model.intelligenceCatalog()
+        if let scope = await model.client?.accountScope {
+            await LyricIntelligence.shared.activate(accountScope: scope)
+        }
+        coverage = await LyricIntelligence.shared.coverage(catalog: catalog)
+    }
+
+    private func startPendingAnalysis() {
+        batchTask?.cancel()
+        batchProgress = LyricBatchProgress.idle
+        batchProgress.isRunning = true
+        batchTask = Task {
+            let catalog = await model.intelligenceCatalog()
+            guard let client = model.client,
+                  let scope = await client.accountScope else {
+                batchProgress.isRunning = false
+                return
+            }
+            let progress = await LyricIntelligence.shared.analyzePending(
+                catalog: catalog,
+                accountScope: scope,
+                lyricsProvider: { song in
+                    let document = try? await client.lyrics(
+                        songID: song.id,
+                        artist: song.artist,
+                        title: song.title
+                    )
+                    return document?.lines
+                        .map(\.text)
+                        .joined(separator: "\n")
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                },
+                fileProvider: { song in
+                    await OfflineStore.shared.localURL(for: song)
+                }
+            )
+            guard !Task.isCancelled else { return }
+            batchProgress = progress
+            await refreshCoverage()
+            currentSignature = await currentSongSignature()
+            model.rebuildRecommendations()
+        }
+        watchBatchProgress()
+    }
+
+    private func watchBatchProgress() {
+        Task {
+            while !Task.isCancelled {
+                let latest = await LyricIntelligence.shared.currentBatchProgress()
+                await MainActor.run {
+                    if latest.isRunning || latest.processed > 0 {
+                        batchProgress = latest
+                    }
+                }
+                if !latest.isRunning {
+                    await refreshCoverage()
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(350))
+            }
         }
     }
 
