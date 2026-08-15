@@ -4,6 +4,12 @@ import Foundation
 /// only when a configured bound is exceeded, keeping the common cache-hit path
 /// independent of the number of cached endpoints.
 struct ResponseBodyCache: Sendable {
+    enum Lookup: Equatable, Sendable {
+        case fresh(Data)
+        case stale(Data)
+        case miss
+    }
+
     private struct Entry: Sendable {
         let data: Data
         let storedAt: ContinuousClock.Instant
@@ -35,16 +41,37 @@ struct ResponseBodyCache: Sendable {
         maximumAge: TimeInterval,
         now: ContinuousClock.Instant = ContinuousClock().now
     ) -> Data? {
-        guard var entry = entries[key] else { return nil }
-        guard maximumAge > 0,
-              entry.storedAt.duration(to: now) <= .seconds(maximumAge) else {
-            removeValue(for: key)
-            return nil
+        if case .fresh(let data) = lookup(
+            for: key,
+            maximumAge: maximumAge,
+            staleGrace: 0,
+            now: now
+        ) {
+            return data
         }
+        return nil
+    }
 
-        entry.accessOrdinal = nextAccessOrdinal()
-        entries[key] = entry
-        return entry.data
+    mutating func lookup(
+        for key: String,
+        maximumAge: TimeInterval,
+        staleGrace: TimeInterval,
+        now: ContinuousClock.Instant = ContinuousClock().now
+    ) -> Lookup {
+        guard var entry = entries[key] else { return .miss }
+        let age = entry.storedAt.duration(to: now)
+        if maximumAge > 0, age <= .seconds(maximumAge) {
+            entry.accessOrdinal = nextAccessOrdinal()
+            entries[key] = entry
+            return .fresh(entry.data)
+        }
+        if staleGrace > 0, age <= .seconds(maximumAge + staleGrace) {
+            entry.accessOrdinal = nextAccessOrdinal()
+            entries[key] = entry
+            return .stale(entry.data)
+        }
+        removeValue(for: key)
+        return .miss
     }
 
     mutating func insert(

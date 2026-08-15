@@ -326,6 +326,12 @@ final class ModernNetworkPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getStarred2"
+            ).lifetime,
+            3 * 60
+        )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
                 for: "getAlbumList2",
                 queryItems: [URLQueryItem(name: "type", value: "random")]
             ).lifetime,
@@ -349,6 +355,25 @@ final class ModernNetworkPolicyTests: XCTestCase {
                 for: "getSong"
             ).revalidation,
             .timeToLive
+        )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getStarred2"
+            ).staleGrace,
+            20 * 60
+        )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getAlbumList2",
+                queryItems: [URLQueryItem(name: "type", value: "newest")]
+            ).staleGrace,
+            15 * 60
+        )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getLyricsBySongId"
+            ).staleGrace,
+            0
         )
     }
 

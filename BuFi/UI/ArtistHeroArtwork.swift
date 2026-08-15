@@ -44,9 +44,11 @@ struct ArtistHeroArtwork: View {
                     .blur(radius: 22)
                     .saturation(0.92)
                     .opacity(0.72)
+                    .allowsHitTesting(false)
 
                 Rectangle()
                     .fill(.black.opacity(0.08))
+                    .allowsHitTesting(false)
 
                 Image(uiImage: loadedArtwork.image)
                     .resizable()
@@ -70,7 +72,12 @@ struct ArtistHeroArtwork: View {
 
     @MainActor
     private func loadImage(requestID: ArtworkLoadRequestIdentity) async {
-        loadedArtwork = nil
+        guard UIRenderPolicy.shouldReloadArtwork(
+            loadedIdentity: loadedArtwork?.requestIdentity,
+            requestedIdentity: requestID
+        ) else {
+            return
+        }
 
         // OpenSubsonic may include third-party artist-image URLs. Fetching those
         // directly would disclose the user's IP address and viewing time to an

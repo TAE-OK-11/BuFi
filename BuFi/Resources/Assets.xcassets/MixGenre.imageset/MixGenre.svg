@@ -1,11 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="48" fill="#D8FF38"/>
-  <rect x="70" y="314" width="52" height="112" rx="26" fill="#15152D"/>
-  <rect x="145" y="248" width="52" height="178" rx="26" fill="#7B35EF"/>
-  <rect x="220" y="180" width="52" height="246" rx="26" fill="#15152D"/>
-  <rect x="295" y="274" width="52" height="152" rx="26" fill="#FF5A98"/>
-  <rect x="370" y="220" width="52" height="206" rx="26" fill="#15152D"/>
-  <path d="M104 200V273M104 200L183 184V255" fill="none" stroke="#7B35EF" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="80" cy="279" r="29" fill="#7B35EF"/>
-  <circle cx="159" cy="261" r="29" fill="#7B35EF"/>
+  <defs>
+    <linearGradient id="gen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#10180A"/>
+      <stop offset="1" stop-color="#6FA80E"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#gen)"/>
+  <circle cx="332" cy="318" r="168" fill="#D8FF4A" fill-opacity=".14"/>
+  <circle cx="332" cy="328" r="118" fill="none" stroke="#E8FF7A" stroke-width="14"/>
+  <circle cx="332" cy="328" r="78" fill="none" stroke="#E8FF7A" stroke-width="8" opacity=".7"/>
+  <circle cx="332" cy="328" r="22" fill="#E8FF7A"/>
+  <circle cx="332" cy="328" r="8" fill="#14200C"/>
 </svg>

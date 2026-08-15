@@ -290,7 +290,7 @@ struct SearchView: View {
     @ViewBuilder
     private var results: some View {
         let result = searchContent.results
-        if searchContent.isSearching {
+        if result.isEmpty && searchContent.isSearching {
             HStack {
                 Spacer()
                 ProgressView("검색 중…")
@@ -302,6 +302,18 @@ struct SearchView: View {
                 .padding(.top, 42)
         } else {
             VStack(alignment: .leading, spacing: 22) {
+                if searchContent.isSearching {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("검색 중…")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                } else if searchContent.isLocalFallback {
+                    Text("라이브러리에서 찾은 결과")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
                 if !result.artists.isEmpty {
                     resultSection("아티스트") {
                         ForEach(result.artists) { artist in

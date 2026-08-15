@@ -1,10 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="72" fill="#FFF34A"/>
-  <circle cx="518" cy="626" r="240" fill="#8C37F5"/>
-  <path d="M410 575Q518 690 626 575" fill="none" stroke="#101010" stroke-width="34" stroke-linecap="round"/>
-  <circle cx="442" cy="540" r="24" fill="#101010"/>
-  <circle cx="594" cy="540" r="24" fill="#101010"/>
-  <path d="M350 415Q518 290 686 415" fill="none" stroke="#29D8D0" stroke-width="60" stroke-linecap="round"/>
-  <rect x="296" y="395" width="86" height="250" rx="40" fill="#29D8D0"/>
-  <rect x="654" y="395" width="86" height="250" rx="40" fill="#29D8D0"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="boost" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2A1800"/>
+      <stop offset="1" stop-color="#F0B400"/>
+    </linearGradient>
+    <radialGradient id="boostGlow" cx="70%" cy="68%" r="40%">
+      <stop offset="0" stop-color="#FFE27A"/>
+      <stop offset="1" stop-color="#FFE27A" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#boost)"/>
+  <circle cx="352" cy="348" r="200" fill="url(#boostGlow)"/>
+  <path d="M352 214L368 292L448 308L368 324L352 402L336 324L256 308L336 292Z" fill="#FFF6C8"/>
 </svg>

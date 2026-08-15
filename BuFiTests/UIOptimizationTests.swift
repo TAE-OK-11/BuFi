@@ -15,6 +15,42 @@ final class UIOptimizationTests: XCTestCase {
         XCTAssertNil(second.value)
     }
 
+    func testArtworkSkipsReloadWhenRequestIdentityIsUnchanged() {
+        let identity = ArtworkLoadRequestIdentity(
+            context: ArtworkContextIdentity(
+                sessionGeneration: 2,
+                accountScope: "scope"
+            ),
+            coverArtID: "cover",
+            cacheRevision: "rev-1",
+            pixelSize: 384
+        )
+
+        XCTAssertFalse(
+            UIRenderPolicy.shouldReloadArtwork(
+                loadedIdentity: identity,
+                requestedIdentity: identity
+            )
+        )
+        XCTAssertTrue(
+            UIRenderPolicy.shouldReloadArtwork(
+                loadedIdentity: nil,
+                requestedIdentity: identity
+            )
+        )
+        XCTAssertTrue(
+            UIRenderPolicy.shouldReloadArtwork(
+                loadedIdentity: identity,
+                requestedIdentity: ArtworkLoadRequestIdentity(
+                    context: identity.context,
+                    coverArtID: "cover",
+                    cacheRevision: "rev-2",
+                    pixelSize: 384
+                )
+            )
+        )
+    }
+
     func testArtworkRequestIdentityKeepsFieldsStructurallyDistinct() {
         let first = ArtworkLoadRequestIdentity(
             context: ArtworkContextIdentity(
@@ -111,6 +147,61 @@ final class UIOptimizationTests: XCTestCase {
         )
 
         XCTAssertEqual(result, "Hello BuFi listeners")
+    }
+
+    func testMediaIdentityDropsDuplicateSongIDsAndHonorsLimit() {
+        let songs = (0..<8).flatMap { index -> [Song] in
+            let song = Song(
+                id: "song-\(index % 4)",
+                title: "Song \(index)",
+                artist: "Artist",
+                album: "Album",
+                artistId: "artist",
+                albumId: "album",
+                coverArt: nil,
+                duration: 180,
+                track: nil,
+                suffix: "m4a",
+                contentType: "audio/mp4",
+                starred: nil
+            )
+            return [song]
+        }
+
+        XCTAssertEqual(MediaIdentity.uniqueSongs(songs).map(\.id), [
+            "song-0", "song-1", "song-2", "song-3"
+        ])
+        XCTAssertEqual(
+            MediaIdentity.uniqueSongs(from: [songs, songs], limit: 2).map(\.id),
+            ["song-0", "song-1"]
+        )
+    }
+
+    func testHomeSnapshotMapsEverySongCollection() {
+        var snapshot = HomeSnapshot(
+            randomSongs: [
+                Song(
+                    id: "one",
+                    title: "One",
+                    artist: "Artist",
+                    album: "Album",
+                    artistId: "artist",
+                    albumId: "album",
+                    coverArt: nil,
+                    duration: 180,
+                    track: nil,
+                    suffix: "m4a",
+                    contentType: "audio/mp4",
+                    starred: nil
+                )
+            ]
+        )
+        snapshot.mapSongs { song in
+            var value = song
+            value.title = "Mapped"
+            return value
+        }
+        XCTAssertEqual(snapshot.randomSongs.first?.title, "Mapped")
     }
 
     func testHomePresentationPreservesRecommendedAlbumOrderAndDeduplicates() {

@@ -218,7 +218,23 @@ actor ArtworkStore {
             processors: [.resize(width: requestedPixelSize)]
         )
         let scopedPipeline = pipeline
-        let image = try await scopedPipeline.image(for: request)
+        let image: UIImage
+        do {
+            image = try await scopedPipeline.image(for: request)
+        } catch {
+            guard CoreRequestClassifier.shouldRetryImageFetch(error) else {
+                throw error
+            }
+            try await Task.sleep(for: .milliseconds(280))
+            try Task.checkCancellation()
+            guard session.matches(
+                accountScope: activeScope,
+                generation: scopeGeneration
+            ), pipeline === scopedPipeline else {
+                throw CancellationError()
+            }
+            image = try await scopedPipeline.image(for: request)
+        }
         try Task.checkCancellation()
         guard session.matches(
             accountScope: activeScope,

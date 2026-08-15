@@ -297,19 +297,11 @@ actor OfflineStore {
             guard remote.scheme?.lowercased() == "https" else {
                 throw OpenSubsonicError.insecureServerURL
             }
-            var request = URLRequest(url: remote)
-            ModernNetworkPolicy.prepareMediaRequest(&request)
-            let (temporary, response) = try await session.download(for: request)
+            let temporary = try await Self.downloadFileWithRetry(
+                remote: remote,
+                session: session
+            )
             try Task.checkCancellation()
-            guard let http = response as? HTTPURLResponse else {
-                throw OpenSubsonicError.invalidResponse
-            }
-            guard http.url?.scheme?.lowercased() == "https" else {
-                throw OpenSubsonicError.insecureServerURL
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                throw OpenSubsonicError.http(http.statusCode)
-            }
 
             let staged = try await Self.stageDownloadedFile(
                 temporary: temporary,
@@ -750,6 +742,60 @@ actor OfflineStore {
                 result[pair.key] = entry
             } else if FileManager.default.fileExists(atPath: fileURL.path) {
                 try? FileManager.default.removeItem(at: fileURL)
+            }
+        }
+    }
+
+    private static func downloadFileWithRetry(
+        remote: URL,
+        session: URLSession
+    ) async throws -> URL {
+        let retryPolicy = ReadRequestRetryPolicy()
+        var retryCount = 0
+        while true {
+            try Task.checkCancellation()
+            var request = URLRequest(url: remote)
+            ModernNetworkPolicy.prepareMediaRequest(&request)
+            do {
+                let (temporary, response) = try await session.download(for: request)
+                try Task.checkCancellation()
+                guard let http = response as? HTTPURLResponse else {
+                    throw OpenSubsonicError.invalidResponse
+                }
+                guard http.url?.scheme?.lowercased() == "https" else {
+                    throw OpenSubsonicError.insecureServerURL
+                }
+                if (200..<300).contains(http.statusCode) {
+                    return temporary
+                }
+                let error = OpenSubsonicError.http(http.statusCode)
+                guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+                      retryPolicy.shouldRetry(error: error),
+                      let delay = retryPolicy.delay(
+                        retryNumber: retryCount + 1,
+                        retryAfterHeader: http.value(
+                            forHTTPHeaderField: "Retry-After"
+                        ),
+                        jitter: Double.random(in: 0.75...1.25)
+                      ) else {
+                    throw error
+                }
+                retryCount += 1
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+                      retryPolicy.shouldRetry(error: error),
+                      let delay = retryPolicy.delay(
+                        retryNumber: retryCount + 1,
+                        retryAfterHeader: nil,
+                        jitter: Double.random(in: 0.75...1.25)
+                      ) else {
+                    throw error
+                }
+                retryCount += 1
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
     }

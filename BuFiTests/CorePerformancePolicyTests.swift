@@ -74,6 +74,96 @@ final class CorePerformancePolicyTests: XCTestCase {
         )
     }
 
+    func testRecommendationScoringBoundsLargeCandidateSets() {
+        let songs = (0..<500).map { index in
+            Song(
+                id: "candidate-\(index)",
+                title: "Song \(index)",
+                artist: "Artist",
+                album: "Album",
+                artistId: "artist",
+                albumId: "album",
+                coverArt: nil,
+                duration: 180,
+                track: nil,
+                suffix: "m4a",
+                contentType: "audio/mp4",
+                starred: nil
+            )
+        }
+
+        XCTAssertEqual(
+            RecommendationScoringPolicy.scoringCandidateLimit,
+            360
+        )
+        XCTAssertEqual(
+            RecommendationScoringPolicy.boundedCandidates(Array(songs.prefix(10)))
+                .map(\.id),
+            songs.prefix(10).map(\.id)
+        )
+        XCTAssertEqual(
+            RecommendationScoringPolicy.boundedCandidates(songs).map(\.id),
+            songs.prefix(360).map(\.id)
+        )
+    }
+
+    func testFavoriteOverrideFastPathSkipsWhenNothingIsPending() {
+        XCTAssertTrue(
+            FavoriteOverrideApplicationPolicy.canReuseSnapshot(
+                hasOverrides: false,
+                hasPendingMutations: false
+            )
+        )
+        XCTAssertFalse(
+            FavoriteOverrideApplicationPolicy.canReuseSnapshot(
+                hasOverrides: true,
+                hasPendingMutations: false
+            )
+        )
+        XCTAssertFalse(
+            FavoriteOverrideApplicationPolicy.canReuseSnapshot(
+                hasOverrides: false,
+                hasPendingMutations: true
+            )
+        )
+    }
+
+    func testExternalRecommendationRefreshSkipsIdenticalIdentity() {
+        let revision = HomeSnapshotRevision()
+        let identity = ExternalRecommendationRefreshIdentity(
+            sessionGeneration: 3,
+            snapshotRevision: revision,
+            seedSongID: "seed",
+            includesLastFM: true,
+            includesListenBrainz: false
+        )
+
+        XCTAssertFalse(
+            ExternalRecommendationRefreshPolicy.shouldRefresh(
+                previous: identity,
+                next: identity
+            )
+        )
+        XCTAssertTrue(
+            ExternalRecommendationRefreshPolicy.shouldRefresh(
+                previous: identity,
+                next: ExternalRecommendationRefreshIdentity(
+                    sessionGeneration: 3,
+                    snapshotRevision: revision.advanced(),
+                    seedSongID: "seed",
+                    includesLastFM: true,
+                    includesListenBrainz: false
+                )
+            )
+        )
+        XCTAssertTrue(
+            ExternalRecommendationRefreshPolicy.shouldRefresh(
+                previous: nil,
+                next: identity
+            )
+        )
+    }
+
     func testConcurrentRecommendationBoundaryPreservesResult() async {
         let defaults = UserDefaults(suiteName: "CorePerformancePolicyTests")!
         defaults.removePersistentDomain(forName: "CorePerformancePolicyTests")

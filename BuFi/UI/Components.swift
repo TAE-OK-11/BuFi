@@ -416,7 +416,12 @@ struct ArtworkView: View {
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: artworkRequestIdentity) {
             let requestID = artworkRequestIdentity
-            loadedArtwork = nil
+            guard UIRenderPolicy.shouldReloadArtwork(
+                loadedIdentity: loadedArtwork?.requestIdentity,
+                requestedIdentity: requestID
+            ) else {
+                return
+            }
             if let sourceURL = await model.artworkURL(
                 id: normalizedCoverArt,
                 size: Int(requestedPixelSize)

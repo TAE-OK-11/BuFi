@@ -62,6 +62,90 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         ))
     }
 
+    func testHTTPClientErrorFailsInsteadOfCyclingCodecs() {
+        let notFound = NSError(
+            domain: AVFoundationErrorDomain,
+            code: -11_828,
+            userInfo: ["statusCode": 404]
+        )
+        XCTAssertEqual(
+            PlaybackFailureClassifier.disposition(for: notFound),
+            .failPermanent
+        )
+        XCTAssertEqual(
+            PlaybackFailureClassifier.disposition(
+                for: NSError(domain: AVFoundationErrorDomain, code: -11_800)
+            ),
+            .tryCompatibilityFormat
+        )
+    }
+
+    func testServerUnavailableRetriesTransport() {
+        let unavailable = NSError(
+            domain: AVFoundationErrorDomain,
+            code: -11_828,
+            userInfo: ["AVErrorHTTPStatusCodeKey": 503]
+        )
+        XCTAssertEqual(
+            PlaybackFailureClassifier.disposition(for: unavailable),
+            .retryTransport
+        )
+    }
+
+    func testWatchdogStaysOffHealthyPlayingClock() {
+        XCTAssertEqual(
+            PlaybackWatchdogPolicy.decision(
+                wantsPlayback: true,
+                timeControlStatus: .playing,
+                elapsed: 12,
+                hasCurrentItem: true
+            ),
+            .cancelWatchdog
+        )
+        XCTAssertEqual(
+            PlaybackWatchdogPolicy.decision(
+                wantsPlayback: true,
+                timeControlStatus: .playing,
+                elapsed: 0.2,
+                hasCurrentItem: true
+            ),
+            .arm(.startup)
+        )
+        XCTAssertEqual(
+            PlaybackWatchdogPolicy.decision(
+                wantsPlayback: true,
+                timeControlStatus: .waitingToPlayAtSpecifiedRate,
+                elapsed: 40,
+                hasCurrentItem: true
+            ),
+            .arm(.stall)
+        )
+        XCTAssertEqual(
+            PlaybackWatchdogPolicy.decision(
+                wantsPlayback: false,
+                timeControlStatus: .paused,
+                elapsed: 40,
+                hasCurrentItem: true
+            ),
+            .cancelWatchdog
+        )
+    }
+
+    func testTransportBackoffGrowsThenCaps() {
+        XCTAssertEqual(
+            PlaybackWatchdogPolicy.transportBackoff(afterFailedAttempt: 1),
+            .milliseconds(400)
+        )
+        XCTAssertEqual(
+            PlaybackWatchdogPolicy.transportBackoff(afterFailedAttempt: 2),
+            .milliseconds(900)
+        )
+        XCTAssertEqual(
+            PlaybackWatchdogPolicy.maximumTransportRetries,
+            2
+        )
+    }
+
     func testNetworkFailureRetriesTransportInsteadOfChangingCodec() {
         let error = URLError(.networkConnectionLost)
         XCTAssertEqual(
@@ -253,6 +337,53 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
                 repeatMode: .all
             )?.queueIndex,
             0
+        )
+    }
+
+    func testManualSkipCommitsOnlyTheStagedSuccessorOccurrence() {
+        let occurrence = UUID()
+        XCTAssertTrue(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: 2,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 2,
+                nextOccurrenceID: occurrence
+            )
+        )
+        XCTAssertFalse(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: 2,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 3,
+                nextOccurrenceID: occurrence
+            )
+        )
+        XCTAssertFalse(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: 2,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 2,
+                nextOccurrenceID: UUID()
+            )
+        )
+        XCTAssertFalse(
+            PlaybackSkipPlan.shouldCommitStagedSuccessor(
+                stagedQueueIndex: nil,
+                stagedOccurrenceID: occurrence,
+                nextQueueIndex: 2,
+                nextOccurrenceID: occurrence
+            )
+        )
+    }
+
+    func testSuccessorWarmupDelayStaysSubSecond() {
+        XCTAssertEqual(
+            PlaybackSuccessorWarmupPolicy.readinessCheckDelay,
+            .milliseconds(280)
+        )
+        XCTAssertEqual(
+            PlaybackSuccessorWarmupPolicy.maximumReadinessChecks,
+            3
         )
     }
 

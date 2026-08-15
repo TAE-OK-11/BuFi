@@ -1,9 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="48" fill="#20BFC4"/>
-  <path d="M257 446C199 400 102 338 102 244C102 180 151 137 209 137C239 137 265 150 285 174C305 150 331 137 361 137C419 137 468 180 468 244C468 338 370 400 312 446L285 467Z" fill="#FF6A8A"/>
-  <path d="M213 275C235 296 258 296 280 275" fill="none" stroke="#15152D" stroke-width="16" stroke-linecap="round"/>
-  <circle cx="211" cy="238" r="11" fill="#15152D"/>
-  <circle cx="283" cy="238" r="11" fill="#15152D"/>
-  <path d="M104 345L118 375L151 379L127 401L133 434L104 418L75 434L81 401L57 379L90 375Z" fill="#FFF058"/>
-  <circle cx="420" cy="402" r="36" fill="#7B35EF"/>
+  <defs>
+    <linearGradient id="mood" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#082028"/>
+      <stop offset="1" stop-color="#1AA3A8"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#mood)"/>
+  <circle cx="360" cy="340" r="160" fill="#7CF0E4" fill-opacity=".14"/>
+  <path d="M256 412C198 368 148 328 148 268C148 228 178 202 214 202C236 202 254 214 256 234C258 214 276 202 298 202C334 202 364 228 364 268C364 328 314 368 256 412Z" fill="#FF7A9A"/>
 </svg>

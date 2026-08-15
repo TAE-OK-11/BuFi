@@ -466,6 +466,38 @@ private final class RecommendationMixCache: @unchecked Sendable {
     }
 }
 
+/// Home snapshots can carry thousands of starred songs. Scoring every
+/// unique ID is wasted work because the mixer only publishes a few dozen
+/// tracks and source lists are already ordered by usefulness.
+enum RecommendationScoringPolicy {
+    static let scoringCandidateLimit = 360
+
+    static func boundedCandidates(_ songs: [Song]) -> [Song] {
+        guard songs.count > scoringCandidateLimit else { return songs }
+        return Array(songs.prefix(scoringCandidateLimit))
+    }
+}
+
+/// Full-home refreshes re-enter the Last.fm / ListenBrainz path even when the
+/// seed and snapshot identity have not changed. Skip that radio work until
+/// one of those inputs actually moves.
+struct ExternalRecommendationRefreshIdentity: Equatable, Sendable {
+    let sessionGeneration: Int
+    let snapshotRevision: HomeSnapshotRevision
+    let seedSongID: String?
+    let includesLastFM: Bool
+    let includesListenBrainz: Bool
+}
+
+enum ExternalRecommendationRefreshPolicy {
+    static func shouldRefresh(
+        previous: ExternalRecommendationRefreshIdentity?,
+        next: ExternalRecommendationRefreshIdentity
+    ) -> Bool {
+        previous != next
+    }
+}
+
 enum RecommendationMixer {
     private static let cache = RecommendationMixCache()
 
@@ -628,7 +660,12 @@ enum RecommendationMixer {
             snapshot.recommendedSongs
         ]
         // Deduplicate while streaming sources; avoid a second flattened corpus.
-        let candidates = unique(sourceLists)
+        // High-priority recommendation lists come first, so a bounded prefix
+        // keeps server/external signals and drops only surplus starred rows.
+        let candidates = MediaIdentity.uniqueSongs(
+            from: sourceLists,
+            limit: RecommendationScoringPolicy.scoringCandidateLimit
+        )
         guard !candidates.isEmpty else { return [] }
 
         let sourceIndex = RecommendationSourceIndex(snapshot: snapshot)
@@ -1319,31 +1356,7 @@ enum RecommendationMixer {
     }
 
     private static func unique(_ values: [Song]) -> [Song] {
-        var ids = Set<String>()
-        var result: [Song] = []
-        result.reserveCapacity(values.count)
-        for (index, value) in values.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { return [] }
-            if ids.insert(value.id).inserted { result.append(value) }
-        }
-        return result
-    }
-
-    private static func unique(_ sources: [[Song]]) -> [Song] {
-        let capacity = sources.reduce(into: 0) { $0 += $1.count }
-        var ids = Set<String>()
-        ids.reserveCapacity(capacity)
-        var result: [Song] = []
-        result.reserveCapacity(capacity)
-        var visited = 0
-        for source in sources {
-            for song in source {
-                if visited.isMultiple(of: 64), Task.isCancelled { return [] }
-                visited += 1
-                if ids.insert(song.id).inserted { result.append(song) }
-            }
-        }
-        return result
+        MediaIdentity.uniqueSongs(values)
     }
 
     fileprivate static func normalized(_ value: String) -> String {
@@ -1657,8 +1670,7 @@ enum DaylistBuilder {
     }
 
     private static func unique(_ songs: [Song]) -> [Song] {
-        var ids = Set<String>()
-        return songs.filter { ids.insert($0.id).inserted }
+        MediaIdentity.uniqueSongs(songs)
     }
 
     private static func normalized(_ value: String) -> String {
@@ -2351,14 +2363,7 @@ enum PersonalizedMixBuilder {
     }
 
     fileprivate static func unique(_ songs: [Song]) -> [Song] {
-        var ids = Set<String>()
-        var result: [Song] = []
-        result.reserveCapacity(songs.count)
-        for (index, song) in songs.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { return [] }
-            if ids.insert(song.id).inserted { result.append(song) }
-        }
-        return result
+        MediaIdentity.uniqueSongs(songs)
     }
 
     static func searchableText(_ song: Song) -> String {

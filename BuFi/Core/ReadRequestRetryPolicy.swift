@@ -1,5 +1,72 @@
 import Foundation
 
+/// Shared Core disposition for idempotent reads, artwork, and offline
+/// downloads. Mutations never consult this type. The split matches the
+/// playback classifier: retry only transport/5xx/429, fail closed on 4xx.
+enum CoreRequestClassifier {
+    static func shouldRetry(statusCode: Int) -> Bool {
+        statusCode == 408 || statusCode == 429 || (500...599).contains(statusCode)
+    }
+
+    static func shouldRetry(error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let openSubsonic = error as? OpenSubsonicError {
+            if case .http(let status) = openSubsonic {
+                return shouldRetry(statusCode: status)
+            }
+            return false
+        }
+
+        let value = error as NSError
+        guard value.domain == NSURLErrorDomain else {
+            return false
+        }
+        let transientCodes: Set<Int> = [
+            URLError.Code.timedOut.rawValue,
+            URLError.Code.cannotFindHost.rawValue,
+            URLError.Code.cannotConnectToHost.rawValue,
+            URLError.Code.networkConnectionLost.rawValue,
+            URLError.Code.dnsLookupFailed.rawValue,
+            URLError.Code.notConnectedToInternet.rawValue,
+            URLError.Code.resourceUnavailable.rawValue,
+            URLError.Code.secureConnectionFailed.rawValue,
+            URLError.Code.cannotLoadFromNetwork.rawValue
+        ]
+        return transientCodes.contains(value.code)
+    }
+
+    static func shouldRetryImageFetch(_ error: Error) -> Bool {
+        shouldRetry(error: error)
+    }
+}
+
+/// Cached library / session data may be shown only after a transient failure.
+/// Auth and address errors stay fail-closed so a bad password cannot reopen
+/// the previous account's snapshot.
+enum TransientServiceFailurePolicy {
+    static func allowsCachedFallback(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let openSubsonic = error as? OpenSubsonicError {
+            switch openSubsonic {
+            case .http(let status):
+                return CoreRequestClassifier.shouldRetry(statusCode: status)
+            case .server(let code, _):
+                if let code, (40...41).contains(code) {
+                    return false
+                }
+                return true
+            case .invalidResponse:
+                return true
+            case .invalidServerURL,
+                    .insecureServerURL,
+                    .credentialsEmbeddedInServerURL:
+                return false
+            }
+        }
+        return CoreRequestClassifier.shouldRetry(error: error)
+    }
+}
+
 /// Retry decisions for idempotent OpenSubsonic reads.
 ///
 /// Mutating endpoints never use this policy. Keeping the decision logic free of
@@ -15,28 +82,11 @@ struct ReadRequestRetryPolicy: Sendable {
     }
 
     func shouldRetry(statusCode: Int) -> Bool {
-        statusCode == 408 || statusCode == 429 || (500...599).contains(statusCode)
+        CoreRequestClassifier.shouldRetry(statusCode: statusCode)
     }
 
     func shouldRetry(error: Error) -> Bool {
-        if error is CancellationError { return false }
-
-        let value = error as NSError
-        guard value.domain == NSURLErrorDomain else {
-            return false
-        }
-        let transientCodes: Set<Int> = [
-            URLError.Code.timedOut.rawValue,
-            URLError.Code.cannotFindHost.rawValue,
-            URLError.Code.cannotConnectToHost.rawValue,
-            URLError.Code.networkConnectionLost.rawValue,
-            URLError.Code.dnsLookupFailed.rawValue,
-            URLError.Code.notConnectedToInternet.rawValue,
-            URLError.Code.resourceUnavailable.rawValue
-        ]
-        // Cancellation, authentication, TLS, malformed responses, and
-        // content-decoding failures require caller or server intervention.
-        return transientCodes.contains(value.code)
+        CoreRequestClassifier.shouldRetry(error: error)
     }
 
     /// Returns a server-directed delay when present, otherwise a jittered

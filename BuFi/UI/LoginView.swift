@@ -60,6 +60,14 @@ struct LoginView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
 
+                        if let serverHint {
+                            Text(serverHint)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 4)
+                        }
+
                         input(
                             "사용자 이름",
                             text: $username,
@@ -107,12 +115,7 @@ struct LoginView: View {
                         .frame(height: 56)
                         .background(BuFiTheme.accent, in: Capsule())
                     }
-                    .disabled(
-                        server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        password.isEmpty ||
-                        isSubmitting || session.phase == .connecting
-                    )
+                    .disabled(!canSubmit)
                     .buttonStyle(BuFiPressStyle())
                     .padding(.top, 22)
 
@@ -157,21 +160,61 @@ struct LoginView: View {
         )
     }
 
-    private func connect() {
-        let trimmedServer = server.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var canSubmit: Bool {
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        if case .success = ServerURLNormalization.normalize(server),
+           !trimmedUsername.isEmpty,
+           !password.isEmpty,
+           !isSubmitting,
+           session.phase != .connecting {
+            return true
+        }
+        return false
+    }
+
+    private var serverHint: String? {
+        switch ServerURLNormalization.normalize(server) {
+        case .success(let url):
+            let persisted = ServerURLNormalization.persistedServerURL(from: url)
+            let typed = server.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard persisted.caseInsensitiveCompare(typed) != .orderedSame else {
+                return nil
+            }
+            return String(
+                format: String(localized: "연결 주소: %@"),
+                persisted
+            )
+        case .empty:
+            return nil
+        case .insecure:
+            return OpenSubsonicError.insecureServerURL.localizedDescription
+        case .credentialsInURL:
+            return OpenSubsonicError.credentialsEmbeddedInServerURL.localizedDescription
+        case .invalid:
+            return nil
+        }
+    }
+
+    private func connect() {
+        let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outcome = ServerURLNormalization.normalize(server)
         guard !isSubmitting,
               session.phase != .connecting,
-              !trimmedServer.isEmpty,
               !trimmedUsername.isEmpty,
               !password.isEmpty else { return }
+        guard case .success(let url) = outcome else {
+            session.errorMessage = serverHint
+                ?? OpenSubsonicError.invalidServerURL.localizedDescription
+            return
+        }
 
         focus = nil
         isSubmitting = true
+        session.errorMessage = nil
         let submittedPassword = password
         loginTask = Task {
             await model.login(
-                serverURL: trimmedServer,
+                serverURL: ServerURLNormalization.persistedServerURL(from: url),
                 username: trimmedUsername,
                 password: submittedPassword
             )
