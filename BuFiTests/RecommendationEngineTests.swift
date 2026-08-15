@@ -486,9 +486,9 @@ final class RecommendationEngineTests: XCTestCase {
 
         let result = RecommendationMixer.mix(
             snapshot: HomeSnapshot(
+                starredSongs: [currentFavorite],
                 serverRecommendedSongs: [staleFavorite, competitor],
-                mostPlayedSongs: [competitor],
-                starredSongs: [currentFavorite]
+                mostPlayedSongs: [competitor]
             ),
             weights: recommendationWeights,
             purpose: .taste,
@@ -519,10 +519,10 @@ final class RecommendationEngineTests: XCTestCase {
         recommendationWeights.serverSimilarity = 1
         recommendationWeights.discoveryRatio = 1
         let snapshot = HomeSnapshot(
-            serverRecommendedSongs: [filler("s0"), consensus, filler("s2")],
             sonicRecommendedSongs: [filler("q0"), single, consensus],
             similarArtistSongs: [filler("m0"), consensus, filler("m2")],
-            genreRecommendedSongs: [filler("g0"), consensus, filler("g2")]
+            genreRecommendedSongs: [filler("g0"), consensus, filler("g2")],
+            serverRecommendedSongs: [filler("s0"), consensus, filler("s2")]
         )
 
         let result = RecommendationMixer.mix(
