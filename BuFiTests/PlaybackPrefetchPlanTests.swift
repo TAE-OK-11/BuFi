@@ -256,6 +256,24 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
         )
     }
 
+    func testStableSuccessorWarmupRequiresHealthyPlayback() {
+        XCTAssertTrue(PlaybackSuccessorWarmupPolicy.shouldWarm(
+            isBuffering: false,
+            isActivelyPlaying: true,
+            isLikelyToKeepUp: true
+        ))
+        XCTAssertFalse(PlaybackSuccessorWarmupPolicy.shouldWarm(
+            isBuffering: true,
+            isActivelyPlaying: true,
+            isLikelyToKeepUp: true
+        ))
+        XCTAssertFalse(PlaybackSuccessorWarmupPolicy.shouldWarm(
+            isBuffering: false,
+            isActivelyPlaying: true,
+            isLikelyToKeepUp: false
+        ))
+    }
+
     func testGaplessPreparationDoesNotOpenSecondStreamEarly() {
         XCTAssertFalse(PlaybackGaplessPreparationPolicy.shouldPrepare(
             elapsed: 30,
