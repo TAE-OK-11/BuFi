@@ -57,7 +57,7 @@ enum SoundAnalysisClassifier {
     }
 
     static func analyzeFile(at url: URL) async -> Analysis? {
-        guard url.isFileURL else { return nil }
+        guard url.isFileURL, !shouldDeferForThermals else { return nil }
 #if canImport(SoundAnalysis) && canImport(AVFoundation)
         return await Task.detached(priority: .utility) {
             analyzeFileSync(at: url)
@@ -65,6 +65,20 @@ enum SoundAnalysisClassifier {
 #else
         return nil
 #endif
+    }
+
+    private static var shouldDeferForThermals: Bool {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            return true
+        }
+        switch ProcessInfo.processInfo.thermalState {
+        case .serious, .critical:
+            return true
+        case .nominal, .fair:
+            return false
+        @unknown default:
+            return true
+        }
     }
 
 #if canImport(SoundAnalysis) && canImport(AVFoundation)
@@ -122,19 +136,6 @@ enum SoundAnalysisClassifier {
             }
 
             analyzer.completeAnalysis()
-            return finished(collector.scores())
-        } catch {
-            return nil
-        }
-    }
-
-    private static func analyzeWholeFile(at url: URL) -> Analysis? {
-        do {
-            let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
-            let collector = SoundClassificationCollector()
-            let analyzer = try SNAudioFileAnalyzer(url: url)
-            try analyzer.add(request, withObserver: collector)
-            analyzer.analyze()
             return finished(collector.scores())
         } catch {
             return nil
