@@ -2846,8 +2846,9 @@ final class AudioEngine: NSObject, ObservableObject {
         let token = UUID()
         networkPrefetchToken = token
         networkPrefetchTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
             defer {
-                if let self, self.networkPrefetchToken == token {
+                if self.networkPrefetchToken == token {
                     self.networkPrefetchTask = nil
                     self.networkPrefetchToken = nil
                 }
