@@ -943,6 +943,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func startBackgroundIntelligenceSweep(client: OpenSubsonicClient) {
+        let scope = client.accountScope
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let catalog = await self.intelligenceCatalog()
+            await LyricIntelligence.shared.startBackgroundSweep(
+                catalog: catalog,
+                accountScope: scope,
+                lyricsProvider: { song in
+                    let document = try? await client.lyrics(
+                        songID: song.id,
+                        artist: song.artist,
+                        title: song.title
+                    )
+                    return document?.lines
+                        .map(\.text)
+                        .joined(separator: "\n")
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                },
+                fileProvider: { song in
+                    await SoundAnalysisSample.resolve(for: song, client: client)
+                }
+            )
+        }
+    }
+
     func intelligenceCatalog() async -> [Song] {
         MediaIdentity.uniqueSongs(
             from: [
@@ -2507,6 +2533,7 @@ final class AppModel: ObservableObject {
             self.serverVersion = Self.sanitizedVersion(status?.serverVersion)
             self.subsonicAPIVersion = Self.sanitizedVersion(status?.version)
             self.sessionState = .ready
+            startBackgroundIntelligenceSweep(client: client)
             activatedLeases = StoreActivationLeases(
                 offline: nil,
                 artwork: nil,

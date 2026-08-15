@@ -38,7 +38,7 @@ enum SoundAnalysisClassifier {
 
     static func topLabels(from scores: [String: Double], limit: Int = 8) -> [String] {
         scores
-            .filter { $0.value >= 0.12 }
+            .filter { $0.value >= 0.05 }
             .sorted { $0.value > $1.value }
             .prefix(limit)
             .map(\.key)
@@ -60,7 +60,9 @@ enum SoundAnalysisClassifier {
         do {
             let file = try AVAudioFile(forReading: url)
             let format = file.processingFormat
-            guard format.sampleRate > 0, format.channelCount > 0 else { return nil }
+            guard format.sampleRate > 0, format.channelCount > 0 else {
+                return analyzeWholeFile(at: url)
+            }
             let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
             let collector = SoundClassificationCollector()
             let analyzer = SNAudioStreamAnalyzer(format: format)
@@ -90,18 +92,33 @@ enum SoundAnalysisClassifier {
                 remaining -= buffer.frameLength
             }
             analyzer.completeAnalysis()
+            return finished(collector.scores()) ?? analyzeWholeFile(at: url)
+        } catch {
+            return analyzeWholeFile(at: url)
+        }
+    }
 
-            let scores = collector.scores()
-            let labels = topLabels(from: scores)
-            guard !labels.isEmpty else { return nil }
-            return Analysis(
-                labels: labels,
-                embedding: embedding(from: scores),
-                source: "coreml-sound-analysis"
-            )
+    private static func analyzeWholeFile(at url: URL) -> Analysis? {
+        do {
+            let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
+            let collector = SoundClassificationCollector()
+            let analyzer = try SNAudioFileAnalyzer(url: url)
+            try analyzer.add(request, withObserver: collector)
+            analyzer.analyze()
+            return finished(collector.scores())
         } catch {
             return nil
         }
+    }
+
+    private static func finished(_ scores: [String: Double]) -> Analysis? {
+        let labels = topLabels(from: scores)
+        guard !labels.isEmpty else { return nil }
+        return Analysis(
+            labels: labels,
+            embedding: embedding(from: scores),
+            source: "coreml-sound-analysis"
+        )
     }
 #endif
 }

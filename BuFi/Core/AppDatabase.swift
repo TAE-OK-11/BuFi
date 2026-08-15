@@ -444,8 +444,9 @@ actor AppDatabase {
                         account_scope, song_id, lyrics_hash, audio_revision,
                         moods_json, themes_json, energy, valence, lyric_source,
                         sound_source, sound_labels_json, lexical_embedding,
-                        sentence_embedding, sound_embedding, summary, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        sentence_embedding, sound_embedding, summary,
+                        details_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(account_scope, song_id) DO UPDATE SET
                         lyrics_hash = excluded.lyrics_hash,
                         audio_revision = excluded.audio_revision,
@@ -460,6 +461,7 @@ actor AppDatabase {
                         sentence_embedding = excluded.sentence_embedding,
                         sound_embedding = excluded.sound_embedding,
                         summary = excluded.summary,
+                        details_json = excluded.details_json,
                         updated_at = excluded.updated_at
                     """,
                     arguments: [
@@ -478,6 +480,7 @@ actor AppDatabase {
                         Self.encodeFloats(signature.sentenceEmbedding),
                         Self.encodeFloats(signature.soundEmbedding),
                         signature.summary,
+                        Self.encodeDetails(signature.details),
                         currentDate().timeIntervalSince1970
                     ]
                 )
@@ -1397,6 +1400,12 @@ actor AppDatabase {
                     ADD COLUMN summary TEXT NOT NULL DEFAULT '';
                 """)
         }
+        migrator.registerMigration("track-intelligence-details-v9") { db in
+            try db.execute(sql: """
+                ALTER TABLE track_intelligence
+                    ADD COLUMN details_json TEXT NOT NULL DEFAULT '';
+                """)
+        }
         return migrator
     }
 
@@ -1416,6 +1425,7 @@ actor AppDatabase {
         let sound: Data = row["sound_embedding"]
         let audioRevision: String = row["audio_revision"]
         let summary: String = row["summary"]
+        let detailsJSON: String = row["details_json"]
         return LyricSignature(
             songID: songID,
             lyricsHash: lyricsHash,
@@ -1430,8 +1440,28 @@ actor AppDatabase {
             soundEmbedding: decodeFloats(sound),
             audioRevision: audioRevision,
             soundSource: soundSource,
-            summary: summary
+            summary: summary,
+            details: decodeDetails(detailsJSON)
         )
+    }
+
+    private static func encodeDetails(_ details: LyricDetailProfile) -> String {
+        guard let data = try? JSONEncoder().encode(details),
+              let text = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return text
+    }
+
+    private static func decodeDetails(_ raw: String) -> LyricDetailProfile {
+        guard let data = raw.data(using: .utf8),
+              let details = try? JSONDecoder().decode(
+                LyricDetailProfile.self,
+                from: data
+              ) else {
+            return .empty
+        }
+        return details
     }
 
     private static func encodeJSONList(_ values: [String]) -> String {

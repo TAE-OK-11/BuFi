@@ -23,6 +23,24 @@ final class LyricIntelligenceTests: XCTestCase {
         )
     }
 
+    func testDetailProfileParsesSeasonAndDayparts() {
+        let parsed = LyricIntelligencePrompt.parse(
+            """
+            {"moods":["calm"],"themes":["night"],"energy":0.2,"valence":0.1,\
+            "summary":"Quiet streets.\\nRain keeps falling.","season":"autumn",\
+            "dayparts":["evening","night"],"style":"ballad","content":"loneliness",\
+            "setting":"city","tempo":0.2,"intimacy":0.8,"narrative":"confession",\
+            "weather":"rain","social":"alone","color":"blue","vocal":"soft",\
+            "language":"en","emotion":0.7,"context":"sleep"}
+            """
+        )
+        XCTAssertEqual(parsed?.details.season, "autumn")
+        XCTAssertEqual(parsed?.details.dayparts, ["evening", "night"])
+        XCTAssertEqual(parsed?.details.listenContext, "sleep")
+        XCTAssertGreaterThan(parsed?.details.matches(hour: 22, month: 10) ?? 0, 0.8)
+        XCTAssertTrue(parsed?.details.hasExtendedFields ?? false)
+    }
+
     func testMoodJSONIncludesTwoLineSummary() {
         let parsed = LyricIntelligencePrompt.parse(
             """
@@ -260,9 +278,12 @@ final class LyricIntelligenceTests: XCTestCase {
             LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
             forKey: LyricIntelligenceSettings.providerKey
         )
+        XCTAssertFalse(
+            LyricIntelligenceProviderKind.applePrivateCloud.isVisibleInSettings
+        )
         XCTAssertEqual(
             LyricIntelligenceSettings.current(defaults: defaults).provider,
-            .applePrivateCloud
+            .onDevice
         )
     }
 
@@ -400,6 +421,26 @@ final class LyricIntelligenceTests: XCTestCase {
         XCTAssertEqual(report.soundDone, 1)
         XCTAssertEqual(report.done.map(\.song.id), ["done"])
         XCTAssertEqual(report.pending.map(\.song.id), ["wait"])
+        XCTAssertTrue(report.needsSound.isEmpty)
+        XCTAssertEqual(report.workQueue.map(\.id), ["wait"])
+
+        let lyricOnly = LyricAnalysisCoverage.make(
+            catalog: [done],
+            signatures: [
+                "done": LyricSignature(
+                    songID: "done",
+                    lyricsHash: "hash",
+                    moods: ["calm"],
+                    themes: [],
+                    energy: 0.2,
+                    valence: 0.3,
+                    embedding: [0.1],
+                    source: "apple-intelligence-3b"
+                )
+            ]
+        )
+        XCTAssertEqual(lyricOnly.needsSound.map(\.song.id), ["done"])
+        XCTAssertEqual(lyricOnly.workQueue.map(\.id), ["done"])
         XCTAssertEqual(report.done.first?.sourceTitle, "Apple Intelligence")
         XCTAssertTrue(report.done.first?.hasSound ?? false)
     }

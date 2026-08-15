@@ -11,12 +11,17 @@ struct LyricAnalysisEntry: Equatable, Identifiable, Sendable {
 struct LyricAnalysisCoverage: Equatable, Sendable {
     var done: [LyricAnalysisEntry]
     var pending: [LyricAnalysisEntry]
+    var needsSound: [LyricAnalysisEntry]
 
     var known: Int { done.count + pending.count }
     var lyricDone: Int { done.count }
     var soundDone: Int { done.filter(\.hasSound).count }
 
-    static let empty = LyricAnalysisCoverage(done: [], pending: [])
+    var workQueue: [Song] {
+        MediaIdentity.uniqueSongs(pending.map(\.song) + needsSound.map(\.song))
+    }
+
+    static let empty = LyricAnalysisCoverage(done: [], pending: [], needsSound: [])
 
     static func make(
         catalog: [Song],
@@ -25,21 +30,25 @@ struct LyricAnalysisCoverage: Equatable, Sendable {
         var seen = Set<String>()
         var done: [LyricAnalysisEntry] = []
         var pending: [LyricAnalysisEntry] = []
+        var needsSound: [LyricAnalysisEntry] = []
         done.reserveCapacity(catalog.count)
         pending.reserveCapacity(catalog.count)
+        needsSound.reserveCapacity(catalog.count)
         for song in catalog {
             if song.id == LyricIntelligence.probeSongID { continue }
             if song.externalStreamURL != nil { continue }
             guard seen.insert(song.id).inserted else { continue }
             let signature = signatures[song.id]
             if let signature, signature.hasStoredLyricAnalysis {
-                done.append(
-                    LyricAnalysisEntry(
-                        song: song,
-                        sourceTitle: signature.sourceTitle,
-                        hasSound: signature.hasStoredSoundAnalysis
-                    )
+                let entry = LyricAnalysisEntry(
+                    song: song,
+                    sourceTitle: signature.sourceTitle,
+                    hasSound: signature.hasStoredSoundAnalysis
                 )
+                done.append(entry)
+                if !entry.hasSound {
+                    needsSound.append(entry)
+                }
             } else {
                 pending.append(
                     LyricAnalysisEntry(
@@ -50,7 +59,11 @@ struct LyricAnalysisCoverage: Equatable, Sendable {
                 )
             }
         }
-        return LyricAnalysisCoverage(done: done, pending: pending)
+        return LyricAnalysisCoverage(
+            done: done,
+            pending: pending,
+            needsSound: needsSound
+        )
     }
 }
 

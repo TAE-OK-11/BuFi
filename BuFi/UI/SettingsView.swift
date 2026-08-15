@@ -847,7 +847,7 @@ private struct RecommendationSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             settingsDescription(
                 String(
-                    localized: "알고 있는 곡 \(coverage.known) · 분석됨 \(coverage.lyricDone) · 남음 \(coverage.pending.count) · 음향 \(coverage.soundDone)"
+                    localized: "알고 있는 곡 \(coverage.known) · 분석됨 \(coverage.lyricDone) · 남음 \(coverage.pending.count) · 음향 \(coverage.soundDone) · 음향 대기 \(coverage.needsSound.count)"
                 )
             )
             if batchProgress.isRunning || batchProgress.processed > 0 {
@@ -865,6 +865,11 @@ private struct RecommendationSettingsView: View {
                     songStatusList(coverage.pending, pending: true)
                 }
             }
+            if !coverage.needsSound.isEmpty {
+                DisclosureGroup("음향 없는 곡 \(coverage.needsSound.count)") {
+                    songStatusList(coverage.needsSound, pending: false)
+                }
+            }
             if coverage.known == 0 {
                 settingsDescription("홈·청취 기록에 곡이 생기면 여기에 집계됩니다.")
             }
@@ -880,11 +885,11 @@ private struct RecommendationSettingsView: View {
                 }
                 .buttonStyle(SettingsActionButtonStyle())
                 .disabled(
-                    coverage.pending.isEmpty
+                    coverage.workQueue.isEmpty
                         || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
                 )
             }
-            settingsDescription("이미 저장된 곡은 건너뜁니다. 가사가 없는 곡은 남고, 다운로드된 곡만 음향 분석을 합니다.")
+            settingsDescription("가사 없는 곡과 음향 없는 곡을 이어서 돌립니다. 오프라인 파일이 없으면 앞부분 스트림을 받아 음향을 분석합니다. 이미 저장된 항목은 건너뜁니다.")
         }
     }
 
@@ -1010,7 +1015,7 @@ private struct RecommendationSettingsView: View {
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 },
                 fileProvider: { song in
-                    await OfflineStore.shared.localURL(for: song)
+                    await SoundAnalysisSample.resolve(for: song, client: client)
                 }
             )
             guard !Task.isCancelled else { return }
@@ -1118,10 +1123,8 @@ private struct RecommendationSettingsView: View {
         switch LyricIntelligenceProviderKind(rawValue: lyricProviderRaw) ?? .onDevice {
         case .off:
             String(localized: "가사 분석을 하지 않습니다. 이미 저장한 결과는 로컬 DB에 남습니다.")
-        case .onDevice:
-            String(localized: "자동은 Apple Intelligence 태깅 모델로 분위기·주제를 뽑고, 기본 AFM으로 에너지·감정을 뽑습니다. 둘 다 안 되면 Gemma 3 270M을 씁니다. 결과는 SQLite에 저장되어 같은 가사는 다시 돌리지 않습니다. 다운로드된 곡은 Sound Analysis 내장 classifier로 음향도 한 번만 분석합니다.")
-        case .applePrivateCloud:
-            AppleFoundationLyricClient.privateCloudStatus().settingsNote
+        case .onDevice, .applePrivateCloud:
+            String(localized: "자동은 Apple Intelligence 3B 로컬 모델로 분위기·계절·시간대·스타일·내용 등 20개 항목을 분석합니다. 안 되면 태깅 모델, 그다음 Gemma 3입니다. Privacy Cloud는 지금은 쓰지 않습니다.")
         case .openAI:
             String(localized: "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         case .openRouter:

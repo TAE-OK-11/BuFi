@@ -102,6 +102,7 @@
 "분석 엔진" = "Analysis engine";
 "기기 (Apple Intelligence)" = "On device (Apple Intelligence)";
 "자동 (기기 → Gemma 3)" = "Auto (device → Gemma 3)";
+"자동 (Apple 3B → Gemma 3)" = "Auto (Apple 3B → Gemma 3)";
 "Apple Privacy Cloud" = "Apple Privacy Cloud";
 "끄기" = "Off";
 "가사 분석을 하지 않습니다. 이미 저장한 결과는 로컬 DB에 남습니다." = "Lyric analysis is off. Results already stored stay in the local database.";

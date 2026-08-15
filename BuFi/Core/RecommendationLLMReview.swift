@@ -129,7 +129,10 @@ enum RecommendationLLMReview {
         let summary = signature?.summary.replacingOccurrences(of: "\n", with: " / ") ?? ""
         let energy = signature.map { String(format: "%.2f", $0.energy) } ?? "-"
         let valence = signature.map { String(format: "%.2f", $0.valence) } ?? "-"
-        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) themes:\(themes) e:\(energy) v:\(valence) sound:\(sound) | \(summary)"
+        let season = signature?.details.season ?? ""
+        let day = signature?.details.dayparts.joined(separator: ",") ?? ""
+        let style = signature?.details.style ?? ""
+        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) themes:\(themes) e:\(energy) v:\(valence) season:\(season) day:\(day) style:\(style) sound:\(sound) | \(summary)"
     }
 
     private static func currentSettings() async -> LyricIntelligenceSettings {

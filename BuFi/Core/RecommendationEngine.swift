@@ -975,7 +975,9 @@ enum RecommendationMixer {
             let timeScore = timeAwarenessScore(
                 song,
                 normalizedText: metadata.timeText,
-                hour: currentHour
+                hour: currentHour,
+                month: Calendar.current.component(.month, from: evaluationDate),
+                details: lyricIndex.bySongID[song.id]?.details
             )
             let popularityScore = max(
                 sourceSignals.popular,
@@ -1347,8 +1349,13 @@ enum RecommendationMixer {
     private static func timeAwarenessScore(
         _ song: Song,
         normalizedText text: String,
-        hour: Int
+        hour: Int,
+        month: Int,
+        details: LyricDetailProfile?
     ) -> Double {
+        if let details, details.hasExtendedFields {
+            return max(0.28, details.matches(hour: hour, month: month))
+        }
         let calmTokens = ["chill", "ambient", "acoustic", "jazz", "ballad", "sleep", "잔잔"]
         let activeTokens = ["dance", "edm", "rock", "hip hop", "workout", "upbeat", "댄스"]
         let bpm = song.bpm ?? 0

@@ -102,6 +102,7 @@
 "분석 엔진" = "分析エンジン";
 "기기 (Apple Intelligence)" = "デバイス（Apple Intelligence）";
 "자동 (기기 → Gemma 3)" = "自動（デバイス → Gemma 3）";
+"자동 (Apple 3B → Gemma 3)" = "自動（Apple 3B → Gemma 3）";
 "Apple Privacy Cloud" = "Apple Privacy Cloud";
 "끄기" = "オフ";
 "가사 분석을 하지 않습니다. 이미 저장한 결과는 로컬 DB에 남습니다." = "歌詞分析はオフです。すでに保存した結果はローカルDBに残ります。";

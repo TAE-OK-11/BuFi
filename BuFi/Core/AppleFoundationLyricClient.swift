@@ -86,6 +86,7 @@ enum AppleFoundationLyricClient {
         var valence: Double
         var summary: String
         var source: String
+        var details: LyricDetailProfile = .empty
     }
 
     static func onDeviceStatus() -> AppleOnDeviceModelStatus {
@@ -103,7 +104,7 @@ enum AppleFoundationLyricClient {
     }
 
     static var showsPrivateCloudSetting: Bool {
-        privateCloudStatus().showsInSettings
+        false
     }
 
     static func analyze(lyrics: String) async -> Analysis? {
@@ -212,7 +213,8 @@ private enum FoundationModelsBridge {
             energy: energy,
             valence: valence,
             summary: summary,
-            source: source
+            source: source,
+            details: tagParse?.details ?? scoreParse?.details ?? .empty
         )
     }
 
@@ -229,7 +231,8 @@ private enum FoundationModelsBridge {
             energy: parsed.energy,
             valence: parsed.valence,
             summary: parsed.summary,
-            source: "apple-intelligence-3b"
+            source: "apple-intelligence-3b",
+            details: parsed.details
         )
     }
 
@@ -324,7 +327,8 @@ private enum PrivateCloudBridge {
                 energy: parsed.energy,
                 valence: parsed.valence,
                 summary: parsed.summary,
-                source: "apple-privacy-cloud"
+                source: "apple-privacy-cloud",
+                details: parsed.details
             )
         } catch {
             return nil
