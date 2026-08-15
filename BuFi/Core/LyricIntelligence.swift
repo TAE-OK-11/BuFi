@@ -122,6 +122,49 @@ struct LyricSignature: Codable, Equatable, Sendable {
     var hasSentenceEmbedding: Bool {
         sentenceEmbedding.count >= 8
     }
+
+    var sourceTitle: String {
+        switch source {
+        case "apple-intelligence-tagging+default":
+            String(localized: "Apple Intelligence (태깅+기본)")
+        case "apple-intelligence-tagging":
+            String(localized: "Apple Intelligence (태깅)")
+        case "apple-intelligence":
+            String(localized: "Apple Intelligence")
+        case "apple-privacy-cloud":
+            String(localized: "Apple Privacy Cloud")
+        case "gemma-3-270m":
+            "Gemma 3 270M"
+        case "openai":
+            "OpenAI"
+        case "openrouter":
+            "OpenRouter"
+        case "lexical":
+            String(localized: "로컬 어휘 (모델 없음)")
+        default:
+            source
+        }
+    }
+}
+
+enum LyricAnalysisCachePolicy {
+    static func shouldReuseLyric(existing: LyricSignature?, lyricsHash: String) -> Bool {
+        guard let existing else { return false }
+        return existing.lyricsHash == lyricsHash && existing.hasStoredLyricAnalysis
+    }
+
+    static func shouldReuseSound(existing: LyricSignature?, audioRevision: String) -> Bool {
+        guard let existing, !audioRevision.isEmpty else { return false }
+        return existing.audioRevision == audioRevision && existing.hasStoredSoundAnalysis
+    }
+}
+
+struct LyricIntelligenceProbe: Equatable, Sendable {
+    var reusedCache: Bool
+    var signature: LyricSignature?
+    var provider: LyricIntelligenceProviderKind
+    var appleOnDevice: AppleOnDeviceModelStatus
+    var privateCloud: ApplePrivateCloudStatus
 }
 
 struct LyricSignatureIndex: Sendable {
@@ -378,6 +421,39 @@ actor LyricIntelligence {
         return LyricSignatureIndex(bySongID: signatures)
     }
 
+    func signature(for songID: String) async -> LyricSignature? {
+        await loadIfNeeded()
+        return signatures[songID]
+    }
+
+    func probeSample(accountScope: String?) async -> LyricIntelligenceProbe {
+        if let accountScope {
+            await activate(accountScope: accountScope)
+        } else {
+            await loadIfNeeded()
+        }
+        let lyrics = Self.sampleLyrics
+        let hash = LyricLexicalEmbedding.hash(lyrics)
+        let song = Song(
+            id: Self.probeSongID,
+            title: "Probe",
+            artist: "BuFi",
+            album: "Probe"
+        )
+        let reused = LyricAnalysisCachePolicy.shouldReuseLyric(
+            existing: signatures[song.id],
+            lyricsHash: hash
+        )
+        await analyze(song: song, lyrics: lyrics, hash: hash)
+        return LyricIntelligenceProbe(
+            reusedCache: reused,
+            signature: signatures[song.id],
+            provider: LyricIntelligenceSettings.current().provider,
+            appleOnDevice: AppleFoundationLyricClient.onDeviceStatus(),
+            privateCloud: AppleFoundationLyricClient.privateCloudStatus()
+        )
+    }
+
     func scheduleAnalysis(song: Song, document: LyricsDocument, accountScope: String? = nil) {
         let lyrics = document.lines
             .map(\.text)
@@ -418,8 +494,10 @@ actor LyricIntelligence {
 
     private func analyze(song: Song, lyrics: String, hash: String) async {
         if var existing = signatures[song.id],
-           existing.lyricsHash == hash,
-           existing.hasStoredLyricAnalysis {
+           LyricAnalysisCachePolicy.shouldReuseLyric(
+            existing: existing,
+            lyricsHash: hash
+           ) {
             if !existing.hasSentenceEmbedding {
                 if let sentence = await LyricSentenceEmbedding.vector(from: lyrics) {
                     existing.sentenceEmbedding = sentence
@@ -504,9 +582,10 @@ actor LyricIntelligence {
         fileURL: URL,
         audioRevision: String
     ) async {
-        if let existing = signatures[song.id],
-           existing.audioRevision == audioRevision,
-           existing.hasStoredSoundAnalysis {
+        if LyricAnalysisCachePolicy.shouldReuseSound(
+            existing: signatures[song.id],
+            audioRevision: audioRevision
+        ) {
             return
         }
         guard soundInFlight.insert(song.id).inserted else { return }
@@ -574,6 +653,13 @@ actor LyricIntelligence {
         }
         try? FileManager.default.removeItem(at: url)
     }
+
+    static let probeSongID = "__bufi-lyric-probe__"
+    static let sampleLyrics = """
+        I walk alone at midnight under the quiet rain
+        The city lights are fading and I keep repeating your name
+        Slow breath, heavy heart, a calm and lonely tune
+        """
 
     private static var storageURL: URL {
         let folder = FileManager.default.urls(

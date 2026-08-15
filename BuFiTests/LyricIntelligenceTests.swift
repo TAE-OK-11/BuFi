@@ -243,6 +243,49 @@ final class LyricIntelligenceTests: XCTestCase {
         )
     }
 
+    func testCachePolicyReusesMatchingLyricAndSoundOnly() {
+        let stored = LyricSignature(
+            songID: "one",
+            lyricsHash: "lyrics-a",
+            moods: ["calm"],
+            themes: ["night"],
+            energy: 0.2,
+            valence: 0.3,
+            embedding: [0.1],
+            source: "apple-intelligence",
+            sentenceEmbedding: [0.2],
+            soundLabels: ["singing"],
+            soundEmbedding: [0.4],
+            audioRevision: "audio-a",
+            soundSource: "coreml-sound-analysis"
+        )
+        XCTAssertTrue(
+            LyricAnalysisCachePolicy.shouldReuseLyric(
+                existing: stored,
+                lyricsHash: "lyrics-a"
+            )
+        )
+        XCTAssertFalse(
+            LyricAnalysisCachePolicy.shouldReuseLyric(
+                existing: stored,
+                lyricsHash: "lyrics-b"
+            )
+        )
+        XCTAssertTrue(
+            LyricAnalysisCachePolicy.shouldReuseSound(
+                existing: stored,
+                audioRevision: "audio-a"
+            )
+        )
+        XCTAssertFalse(
+            LyricAnalysisCachePolicy.shouldReuseSound(
+                existing: stored,
+                audioRevision: "audio-b"
+            )
+        )
+        XCTAssertEqual(stored.sourceTitle, "Apple Intelligence")
+    }
+
     func testBackendOffDoesNotCallAModel() async {
         let settings = LyricIntelligenceSettings(
             provider: .off,

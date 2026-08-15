@@ -204,6 +204,8 @@ struct SettingsView: View {
             NavigationLink {
                 RecommendationSettingsView()
                     .environmentObject(model)
+                    .environmentObject(audio)
+                    .environmentObject(audio.playbackState)
             } label: {
                 HStack(spacing: 12) {
                     settingIcon("wand.and.stars")
@@ -550,6 +552,11 @@ private extension View {
 private struct RecommendationSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
+    @EnvironmentObject private var audio: AudioEngine
+    @EnvironmentObject private var playbackState: PlaybackState
+    @State private var currentSignature: LyricSignature?
+    @State private var probe: LyricIntelligenceProbe?
+    @State private var isProbing = false
     @State private var lastFMAPIKey = ""
     @State private var listenBrainzUsername = ""
     @State private var listenBrainzToken = ""
@@ -785,6 +792,7 @@ private struct RecommendationSettingsView: View {
                                     .isEmpty
                             )
                         }
+                        lyricIntelligenceTestSection
                     }
                 }
                 .padding(.horizontal, 16)
@@ -804,6 +812,104 @@ private struct RecommendationSettingsView: View {
                 lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
             }
         }
+        .task(id: playbackState.currentSong?.id) {
+            currentSignature = await currentSongSignature()
+        }
+    }
+
+    @ViewBuilder
+    private var lyricIntelligenceTestSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("실기기 시험")
+                .font(.system(size: 15, weight: .semibold))
+            settingsDescription(AppleFoundationLyricClient.onDeviceStatus().title)
+            settingsDescription(AppleFoundationLyricClient.privateCloudStatus().title)
+            if let song = playbackState.currentSong {
+                if let currentSignature {
+                    settingsDescription(nowPlayingAnalysisText(song: song, signature: currentSignature))
+                } else {
+                    settingsDescription(
+                        String(
+                            localized: "지금 재생 중: \(song.title). 가사가 뜨면 분석이 시작되고, 같은 가사는 다시 돌리지 않습니다."
+                        )
+                    )
+                }
+            } else {
+                settingsDescription("가사가 있는 곡을 재생하면 저장된 분석이 여기에 나타납니다. 음향은 다운로드된 곡만 분석합니다.")
+            }
+            if let probe {
+                settingsDescription(probeResultText(probe))
+            }
+            Button(isProbing ? "분석 중…" : "샘플 가사로 시험") {
+                Task { await runLyricProbe() }
+            }
+            .buttonStyle(SettingsActionButtonStyle())
+            .disabled(isProbing)
+            settingsDescription("한 번 누르면 지금 고른 엔진으로 샘플 가사를 분석합니다. 같은 버튼을 다시 누르면 캐시에서 읽어야 정상입니다.")
+        }
+    }
+
+    private func currentSongSignature() async -> LyricSignature? {
+        guard let songID = playbackState.currentSong?.id else { return nil }
+        if let scope = await model.client?.accountScope {
+            await LyricIntelligence.shared.activate(accountScope: scope)
+        }
+        return await LyricIntelligence.shared.signature(for: songID)
+    }
+
+    private func runLyricProbe() async {
+        isProbing = true
+        defer { isProbing = false }
+        let scope = await model.client?.accountScope
+        probe = await LyricIntelligence.shared.probeSample(accountScope: scope)
+        currentSignature = await currentSongSignature()
+    }
+
+    private func nowPlayingAnalysisText(song: Song, signature: LyricSignature) -> String {
+        var parts = [
+            String(localized: "지금 재생 중: \(song.title)"),
+            String(localized: "가사 엔진: \(signature.sourceTitle)")
+        ]
+        if !signature.moods.isEmpty {
+            parts.append(String(localized: "분위기: \(signature.moods.joined(separator: ", "))"))
+        }
+        if signature.hasSentenceEmbedding {
+            parts.append(
+                String(
+                    localized: "문장 임베딩: \(signature.sentenceEmbedding.count)차원 저장됨"
+                )
+            )
+        }
+        if signature.hasStoredSoundAnalysis {
+            let labels = signature.soundLabels.joined(separator: ", ")
+            parts.append(String(localized: "음향: \(labels)"))
+        } else {
+            parts.append(String(localized: "음향: 아직 없음 (다운로드된 곡을 재생하면 채워집니다)"))
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private func probeResultText(_ probe: LyricIntelligenceProbe) -> String {
+        let cache = probe.reusedCache
+            ? String(localized: "캐시에서 읽음 (모델을 다시 호출하지 않음)")
+            : String(localized: "새로 분석함")
+        guard let signature = probe.signature else {
+            return String(localized: "시험 결과: 분석을 저장하지 못했습니다. 가사 지능이 꺼져 있는지 확인하세요.")
+        }
+        let moods = signature.moods.isEmpty
+            ? String(localized: "없음")
+            : signature.moods.joined(separator: ", ")
+        return [
+            String(localized: "시험 결과: \(cache)"),
+            String(localized: "엔진: \(signature.sourceTitle)"),
+            String(localized: "분위기: \(moods)"),
+            String(
+                localized: "에너지 \(Int((signature.energy * 100).rounded()))% · 감정 \(Int((signature.valence * 100).rounded()))%"
+            ),
+            signature.hasSentenceEmbedding
+                ? String(localized: "문장 임베딩: \(signature.sentenceEmbedding.count)차원")
+                : String(localized: "문장 임베딩: 없음")
+        ].joined(separator: "\n")
     }
 
     private var usesOnDeviceFallback: Bool {

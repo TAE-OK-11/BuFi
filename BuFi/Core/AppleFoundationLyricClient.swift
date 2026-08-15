@@ -17,6 +17,23 @@ enum ApplePrivateCloudStatus: Equatable, Sendable {
         }
     }
 
+    var title: String {
+        switch self {
+        case .needsIOS27:
+            String(localized: "Apple Privacy Cloud: iOS 27 이상 필요")
+        case .deviceNotEligible:
+            String(localized: "Apple Privacy Cloud: 이 기기는 미지원")
+        case .systemNotReady:
+            String(localized: "Apple Privacy Cloud: 아직 준비되지 않음")
+        case .quotaReached:
+            String(localized: "Apple Privacy Cloud: 오늘 한도 초과")
+        case .available:
+            String(localized: "Apple Privacy Cloud: 사용 가능")
+        case .unavailable:
+            String(localized: "Apple Privacy Cloud: 지금은 사용 불가")
+        }
+    }
+
     var settingsNote: String {
         switch self {
         case .needsIOS27:
@@ -40,6 +57,23 @@ enum ApplePrivateCloudStatus: Equatable, Sendable {
 /// Gemma 3 270M is only the fallback when both adapters fail.
 /// Apple Privacy Cloud (Private Cloud Compute) is opt-in from Settings
 /// on iOS 27+ devices that expose the server model.
+enum AppleOnDeviceModelStatus: Equatable, Sendable {
+    case needsIOS26
+    case available
+    case unavailable
+
+    var title: String {
+        switch self {
+        case .needsIOS26:
+            String(localized: "기기 Apple Intelligence: iOS 26 이상 필요")
+        case .available:
+            String(localized: "기기 Apple Intelligence: 사용 가능")
+        case .unavailable:
+            String(localized: "기기 Apple Intelligence: 꺼져 있거나 이 기기에서 사용 불가")
+        }
+    }
+}
+
 enum AppleFoundationLyricClient {
     struct Analysis: Sendable {
         var moods: [String]
@@ -47,6 +81,13 @@ enum AppleFoundationLyricClient {
         var energy: Double
         var valence: Double
         var source: String
+    }
+
+    static func onDeviceStatus() -> AppleOnDeviceModelStatus {
+        if #available(iOS 26.0, *) {
+            return FoundationModelsBridge.status()
+        }
+        return .needsIOS26
     }
 
     static func privateCloudStatus() -> ApplePrivateCloudStatus {
@@ -80,6 +121,15 @@ import FoundationModels
 
 @available(iOS 26.0, *)
 private enum FoundationModelsBridge {
+    static func status() -> AppleOnDeviceModelStatus {
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            return .available
+        default:
+            return .unavailable
+        }
+    }
+
     static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
         async let tagged = respond(
             to: LyricIntelligencePrompt.tagging(lyrics: lyrics),
@@ -137,6 +187,10 @@ private enum FoundationModelsBridge {
 #else
 @available(iOS 26.0, *)
 private enum FoundationModelsBridge {
+    static func status() -> AppleOnDeviceModelStatus {
+        .unavailable
+    }
+
     static func analyze(lyrics: String) async -> AppleFoundationLyricClient.Analysis? {
         _ = lyrics
         return nil
