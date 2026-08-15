@@ -235,14 +235,14 @@ private struct RecommendationPreset {
             )
         case .autoplay:
             RecommendationPreset(
-                shortTermRatio: 0.72,
+                shortTermRatio: 0.78,
                 featureWeights: [
-                    .context: 0.28, .server: 0.26, .history: 0.18,
-                    .favorites: 0.12, .lastFM: 0.10,
-                    .listenBrainz: 0.10, .behavior: 0.16,
-                    .completion: 0.12, .discovery: 0.08,
-                    .localMetadata: 0.14, .artistRotation: 0.10,
-                    .timeAwareness: 0.08, .lyricMood: 0.16
+                    .context: 0.42, .lyricMood: 0.24, .server: 0.18,
+                    .localMetadata: 0.16, .lastFM: 0.12,
+                    .listenBrainz: 0.10, .history: 0.10,
+                    .favorites: 0.08, .behavior: 0.10,
+                    .completion: 0.08, .discovery: 0.08,
+                    .artistRotation: 0.08, .timeAwareness: 0.08
                 ]
             )
         }
@@ -598,49 +598,92 @@ enum RecommendationSuppressionPolicy {
 }
 
 enum RecommendationSeedAffinity {
-    /// Distance to the current seed. Same album after a completed listen is
-    /// the strongest local radio cue; BPM and genre keep the lane.
+    /// Distance to the current seed. Album, lyrics, and sound decide the
+    /// lane. Same artist alone is only a weak prior so two Taylor songs
+    /// do not produce the same radio.
     static func score(
         candidate: Song,
         seed: Song,
-        seedCompleted: Bool
+        seedCompleted: Bool,
+        lyricIndex: LyricSignatureIndex = .empty
     ) -> Double {
         if candidate.id == seed.id { return 0 }
         var score = 0.0
         let seedArtist = RecommendationCandidateMetadata.artistKey(for: seed)
         let candidateArtist = RecommendationCandidateMetadata.artistKey(for: candidate)
-        if !seedArtist.isEmpty, seedArtist == candidateArtist {
-            score = max(score, 0.80)
-        }
+        let sameArtist = !seedArtist.isEmpty && seedArtist == candidateArtist
         let seedAlbum = RecommendationMixer.normalized(seed.albumId ?? seed.album)
         let candidateAlbum = RecommendationMixer.normalized(
             candidate.albumId ?? candidate.album
         )
-        if !seedAlbum.isEmpty, seedAlbum == candidateAlbum {
-            score = max(score, seedCompleted ? 0.94 : 0.62)
+        let sameAlbum = !seedAlbum.isEmpty && seedAlbum == candidateAlbum
+
+        if sameAlbum {
+            score = max(score, seedCompleted ? 0.90 : 0.74)
             if seedCompleted,
                let next = candidate.track,
                let current = seed.track,
                next > current,
                next <= current + 3 {
-                score = max(score, 0.98)
+                score = max(score, 0.97)
+            }
+        } else if sameArtist {
+            score = max(score, 0.36)
+            if albumFamily(seed.album, candidate.album) {
+                score = max(score, 0.58)
             }
         }
+
+        let titleOverlap = tokenOverlap(seed.title, candidate.title)
+        if titleOverlap > 0 {
+            score = max(score, 0.18 + 0.40 * titleOverlap)
+        }
+
         let seedGenres = Set(RecommendationCandidateMetadata.genreKeys(for: seed))
         if !seedGenres.isEmpty,
            RecommendationCandidateMetadata.genreKeys(for: candidate)
             .contains(where: seedGenres.contains) {
-            score = max(score, 0.72)
+            score = max(score, sameArtist ? 0.42 : 0.28)
         }
         if let left = candidate.bpm, let right = seed.bpm, left > 0, right > 0 {
             let delta = abs(left - right)
             if delta <= 8 {
-                score = max(score, 0.74)
+                score = max(score, 0.62)
             } else if delta <= 16 {
-                score = max(score, 0.56)
+                score = max(score, 0.44)
             }
         }
+        if let seedSignature = lyricIndex.bySongID[seed.id],
+           let candidateSignature = lyricIndex.bySongID[candidate.id] {
+            let related = LyricLexicalEmbedding.similarity(
+                seedSignature,
+                candidateSignature
+            )
+            score = max(score, related * 0.94)
+            score += related * 0.10
+        }
         return min(1, score)
+    }
+
+    private static func albumFamily(_ left: String, _ right: String) -> Bool {
+        let a = RecommendationMixer.normalized(left)
+        let b = RecommendationMixer.normalized(right)
+        guard a.count >= 4, b.count >= 4 else { return false }
+        return a.contains(b) || b.contains(a)
+    }
+
+    private static func tokenOverlap(_ left: String, _ right: String) -> Double {
+        let a = Set(tokens(left))
+        let b = Set(tokens(right))
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        return Double(a.intersection(b).count) / Double(a.union(b).count)
+    }
+
+    private static func tokens(_ value: String) -> [String] {
+        RecommendationMixer.normalized(value)
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+            .filter { $0.count > 2 }
     }
 }
 
@@ -723,6 +766,7 @@ enum RecommendationMixer {
         snapshotRevision: HomeSnapshotRevision? = nil,
         weights: RecommendationWeights,
         behavior: RecommendationBehaviorSnapshot,
+        seed: Song? = nil,
         lyricIndex: LyricSignatureIndex = .empty,
         date: Date = Date()
     ) async -> (recommended: [Song], daylist: [Song]) {
@@ -732,6 +776,7 @@ enum RecommendationMixer {
             snapshotRevision: snapshotRevision,
             weights: weights,
             behavior: behavior,
+            seed: seed,
             lyricIndex: lyricIndex,
             date: date
         )
@@ -836,8 +881,18 @@ enum RecommendationMixer {
                     .map(normalized)
             }
         )
+        let resolvedSeed = seed ?? behavior.recentSongs.first
+        let seedNeighbors = resolvedSeed.map {
+            seedNeighborhood(
+                seed: $0,
+                snapshot: snapshot,
+                behavior: behavior,
+                lyricIndex: lyricIndex
+            )
+        } ?? []
 
         let sourceLists: [[Song]] = [
+            seedNeighbors,
             snapshot.serverRecommendedSongs,
             snapshot.sonicRecommendedSongs,
             snapshot.similarArtistSongs,
@@ -895,10 +950,15 @@ enum RecommendationMixer {
         )
         let currentHour = Calendar.current.component(.hour, from: evaluationDate)
         let rankingSeed = temporalBucket(for: purpose, date: date)
-        let sessionIntent = RecommendationSessionIntent.make(
-            from: behavior.recentSongs
-        )
-        let resolvedSeed = seed ?? behavior.recentSongs.first
+        let sessionSongs: [Song]
+        if let resolvedSeed {
+            sessionSongs = [resolvedSeed] + behavior.recentSongs.filter {
+                $0.id != resolvedSeed.id
+            }
+        } else {
+            sessionSongs = behavior.recentSongs
+        }
+        let sessionIntent = RecommendationSessionIntent.make(from: sessionSongs)
         let seedBehavior = resolvedSeed.flatMap { behavior.songs[$0.id] }
         let seedCompleted = seedBehavior.map {
             $0.averageCompletion >= 0.65 || $0.completedCount > $0.skipCount
@@ -910,6 +970,13 @@ enum RecommendationMixer {
             if index.isMultiple(of: 32), Task.isCancelled { return [] }
             let songBehavior = behavior.songs[song.id]
             if RecommendationSuppressionPolicy.shouldDrop(songBehavior) {
+                continue
+            }
+            if let resolvedSeed, song.id == resolvedSeed.id {
+                continue
+            }
+            if purpose == .autoplay,
+               behavior.recentSongs.prefix(8).contains(where: { $0.id == song.id }) {
                 continue
             }
             let metadata = RecommendationCandidateMetadata(song: song)
@@ -1013,7 +1080,8 @@ enum RecommendationMixer {
                 RecommendationSeedAffinity.score(
                     candidate: song,
                     seed: $0,
-                    seedCompleted: seedCompleted
+                    seedCompleted: seedCompleted,
+                    lyricIndex: lyricIndex
                 )
             } ?? 0
             let contextScore = min(
@@ -1038,7 +1106,8 @@ enum RecommendationMixer {
                 score: lyricIndex.affinity(
                     candidateID: song.id,
                     recentIDs: behavior.recentSongs.map(\.id),
-                    favoriteIDs: snapshot.starredSongs.map(\.id)
+                    favoriteIDs: snapshot.starredSongs.map(\.id),
+                    seedID: resolvedSeed?.id
                 )
             )
             let score = scoringPlan.normalizedScore(weightedTotal)
@@ -1054,12 +1123,23 @@ enum RecommendationMixer {
                 * sourceConfidence
             let penalty = negativePreferencePenalty(songBehavior)
             let jitter = stableJitter(song.id, seed: rankingSeed)
-            let finalScore = max(
+            var finalScore = max(
                 0,
                 score * (0.55 + 0.45 * confidence)
                     - penalty * 0.28
                     + jitter
             )
+            if resolvedSeed != nil {
+                let lane = seedScore
+                if purpose == .autoplay {
+                    if lane < 0.18 {
+                        finalScore *= 0.10
+                    }
+                    finalScore = finalScore * 0.36 + lane * 0.64
+                } else {
+                    finalScore = finalScore * 0.58 + lane * 0.42
+                }
+            }
             let isDiscovery = !knownSongIDs.contains(song.id)
             let isNewArtist = !knownArtists.contains(metadata.artistKey)
             // Missing play-count metadata means unknown popularity, not a gem.
@@ -1103,6 +1183,55 @@ enum RecommendationMixer {
 
     static func invalidateCache() {
         cache.removeAll()
+    }
+
+    private static func seedNeighborhood(
+        seed: Song,
+        snapshot: HomeSnapshot,
+        behavior: RecommendationBehaviorSnapshot,
+        lyricIndex: LyricSignatureIndex
+    ) -> [Song] {
+        let seedArtist = RecommendationCandidateMetadata.artistKey(for: seed)
+        let seedAlbum = normalized(seed.albumId ?? seed.album)
+        let pool = MediaIdentity.uniqueSongs(
+            from: [
+                snapshot.knownSongs(),
+                behavior.recentSongs,
+                behavior.songs.values.map(\.song)
+            ]
+        )
+        var albumMates: [Song] = []
+        var artistMates: [Song] = []
+        var byID: [String: Song] = [:]
+        byID.reserveCapacity(pool.count)
+        for song in pool where song.id != seed.id {
+            byID[song.id] = song
+            let album = normalized(song.albumId ?? song.album)
+            if !seedAlbum.isEmpty, album == seedAlbum {
+                albumMates.append(song)
+            } else if !seedArtist.isEmpty,
+                      RecommendationCandidateMetadata.artistKey(for: song) == seedArtist {
+                artistMates.append(song)
+            }
+        }
+        var related: [Song] = []
+        if let seedSignature = lyricIndex.bySongID[seed.id] {
+            related = lyricIndex.bySongID.values
+                .compactMap { signature -> (Song, Double)? in
+                    guard signature.songID != seed.id,
+                          let song = byID[signature.songID] else {
+                        return nil
+                    }
+                    return (
+                        song,
+                        LyricLexicalEmbedding.similarity(seedSignature, signature)
+                    )
+                }
+                .sorted { $0.1 > $1.1 }
+                .prefix(24)
+                .map(\.0)
+        }
+        return MediaIdentity.uniqueSongs(albumMates + artistMates + related)
     }
 
     private static func scoringPlan(

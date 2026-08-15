@@ -787,13 +787,17 @@ final class AppModel: ObservableObject {
             seed: seed,
             excluding: excludedIDs
         )
+        var albumSongs: [Song] = []
+        if let albumID = seed.albumId {
+            albumSongs = (try? await client.album(id: albumID))?.songs ?? []
+        }
         guard self.client === client else { return [] }
         let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
         guard self.client === client else { return [] }
         let lyricIndex = await LyricIntelligence.shared.index()
         var snapshot = home
         snapshot.serverRecommendedSongs = Self.uniqueSongs(
-            serverValues + snapshot.serverRecommendedSongs
+            albumSongs + serverValues + snapshot.serverRecommendedSongs
         )
         let ranked = await Self.recommendations(
             snapshot: snapshot,
@@ -804,7 +808,7 @@ final class AppModel: ObservableObject {
             lyricIndex: lyricIndex,
             limit: 32
         )
-        return Self.uniqueSongs(ranked + serverValues)
+        return ranked
             .filter {
                 !excludedIDs.contains($0.id) &&
                     $0.id != seed.id &&
@@ -1013,6 +1017,17 @@ final class AppModel: ObservableObject {
         )
     }
 
+    private var seedRecommendationTask: Task<Void, Never>?
+
+    func scheduleSeedRecommendationRefresh() {
+        seedRecommendationTask?.cancel()
+        seedRecommendationTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else { return }
+            self?.rebuildRecommendations()
+        }
+    }
+
     func rebuildRecommendations() {
         recommendationTask?.cancel()
         recommendationGeneration &+= 1
@@ -1036,6 +1051,7 @@ final class AppModel: ObservableObject {
                 snapshotRevision: sourceRevision,
                 weights: weights,
                 behavior: behavior,
+                seed: AudioEngine.shared.currentSong,
                 lyricIndex: lyricIndex
             )
             let latestBehaviorRevision = await ListeningHistoryStore.shared
@@ -1074,6 +1090,8 @@ final class AppModel: ObservableObject {
         }
         recommendationTask?.cancel()
         recommendationTask = nil
+        seedRecommendationTask?.cancel()
+        seedRecommendationTask = nil
     }
 
     func album(id: String) async throws -> AlbumDetail {
@@ -2115,6 +2133,7 @@ final class AppModel: ObservableObject {
             snapshot: value,
             weights: weights,
             behavior: behavior,
+            seed: AudioEngine.shared.currentSong,
             lyricIndex: lyricIndex
         )
         value.recommendedSongs = sections.recommended
@@ -2150,6 +2169,7 @@ final class AppModel: ObservableObject {
         snapshotRevision: HomeSnapshotRevision? = nil,
         weights: RecommendationWeights,
         behavior: RecommendationBehaviorSnapshot,
+        seed: Song? = nil,
         lyricIndex: LyricSignatureIndex = .empty
     ) async -> (recommended: [Song], daylist: [Song]) {
         await RecommendationMixer.sectionsConcurrently(
@@ -2157,6 +2177,7 @@ final class AppModel: ObservableObject {
             snapshotRevision: snapshotRevision,
             weights: weights,
             behavior: behavior,
+            seed: seed,
             lyricIndex: lyricIndex
         )
     }
@@ -2218,7 +2239,8 @@ final class AppModel: ObservableObject {
         let listenBrainzToken = await secureStore.loadSecret(
             account: Self.listenBrainzTokenAccount
         )
-        let seed = snapshot.mostPlayedSongs.first
+        let seed = AudioEngine.shared.currentSong
+            ?? snapshot.mostPlayedSongs.first
             ?? snapshot.starredSongs.first
             ?? snapshot.randomSongs.first
 
@@ -2287,7 +2309,8 @@ final class AppModel: ObservableObject {
         let nextIdentity = ExternalRecommendationRefreshIdentity(
             sessionGeneration: generation,
             snapshotRevision: library.revision,
-            seedSongID: home.mostPlayedSongs.first?.id
+            seedSongID: AudioEngine.shared.currentSong?.id
+                ?? home.mostPlayedSongs.first?.id
                 ?? home.starredSongs.first?.id
                 ?? home.randomSongs.first?.id,
             includesLastFM: hasLastFMAPIKey,
@@ -2349,6 +2372,7 @@ final class AppModel: ObservableObject {
                     : nil,
                 weights: weights,
                 behavior: behavior,
+                seed: AudioEngine.shared.currentSong,
                 lyricIndex: lyricIndex
             )
             let latestBehaviorRevision = await ListeningHistoryStore.shared
@@ -2591,6 +2615,9 @@ final class AppModel: ObservableObject {
                         excluding: excludedIDs,
                         client: client
                     )
+                },
+                songChangeHandler: { [weak self] _ in
+                    self?.scheduleSeedRecommendationRefresh()
                 }
             )
             if cachedSnapshot != nil {

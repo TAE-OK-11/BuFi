@@ -902,7 +902,7 @@ private struct RecommendationSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             settingsDescription(
                 String(
-                    localized: "알고 있는 곡 \(coverage.known) · 분석됨 \(coverage.lyricDone) · 남음 \(coverage.pending.count) · 음향 \(coverage.soundDone) · 음향 대기 \(coverage.needsSound.count)"
+                    localized: "알고 있는 곡 \(coverage.known) · 분석됨 \(coverage.lyricDone) · 남음 \(coverage.pending.count) · 음향 \(coverage.soundDone) · 음향 대기 \(coverage.needsSound.count) · 요약 대기 \(coverage.needsResummary.count)"
                 )
             )
             if batchProgress.isRunning || batchProgress.processed > 0 {
@@ -925,6 +925,11 @@ private struct RecommendationSettingsView: View {
                     songStatusList(coverage.needsSound, pending: false)
                 }
             }
+            if !coverage.needsResummary.isEmpty {
+                DisclosureGroup("요약 다시 할 곡 \(coverage.needsResummary.count)") {
+                    songStatusList(coverage.needsResummary, pending: false)
+                }
+            }
             if coverage.known == 0 {
                 settingsDescription("홈·청취 기록에 곡이 생기면 여기에 집계됩니다.")
             }
@@ -935,6 +940,14 @@ private struct RecommendationSettingsView: View {
                 }
                 .buttonStyle(SettingsActionButtonStyle())
             } else {
+                Button("지금 곡 다시 분석") {
+                    startCurrentSongReanalysis()
+                }
+                .buttonStyle(SettingsActionButtonStyle())
+                .disabled(
+                    playbackState.currentSong == nil
+                        || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
+                )
                 Button("안 된 곡 전부 분석") {
                     startPendingAnalysis()
                 }
@@ -943,8 +956,16 @@ private struct RecommendationSettingsView: View {
                     coverage.workQueue.isEmpty
                         || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
                 )
+                Button("안 된 곡 Groq로 분석") {
+                    startPendingAnalysis(usingGroq: true)
+                }
+                .buttonStyle(SettingsActionButtonStyle())
+                .disabled(
+                    coverage.workQueue.isEmpty
+                        || !session.hasGroqKey
+                )
             }
-            settingsDescription("가사 없는 곡과 음향 없는 곡을 이어서 돌립니다. 오프라인 파일이 없으면 앞부분 스트림을 받아 음향을 분석합니다. 이미 저장된 항목은 건너뜁니다.")
+            settingsDescription("지금 곡은 저장된 결과를 지우고 다시 돌립니다. 안 된 곡·요약이 비거나 이상한 곡·음향 없는 곡을 이어서 돌립니다. Groq 키가 있으면 실패한 분석은 Groq로 이어집니다.")
         }
     }
 
@@ -990,7 +1011,7 @@ private struct RecommendationSettingsView: View {
                     )
                 }
             } else {
-                settingsDescription("가사가 있는 곡을 재생하면 저장된 분석이 여기에 나타납니다. 음향은 다운로드된 곡만 분석합니다.")
+                settingsDescription("가사가 있는 곡을 재생하면 저장된 분석이 여기에 나타납니다. 다운로드가 없으면 스트림으로 음향을 분석합니다.")
             }
             if let probe {
                 settingsDescription(probeResultText(probe))
@@ -1044,7 +1065,7 @@ private struct RecommendationSettingsView: View {
         coverage = await LyricIntelligence.shared.coverage(catalog: catalog)
     }
 
-    private func startPendingAnalysis() {
+    private func startPendingAnalysis(usingGroq: Bool = false) {
         batchTask?.cancel()
         batchProgress = LyricBatchProgress.idle
         batchProgress.isRunning = true
@@ -1055,23 +1076,20 @@ private struct RecommendationSettingsView: View {
                 return
             }
             let scope = client.accountScope
+            var settings = await LyricIntelligenceSettings.load()
+            if usingGroq {
+                settings.provider = .groq
+            }
             let progress = await LyricIntelligence.shared.analyzePending(
                 catalog: catalog,
                 accountScope: scope,
                 lyricsProvider: { song in
-                    let document = try? await client.lyrics(
-                        songID: song.id,
-                        artist: song.artist,
-                        title: song.title
-                    )
-                    return document?.lines
-                        .map(\.text)
-                        .joined(separator: "\n")
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    await Self.lyricsText(for: song, client: client)
                 },
                 fileProvider: { song in
                     await SoundAnalysisSample.resolve(for: song, client: client)
-                }
+                },
+                settings: settings
             )
             guard !Task.isCancelled else { return }
             batchProgress = progress
@@ -1080,6 +1098,54 @@ private struct RecommendationSettingsView: View {
             model.rebuildRecommendations()
         }
         watchBatchProgress()
+    }
+
+    private func startCurrentSongReanalysis() {
+        batchTask?.cancel()
+        batchTask = Task {
+            guard let song = playbackState.currentSong,
+                  let client = model.client else {
+                return
+            }
+            let lyrics = await Self.lyricsText(for: song, client: client)
+            guard lyrics.count >= 24 else { return }
+            await LyricIntelligence.shared.reanalyze(
+                song: song,
+                lyrics: lyrics,
+                accountScope: client.accountScope
+            )
+            if let fileURL = await SoundAnalysisSample.resolve(
+                for: song,
+                client: client
+            ) {
+                await LyricIntelligence.shared.scheduleSoundAnalysis(
+                    song: song,
+                    fileURL: fileURL,
+                    audioRevision: song.audioResourceRevision.isEmpty
+                        ? song.id
+                        : song.audioResourceRevision,
+                    accountScope: client.accountScope
+                )
+            }
+            await refreshCoverage()
+            currentSignature = await currentSongSignature()
+            model.rebuildRecommendations()
+        }
+    }
+
+    private static func lyricsText(
+        for song: Song,
+        client: OpenSubsonicClient
+    ) async -> String {
+        let document = try? await client.lyrics(
+            songID: song.id,
+            artist: song.artist,
+            title: song.title
+        )
+        return document?.lines
+            .map(\.text)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     private func watchBatchProgress() {

@@ -59,6 +59,10 @@ final class LyricIntelligenceTests: XCTestCase {
     func testSummaryRejectsLanguageCommentaryAndKeepsLyricContent() {
         XCTAssertEqual(LyricIntelligencePrompt.normalizedSummary("한국어다"), "")
         XCTAssertEqual(
+            LyricIntelligencePrompt.normalizedSummary("two sentences in korean"),
+            ""
+        )
+        XCTAssertEqual(
             LyricIntelligencePrompt.normalizedSummary(
                 "This is Korean.\nThe lyrics are in English."
             ),
@@ -491,7 +495,8 @@ final class LyricIntelligenceTests: XCTestCase {
                     soundLabels: ["singing"],
                     soundEmbedding: [0.2],
                     audioRevision: "rev",
-                    soundSource: "coreml-sound-analysis"
+                    soundSource: "coreml-sound-analysis",
+                    summary: "Walking alone after midnight.\nThe rain keeps your name."
                 )
             ]
         )
@@ -501,6 +506,7 @@ final class LyricIntelligenceTests: XCTestCase {
         XCTAssertEqual(report.done.map(\.song.id), ["done"])
         XCTAssertEqual(report.pending.map(\.song.id), ["wait"])
         XCTAssertTrue(report.needsSound.isEmpty)
+        XCTAssertTrue(report.needsResummary.isEmpty)
         XCTAssertEqual(report.workQueue.map(\.id), ["wait"])
 
         let lyricOnly = LyricAnalysisCoverage.make(
@@ -519,6 +525,7 @@ final class LyricIntelligenceTests: XCTestCase {
             ]
         )
         XCTAssertEqual(lyricOnly.needsSound.map(\.song.id), ["done"])
+        XCTAssertEqual(lyricOnly.needsResummary.map(\.song.id), ["done"])
         XCTAssertEqual(lyricOnly.workQueue.map(\.id), ["done"])
         XCTAssertEqual(report.done.first?.sourceTitle, "Apple Intelligence")
         XCTAssertTrue(report.done.first?.hasSound ?? false)

@@ -1278,6 +1278,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)?
     private var autoplayContinuationProvider:
         (@MainActor (Song, Set<String>) async -> [Song])?
+    private var songChangeHandler: (@MainActor (Song) -> Void)?
     private var itemObservation: NSKeyValueObservation?
     private weak var logicalCurrentItem: AVPlayerItem?
     private var currentItemTransitionObservation: NSKeyValueObservation?
@@ -1422,7 +1423,8 @@ final class AudioEngine: NSObject, ObservableObject {
         historySession: AccountSessionToken? = nil,
         songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil,
         autoplayContinuationProvider:
-            (@MainActor (Song, Set<String>) async -> [Song])? = nil
+            (@MainActor (Song, Set<String>) async -> [Song])? = nil,
+        songChangeHandler: (@MainActor (Song) -> Void)? = nil
     ) {
         playbackSessionGeneration &+= 1
         let sessionGeneration = playbackSessionGeneration
@@ -1448,6 +1450,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
         self.autoplayContinuationProvider = autoplayContinuationProvider
+        self.songChangeHandler = songChangeHandler
         if client == nil {
             finalizeCurrentPlayback(reason: .stopped)
             historySessionToken = nil
@@ -3334,6 +3337,7 @@ final class AudioEngine: NSObject, ObservableObject {
         handledFailedItem = nil
         if previousSongID != song.id {
             provideTrackChangeHaptic()
+            songChangeHandler?(song)
         }
     }
 

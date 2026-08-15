@@ -12,16 +12,24 @@ struct LyricAnalysisCoverage: Equatable, Sendable {
     var done: [LyricAnalysisEntry]
     var pending: [LyricAnalysisEntry]
     var needsSound: [LyricAnalysisEntry]
+    var needsResummary: [LyricAnalysisEntry]
 
     var known: Int { done.count + pending.count }
     var lyricDone: Int { done.count }
     var soundDone: Int { done.filter(\.hasSound).count }
 
     var workQueue: [Song] {
-        MediaIdentity.uniqueSongs(pending.map(\.song) + needsSound.map(\.song))
+        MediaIdentity.uniqueSongs(
+            pending.map(\.song) + needsSound.map(\.song) + needsResummary.map(\.song)
+        )
     }
 
-    static let empty = LyricAnalysisCoverage(done: [], pending: [], needsSound: [])
+    static let empty = LyricAnalysisCoverage(
+        done: [],
+        pending: [],
+        needsSound: [],
+        needsResummary: []
+    )
 
     static func make(
         catalog: [Song],
@@ -31,9 +39,11 @@ struct LyricAnalysisCoverage: Equatable, Sendable {
         var done: [LyricAnalysisEntry] = []
         var pending: [LyricAnalysisEntry] = []
         var needsSound: [LyricAnalysisEntry] = []
+        var needsResummary: [LyricAnalysisEntry] = []
         done.reserveCapacity(catalog.count)
         pending.reserveCapacity(catalog.count)
         needsSound.reserveCapacity(catalog.count)
+        needsResummary.reserveCapacity(catalog.count)
         for song in catalog {
             if song.id == LyricIntelligence.probeSongID { continue }
             if song.externalStreamURL != nil { continue }
@@ -49,6 +59,9 @@ struct LyricAnalysisCoverage: Equatable, Sendable {
                 if !entry.hasSound {
                     needsSound.append(entry)
                 }
+                if !signature.hasStoredSummary {
+                    needsResummary.append(entry)
+                }
             } else {
                 pending.append(
                     LyricAnalysisEntry(
@@ -62,7 +75,8 @@ struct LyricAnalysisCoverage: Equatable, Sendable {
         return LyricAnalysisCoverage(
             done: done,
             pending: pending,
-            needsSound: needsSound
+            needsSound: needsSound,
+            needsResummary: needsResummary
         )
     }
 }

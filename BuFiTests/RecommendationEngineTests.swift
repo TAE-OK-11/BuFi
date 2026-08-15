@@ -631,6 +631,78 @@ final class RecommendationEngineTests: XCTestCase {
         )
     }
 
+    func testDifferentSeedsFromTheSameArtistRankDifferentNeighbors() {
+        RecommendationMixer.invalidateCache()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let antiHero = song(
+            id: "anti-hero",
+            title: "Anti-Hero",
+            artist: "Taylor Swift",
+            album: "Midnights",
+            albumId: "midnights"
+        )
+        let lavender = song(
+            id: "lavender",
+            title: "Lavender Haze",
+            artist: "Taylor Swift",
+            album: "Midnights",
+            albumId: "midnights"
+        )
+        let longLive = song(
+            id: "long-live",
+            title: "Long Live",
+            artist: "Taylor Swift",
+            album: "Speak Now",
+            albumId: "speak-now"
+        )
+        let enchanted = song(
+            id: "enchanted",
+            title: "Enchanted",
+            artist: "Taylor Swift",
+            album: "Speak Now",
+            albumId: "speak-now"
+        )
+        let metal = song(
+            id: "metal",
+            title: "Break Stuff",
+            artist: "Limp Bizkit",
+            album: "Significant Other",
+            albumId: "so",
+            genre: "Metal"
+        )
+        var recommendationWeights = isolatedWeights()
+        recommendationWeights.context = 1
+        recommendationWeights.discoveryRatio = 0
+        let snapshot = HomeSnapshot(
+            randomSongs: [lavender, enchanted, metal, antiHero, longLive]
+        )
+
+        let afterAntiHero = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: recommendationWeights,
+            purpose: .autoplay,
+            seed: antiHero,
+            limit: 3,
+            date: date
+        )
+        let afterLongLive = RecommendationMixer.mix(
+            snapshot: snapshot,
+            weights: recommendationWeights,
+            purpose: .autoplay,
+            seed: longLive,
+            limit: 3,
+            date: date
+        )
+
+        XCTAssertEqual(afterAntiHero.first?.id, lavender.id)
+        XCTAssertEqual(afterLongLive.first?.id, enchanted.id)
+        XCTAssertNotEqual(
+            afterAntiHero.prefix(3).map(\.id),
+            afterLongLive.prefix(3).map(\.id)
+        )
+        XCTAssertFalse(afterAntiHero.contains { $0.id == antiHero.id })
+    }
+
     func testAutoplayFollowsRecentSessionGenre() {
         RecommendationMixer.invalidateCache()
         let date = Date(timeIntervalSince1970: 1_800_000_000)
@@ -733,6 +805,8 @@ final class RecommendationEngineTests: XCTestCase {
         id: String,
         title: String,
         artist: String,
+        album: String = "Album",
+        albumId: String? = nil,
         genre: String? = nil,
         starred: String? = nil
     ) -> Song {
@@ -740,9 +814,9 @@ final class RecommendationEngineTests: XCTestCase {
             id: id,
             title: title,
             artist: artist,
-            album: "Album",
+            album: album,
             artistId: "artist-\(artist)",
-            albumId: "album-\(artist)",
+            albumId: albumId ?? "album-\(artist)",
             coverArt: nil,
             duration: 180,
             track: 1,

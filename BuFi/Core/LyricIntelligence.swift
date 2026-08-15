@@ -217,9 +217,18 @@ struct LyricSignatureIndex: Sendable {
     func affinity(
         candidateID: String,
         recentIDs: [String],
-        favoriteIDs: [String]
+        favoriteIDs: [String],
+        seedID: String? = nil
     ) -> Double {
         guard let candidate = bySongID[candidateID] else { return 0 }
+        let seedScore: Double
+        if let seedID,
+           seedID != candidateID,
+           let seed = bySongID[seedID] {
+            seedScore = LyricLexicalEmbedding.similarity(candidate, seed)
+        } else {
+            seedScore = 0
+        }
         let anchors = recentIDs.prefix(8) + favoriteIDs.prefix(12)
         var best = 0.0
         var samples = 0
@@ -231,8 +240,16 @@ struct LyricSignatureIndex: Sendable {
             total += score
             samples += 1
         }
-        guard samples > 0 else { return 0 }
-        return min(1, best * 0.72 + (total / Double(samples)) * 0.28)
+        let rest: Double
+        if samples > 0 {
+            rest = min(1, best * 0.72 + (total / Double(samples)) * 0.28)
+        } else {
+            rest = 0
+        }
+        if seedScore > 0 {
+            return min(1, seedScore * 0.78 + rest * 0.22)
+        }
+        return rest
     }
 }
 
@@ -387,7 +404,7 @@ enum LyricIntelligencePrompt {
     static func moodAnalysis(lyrics: String, characterLimit: Int = 2_400) -> String {
         """
         Score these lyrics for a personal music recommender. JSON only, 20 fields, no markdown:
-        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"energy":0.0,"valence":0.0,"summary":"two short lines about the lyric story","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what the song is about","setting":"place","tempo":0.0,"intimacy":0.0,"narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color word","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","emotion":0.0,"context":"sleep|commute|workout|date|focus"}
+        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"energy":0.0,"valence":0.0,"summary":"She waits by the window after midnight.\\nThe rain keeps repeating his name.","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what the song is about","setting":"place","tempo":0.0,"intimacy":0.0,"narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color word","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","emotion":0.0,"context":"sleep|commute|workout|date|focus"}
         energy/tempo/intimacy/emotion are 0-1. valence 0 sad to 1 joyful.
         \(summaryRules)
         Lyrics:
@@ -398,7 +415,7 @@ enum LyricIntelligencePrompt {
     static func tagging(lyrics: String) -> String {
         """
         Tag these lyrics for recommendation matching. JSON only:
-        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"summary":"two short lines about the lyric story","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what it is about","setting":"place","narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","context":"sleep|commute|workout|date|focus"}
+        {"moods":["up to 5 mood tags"],"themes":["up to 5 themes"],"summary":"She waits by the window after midnight.\\nThe rain keeps repeating his name.","season":"spring|summer|autumn|winter|any","dayparts":["morning","afternoon","evening","night"],"style":"short style","content":"what it is about","setting":"place","narrative":"story|confession|party|letter","weather":"rain|sun|snow|clear|any","social":"alone|couple|crowd","color":"one color","vocal":"soft|powerful|rap|choir","language":"ko|en|ja|other","context":"sleep|commute|workout|date|focus"}
         \(summaryRules)
         Lyrics:
         \(lyrics.prefix(2_400))
@@ -418,8 +435,8 @@ enum LyricIntelligencePrompt {
 
     static func summaryOnly(lyrics: String) -> String {
         """
-        Retell what happens or is felt in these lyrics in exactly two short sentences.
-        JSON only: {"summary":"line one\\nline two"}
+        Retell the lyric story or feeling. JSON only:
+        {"summary":"She waits by the window after midnight.\\nThe rain keeps repeating his name."}
         \(summaryRules)
         Lyrics:
         \(lyrics.prefix(2_400))
@@ -578,7 +595,12 @@ enum LyricIntelligencePrompt {
             "thelyricsarekorean", "thelyricsareenglish",
             "koreantlyrics", "englishlyrics", "japaneselyrics",
             "가사언어", "가사의언어",
-            "thisisasong", "이것은노래", "이건노래"
+            "thisisasong", "이것은노래", "이건노래",
+            "twosentences", "twoshortlines", "twoshortsentences",
+            "sentencesinkorean", "sentencesinenglish", "sentencesinjapanese",
+            "twosentencesin", "twosentencesinkorean", "twosentencesinenglish",
+            "두문장", "한국어로두", "영어로두",
+            "aboutthelyricstory", "lyricstory", "shortlinesabout"
         ]
         return markers.contains { compact.contains($0) }
     }
@@ -686,11 +708,30 @@ actor LyricIntelligence {
         batchProgress.currentTitle = ""
     }
 
+    func reanalyze(
+        song: Song,
+        lyrics: String,
+        accountScope: String,
+        settings: LyricIntelligenceSettings? = nil
+    ) async {
+        await activate(accountScope: accountScope)
+        let hash = LyricLexicalEmbedding.hash(lyrics)
+        await analyze(
+            song: song,
+            lyrics: lyrics,
+            hash: hash,
+            force: true,
+            settings: settings
+        )
+    }
+
     func analyzePending(
         catalog: [Song],
         accountScope: String,
         lyricsProvider: @escaping @Sendable (Song) async -> String,
-        fileProvider: @escaping @Sendable (Song) async -> URL?
+        fileProvider: @escaping @Sendable (Song) async -> URL?,
+        force: Bool = false,
+        settings: LyricIntelligenceSettings? = nil
     ) async -> LyricBatchProgress {
         await activate(accountScope: accountScope)
         batchGeneration &+= 1
@@ -717,11 +758,20 @@ actor LyricIntelligence {
             let lyrics = await lyricsProvider(song)
             if lyrics.count >= 24 {
                 let hash = LyricLexicalEmbedding.hash(lyrics)
-                let reused = LyricAnalysisCachePolicy.shouldReuseLyric(
-                    existing: signatures[song.id],
-                    lyricsHash: hash
+                let missingSummary = !(signatures[song.id]?.hasStoredSummary ?? false)
+                let reused = !force
+                    && !missingSummary
+                    && LyricAnalysisCachePolicy.shouldReuseLyric(
+                        existing: signatures[song.id],
+                        lyricsHash: hash
+                    )
+                await analyze(
+                    song: song,
+                    lyrics: lyrics,
+                    hash: hash,
+                    force: force || missingSummary,
+                    settings: settings
                 )
-                await analyze(song: song, lyrics: lyrics, hash: hash)
                 if reused {
                     progress.cached += 1
                 } else {
@@ -838,8 +888,15 @@ actor LyricIntelligence {
         }
     }
 
-    private func analyze(song: Song, lyrics: String, hash: String) async {
-        if var existing = signatures[song.id],
+    private func analyze(
+        song: Song,
+        lyrics: String,
+        hash: String,
+        force: Bool = false,
+        settings: LyricIntelligenceSettings? = nil
+    ) async {
+        if !force,
+           var existing = signatures[song.id],
            LyricAnalysisCachePolicy.shouldReuseLyric(
             existing: existing,
             lyricsHash: hash
@@ -885,7 +942,7 @@ actor LyricIntelligence {
         }
         guard inFlight.insert(song.id).inserted else { return }
         defer { inFlight.remove(song.id) }
-        let settings = await LyricIntelligenceSettings.load()
+        let settings = settings ?? await LyricIntelligenceSettings.load()
         guard settings.provider != .off else { return }
         var signature = signatures[song.id] ?? LyricSignature(
             songID: song.id,
@@ -1207,6 +1264,9 @@ enum LyricIntelligenceBackend {
             result = nil
         case .onDevice, .applePrivateCloud:
             result = await onDevice(lyrics: lyrics, settings: settings)
+            if result == nil {
+                result = await groqAnalysis(lyrics: lyrics, settings: settings)
+            }
         case .openAI:
             result = await remote(
                 lyrics: lyrics,
@@ -1248,7 +1308,41 @@ enum LyricIntelligenceBackend {
                 source: "cerebras"
             )
         }
-        guard var analysis = result else { return nil }
+        guard var analysis = result else {
+            if settings.provider != .off, settings.provider != .groq {
+                return await groqAnalysis(lyrics: lyrics, settings: settings)
+            }
+            return nil
+        }
+        analysis.summary = LyricIntelligencePrompt.resolvedSummary(
+            analysis.summary,
+            lyrics: lyrics
+        )
+        analysis.details.summary = analysis.summary
+        if settings.provider != .groq,
+           !LyricIntelligencePrompt.isContentSummary(analysis.summary),
+           let groq = await groqAnalysis(lyrics: lyrics, settings: settings) {
+            return groq
+        }
+        return analysis
+    }
+
+    private static func groqAnalysis(
+        lyrics: String,
+        settings: LyricIntelligenceSettings
+    ) async -> Analysis? {
+        guard !settings.groqKey.isEmpty else { return nil }
+        guard var analysis = await remote(
+            lyrics: lyrics,
+            endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
+            embeddingEndpoint: nil,
+            key: settings.groqKey,
+            model: settings.groqModel,
+            embeddingModel: "",
+            source: "groq"
+        ) else {
+            return nil
+        }
         analysis.summary = LyricIntelligencePrompt.resolvedSummary(
             analysis.summary,
             lyrics: lyrics
@@ -1266,6 +1360,9 @@ enum LyricIntelligenceBackend {
         }
         if let apple = await AppleFoundationLyricClient.analyze(lyrics: lyrics) {
             return appleAnalysis(apple)
+        }
+        if let groq = await groqAnalysis(lyrics: lyrics, settings: settings) {
+            return groq
         }
         if !settings.openRouterKey.isEmpty,
            let gemma = await remote(
@@ -1367,6 +1464,14 @@ enum LyricIntelligenceBackend {
         case .onDevice, .applePrivateCloud:
             if let text = await AppleFoundationLyricClient.complete(prompt) {
                 return text
+            }
+            if let groq = await remoteText(
+                prompt: prompt,
+                endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
+                key: settings.groqKey,
+                model: settings.groqModel
+            ) {
+                return groq
             }
             return await remoteText(
                 prompt: prompt,
