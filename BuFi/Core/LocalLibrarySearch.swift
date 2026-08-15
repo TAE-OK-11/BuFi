@@ -27,19 +27,19 @@ enum LocalLibrarySearch {
 
         return SearchResults(
             artists: ranked(artists, query: query, limit: artistLimit) {
-                matches($0.name, query: query)
+                fieldMatch($0.name, query: query, field: 0)
             },
             albums: ranked(albums, query: query, limit: albumLimit) { album in
-                bestRank(
-                    matches(album.name, query: query),
-                    matches(album.artist, query: query)
+                bestFieldMatch(
+                    fieldMatch(album.name, query: query, field: 0),
+                    fieldMatch(album.artist, query: query, field: 1)
                 )
             },
             songs: ranked(songs, query: query, limit: songLimit) { song in
-                bestRank(
-                    matches(song.title, query: query),
-                    matches(song.artist, query: query),
-                    matches(song.album, query: query)
+                bestFieldMatch(
+                    fieldMatch(song.title, query: query, field: 0),
+                    fieldMatch(song.artist, query: query, field: 1),
+                    fieldMatch(song.album, query: query, field: 2)
                 )
             }
         )
@@ -75,16 +75,26 @@ private enum SearchMatchRank: Int, Comparable {
     }
 }
 
+private struct FieldMatch: Comparable {
+    let match: SearchMatchRank
+    let field: Int
+
+    static func < (lhs: FieldMatch, rhs: FieldMatch) -> Bool {
+        if lhs.match != rhs.match { return lhs.match < rhs.match }
+        return lhs.field < rhs.field
+    }
+}
+
 private func ranked<Item>(
     _ items: [Item],
     query: String,
     limit: Int,
-    rank: (Item) -> SearchMatchRank?
+    rank: (Item) -> FieldMatch?
 ) -> [Item] {
     guard limit > 0 else { return [] }
     return Array(
         items.enumerated()
-            .compactMap { offset, item -> (Item, SearchMatchRank, Int)? in
+            .compactMap { offset, item -> (Item, FieldMatch, Int)? in
                 guard let match = rank(item) else { return nil }
                 return (item, match, offset)
             }
@@ -112,7 +122,15 @@ private func matches(_ value: String, query: String) -> SearchMatchRank? {
     return .contains
 }
 
-private func bestRank(_ ranks: SearchMatchRank?...) -> SearchMatchRank? {
+private func fieldMatch(
+    _ value: String,
+    query: String,
+    field: Int
+) -> FieldMatch? {
+    matches(value, query: query).map { FieldMatch(match: $0, field: field) }
+}
+
+private func bestFieldMatch(_ ranks: FieldMatch?...) -> FieldMatch? {
     ranks.compactMap { $0 }.min()
 }
 
