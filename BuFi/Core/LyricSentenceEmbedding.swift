@@ -17,7 +17,10 @@ enum LyricSentenceEmbedding {
 
     private static func vectorSync(from text: String) -> [Float]? {
 #if canImport(NaturalLanguage)
-        let snippet = String(text.prefix(1_600))
+        // Use the same representative head/middle/tail sampler as the LLM so
+        // long lyrics are not embedded from the first verse only. 1.2K chars
+        // also keeps transformer work noticeably below the previous 1.6K path.
+        let snippet = LyricTextSampler.sample(text, limit: 1_200)
         if let contextual = contextualVector(from: snippet) {
             return contextual
         }
@@ -31,7 +34,16 @@ enum LyricSentenceEmbedding {
 #if canImport(NaturalLanguage)
     private static func contextualVector(from text: String) -> [Float]? {
         let recognized = NLLanguageRecognizer.dominantLanguage(for: text)
-        let languages = [recognized, .english, .korean, .japanese].compactMap { $0 }
+        var languages: [NLLanguage] = []
+        if let recognized {
+            languages.append(recognized)
+        }
+        // Avoid loading Korean/Japanese/English contextual assets one after
+        // another for every song. Only try the detected language, then English
+        // as a compatibility fallback when it is actually different.
+        if recognized != .english {
+            languages.append(.english)
+        }
         for language in languages {
             guard let embedding = NLContextualEmbedding(language: language) else {
                 continue
@@ -74,7 +86,11 @@ enum LyricSentenceEmbedding {
 
     private static func staticSentenceVector(from text: String) -> [Float]? {
         let recognized = NLLanguageRecognizer.dominantLanguage(for: text) ?? .english
-        for language in [recognized, .english] {
+        var languages = [recognized]
+        if recognized != .english {
+            languages.append(.english)
+        }
+        for language in languages {
             guard let embedding = NLEmbedding.sentenceEmbedding(for: language),
                   let vector = embedding.vector(for: text),
                   !vector.isEmpty else {
@@ -110,5 +126,4 @@ enum LyricLexicalFeatures {
         _ = text
         return []
 #endif
-    }
 }
