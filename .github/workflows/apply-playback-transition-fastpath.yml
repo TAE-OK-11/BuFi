@@ -1,0 +1,36 @@
+name: Apply Playback Transition Fast Path
+
+on:
+  push:
+    branches:
+      - agent/playback-transition-fastpath
+    paths:
+      - .github/scripts/apply-playback-transition-fastpath.py
+      - .github/workflows/apply-playback-transition-fastpath.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/playback-transition-fastpath
+          fetch-depth: 0
+      - name: Apply transition fast path
+        run: python3 .github/scripts/apply-playback-transition-fastpath.py
+      - name: Validate
+        run: |
+          git diff --check
+          test "$(grep -c --fixed-strings 'reusesCurrentQueue: true' BuFi/Playback/AudioEngine.swift)" -eq 4
+          grep -n --fixed-strings 'playbackState.setIndex(resolvedIndex, renewsPlayback: true)' BuFi/Playback/AudioEngine.swift
+      - name: Commit source change
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add BuFi/Playback/AudioEngine.swift
+          git commit -m 'Fast-path current queue playback transitions'
+          git push origin HEAD:agent/playback-transition-fastpath
