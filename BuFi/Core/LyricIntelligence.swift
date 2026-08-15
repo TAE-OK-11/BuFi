@@ -942,8 +942,13 @@ actor LyricIntelligence {
         }
         guard inFlight.insert(song.id).inserted else { return }
         defer { inFlight.remove(song.id) }
-        let settings = settings ?? await LyricIntelligenceSettings.load()
-        guard settings.provider != .off else { return }
+        let resolvedSettings: LyricIntelligenceSettings
+        if let provided = settings {
+            resolvedSettings = provided
+        } else {
+            resolvedSettings = await LyricIntelligenceSettings.load()
+        }
+        guard resolvedSettings.provider != .off else { return }
         var signature = signatures[song.id] ?? LyricSignature(
             songID: song.id,
             lyricsHash: hash,
@@ -963,7 +968,7 @@ actor LyricIntelligence {
         )
         if let analyzed = await LyricIntelligenceBackend.analyze(
             lyrics: lyrics,
-            settings: settings
+            settings: resolvedSettings
         ) {
             signature.moods = analyzed.moods
             signature.themes = analyzed.themes
