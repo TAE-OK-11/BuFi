@@ -6,6 +6,7 @@ import SwiftSonic
 enum OpenSubsonicError: LocalizedError, Equatable {
     case invalidServerURL
     case insecureServerURL
+    case credentialsEmbeddedInServerURL
     case invalidResponse
     case server(code: Int?, message: String)
     case http(Int)
@@ -16,6 +17,8 @@ enum OpenSubsonicError: LocalizedError, Equatable {
             String(localized: "서버 주소가 올바르지 않습니다.")
         case .insecureServerURL:
             String(localized: "보안을 위해 HTTPS 서버 주소만 사용할 수 있습니다.")
+        case .credentialsEmbeddedInServerURL:
+            String(localized: "서버 주소에 아이디나 비밀번호를 넣지 마세요.")
         case .invalidResponse:
             String(localized: "OpenSubsonic 응답 형식이 올바르지 않습니다.")
         case .server(_, let message):
@@ -165,15 +168,18 @@ struct OpenSubsonicResponseCachePolicy: Equatable, Sendable {
     }
 
     let lifetime: TimeInterval
+    let staleGrace: TimeInterval
     let dependencies: Set<OpenSubsonicCacheDependency>
     let revalidation: RevalidationStrategy
 
     init(
         lifetime: TimeInterval,
+        staleGrace: TimeInterval = 0,
         dependencies: Set<OpenSubsonicCacheDependency> = [],
         revalidation: RevalidationStrategy = .timeToLive
     ) {
-        self.lifetime = lifetime
+        self.lifetime = max(0, lifetime)
+        self.staleGrace = max(0, staleGrace)
         self.dependencies = dependencies
         self.revalidation = revalidation
     }
@@ -209,33 +215,41 @@ enum OpenSubsonicRequestPolicy {
         case "getArtistInfo2":
             return OpenSubsonicResponseCachePolicy(lifetime: 15 * 60)
         case "getPlaylists":
-            return OpenSubsonicResponseCachePolicy(lifetime: 5 * 60)
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 5 * 60,
+                staleGrace: 20 * 60
+            )
         case "getStarred2":
             // Star/unstar already invalidates `.favorites`. The longer TTL
             // avoids refetching a potentially huge starred catalog on every
             // incremental home refresh.
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 3 * 60,
+                staleGrace: 20 * 60,
                 dependencies: [.favorites]
             )
         case "getSong":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 5 * 60,
+                staleGrace: 15 * 60,
                 dependencies: [.songDetails]
             )
         case "getAlbum":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 5 * 60,
+                staleGrace: 15 * 60,
                 dependencies: [.albumDetails]
             )
         case "getArtist":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 5 * 60,
+                staleGrace: 15 * 60,
                 dependencies: [.artistDetails]
             )
         case "getPlaylist":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 2 * 60,
+                staleGrace: 15 * 60,
                 dependencies: [.libraryLists]
             )
         case "getPlayQueue":
@@ -246,11 +260,13 @@ enum OpenSubsonicRequestPolicy {
         case "search2", "search3":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 60,
+                staleGrace: 10 * 60,
                 dependencies: [.libraryLists]
             )
         case "getArtists":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 5 * 60,
+                staleGrace: 20 * 60,
                 dependencies: [.libraryLists]
             )
         case "getAlbumList2":
@@ -262,21 +278,25 @@ enum OpenSubsonicRequestPolicy {
             }
             return OpenSubsonicResponseCachePolicy(
                 lifetime: lifetime,
+                staleGrace: 15 * 60,
                 dependencies: [.libraryLists]
             )
         case "getRandomSongs":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 30,
+                staleGrace: 10 * 60,
                 dependencies: [.libraryLists, .recommendations]
             )
         case "getSongsByGenre", "getTopSongs":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 2 * 60,
+                staleGrace: 15 * 60,
                 dependencies: [.libraryLists, .recommendations]
             )
         case "getSonicSimilarTracks", "getSimilarSongs2":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 2 * 60,
+                staleGrace: 15 * 60,
                 dependencies: [.recommendations]
             )
         default:
@@ -661,15 +681,12 @@ actor OpenSubsonicClient {
     }
 
     init(credentials: ServerCredentials) throws {
-        guard let normalized = Self.normalizedBaseURL(credentials.serverURL) else {
-            throw OpenSubsonicError.invalidServerURL
-        }
-        guard normalized.scheme?.lowercased() == "https" else {
-            throw OpenSubsonicError.insecureServerURL
-        }
+        let normalized = try ServerURLNormalization.resolvedURL(
+            from: credentials.serverURL
+        )
         let username = credentials.username.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedCredentials = ServerCredentials(
-            serverURL: normalized.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+            serverURL: ServerURLNormalization.persistedServerURL(from: normalized),
             username: username,
             password: credentials.password
         )
@@ -700,27 +717,6 @@ actor OpenSubsonicClient {
             delegate: HTTPSOnlyURLSessionDelegate(),
             delegateQueue: nil
         )
-    }
-
-    private static func normalizedBaseURL(_ value: String) -> URL? {
-        var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        if !text.lowercased().hasPrefix("https://") && !text.lowercased().hasPrefix("http://") {
-            text = "https://" + text
-        }
-        guard var components = URLComponents(string: text),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "https" || scheme == "http",
-              components.user == nil,
-              components.password == nil,
-              let host = components.host,
-              !host.isEmpty else {
-            return nil
-        }
-        components.path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        components.query = nil
-        components.fragment = nil
-        return components.url
     }
 
     private func authenticationItems() -> [URLQueryItem] {
@@ -895,32 +891,14 @@ actor OpenSubsonicClient {
             let responseWasCached: Bool
             switch semantics {
             case .readOnly:
-                if allowsCachedResponse,
-                   !cacheRevisionState.hasMutation(
-                    affecting: cachePolicy.dependencies
-                ),
-                   cachePolicy.lifetime > 0,
-                   let cached = cachedResponse(
-                    for: cacheKey,
-                    lifetime: cachePolicy.lifetime
-                   ) {
-                    response = HTTPResponseData(
-                        data: cached,
-                        statusCode: 200,
-                        retryAfter: nil
-                    )
-                    responseWasCached = true
-                } else {
-                    response = try await coalescedReadResponse(
-                        from: url,
-                        key: ReadRequestKey(
-                            endpoint: endpoint,
-                            queryItems: queryItems,
-                            cacheRevision: requestRevision
-                        )
-                    )
-                    responseWasCached = false
-                }
+                (response, responseWasCached) = try await readResponse(
+                    from: url,
+                    queryItems: queryItems,
+                    cacheKey: cacheKey,
+                    cachePolicy: cachePolicy,
+                    requestRevision: requestRevision,
+                    allowsCachedResponse: allowsCachedResponse
+                )
             case .mutation(let impact):
                 cacheRevisionState.begin(impact)
                 response = try await responseData(
@@ -1420,11 +1398,70 @@ actor OpenSubsonicClient {
         }
     }
 
+    private func readResponse(
+        from url: URL,
+        queryItems: [URLQueryItem],
+        cacheKey: String,
+        cachePolicy: OpenSubsonicResponseCachePolicy,
+        requestRevision: OpenSubsonicCacheRevision,
+        allowsCachedResponse: Bool
+    ) async throws -> (HTTPResponseData, Bool) {
+        let cacheHit: ResponseBodyCache.Lookup
+        if allowsCachedResponse,
+           !cacheRevisionState.hasMutation(affecting: cachePolicy.dependencies),
+           cachePolicy.lifetime > 0 {
+            cacheHit = cachedResponse(
+                for: cacheKey,
+                lifetime: cachePolicy.lifetime,
+                staleGrace: cachePolicy.staleGrace
+            )
+        } else {
+            cacheHit = .miss
+        }
+
+        if case .fresh(let cached) = cacheHit {
+            return (
+                HTTPResponseData(data: cached, statusCode: 200, retryAfter: nil),
+                true
+            )
+        }
+
+        do {
+            let response = try await coalescedReadResponse(
+                from: url,
+                key: ReadRequestKey(
+                    endpoint: endpoint,
+                    queryItems: queryItems,
+                    cacheRevision: requestRevision
+                )
+            )
+            return (response, false)
+        } catch {
+            if case .stale(let cached) = cacheHit,
+               TransientServiceFailurePolicy.allowsCachedFallback(error) {
+                return (
+                    HTTPResponseData(
+                        data: cached,
+                        statusCode: 200,
+                        retryAfter: nil
+                    ),
+                    true
+                )
+            }
+            throw error
+        }
+    }
+
     private func cachedResponse(
         for key: String,
-        lifetime: TimeInterval
-    ) -> Data? {
-        responseCache.value(for: key, maximumAge: lifetime)
+        lifetime: TimeInterval,
+        staleGrace: TimeInterval = 0
+    ) -> ResponseBodyCache.Lookup {
+        responseCache.lookup(
+            for: key,
+            maximumAge: lifetime,
+            staleGrace: staleGrace
+        )
     }
 
     private func storeResponse(_ data: Data, for key: String) {

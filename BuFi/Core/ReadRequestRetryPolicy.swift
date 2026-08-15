@@ -40,6 +40,33 @@ enum CoreRequestClassifier {
     }
 }
 
+/// Cached library / session data may be shown only after a transient failure.
+/// Auth and address errors stay fail-closed so a bad password cannot reopen
+/// the previous account's snapshot.
+enum TransientServiceFailurePolicy {
+    static func allowsCachedFallback(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let openSubsonic = error as? OpenSubsonicError {
+            switch openSubsonic {
+            case .http(let status):
+                return CoreRequestClassifier.shouldRetry(statusCode: status)
+            case .server(let code, _):
+                if let code, (40...41).contains(code) {
+                    return false
+                }
+                return true
+            case .invalidResponse:
+                return true
+            case .invalidServerURL,
+                    .insecureServerURL,
+                    .credentialsEmbeddedInServerURL:
+                return false
+            }
+        }
+        return CoreRequestClassifier.shouldRetry(error: error)
+    }
+}
+
 /// Retry decisions for idempotent OpenSubsonic reads.
 ///
 /// Mutating endpoints never use this policy. Keeping the decision logic free of

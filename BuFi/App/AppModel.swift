@@ -103,11 +103,13 @@ final class SearchContentState: ObservableObject {
         let query: String
         let results: SearchResults
         let isSearching: Bool
+        let isLocalFallback: Bool
 
         static let empty = Presentation(
             query: "",
             results: .empty,
-            isSearching: false
+            isSearching: false,
+            isLocalFallback: false
         )
     }
 
@@ -116,24 +118,37 @@ final class SearchContentState: ObservableObject {
     var results: SearchResults { presentation.results }
     var isSearching: Bool { presentation.isSearching }
     var query: String { presentation.query }
+    var isLocalFallback: Bool { presentation.isLocalFallback }
 
     fileprivate func setResults(_ value: SearchResults) {
-        publish(query: query, results: value, isSearching: isSearching)
+        publish(
+            query: query,
+            results: value,
+            isSearching: isSearching,
+            isLocalFallback: isLocalFallback
+        )
     }
 
     fileprivate func setSearching(_ value: Bool) {
-        publish(query: query, results: results, isSearching: value)
+        publish(
+            query: query,
+            results: results,
+            isSearching: value,
+            isLocalFallback: isLocalFallback
+        )
     }
 
     fileprivate func publish(
         query: String,
         results: SearchResults,
-        isSearching: Bool
+        isSearching: Bool,
+        isLocalFallback: Bool = false
     ) {
         let next = Presentation(
             query: query,
             results: results,
-            isSearching: isSearching
+            isSearching: isSearching,
+            isLocalFallback: isLocalFallback && !results.isEmpty
         )
         guard presentation != next else { return }
         presentation = next
@@ -227,6 +242,7 @@ final class AppModel: ObservableObject {
     private struct CachedValue<Value> {
         let value: Value
         let expiresAt: ContinuousClock.Instant
+        let staleUntil: ContinuousClock.Instant
     }
 
     private struct DetailRequest<Value: Sendable> {
@@ -396,8 +412,16 @@ final class AppModel: ObservableObject {
         guard !loginInFlight else { return }
         loginInFlight = true
         defer { loginInFlight = false }
+        let normalizedURL: URL
+        do {
+            normalizedURL = try ServerURLNormalization.resolvedURL(from: serverURL)
+        } catch {
+            sessionState = .signedOut
+            errorMessage = error.localizedDescription
+            return
+        }
         let credentials = ServerCredentials(
-            serverURL: serverURL,
+            serverURL: ServerURLNormalization.persistedServerURL(from: normalizedURL),
             username: username,
             password: password
         )
@@ -582,10 +606,16 @@ final class AppModel: ObservableObject {
             )
             return nil
         }
+        let retained = SearchPresentationPolicy.retainedResults(
+            previousQuery: searchContent.query,
+            previousResults: searchContent.results,
+            nextQuery: query
+        )
         searchContent.publish(
             query: query,
-            results: .empty,
-            isSearching: true
+            results: retained,
+            isSearching: true,
+            isLocalFallback: searchContent.isLocalFallback && !retained.isEmpty
         )
 
         let task = Task { [weak self] in
@@ -611,18 +641,23 @@ final class AppModel: ObservableObject {
                       self.client === client else { return }
                 self.searchContent.publish(
                     query: query,
-                    results: .empty,
-                    isSearching: false
+                    results: self.searchContent.results,
+                    isSearching: false,
+                    isLocalFallback: self.searchContent.isLocalFallback
                 )
                 self.searchTask = nil
             } catch {
                 guard let self, generation == self.searchGeneration, self.client === client else { return }
+                let fallback = self.localSearchFallback(for: query)
                 self.searchContent.publish(
                     query: query,
-                    results: .empty,
-                    isSearching: false
+                    results: fallback.results,
+                    isSearching: false,
+                    isLocalFallback: fallback.isLocal
                 )
-                self.errorMessage = error.localizedDescription
+                if fallback.results.isEmpty {
+                    self.errorMessage = error.localizedDescription
+                }
                 self.searchTask = nil
             }
         }
@@ -636,6 +671,26 @@ final class AppModel: ObservableObject {
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func localSearchFallback(
+        for query: String
+    ) -> (results: SearchResults, isLocal: Bool) {
+        let retained = SearchPresentationPolicy.retainedResults(
+            previousQuery: searchContent.query,
+            previousResults: searchContent.results,
+            nextQuery: query
+        )
+        let local = applyingFavoriteOverrides(
+            to: LocalLibrarySearch.results(for: query, in: home)
+        )
+        if !local.isEmpty {
+            return (local, true)
+        }
+        if !retained.isEmpty {
+            return (retained, searchContent.isLocalFallback)
+        }
+        return (.empty, false)
     }
 
     func clearSearch() {
@@ -920,6 +975,13 @@ final class AppModel: ObservableObject {
                albumDetailTasks[id]?.token == request.token {
                 albumDetailTasks[id] = nil
             }
+            if TransientServiceFailurePolicy.allowsCachedFallback(error),
+               let stale = Self.staleDetail(id: id, cache: &albumDetailCache) {
+                return AlbumDetail(
+                    songs: stale.songs.map(applyingFavoriteOverride),
+                    album: stale.album.map(applyingFavoriteOverride)
+                )
+            }
             throw error
         }
         guard generation == sessionGeneration, self.client === client else {
@@ -978,6 +1040,13 @@ final class AppModel: ObservableObject {
                playlistDetailTasks[id]?.token == request.token {
                 playlistDetailTasks[id] = nil
             }
+            if TransientServiceFailurePolicy.allowsCachedFallback(error),
+               let stale = Self.staleDetail(id: id, cache: &playlistDetailCache) {
+                return PlaylistDetail(
+                    songs: stale.songs.map(applyingFavoriteOverride),
+                    playlist: stale.playlist
+                )
+            }
             throw error
         }
         guard generation == sessionGeneration, self.client === client else {
@@ -1035,6 +1104,15 @@ final class AppModel: ObservableObject {
             if generation == sessionGeneration,
                artistDetailTasks[id]?.token == request.token {
                 artistDetailTasks[id] = nil
+            }
+            if TransientServiceFailurePolicy.allowsCachedFallback(error),
+               let stale = Self.staleDetail(id: id, cache: &artistDetailCache) {
+                return ArtistDetail(
+                    artist: applyingFavoriteOverride(stale.artist),
+                    albums: stale.albums.map(applyingFavoriteOverride),
+                    topSongs: stale.topSongs.map(applyingFavoriteOverride),
+                    info: stale.info
+                )
             }
             throw error
         }
@@ -1142,13 +1220,16 @@ final class AppModel: ObservableObject {
         )
         if outcome.succeeded,
            generation == sessionGeneration,
-           self.client === client,
-           let historySession {
-            await ListeningHistoryStore.shared.recordFavorite(
-                song,
-                enabled: enabled,
-                session: historySession
-            )
+           self.client === client {
+            if let historySession {
+                Task {
+                    await ListeningHistoryStore.shared.recordFavorite(
+                        song,
+                        enabled: enabled,
+                        session: historySession
+                    )
+                }
+            }
             return true
         }
         guard !outcome.succeeded,
@@ -1661,6 +1742,12 @@ final class AppModel: ObservableObject {
             ? Self.starDateFormatter.string(from: Date())
             : nil
         var snapshot = home
+        snapshot.mapSongs { item in
+            guard item.id == song.id else { return item }
+            var updated = item
+            updated.starred = starredValue
+            return updated
+        }
         let freshestKnownSong = searchResults.songs.first { $0.id == song.id }
             ?? snapshot.randomSongs.first { $0.id == song.id }
             ?? snapshot.serverRecommendedSongs.first { $0.id == song.id }
@@ -1671,6 +1758,7 @@ final class AppModel: ObservableObject {
         snapshot.starredSongs.removeAll { $0.id == song.id }
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
         publishHome(snapshot)
+        stampSearchSong(id: song.id, starred: starredValue)
     }
 
     private func updateStarredAlbum(_ album: Album, enabled: Bool) {
@@ -1679,6 +1767,12 @@ final class AppModel: ObservableObject {
             ? Self.starDateFormatter.string(from: Date())
             : nil
         var snapshot = home
+        snapshot.mapAlbums { item in
+            guard item.id == album.id else { return item }
+            var updated = item
+            updated.starred = starredValue
+            return updated
+        }
         let freshestKnownAlbum = searchResults.albums.first { $0.id == album.id }
             ?? snapshot.recentAlbums.first { $0.id == album.id }
             ?? snapshot.randomAlbums.first { $0.id == album.id }
@@ -1689,6 +1783,16 @@ final class AppModel: ObservableObject {
         snapshot.starredAlbums.removeAll { $0.id == album.id }
         if enabled { snapshot.starredAlbums.insert(updated, at: 0) }
         publishHome(snapshot)
+        if searchResults.albums.contains(where: { $0.id == album.id }) {
+            var results = searchResults
+            results.albums = results.albums.map { item in
+                guard item.id == album.id else { return item }
+                var value = item
+                value.starred = starredValue
+                return value
+            }
+            searchResults = results
+        }
     }
 
     private func updateStarredArtist(_ artist: Artist, enabled: Bool) {
@@ -1697,6 +1801,12 @@ final class AppModel: ObservableObject {
             ? Self.starDateFormatter.string(from: Date())
             : nil
         var snapshot = home
+        snapshot.mapArtists { item in
+            guard item.id == artist.id else { return item }
+            var updated = item
+            updated.starred = starredValue
+            return updated
+        }
         let freshestKnownArtist = searchResults.artists.first { $0.id == artist.id }
             ?? snapshot.artists.first { $0.id == artist.id }
             ?? snapshot.starredArtists.first { $0.id == artist.id }
@@ -1706,6 +1816,28 @@ final class AppModel: ObservableObject {
         snapshot.starredArtists.removeAll { $0.id == artist.id }
         if enabled { snapshot.starredArtists.insert(updated, at: 0) }
         publishHome(snapshot)
+        if searchResults.artists.contains(where: { $0.id == artist.id }) {
+            var results = searchResults
+            results.artists = results.artists.map { item in
+                guard item.id == artist.id else { return item }
+                var value = item
+                value.starred = starredValue
+                return value
+            }
+            searchResults = results
+        }
+    }
+
+    private func stampSearchSong(id: String, starred: String?) {
+        guard searchResults.songs.contains(where: { $0.id == id }) else { return }
+        var results = searchResults
+        results.songs = results.songs.map { item in
+            guard item.id == id else { return item }
+            var value = item
+            value.starred = starred
+            return value
+        }
+        searchResults = results
     }
 
     private func clearFavoriteState() {
@@ -1734,6 +1866,17 @@ final class AppModel: ObservableObject {
     ) -> Value? {
         guard let cached = cache[id] else { return nil }
         guard cached.expiresAt > ContinuousClock().now else {
+            return nil
+        }
+        return cached.value
+    }
+
+    private static func staleDetail<Value>(
+        id: String,
+        cache: inout [String: CachedValue<Value>]
+    ) -> Value? {
+        guard let cached = cache[id] else { return nil }
+        guard cached.staleUntil > ContinuousClock().now else {
             cache[id] = nil
             return nil
         }
@@ -1745,13 +1888,15 @@ final class AppModel: ObservableObject {
         id: String,
         lifetime: TimeInterval,
         limit: Int,
-        cache: inout [String: CachedValue<Value>]
+        cache: inout [String: CachedValue<Value>],
+        staleGrace: TimeInterval = 15 * 60
     ) {
         let clock = ContinuousClock()
         let now = clock.now
         cache[id] = CachedValue(
             value: value,
-            expiresAt: now.advanced(by: .seconds(lifetime))
+            expiresAt: now.advanced(by: .seconds(lifetime)),
+            staleUntil: now.advanced(by: .seconds(lifetime + max(0, staleGrace)))
         )
         guard limit > 0 else {
             cache.removeAll(keepingCapacity: false)
@@ -2194,55 +2339,64 @@ final class AppModel: ObservableObject {
         do {
             let client = try OpenSubsonicClient(credentials: credentials)
             let accountScope = AccountScope.identifier(for: client.credentials)
-            async let statusRequest = client.ping()
+            async let statusRequest = Self.pingResult(client)
             async let cachedSnapshotRequest = HomeSnapshotStore.shared.load(
                 accountScope: accountScope
             )
-            let status = try await statusRequest
-            guard generation == sessionGeneration else { return }
+            async let offlineRequest = OfflineStore.shared.activate(
+                accountScope: accountScope
+            )
+            async let artworkRequest = ArtworkStore.shared.activate(
+                accountScope: accountScope
+            )
+            async let historyRequest = ListeningHistoryStore.shared.activate(
+                accountScope: accountScope
+            )
+
             let cachedSnapshot = await cachedSnapshotRequest
+            let offlineSession = await offlineRequest
+            let artworkSession = await artworkRequest
+            let historySession = await historyRequest
+            let ping = await statusRequest
             try Task.checkCancellation()
-            guard generation == sessionGeneration else { return }
+            guard generation == sessionGeneration else {
+                await deactivateStores(
+                    StoreActivationLeases(
+                        offline: offlineSession,
+                        artwork: artworkSession,
+                        history: historySession
+                    )
+                )
+                return
+            }
 
-            guard let offlineSession = await OfflineStore.shared.activate(
-                accountScope: accountScope
-            ) else {
+            guard let offlineSession, let historySession else {
                 throw CancellationError()
             }
-            activatedLeases.offline = offlineSession
-            guard generation == sessionGeneration else {
-                await deactivateStores(activatedLeases)
-                return
-            }
-
-            let artworkSession = await ArtworkStore.shared.activate(
-                accountScope: accountScope
+            activatedLeases = StoreActivationLeases(
+                offline: offlineSession,
+                artwork: artworkSession,
+                history: historySession
             )
-            activatedLeases.artwork = artworkSession
-            guard generation == sessionGeneration else {
-                await deactivateStores(activatedLeases)
-                return
-            }
 
-            guard let historySession = await ListeningHistoryStore.shared.activate(
-                accountScope: accountScope
-            ) else {
+            if ping.isCancelled {
                 throw CancellationError()
             }
-            activatedLeases.history = historySession
-            guard generation == sessionGeneration else {
-                await deactivateStores(activatedLeases)
-                return
+            let status = ping.status
+            if status == nil {
+                if cachedSnapshot == nil || !ping.allowsCachedFallback {
+                    throw OpenSubsonicError.server(
+                        code: nil,
+                        message: ping.failureDescription
+                            ?? String(localized: "서버 연결에 실패했습니다.")
+                    )
+                }
+                errorMessage = String(
+                    localized: "서버에 연결할 수 없어 저장된 라이브러리를 엽니다."
+                )
             }
 
-            let snapshot = await preparedHomeSnapshot(
-                cachedSnapshot ?? .empty
-            )
-            guard generation == sessionGeneration else {
-                await deactivateStores(activatedLeases)
-                return
-            }
-            if persist {
+            if persist, status != nil {
                 try await secureStore.save(client.credentials)
                 guard generation == sessionGeneration else {
                     await deactivateStores(activatedLeases)
@@ -2255,6 +2409,8 @@ final class AppModel: ObservableObject {
                 await deactivateStores(activatedLeases)
                 return
             }
+
+            let snapshot = cachedSnapshot ?? .empty
             reconcileFavoriteStates(
                 in: snapshot,
                 authoritative: false
@@ -2269,8 +2425,8 @@ final class AppModel: ObservableObject {
             self.connectedServerAddress = Self.serverDisplayAddress(
                 from: client.credentials.serverURL
             )
-            self.serverVersion = Self.sanitizedVersion(status.serverVersion)
-            self.subsonicAPIVersion = Self.sanitizedVersion(status.version)
+            self.serverVersion = Self.sanitizedVersion(status?.serverVersion)
+            self.subsonicAPIVersion = Self.sanitizedVersion(status?.version)
             self.sessionState = .ready
             activatedLeases = StoreActivationLeases(
                 offline: nil,
@@ -2296,10 +2452,18 @@ final class AppModel: ObservableObject {
                     )
                 }
             )
-            scheduleAutomaticRefresh(
-                silent: cachedSnapshot != nil,
-                generation: generation
-            )
+            if cachedSnapshot != nil {
+                scheduleCachedHomePreparation(
+                    snapshot,
+                    generation: generation
+                )
+            }
+            if status != nil {
+                scheduleAutomaticRefresh(
+                    silent: cachedSnapshot != nil,
+                    generation: generation
+                )
+            }
         } catch is CancellationError {
             await deactivateStores(activatedLeases)
             return
@@ -2320,6 +2484,60 @@ final class AppModel: ObservableObject {
             isSearching = false
             sessionState = .signedOut
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private struct ConnectPingResult: Sendable {
+        var status: StatusBody?
+        var failureDescription: String?
+        var allowsCachedFallback: Bool
+        var isCancelled: Bool
+    }
+
+    private static func pingResult(
+        _ client: OpenSubsonicClient
+    ) async -> ConnectPingResult {
+        do {
+            return ConnectPingResult(
+                status: try await client.ping(),
+                failureDescription: nil,
+                allowsCachedFallback: false,
+                isCancelled: false
+            )
+        } catch is CancellationError {
+            return ConnectPingResult(
+                status: nil,
+                failureDescription: nil,
+                allowsCachedFallback: false,
+                isCancelled: true
+            )
+        } catch {
+            return ConnectPingResult(
+                status: nil,
+                failureDescription: error.localizedDescription,
+                allowsCachedFallback: TransientServiceFailurePolicy
+                    .allowsCachedFallback(error),
+                isCancelled: false
+            )
+        }
+    }
+
+    private func scheduleCachedHomePreparation(
+        _ snapshot: HomeSnapshot,
+        generation: Int
+    ) {
+        Task { [weak self] in
+            guard let self else { return }
+            let prepared = await self.preparedHomeSnapshot(snapshot)
+            guard generation == self.sessionGeneration,
+                  self.lastFullRefresh == nil else {
+                return
+            }
+            self.reconcileFavoriteStates(
+                in: prepared,
+                authoritative: false
+            )
+            _ = self.publishHome(self.applyingFavoriteOverrides(to: prepared))
         }
     }
 

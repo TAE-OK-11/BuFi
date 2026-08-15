@@ -58,6 +58,37 @@ final class ResponseBodyCacheTests: XCTestCase {
         XCTAssertEqual(cache.byteCount, 0)
     }
 
+    func testLookupKeepsStaleBodyInsideGraceAndEvictsAfter() {
+        var cache = ResponseBodyCache(
+            countLimit: 2,
+            byteLimit: 16,
+            maximumEntryBytes: 16
+        )
+        let storedAt = ContinuousClock().now
+        cache.insert(Data([9]), for: "library", now: storedAt)
+
+        XCTAssertEqual(
+            cache.lookup(
+                for: "library",
+                maximumAge: 5,
+                staleGrace: 10,
+                now: storedAt.advanced(by: .seconds(8))
+            ),
+            .stale(Data([9]))
+        )
+        XCTAssertEqual(cache.count, 1)
+        XCTAssertEqual(
+            cache.lookup(
+                for: "library",
+                maximumAge: 5,
+                staleGrace: 10,
+                now: storedAt.advanced(by: .seconds(16))
+            ),
+            .miss
+        )
+        XCTAssertEqual(cache.count, 0)
+    }
+
     func testUncacheableReplacementInvalidatesOlderBody() {
         var cache = ResponseBodyCache(
             countLimit: 2,

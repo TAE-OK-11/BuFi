@@ -356,6 +356,25 @@ final class ModernNetworkPolicyTests: XCTestCase {
             ).revalidation,
             .timeToLive
         )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getStarred2"
+            ).staleGrace,
+            20 * 60
+        )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getAlbumList2",
+                queryItems: [URLQueryItem(name: "type", value: "newest")]
+            ).staleGrace,
+            15 * 60
+        )
+        XCTAssertEqual(
+            OpenSubsonicRequestPolicy.responseCachePolicy(
+                for: "getLyricsBySongId"
+            ).staleGrace,
+            0
+        )
     }
 
     func testHomeEnrichmentLimiterBoundsConcurrentOperations() async {

@@ -390,7 +390,10 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
 
     static let empty = HomeSnapshot()
 
-    static let songCollections: [WritableKeyPath<HomeSnapshot, [Song]>] = [
+    // WritableKeyPath is a class and is not Sendable. These tables are
+    // immutable after initialization and only used as collection indexes.
+    nonisolated(unsafe) static let songCollections:
+        [WritableKeyPath<HomeSnapshot, [Song]>] = [
         \.starredSongs,
         \.randomSongs,
         \.sonicRecommendedSongs,
@@ -409,7 +412,8 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
         \.mostPlayedSongs
     ]
 
-    static let albumCollections: [WritableKeyPath<HomeSnapshot, [Album]>] = [
+    nonisolated(unsafe) static let albumCollections:
+        [WritableKeyPath<HomeSnapshot, [Album]>] = [
         \.recentAlbums,
         \.recentlyPlayedAlbums,
         \.frequentAlbums,
@@ -417,7 +421,8 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
         \.starredAlbums
     ]
 
-    static let artistCollections: [WritableKeyPath<HomeSnapshot, [Artist]>] = [
+    nonisolated(unsafe) static let artistCollections:
+        [WritableKeyPath<HomeSnapshot, [Artist]>] = [
         \.starredArtists,
         \.artists,
         \.recommendedArtists
