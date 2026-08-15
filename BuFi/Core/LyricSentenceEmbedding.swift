@@ -21,6 +21,9 @@ enum LyricSentenceEmbedding {
         // long lyrics are not embedded from the first verse only. 1.2K chars
         // also keeps transformer work noticeably below the previous 1.6K path.
         let snippet = LyricTextSampler.sample(text, limit: 1_200)
+        if shouldUseLightweightPath {
+            return staticSentenceVector(from: snippet)
+        }
         if let contextual = contextualVector(from: snippet) {
             return contextual
         }
@@ -29,6 +32,20 @@ enum LyricSentenceEmbedding {
         _ = text
         return nil
 #endif
+    }
+
+    private static var shouldUseLightweightPath: Bool {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            return true
+        }
+        switch ProcessInfo.processInfo.thermalState {
+        case .serious, .critical:
+            return true
+        case .nominal, .fair:
+            return false
+        @unknown default:
+            return true
+        }
     }
 
 #if canImport(NaturalLanguage)
