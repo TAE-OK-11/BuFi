@@ -2315,7 +2315,7 @@ enum PersonalizedMixBuilder {
         return result
     }
 
-    fileprivate static func searchableText(_ song: Song) -> String {
+    static func searchableText(_ song: Song) -> String {
         normalized(
             (
                 [song.genre, song.title, song.album, song.artist].compactMap { $0 }
