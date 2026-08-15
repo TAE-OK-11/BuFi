@@ -1,11 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="like" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#22083A"/>
-      <stop offset="1" stop-color="#8A2BFF"/>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2A0820"/>
+      <stop offset="1" stop-color="#A82868"/>
     </linearGradient>
   </defs>
-  <rect width="512" height="512" fill="url(#like)"/>
-  <circle cx="360" cy="340" r="160" fill="#72F1D1" fill-opacity=".14"/>
-  <path d="M256 404C198 360 148 320 148 262C148 222 178 196 214 196C236 196 254 208 256 228C258 208 276 196 298 196C334 196 364 222 364 262C364 320 314 360 256 404Z" fill="#72F1D1"/>
+  <rect width="512" height="512" fill="url(#g)"/>
 </svg>

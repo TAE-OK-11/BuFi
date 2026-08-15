@@ -1,18 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3A1030"/>
-      <stop offset=".42" stop-color="#E23B5B"/>
-      <stop offset="1" stop-color="#FFB15A"/>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A1630"/>
+      <stop offset="1" stop-color="#E06A3A"/>
     </linearGradient>
-    <radialGradient id="sunGlow" cx="50%" cy="58%" r="40%">
-      <stop offset="0" stop-color="#FFE08A"/>
-      <stop offset="1" stop-color="#FFE08A" stop-opacity="0"/>
-    </radialGradient>
   </defs>
-  <rect width="512" height="512" fill="url(#sun)"/>
-  <circle cx="256" cy="300" r="200" fill="url(#sunGlow)"/>
-  <circle cx="256" cy="318" r="92" fill="#FFD36A"/>
-  <path d="M0 348H512V512H0Z" fill="#2A0C22" fill-opacity=".28"/>
-  <path d="M0 392C96 364 168 424 256 392C344 360 416 424 512 388V512H0Z" fill="#1A0818" fill-opacity=".38"/>
+  <rect width="512" height="512" fill="url(#g)"/>
 </svg>

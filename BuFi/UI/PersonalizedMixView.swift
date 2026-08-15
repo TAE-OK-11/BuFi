@@ -16,25 +16,21 @@ struct PersonalizedMixArtwork: View {
                 .frame(width: size, height: size)
 
                 LinearGradient(
-                    colors: [.clear, .black.opacity(0.48)],
+                    colors: [.clear, .black.opacity(0.62)],
                     startPoint: .center,
                     endPoint: .bottom
                 )
 
-                VStack {
-                    Spacer()
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 0)
                     Text(coverTitle)
                         .font(coverFont)
                         .tracking(-size * 0.006)
-                        .foregroundStyle(.black)
+                        .foregroundStyle(.white)
                         .lineLimit(2)
                         .minimumScaleFactor(0.64)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, max(10, size * 0.06))
-                        .padding(.vertical, max(7, size * 0.04))
-                        .background(Color(red: 0.77, green: 1.0, blue: 0.28))
-                        .padding(.bottom, max(12, size * 0.07))
                 }
+                .padding(max(13, size * 0.075))
             } else {
                 Image(assetName)
                     .resizable()
