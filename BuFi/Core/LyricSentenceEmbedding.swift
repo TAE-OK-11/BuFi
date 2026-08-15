@@ -143,4 +143,5 @@ enum LyricLexicalFeatures {
         _ = text
         return []
 #endif
+    }
 }
