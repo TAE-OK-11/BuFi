@@ -22,7 +22,8 @@ enum RecommendationLLMReview {
     ) async -> [Song] {
         guard !songs.isEmpty, limit > 0 else { return songs }
         guard isEnabled() else { return Array(songs.prefix(limit)) }
-        let settings = await currentSettings()
+        let loadedSettings = await currentSettings()
+        let settings = RecommendationAIRouting.resolve(loadedSettings)
         let family = LyricModelFamily.resolve(model: settings.radioModel)
         let pool = Array(songs.prefix(family.reviewPoolLimit))
         guard pool.count >= 3 else { return songs }
