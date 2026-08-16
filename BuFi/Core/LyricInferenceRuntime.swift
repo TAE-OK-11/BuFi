@@ -539,10 +539,7 @@ enum LyricOrderBlend {
         laneScores: [String: Double]
     ) -> [String] {
         guard !llmOrder.isEmpty else {
-            return songs
-                .map { ($0.id, laneScores[$0.id] ?? 0) }
-                .sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
-                .map(\.0)
+            return rankedIDs(songs: songs, scores: laneScores)
         }
         let span = max(llmOrder.count - 1, 1)
         var scores: [String: Double] = [:]
@@ -554,12 +551,22 @@ enum LyricOrderBlend {
         for song in songs where scores[song.id] == nil {
             scores[song.id] = (laneScores[song.id] ?? 0) * 0.24
         }
-        return songs
-            .map { ($0.id, scores[$0.id] ?? 0) }
-            .sorted { lhs, rhs in
-                if lhs.1 == rhs.1 { return lhs.0 < rhs.0 }
-                return lhs.1 > rhs.1
-            }
-            .map(\.0)
+        return rankedIDs(songs: songs, scores: scores)
+    }
+
+    private static func rankedIDs(
+        songs: [Song],
+        scores: [String: Double]
+    ) -> [String] {
+        var ranked: [(String, Double)] = []
+        ranked.reserveCapacity(songs.count)
+        for song in songs {
+            ranked.append((song.id, scores[song.id] ?? 0))
+        }
+        ranked.sort { lhs, rhs in
+            if lhs.1 == rhs.1 { return lhs.0 < rhs.0 }
+            return lhs.1 > rhs.1
+        }
+        return ranked.map(\.0)
     }
 }

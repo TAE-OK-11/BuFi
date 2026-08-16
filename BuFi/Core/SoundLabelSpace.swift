@@ -149,10 +149,11 @@ enum SoundLabelSpace {
             "singing", "choir", "electronic", "acoustic", "beat",
             "ambient", "rock", "pop", "jazz", "classical", "instrument"
         ])
-        if !values.keys.isDisjoint(with: specificInstruments) {
+        let present = Set(values.keys)
+        if !present.isDisjoint(with: specificInstruments) {
             values.removeValue(forKey: "instrument")
         }
-        if !values.keys.isDisjoint(with: musicChildren) {
+        if !present.isDisjoint(with: musicChildren) {
             values.removeValue(forKey: "music")
         }
         if values["singing"] != nil || values["choir"] != nil {
