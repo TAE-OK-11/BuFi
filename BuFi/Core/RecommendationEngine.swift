@@ -797,7 +797,8 @@ enum RecommendationMixer {
         behavior: RecommendationBehaviorSnapshot,
         seed: Song? = nil,
         lyricIndex: LyricSignatureIndex = .empty,
-        date: Date = Date()
+        date: Date = Date(),
+        reviewsWithLLM: Bool = true
     ) async -> (recommended: [Song], daylist: [Song]) {
         guard !Task.isCancelled else { return ([], []) }
         async let recommendedScored = scoreConcurrently(
@@ -822,6 +823,7 @@ enum RecommendationMixer {
         let scored = await recommendedScored
         let daylist = await daylistScored
         guard !Task.isCancelled else { return (scored, daylist) }
+        guard reviewsWithLLM else { return (scored, daylist) }
         let recommended = await RecommendationLLMReview.refine(
             songs: scored,
             seed: seed,

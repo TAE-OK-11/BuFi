@@ -186,7 +186,7 @@ struct OpenSubsonicResponseCachePolicy: Equatable, Sendable {
 }
 
 enum OpenSubsonicRequestPolicy {
-    static let homeEnrichmentConcurrencyLimit = 5
+    static let homeEnrichmentConcurrencyLimit = 3
 
     private static let favoriteRepresentations: Set<OpenSubsonicCacheDependency> = [
         .favorites,

@@ -1099,7 +1099,7 @@ actor LyricIntelligence {
     ) {
         sweepTask?.cancel()
         sweepTask = Task { [catalog, accountScope] in
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(12))
             guard !Task.isCancelled, !self.batchProgress.isRunning else { return }
             _ = await self.analyzePending(
                 catalog: catalog,

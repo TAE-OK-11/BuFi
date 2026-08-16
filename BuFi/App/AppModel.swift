@@ -1061,7 +1061,14 @@ final class AppModel: ObservableObject {
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 },
                 fileProvider: { song in
-                    await SoundAnalysisSample.resolve(for: song, client: client)
+                    let streamOwnsNetwork = await MainActor.run {
+                        AudioEngine.shared.wantsPlayback
+                    }
+                    if streamOwnsNetwork { return nil }
+                    return await SoundAnalysisSample.resolve(
+                        for: song,
+                        client: client
+                    )
                 }
             )
         }
@@ -1083,11 +1090,11 @@ final class AppModel: ObservableObject {
         seedRecommendationTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(1_500))
             guard !Task.isCancelled else { return }
-            self?.rebuildRecommendations()
+            self?.rebuildRecommendations(reviewsWithLLM: false)
         }
     }
 
-    func rebuildRecommendations() {
+    func rebuildRecommendations(reviewsWithLLM: Bool = true) {
         recommendationTask?.cancel()
         recommendationGeneration &+= 1
         let requestGeneration = recommendationGeneration
@@ -1111,7 +1118,8 @@ final class AppModel: ObservableObject {
                 weights: weights,
                 behavior: behavior,
                 seed: AudioEngine.shared.currentSong,
-                lyricIndex: lyricIndex
+                lyricIndex: lyricIndex,
+                reviewsWithLLM: reviewsWithLLM
             )
             let latestBehaviorRevision = await ListeningHistoryStore.shared
                 .recommendationRevision()
@@ -2229,7 +2237,8 @@ final class AppModel: ObservableObject {
         weights: RecommendationWeights,
         behavior: RecommendationBehaviorSnapshot,
         seed: Song? = nil,
-        lyricIndex: LyricSignatureIndex = .empty
+        lyricIndex: LyricSignatureIndex = .empty,
+        reviewsWithLLM: Bool = true
     ) async -> (recommended: [Song], daylist: [Song]) {
         await RecommendationMixer.sectionsConcurrently(
             snapshot: snapshot,
@@ -2237,7 +2246,8 @@ final class AppModel: ObservableObject {
             weights: weights,
             behavior: behavior,
             seed: seed,
-            lyricIndex: lyricIndex
+            lyricIndex: lyricIndex,
+            reviewsWithLLM: reviewsWithLLM
         )
     }
 
