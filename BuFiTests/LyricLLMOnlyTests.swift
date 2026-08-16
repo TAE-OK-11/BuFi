@@ -16,6 +16,10 @@ final class LyricLLMOnlyTests: XCTestCase {
         )
 
         XCTAssertFalse(signature.hasStoredLyricAnalysis)
+        XCTAssertEqual(
+            signature.sourceTitle,
+            String(localized: "이전 로컬 결과 (LLM 재분석 필요)")
+        )
         XCTAssertFalse(
             LyricAnalysisCachePolicy.shouldReuseLyric(
                 existing: signature,
