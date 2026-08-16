@@ -8,7 +8,8 @@ enum PersonalizedMixLLM {
         lyricIndex: LyricSignatureIndex,
         date: Date = Date()
     ) async -> [PersonalizedMix] {
-        let settings = await LyricIntelligenceSettings.load()
+        let loadedSettings = await LyricIntelligenceSettings.load()
+        let settings = RecommendationAIRouting.resolve(loadedSettings)
         let family = LyricModelFamily.resolve(model: settings.radioModel)
         let calendar = Calendar.current
         let hour = calendar.component(.hour, from: date)
