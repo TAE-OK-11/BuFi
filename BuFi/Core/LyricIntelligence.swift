@@ -67,6 +67,65 @@ enum RadioModelOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// What the radio actually calls right now, given the selected model and keys.
+struct RecommendationAIStatus: Equatable, Sendable {
+    var radioName: String
+    var radioNote: String
+    var analysisName: String
+
+    static func resolve(
+        radioModel: String,
+        hasGroqKey: Bool,
+        hasGeminiKey: Bool,
+        lyricProvider: LyricIntelligenceProviderKind,
+        lyricAnalysisName: String
+    ) -> RecommendationAIStatus {
+        var settings = LyricIntelligenceSettings.current(
+            groqKey: hasGroqKey ? "set" : "",
+            geminiKey: hasGeminiKey ? "set" : ""
+        )
+        settings.radioModel = radioModel
+        settings.provider = lyricProvider
+        let selected = RadioModelOption.resolved(radioModel)
+        let targets = LyricInferenceRuntime.radioTargets(settings)
+        guard let first = targets.first else {
+            return RecommendationAIStatus(
+                radioName: String(localized: "로컬 추천"),
+                radioNote: String(
+                    localized: "Groq나 Gemini 키가 없어서 다음 곡은 기기 안에서만 고릅니다."
+                ),
+                analysisName: lyricAnalysisName
+            )
+        }
+        let primary = RadioModelOption.resolved(first.model)
+        let fallbacks = targets.dropFirst().map {
+            RadioModelOption.resolved($0.model).title
+        }
+        var note: String
+        if primary.id == selected.id {
+            note = fallbacks.isEmpty
+                ? String(localized: "다음 곡을 이을 때 이 모델을 바로 부릅니다.")
+                : String(
+                    localized: "안 되면 \(fallbacks.joined(separator: " → ")) 순으로 넘어갑니다."
+                )
+        } else {
+            note = String(
+                localized: "고른 모델은 \(selected.title)이지만, 키가 있는 \(primary.title)로 호출합니다."
+            )
+            if !fallbacks.isEmpty {
+                note += "\n" + String(
+                    localized: "그다음 \(fallbacks.joined(separator: " → "))"
+                )
+            }
+        }
+        return RecommendationAIStatus(
+            radioName: primary.title,
+            radioNote: note,
+            analysisName: lyricAnalysisName
+        )
+    }
+}
+
 struct LyricSignature: Codable, Equatable, Sendable {
     var songID: String
     var lyricsHash: String
@@ -997,7 +1056,8 @@ actor LyricIntelligence {
         lyricsProvider: @escaping @Sendable (Song) async -> String,
         fileProvider: @escaping @Sendable (Song) async -> URL?,
         force: Bool = false,
-        settings: LyricIntelligenceSettings? = nil
+        settings: LyricIntelligenceSettings? = nil,
+        paced: Bool = false
     ) async -> LyricBatchProgress {
         await activate(accountScope: accountScope)
         batchGeneration &+= 1
@@ -1076,7 +1136,8 @@ actor LyricIntelligence {
                 await analyzeSound(
                     song: song,
                     fileURL: fileURL,
-                    audioRevision: revision
+                    audioRevision: revision,
+                    paced: paced
                 )
                 if !beforeMeasured, signatures[song.id]?.details.audioMeasured == true {
                     progress.soundAnalyzed += 1
@@ -1140,10 +1201,11 @@ actor LyricIntelligence {
         song: Song,
         fileURL: URL,
         audioRevision: String,
-        accountScope: String? = nil
+        accountScope: String? = nil,
+        paced: Bool = false
     ) {
         guard !audioRevision.isEmpty, fileURL.isFileURL else { return }
-        Task { [song, fileURL, audioRevision, accountScope] in
+        Task { [song, fileURL, audioRevision, accountScope, paced] in
             if let accountScope {
                 await self.activate(accountScope: accountScope)
             } else {
@@ -1152,7 +1214,8 @@ actor LyricIntelligence {
             await self.analyzeSound(
                 song: song,
                 fileURL: fileURL,
-                audioRevision: audioRevision
+                audioRevision: audioRevision,
+                paced: paced
             )
         }
     }
@@ -1262,7 +1325,8 @@ actor LyricIntelligence {
     private func analyzeSound(
         song: Song,
         fileURL: URL,
-        audioRevision: String
+        audioRevision: String,
+        paced: Bool = false
     ) async {
         let existing = signatures[song.id]
         let labelsReady = LyricAnalysisCachePolicy.shouldReuseSound(
@@ -1282,7 +1346,10 @@ actor LyricIntelligence {
             )
             return
         }
-        guard let analyzed = await SoundAnalysisClassifier.analyzeFile(at: fileURL) else {
+        guard let analyzed = await SoundAnalysisClassifier.analyzeFile(
+            at: fileURL,
+            paced: paced
+        ) else {
             await applyAudioFeatures(
                 to: song.id,
                 features: localAudioFeatures(fileURL: fileURL, song: song),

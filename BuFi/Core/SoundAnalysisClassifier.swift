@@ -36,11 +36,32 @@ enum SoundAnalysisClassifier {
         Array(SoundLabelSpace.tokens(from: scores).prefix(limit).map(\.token))
     }
 
-    static func analyzeFile(at url: URL) async -> Analysis? {
-        guard url.isFileURL, !shouldDeferForThermals else { return nil }
+    static func analyzeFile(at url: URL, paced: Bool = false) async -> Analysis? {
+        guard url.isFileURL else { return nil }
+        if shouldDeferForThermals {
+#if canImport(AVFoundation)
+            return await Task.detached(priority: .background) {
+                guard let features = SoundFeatureExtractor.estimateFile(at: url),
+                      features.isMeasured else {
+                    return nil
+                }
+                return Analysis(
+                    labels: [],
+                    embedding: [],
+                    source: "local-features",
+                    bpm: features.bpm,
+                    energy: features.energy,
+                    brightness: features.brightness,
+                    pulse: features.pulse
+                )
+            }.value
+#else
+            return nil
+#endif
+        }
 #if canImport(SoundAnalysis) && canImport(AVFoundation)
-        return await Task.detached(priority: .utility) {
-            analyzeFileSync(at: url)
+        return await Task.detached(priority: paced ? .background : .utility) {
+            analyzeFileSync(at: url, paced: paced)
         }.value
 #else
         return nil
@@ -62,7 +83,7 @@ enum SoundAnalysisClassifier {
     }
 
 #if canImport(SoundAnalysis) && canImport(AVFoundation)
-    private static func analyzeFileSync(at url: URL) -> Analysis? {
+    private static func analyzeFileSync(at url: URL, paced: Bool) -> Analysis? {
         do {
             let file = try AVAudioFile(forReading: url)
             let format = file.processingFormat
@@ -75,10 +96,11 @@ enum SoundAnalysisClassifier {
             let analyzer = SNAudioStreamAnalyzer(format: format)
             try analyzer.add(request, withObserver: collector)
 
-            let segmentFrames = AVAudioFramePosition(format.sampleRate * segmentDuration)
+            let seconds = paced ? 6.0 : segmentDuration
+            let segmentFrames = AVAudioFramePosition(format.sampleRate * seconds)
             guard segmentFrames > 0 else { return nil }
             let starts: [AVAudioFramePosition]
-            if file.length <= segmentFrames * 3 {
+            if paced || file.length <= segmentFrames * 3 {
                 starts = [0]
             } else {
                 starts = [
@@ -88,7 +110,7 @@ enum SoundAnalysisClassifier {
                 ]
             }
 
-            let bufferSize: AVAudioFrameCount = 4_096
+            let bufferSize: AVAudioFrameCount = paced ? 2_048 : 4_096
             guard let buffer = AVAudioPCMBuffer(
                 pcmFormat: format,
                 frameCapacity: bufferSize
@@ -104,6 +126,7 @@ enum SoundAnalysisClassifier {
             var highEnergy = 0.0
             var allEnergy = 0.0
             var analysisPosition: AVAudioFramePosition = 0
+            var buffersSincePause = 0
             for start in starts {
                 file.framePosition = start
                 let available = file.length - start
@@ -127,6 +150,13 @@ enum SoundAnalysisClassifier {
                         allEnergy: &allEnergy
                     )
                     remaining -= buffer.frameLength
+                    if paced {
+                        buffersSincePause += 1
+                        if buffersSincePause >= 4 {
+                            buffersSincePause = 0
+                            Thread.sleep(forTimeInterval: 0.008)
+                        }
+                    }
                 }
             }
 

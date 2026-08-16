@@ -594,6 +594,7 @@ struct RecommendationSettingsView: View {
                 settingsDescription("아무것도 고르지 않아도 괜찮아요. 지금 듣는 곡 느낌으로 이어서 틀어 줘요.")
                     .padding(.horizontal, 18)
 
+                aiInUseSection
                 aiTasteSection
                 aiArtistSection
                 aiSignalSection
@@ -1075,6 +1076,7 @@ struct RecommendationSettingsView: View {
             if usingGroq {
                 settings.provider = .groq
             }
+            let paced = audio.wantsPlayback
             let progress = await LyricIntelligence.shared.analyzePending(
                 catalog: catalog,
                 accountScope: scope,
@@ -1082,9 +1084,14 @@ struct RecommendationSettingsView: View {
                     await Self.lyricsText(for: song, client: client)
                 },
                 fileProvider: { song in
-                    await SoundAnalysisSample.resolve(for: song, client: client)
+                    await SoundAnalysisSample.resolve(
+                        for: song,
+                        client: client,
+                        paced: paced
+                    )
                 },
-                settings: settings
+                settings: settings,
+                paced: paced
             )
             guard !Task.isCancelled else { return }
             batchProgress = progress
@@ -1138,6 +1145,7 @@ struct RecommendationSettingsView: View {
             guard !Task.isCancelled else { return }
             await LyricIntelligence.shared.activate(accountScope: scope)
             let settings = await LyricIntelligenceSettings.load()
+            let paced = audio.wantsPlayback
             let progress = await LyricIntelligence.shared.analyzePending(
                 catalog: catalog,
                 accountScope: scope,
@@ -1145,10 +1153,15 @@ struct RecommendationSettingsView: View {
                     await Self.lyricsText(for: song, client: client)
                 },
                 fileProvider: { song in
-                    await SoundAnalysisSample.resolve(for: song, client: client)
+                    await SoundAnalysisSample.resolve(
+                        for: song,
+                        client: client,
+                        paced: paced
+                    )
                 },
                 force: true,
-                settings: settings
+                settings: settings,
+                paced: paced
             )
             guard !Task.isCancelled else { return }
             batchProgress = progress
@@ -1180,7 +1193,8 @@ struct RecommendationSettingsView: View {
         )
         if let fileURL = await SoundAnalysisSample.resolve(
             for: song,
-            client: client
+            client: client,
+            paced: audio.wantsPlayback
         ) {
             await LyricIntelligence.shared.scheduleSoundAnalysis(
                 song: song,
@@ -1188,7 +1202,8 @@ struct RecommendationSettingsView: View {
                 audioRevision: song.audioResourceRevision.isEmpty
                     ? song.id
                     : song.audioResourceRevision,
-                accountScope: client.accountScope
+                accountScope: client.accountScope,
+                paced: audio.wantsPlayback
             )
         }
         await refreshCoverage()
@@ -1370,6 +1385,76 @@ struct RecommendationSettingsView: View {
         case .cerebras:
             String(localized: "Cerebras도 Llama 3.3 70B와 GPT-OSS 120B에 각각 다른 프롬프트를 씁니다. 결과는 로컬에 남습니다.")
         }
+    }
+
+    private var recommendationAIStatus: RecommendationAIStatus {
+        RecommendationAIStatus.resolve(
+            radioModel: radioModel,
+            hasGroqKey: session.hasGroqKey,
+            hasGeminiKey: session.hasGeminiKey,
+            lyricProvider: LyricIntelligenceProviderKind(rawValue: lyricProviderRaw)
+                ?? .onDevice,
+            lyricAnalysisName: lyricAnalysisDisplayName
+        )
+    }
+
+    private var lyricAnalysisDisplayName: String {
+        switch LyricIntelligenceProviderKind(rawValue: lyricProviderRaw) ?? .onDevice {
+        case .off:
+            String(localized: "가사 분석 끔")
+        case .onDevice, .applePrivateCloud:
+            String(localized: "Apple 3B (가사)")
+        case .openAI:
+            "OpenAI"
+        case .openRouter:
+            openRouterModel
+        case .groq:
+            groqAnalysisTitle
+        case .googleAI:
+            geminiAnalysisTitle
+        case .cerebras:
+            cerebrasModel
+        }
+    }
+
+    private var groqAnalysisTitle: String {
+        switch groqModel {
+        case "openai/gpt-oss-120b": "Groq · GPT-OSS 120B"
+        case "qwen/qwen3.6-27b": "Groq · Qwen 3.6 27B"
+        case "openai/gpt-oss-20b": "Groq · GPT-OSS 20B"
+        case "llama-3.1-8b-instant": "Groq · Llama 3.1 8B"
+        default: groqModel
+        }
+    }
+
+    private var geminiAnalysisTitle: String {
+        switch geminiModel {
+        case LyricIntelligenceSettings.geminiFlashModel: "Gemini 3.7 Flash"
+        case LyricIntelligenceSettings.geminiFlashLiteModel: "Gemini 3.6 Flash Lite"
+        default: geminiModel
+        }
+    }
+
+    private var aiInUseSection: some View {
+        SettingsGroup(title: "지금 곡 추천에 쓰는 AI") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(recommendationAIStatus.radioName)
+                    .font(.system(size: 20, weight: .bold))
+                Text(recommendationAIStatus.radioNote)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    String(
+                        localized: "가사 분석: \(recommendationAIStatus.analysisName)"
+                    )
+                )
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                settingsDescription("라디오 모델이나 키를 바꾸면 여기 표시도 바로 바뀝니다. 실제로 호출되는 쪽을 보여 줍니다.")
+            }
+        }
+        .padding(.horizontal, 16)
     }
 
     private var aiTasteSection: some View {

@@ -110,6 +110,18 @@ enum ModernNetworkPolicy {
         request.setValue(compatibilityContentEncodings, forHTTPHeaderField: "Accept-Encoding")
     }
 
+    /// Analysis samples must not race the player for the AV streaming class.
+    /// Keep identity encoding so the range maps to raw audio bytes.
+    static func prepareAnalysisMediaRequest(_ request: inout URLRequest) {
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.networkServiceType = .background
+        request.setValue(
+            "audio/*, application/octet-stream;q=0.9, */*;q=0.1",
+            forHTTPHeaderField: "Accept"
+        )
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+    }
+
     static func prepareMediaRequest(_ request: inout URLRequest) {
         prepareHTTP3Request(&request)
         request.cachePolicy = .reloadIgnoringLocalCacheData

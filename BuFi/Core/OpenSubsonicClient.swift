@@ -2573,18 +2573,12 @@ actor OpenSubsonicClient {
         request.timeoutInterval = 24
         ModernNetworkPolicy.prepareMediaRequest(&request)
         do {
-            let (bytes, response) = try await session.bytes(for: request)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
+                  (200..<300).contains(http.statusCode),
+                  data.count > 8_000 else {
                 return nil
             }
-            var data = Data()
-            data.reserveCapacity(min(maxBytes, 256_000))
-            for try await byte in bytes {
-                data.append(byte)
-                if data.count >= maxBytes { break }
-            }
-            guard data.count > 8_000 else { return nil }
             return Self.writeTemporaryAudioSample(
                 data,
                 songID: songID,
