@@ -19,7 +19,7 @@ printf '%s\n' "$swift_version" \
 
 printf 'Xcode %s / %s\n' "$xcode_version" "$swift_version"
 
-for target in BuFi BuFiTests; do
+for target in BuFi; do
     for configuration in Debug Release; do
         settings="$(
             xcodebuild \

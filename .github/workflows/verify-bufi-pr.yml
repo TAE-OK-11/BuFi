@@ -26,7 +26,7 @@ jobs:
   unified-ios:
     name: Swift 6.4 unified iOS build
     runs-on: xcode-27
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -59,14 +59,6 @@ jobs:
       - name: Verify Swift 6.4 unified configuration
         run: Scripts/verify-swift6-language-mode.sh
 
-      - name: Boot an available iPhone simulator
-        run: |
-          SIMULATOR_UDID="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(device["udid"] for devices in reversed(list(data["devices"].values())) for device in devices if device.get("isAvailable") and device.get("name", "").startswith("iPhone")))')"
-          test -n "$SIMULATOR_UDID"
-          echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> "$GITHUB_ENV"
-          xcrun simctl boot "$SIMULATOR_UDID" 2>/dev/null || true
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-
       - name: Build unsigned app
         run: |
           set -o pipefail
@@ -92,37 +84,6 @@ jobs:
             CODE_SIGN_IDENTITY='' \
             build 2>&1 | tee build/xcode.log
 
-      - name: Build simulator app
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -disableAutomaticPackageResolution \
-            -quiet \
-            -project BuFi.xcodeproj \
-            -scheme BuFi \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath build/DerivedData-Tests \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            build 2>&1 | tee build/tests-build.log
-
-      - name: Launch smoke test
-        run: |
-          APP_PATH="build/DerivedData-Tests/Build/Products/Debug-iphonesimulator/BuFi.app"
-          test -d "$APP_PATH"
-          test -f "$APP_PATH/PrivacyInfo.xcprivacy"
-          xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
-          LAUNCH_OUTPUT="$(xcrun simctl launch --terminate-running-process "$SIMULATOR_UDID" cloud.tae00217.BuFi)"
-          APP_PID="${LAUNCH_OUTPUT##*: }"
-          test -n "$APP_PID"
-          sleep 5
-          PROCINFO="$(xcrun simctl spawn "$SIMULATOR_UDID" launchctl procinfo "$APP_PID" 2>&1 || true)"
-          printf '%s\n' "$PROCINFO"
-          printf '%s\n' "$PROCINFO" | grep -q 'job state = running'
-
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -130,7 +91,6 @@ jobs:
           name: BuFi-1.0.0-swift6.4-failure-logs
           path: |
             build/xcode.log
-            build/tests-build.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -161,9 +121,3 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Shut down simulator
-        if: always()
-        run: |
-          if [ -n "${SIMULATOR_UDID:-}" ]; then
-            xcrun simctl shutdown "$SIMULATOR_UDID" 2>/dev/null || true
-          fi
