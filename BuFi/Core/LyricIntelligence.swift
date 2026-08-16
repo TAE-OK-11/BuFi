@@ -1363,8 +1363,23 @@ struct LyricIntelligenceSettings: Sendable {
     static let defaultGroqModel = "openai/gpt-oss-120b"
     static let defaultCerebrasModel = "llama-3.3-70b"
     static let radioPrimaryModel = "openai/gpt-oss-120b"
+    static let radioSecondaryModel = "qwen/qwen3.6-27b"
     static let radioFallbackModel = "openai/gpt-oss-20b"
     static let radioReasoningEffort = "low"
+    static let radioQwenReasoningEffort = "none"
+
+    static func reasoningEffort(for model: String) -> String? {
+        let value = model.lowercased()
+        if value.contains("gpt-oss")
+            || value.contains("oss-120")
+            || value.contains("oss-20") {
+            return radioReasoningEffort
+        }
+        if value.contains("qwen3.6") || value.contains("qwen/qwen3") {
+            return radioQwenReasoningEffort
+        }
+        return nil
+    }
 
     static func current(
         defaults: UserDefaults = .standard,

@@ -217,8 +217,21 @@ enum LyricInferenceRuntime {
                 key: settings.groqKey,
                 model: LyricIntelligenceSettings.radioPrimaryModel,
                 source: "groq",
-                reasoningEffort: LyricIntelligenceSettings.radioReasoningEffort,
+                reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
+                    for: LyricIntelligenceSettings.radioPrimaryModel
+                ),
                 timeout: 8,
+                allowRetries: false
+            ),
+            LyricChatTarget(
+                endpoint: endpoint,
+                key: settings.groqKey,
+                model: LyricIntelligenceSettings.radioSecondaryModel,
+                source: "groq",
+                reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
+                    for: LyricIntelligenceSettings.radioSecondaryModel
+                ),
+                timeout: 7,
                 allowRetries: false
             ),
             LyricChatTarget(
@@ -226,7 +239,9 @@ enum LyricInferenceRuntime {
                 key: settings.groqKey,
                 model: LyricIntelligenceSettings.radioFallbackModel,
                 source: "groq",
-                reasoningEffort: LyricIntelligenceSettings.radioReasoningEffort,
+                reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
+                    for: LyricIntelligenceSettings.radioFallbackModel
+                ),
                 timeout: 6,
                 allowRetries: false
             )
@@ -466,11 +481,9 @@ enum LyricInferenceRuntime {
                 key: settings.groqKey,
                 model: settings.groqModel,
                 source: "groq",
-                reasoningEffort: settings.groqModel.lowercased().contains("gpt-oss")
-                    || settings.groqModel.lowercased().contains("oss-120")
-                    || settings.groqModel.lowercased().contains("oss-20")
-                    ? LyricIntelligenceSettings.radioReasoningEffort
-                    : nil
+                reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
+                    for: settings.groqModel
+                )
             )
         case .cerebras:
             guard !settings.cerebrasKey.isEmpty,

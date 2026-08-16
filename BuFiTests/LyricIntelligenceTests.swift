@@ -100,6 +100,10 @@ final class LyricIntelligenceTests: XCTestCase {
             .gptOSS
         )
         XCTAssertEqual(
+            LyricModelFamily.resolve(model: "qwen/qwen3.6-27b"),
+            .gptOSS
+        )
+        XCTAssertEqual(
             LyricModelFamily.resolve(model: "llama-3.3-70b-versatile"),
             .llama70B
         )

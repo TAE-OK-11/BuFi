@@ -19,7 +19,10 @@ enum LyricModelFamily: String, Sendable {
 
     static func resolve(model: String) -> LyricModelFamily {
         let value = model.lowercased()
-        if value.contains("gpt-oss") || value.contains("oss-120") {
+        if value.contains("gpt-oss")
+            || value.contains("oss-120")
+            || value.contains("qwen3.6")
+            || value.contains("qwen/qwen3") {
             return .gptOSS
         }
         if value.contains("llama-3.3")

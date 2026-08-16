@@ -379,6 +379,7 @@ final class LyricOptimizationTests: XCTestCase {
             ).map(\.model),
             [
                 LyricIntelligenceSettings.radioPrimaryModel,
+                LyricIntelligenceSettings.radioSecondaryModel,
                 LyricIntelligenceSettings.radioFallbackModel
             ]
         )
@@ -392,10 +393,21 @@ final class LyricOptimizationTests: XCTestCase {
                 groqModel: "openai/gpt-oss-120b"
             )
         )
-        XCTAssertEqual(radioTargets.first?.reasoningEffort, "low")
+        XCTAssertEqual(radioTargets.map(\.model), [
+            "openai/gpt-oss-120b",
+            "qwen/qwen3.6-27b",
+            "openai/gpt-oss-20b"
+        ])
+        XCTAssertEqual(radioTargets[0].reasoningEffort, "low")
+        XCTAssertEqual(radioTargets[1].reasoningEffort, "none")
+        XCTAssertEqual(radioTargets[2].reasoningEffort, "low")
         XCTAssertEqual(radioTargets.first?.timeout, 8)
         XCTAssertEqual(radioTargets.first?.allowRetries, false)
         XCTAssertEqual(radioTargets.last?.timeout, 6)
+        XCTAssertEqual(
+            LyricModelFamily.resolve(model: "qwen/qwen3.6-27b"),
+            .gptOSS
+        )
         let heuristic = RadioLLMDirector.heuristicBrief(
             seed: seed,
             lyricIndex: LyricSignatureIndex(bySongID: ["seed": close])

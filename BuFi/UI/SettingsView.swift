@@ -677,6 +677,7 @@ struct RecommendationSettingsView: View {
                         if lyricProviderRaw == LyricIntelligenceProviderKind.groq.rawValue {
                             Picker("Groq 모델", selection: $groqModel) {
                                 Text("GPT-OSS 120B (기본)").tag("openai/gpt-oss-120b")
+                                Text("Qwen 3.6 27B").tag("qwen/qwen3.6-27b")
                                 Text("GPT-OSS 20B").tag("openai/gpt-oss-20b")
                                 Text("Llama 3.1 8B Instant").tag("llama-3.1-8b-instant")
                             }
