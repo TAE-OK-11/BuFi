@@ -141,6 +141,12 @@ enum AppleFoundationLyricClient {
         if #available(iOS 26.0, *) {
             return await FoundationModelsBridge.complete(prompt)
         }
+        RecommendationDiagnostics.record(
+            kind: .llm,
+            level: .error,
+            title: String(localized: "Apple 3B를 사용할 수 없습니다"),
+            detail: "requires iOS 26+"
+        )
         return nil
     }
 
@@ -229,13 +235,46 @@ private enum FoundationModelsBridge {
         to prompt: String,
         useCase: SystemLanguageModel.UseCase?
     ) async -> String? {
+        let model = useCase.map { SystemLanguageModel(useCase: $0) }
+            ?? SystemLanguageModel.default
+        guard case .available = model.availability else {
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .error,
+                title: String(localized: "Apple 3B가 준비되지 않았습니다"),
+                detail: String(describing: model.availability)
+            )
+            return nil
+        }
         do {
-            let model = useCase.map { SystemLanguageModel(useCase: $0) }
-                ?? SystemLanguageModel.default
             let session = LanguageModelSession(model: model)
             let response = try await session.respond(to: prompt)
-            return response.content
+            let content = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else {
+                RecommendationDiagnostics.record(
+                    kind: .llm,
+                    level: .error,
+                    title: String(localized: "Apple 3B 응답이 비었습니다"),
+                    detail: "empty response"
+                )
+                return nil
+            }
+            return content
+        } catch is CancellationError {
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .delay,
+                title: String(localized: "Apple 3B 호출이 취소되었습니다"),
+                detail: "cancelled"
+            )
+            return nil
         } catch {
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .error,
+                title: String(localized: "Apple 3B 호출에 실패했습니다"),
+                detail: "\(String(describing: type(of: error))): \(error.localizedDescription)"
+            )
             return nil
         }
     }
@@ -259,6 +298,12 @@ private enum FoundationModelsBridge {
 
     static func complete(_ prompt: String) async -> String? {
         _ = prompt
+        RecommendationDiagnostics.record(
+            kind: .llm,
+            level: .error,
+            title: String(localized: "Apple Foundation Models를 불러오지 못했습니다"),
+            detail: "FoundationModels unavailable in this build"
+        )
         return nil
     }
 }
