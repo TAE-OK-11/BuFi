@@ -4,6 +4,7 @@ import Security
 enum SecureStoreError: LocalizedError, Sendable {
     case encoding
     case keychain(OSStatus)
+    case verification
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum SecureStoreError: LocalizedError, Sendable {
                 format: String(localized: "Keychain 오류가 발생했습니다. (%d)"),
                 status
             )
+        case .verification:
+            String(localized: "API 키를 Keychain에 저장했지만 다시 읽어오지 못했습니다.")
         }
     }
 }
@@ -30,6 +33,15 @@ struct SecureBootstrapState: Sendable {
 actor SecureStore {
     private let service = "cloud.tae00217.BuFi"
     private let account = "server-credentials"
+
+    // API settings are loaded through short-lived SecureStore actors in a few
+    // recommendation paths. Keep only secrets that have already been verified
+    // against Keychain so a transient Security.framework read immediately
+    // after a successful write cannot make the next actor think the key is
+    // absent. This cache never replaces persistent Keychain storage and is
+    // discarded with the process.
+    private static let secretCacheLock = NSLock()
+    nonisolated(unsafe) private static var secretCache: [String: String] = [:]
 
     func save(_ credentials: ServerCredentials) throws {
         guard let data = try? JSONEncoder().encode(credentials) else {
@@ -99,11 +111,32 @@ actor SecureStore {
             throw SecureStoreError.encoding
         }
         try saveData(data, account: account)
+
+        // Do not report success until the exact bytes can be read back from
+        // Keychain. This prevents UI state from claiming that a Gemini/Groq key
+        // exists while the recommendation runtime receives an empty secret.
+        guard let verifiedData = loadData(account: account),
+              verifiedData == data,
+              let verified = String(data: verifiedData, encoding: .utf8),
+              verified == value else {
+            Self.removeCachedSecret(account: account)
+            throw SecureStoreError.verification
+        }
+        Self.cacheSecret(verified, account: account)
     }
 
     func loadSecret(account: String) -> String? {
-        guard let data = loadData(account: account) else { return nil }
-        return String(data: data, encoding: .utf8)
+        if let data = loadData(account: account),
+           let value = String(data: data, encoding: .utf8),
+           !value.isEmpty {
+            Self.cacheSecret(value, account: account)
+            return value
+        }
+
+        // A verified write from another SecureStore actor in this process is a
+        // safe fallback for a transient Keychain read miss. Persistent truth is
+        // still Keychain: this memory value disappears on app termination.
+        return Self.cachedSecret(account: account)
     }
 
     func loadSecrets(accounts: [String]) -> [String: String] {
@@ -124,6 +157,7 @@ actor SecureStore {
             kSecAttrAccount as String: account
         ]
         try deleteItem(query)
+        Self.removeCachedSecret(account: account)
     }
 
     private func saveData(_ data: Data, account: String) throws {
@@ -169,5 +203,23 @@ actor SecureStore {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw SecureStoreError.keychain(status)
         }
+    }
+
+    private static func cacheSecret(_ value: String, account: String) {
+        secretCacheLock.lock()
+        secretCache[account] = value
+        secretCacheLock.unlock()
+    }
+
+    private static func cachedSecret(account: String) -> String? {
+        secretCacheLock.lock()
+        defer { secretCacheLock.unlock() }
+        return secretCache[account]
+    }
+
+    private static func removeCachedSecret(account: String) {
+        secretCacheLock.lock()
+        secretCache.removeValue(forKey: account)
+        secretCacheLock.unlock()
     }
 }
