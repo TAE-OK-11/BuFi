@@ -1,0 +1,33 @@
+name: One-shot LLM-only lyric analysis migration
+
+on:
+  push:
+    branches:
+      - agent/smarter-recommendations
+    paths:
+      - .github/workflows/one-shot-llm-only-lyrics.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: agent/smarter-recommendations
+          fetch-depth: 0
+
+      - name: Apply LLM-only lyric analysis patch
+        run: python3 Scripts/llm_only_lyrics_patch.py
+
+      - name: Commit migration
+        run: |
+          rm -f Scripts/llm_only_lyrics_patch.py
+          rm -f .github/workflows/one-shot-llm-only-lyrics.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Require LLM-generated lyric analysis"
+          git push origin HEAD:agent/smarter-recommendations
