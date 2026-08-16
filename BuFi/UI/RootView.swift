@@ -5,6 +5,7 @@ enum AppTab: Hashable {
     case home
     case search
     case library
+    case algorithm
     case settings
 }
 
@@ -187,6 +188,10 @@ struct RootView: View {
             tabPage(LibraryView(), tag: .library)
                 .tabItem { Label("내 라이브러리", systemImage: "music.note.list") }
                 .tag(AppTab.library)
+
+            tabPage(AlgorithmHubView(), tag: .algorithm)
+                .tabItem { Label("알고리즘", systemImage: "slider.horizontal.3") }
+                .tag(AppTab.algorithm)
 
             tabPage(SettingsView(), tag: .settings)
                 .tabItem { Label("설정", systemImage: "gearshape.fill") }

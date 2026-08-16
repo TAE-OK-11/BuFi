@@ -409,6 +409,32 @@ final class LyricOptimizationTests: XCTestCase {
         )
     }
 
+    func testAIProfileDefaultsNeedNoSetupAndRespectAvoidedArtists() {
+        let profile = AIRecommendationProfile.unset
+        XCTAssertTrue(profile.useListenCount)
+        XCTAssertTrue(profile.useFavorites)
+        XCTAssertTrue(profile.useFrequent)
+        XCTAssertTrue(profile.stayOnAlbum)
+        XCTAssertTrue(profile.moods.isEmpty)
+        XCTAssertEqual(profile.promptAppendix(), "")
+
+        var tuned = profile
+        tuned.avoidedArtists = ["Limp Bizkit"]
+        tuned.preferredArtists = ["Taylor Swift"]
+        tuned.moods = ["yearning", "calm"]
+        tuned.pens = ["fountain"]
+        tuned.sanitize()
+        let taylor = Song(id: "t", title: "Exile", artist: "Taylor Swift", album: "Folklore")
+        let limp = Song(id: "l", title: "Break Stuff", artist: "Limp Bizkit", album: "SO")
+        XCTAssertGreaterThan(
+            tuned.score(song: taylor, signature: nil),
+            tuned.score(song: limp, signature: nil)
+        )
+        XCTAssertTrue(tuned.promptAppendix().contains("만년필") || tuned.promptAppendix().contains("fountain") || tuned.promptAppendix().contains("Taylor"))
+        XCTAssertEqual(TaylorPenStyle.allCases.count, 3)
+        XCTAssertEqual(AILyricMood.allCases.count, 10)
+    }
+
     func testFallbackTargetsSkipThePrimaryProvider() {
         let settings = LyricIntelligenceSettings(
             provider: .groq,

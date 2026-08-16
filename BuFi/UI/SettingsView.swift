@@ -201,29 +201,17 @@ struct SettingsView: View {
 
     private var recommendationSection: some View {
         SettingsGroup(title: "추천") {
-            NavigationLink {
-                RecommendationSettingsView()
-                    .environmentObject(model)
-                    .environmentObject(audio)
-                    .environmentObject(audio.playbackState)
-            } label: {
-                HStack(spacing: 12) {
-                    settingIcon("wand.and.stars")
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("추천 알고리즘")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("취향 가중치와 외부 추천 서비스")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.tertiary)
+            HStack(spacing: 12) {
+                settingIcon("slider.horizontal.3")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("알고리즘 탭에서 설정")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("기존 추천과 AI 라디오를 따로 조정합니다")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
                 }
-                .contentShape(Rectangle())
+                Spacer()
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
     }
@@ -484,7 +472,7 @@ struct SettingsView: View {
     }
 }
 
-private struct SettingsGroup<Content: View>: View {
+struct SettingsGroup<Content: View>: View {
     let title: LocalizedStringKey
     let content: Content
 
@@ -510,7 +498,7 @@ private struct SettingsGroup<Content: View>: View {
     }
 }
 
-private struct SettingsActionButtonStyle: ButtonStyle {
+struct SettingsActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
@@ -532,7 +520,7 @@ private struct SettingsActionButtonStyle: ButtonStyle {
     }
 }
 
-private extension View {
+extension View {
     func settingsTextField() -> some View {
         textInputAutocapitalization(.never)
             .autocorrectionDisabled()
@@ -549,7 +537,7 @@ private extension View {
     }
 }
 
-private struct RecommendationSettingsView: View {
+struct RecommendationSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
     @EnvironmentObject private var audio: AudioEngine
@@ -562,42 +550,9 @@ private struct RecommendationSettingsView: View {
     @State private var batchProgress = LyricBatchProgress.idle
     @State private var batchTask: Task<Void, Never>?
     @State private var confirmFullLyricReanalysis = false
-    @State private var lastFMAPIKey = ""
-    @State private var listenBrainzUsername = ""
-    @State private var listenBrainzToken = ""
-    @AppStorage("recommendation-weight-history") private var historyWeight = 0.70
-    @AppStorage("recommendation-weight-favorites") private var favoriteWeight = 0.80
-    @AppStorage("recommendation-weight-server") private var serverWeight = 0.90
-    @AppStorage("recommendation-weight-discovery") private var discoveryWeight = 0.35
-    @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.55
-    @AppStorage("recommendation-weight-listenbrainz")
-    private var listenBrainzWeight = 0.55
-    @AppStorage("recommendation-weight-behavior")
-    private var behaviorWeight = 0.85
-    @AppStorage("recommendation-weight-completion")
-    private var completionWeight = 0.70
-    @AppStorage("recommendation-weight-repeat")
-    private var repeatWeight = 0.55
-    @AppStorage("recommendation-weight-recency")
-    private var recencyWeight = 0.65
-    @AppStorage("recommendation-weight-context")
-    private var contextWeight = 0.60
-    @AppStorage("recommendation-weight-metadata")
-    private var metadataWeight = 0.60
-    @AppStorage("recommendation-weight-playlist-affinity")
-    private var playlistAffinityWeight = 0.55
-    @AppStorage("recommendation-weight-album-completion")
-    private var albumCompletionWeight = 0.45
-    @AppStorage("recommendation-weight-forgotten-favorites")
-    private var forgottenFavoritesWeight = 0.50
-    @AppStorage("recommendation-weight-artist-rotation")
-    private var artistRotationWeight = 0.45
-    @AppStorage("recommendation-weight-time-awareness")
-    private var timeAwarenessWeight = 0.30
-    @AppStorage("recommendation-weight-lyric-mood")
-    private var lyricMoodWeight = 0.50
-    @AppStorage("recommendation-discovery-ratio")
-    private var discoveryRatio = 0.35
+    @State private var profile = AIRecommendationProfile.load()
+    @State private var preferredDraft = ""
+    @State private var avoidedDraft = ""
     @AppStorage("lyric-intelligence-provider")
     private var lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
     @AppStorage("lyric-intelligence-openrouter-model")
@@ -618,120 +573,13 @@ private struct RecommendationSettingsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
-                BuFiPageHeader(title: "추천 알고리즘")
+                BuFiPageHeader(title: "AI 알고리즘")
+                settingsDescription("비워 두면 지금 듣는 곡의 분위기만 따라갑니다. 손댄 항목만 라디오에 섞입니다.")
+                    .padding(.horizontal, 18)
 
-                SettingsGroup(title: "핵심 추천 가중치") {
-                    VStack(spacing: 18) {
-                        weightRow("청취 기록 취향", value: $historyWeight)
-                        weightRow("좋아요 취향", value: $favoriteWeight)
-                        weightRow("서버 유사곡·Sonic", value: $serverWeight)
-                        weightRow("새로운 음악 발견", value: $discoveryWeight)
-                        weightRow("Last.fm 유사곡", value: $lastFMWeight)
-                        weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
-                        weightRow("재생 행동", value: $behaviorWeight)
-                        weightRow("완주율", value: $completionWeight)
-                        weightRow("반복 재생", value: $repeatWeight)
-                        weightRow("최근 취향", value: $recencyWeight)
-                        weightRow("현재 세션 흐름", value: $contextWeight)
-                    }
-                }
-                .padding(.horizontal, 16)
-
-                SettingsGroup(title: "발견 비율") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        weightRow("새로운 곡·아티스트 비율", value: $discoveryRatio)
-                        settingsDescription("점수에 곱하지 않고 최종 목록에서 익숙한 음악과 새로운 음악의 구성 비율을 조절합니다.")
-                    }
-                }
-                .padding(.horizontal, 16)
-
-                SettingsGroup(title: "고급 추천 신호") {
-                    VStack(alignment: .leading, spacing: 18) {
-                        weightRow("장르·BPM·분위기 메타데이터", value: $metadataWeight)
-                        weightRow("플레이리스트 연관성", value: $playlistAffinityWeight)
-                        weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
-                        weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
-                        weightRow("아티스트 순환", value: $artistRotationWeight)
-                        weightRow("시간대 맞춤", value: $timeAwarenessWeight)
-                        weightRow("가사 분위기", value: $lyricMoodWeight)
-                        Button("기본값으로 복원") {
-                            restoreDefaults()
-                        }
-                        .font(.system(size: 15, weight: .semibold))
-                        settingsDescription("모든 입력은 0~1로 정규화되며, 낮은 메타데이터 매칭 신뢰도와 반복 조기 스킵은 별도로 감점합니다.")
-                    }
-                }
-                .padding(.horizontal, 16)
-
-                SettingsGroup(title: "Last.fm") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        SecureField(
-                            session.hasLastFMAPIKey
-                                ? "저장된 API 키 교체"
-                                : "Last.fm API 키",
-                            text: $lastFMAPIKey
-                        )
-                        .settingsTextField()
-                        Button(session.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
-                            Task { @MainActor in
-                                await model.saveLastFMAPIKey(lastFMAPIKey)
-                                lastFMAPIKey = ""
-                            }
-                        }
-                        .buttonStyle(SettingsActionButtonStyle())
-                        .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if session.hasLastFMAPIKey {
-                            Button("Last.fm 연동 해제", role: .destructive) {
-                                Task { await model.saveLastFMAPIKey("") }
-                            }
-                        }
-                        settingsDescription("track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
-                    }
-                }
-                .padding(.horizontal, 16)
-
-                SettingsGroup(title: "ListenBrainz") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        TextField("사용자 이름", text: $listenBrainzUsername)
-                            .settingsTextField()
-                        SecureField(
-                            session.hasListenBrainzToken
-                                ? "저장된 토큰 유지 또는 교체"
-                                : "사용자 토큰",
-                            text: $listenBrainzToken
-                        )
-                        .settingsTextField()
-                        Button("ListenBrainz 설정 저장") {
-                            let username = listenBrainzUsername
-                            let token = listenBrainzToken
-                            Task { @MainActor in
-                                let saved = await model.saveListenBrainz(
-                                    username: username,
-                                    token: token
-                                )
-                                if saved { listenBrainzToken = "" }
-                            }
-                        }
-                        .buttonStyle(SettingsActionButtonStyle())
-                        .disabled(
-                            listenBrainzUsername
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                                .isEmpty
-                        )
-                        if session.hasListenBrainzToken || !session.listenBrainzUsername.isEmpty {
-                            Button("ListenBrainz 연동 해제", role: .destructive) {
-                                Task { @MainActor in
-                                    if await model.removeListenBrainz() {
-                                        listenBrainzUsername = ""
-                                        listenBrainzToken = ""
-                                    }
-                                }
-                            }
-                        }
-                        settingsDescription("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 있는 곡만 매칭합니다.")
-                    }
-                }
-                .padding(.horizontal, 16)
+                aiTasteSection
+                aiArtistSection
+                aiSignalSection
 
                 SettingsGroup(title: "가사 지능") {
                     VStack(alignment: .leading, spacing: 14) {
@@ -938,7 +786,7 @@ private struct RecommendationSettingsView: View {
             }
         }
         .onAppear {
-            listenBrainzUsername = session.listenBrainzUsername
+            profile = AIRecommendationProfile.load()
             if lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
                !LyricIntelligenceProviderKind.applePrivateCloud.isVisibleInSettings {
                 lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
@@ -1458,29 +1306,248 @@ private struct RecommendationSettingsView: View {
         }
     }
 
-    private func weightRow(
-        _ title: LocalizedStringKey,
-        value: Binding<Double>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(value.wrappedValue, format: .percent.precision(.fractionLength(0)))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-            Slider(
-                value: value,
-                in: 0...1,
-                step: 0.05,
-                onEditingChanged: { isEditing in
-                    guard !isEditing else { return }
-                    model.rebuildRecommendations()
+    private var aiTasteSection: some View {
+        SettingsGroup(title: "가사 느낌") {
+            VStack(alignment: .leading, spacing: 12) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 88), spacing: 8)],
+                    spacing: 8
+                ) {
+                    ForEach(AILyricMood.allCases) { mood in
+                        chip(
+                            mood.title,
+                            selected: profile.moods.contains(mood.rawValue)
+                        ) {
+                            toggleMood(mood)
+                        }
+                    }
                 }
-            )
-                .tint(BuFiTheme.accent)
+                settingsDescription("최대 3개. 고르지 않으면 지금 곡의 감정을 따라갑니다.")
+
+                Text("테일러 펜")
+                    .font(.system(size: 15, weight: .semibold))
+                ForEach(TaylorPenStyle.allCases) { pen in
+                    Button {
+                        togglePen(pen)
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: profile.pens.contains(pen.rawValue)
+                                  ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(BuFiTheme.accent)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(pen.title)
+                                    .font(.system(size: 15, weight: .semibold))
+                                Text(pen.subtitle)
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Picker("에너지", selection: energyBinding) {
+                    ForEach(AIEnergyLane.allCases) { lane in
+                        Text(lane.title).tag(lane.rawValue)
+                    }
+                }
+                Picker("언어", selection: languageBinding) {
+                    ForEach(AILyricLanguage.allCases) { language in
+                        Text(language.title).tag(language.rawValue)
+                    }
+                }
+                Picker("보컬", selection: vocalBinding) {
+                    Text("상관없음").tag("")
+                    Text("여성").tag("female")
+                    Text("남성").tag("male")
+                }
+            }
         }
+        .padding(.horizontal, 16)
+    }
+
+    private var aiArtistSection: some View {
+        SettingsGroup(title: "아티스트") {
+            VStack(alignment: .leading, spacing: 12) {
+                artistEditor(
+                    title: "선호 아티스트",
+                    draft: $preferredDraft,
+                    names: profile.preferredArtists,
+                    limit: 3
+                ) { name in
+                    addArtist(name, preferred: true)
+                } remove: { name in
+                    profile.preferredArtists.removeAll { $0 == name }
+                    persistProfile()
+                }
+                artistEditor(
+                    title: "기피 아티스트",
+                    draft: $avoidedDraft,
+                    names: profile.avoidedArtists,
+                    limit: 5
+                ) { name in
+                    addArtist(name, preferred: false)
+                } remove: { name in
+                    profile.avoidedArtists.removeAll { $0 == name }
+                    persistProfile()
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var aiSignalSection: some View {
+        SettingsGroup(title: "기존 취향 반영") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("들은 수 반영", isOn: listenCountBinding)
+                Toggle("좋아요 반영", isOn: favoritesBinding)
+                Toggle("자주 들은 곡 반영", isOn: frequentBinding)
+                Toggle("같은 앨범 이어 듣기", isOn: stayOnAlbumBinding)
+                settingsDescription("세 가지는 기본으로 켜져 있습니다. 끄면 AI 라디오가 그 신호를 거의 쓰지 않습니다.")
+            }
+            .font(.system(size: 15, weight: .semibold))
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func artistEditor(
+        title: LocalizedStringKey,
+        draft: Binding<String>,
+        names: [String],
+        limit: Int,
+        add: @escaping (String) -> Void,
+        remove: @escaping (String) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+            if !names.isEmpty {
+                FlexibleArtistChips(names: names, onRemove: remove)
+            }
+            HStack {
+                TextField("이름 추가", text: draft)
+                    .settingsTextField()
+                Button("추가") {
+                    add(draft.wrappedValue)
+                    draft.wrappedValue = ""
+                }
+                .disabled(
+                    names.count >= limit
+                        || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
+            Text("최대 \(limit)명")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func chip(
+        _ title: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(
+                    selected ? BuFiTheme.accent.opacity(0.16) : Color.primary.opacity(0.05),
+                    in: Capsule()
+                )
+                .foregroundStyle(selected ? BuFiTheme.accent : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toggleMood(_ mood: AILyricMood) {
+        if let index = profile.moods.firstIndex(of: mood.rawValue) {
+            profile.moods.remove(at: index)
+        } else if profile.moods.count < 3 {
+            profile.moods.append(mood.rawValue)
+        }
+        persistProfile()
+    }
+
+    private func togglePen(_ pen: TaylorPenStyle) {
+        if let index = profile.pens.firstIndex(of: pen.rawValue) {
+            profile.pens.remove(at: index)
+        } else {
+            profile.pens.append(pen.rawValue)
+        }
+        persistProfile()
+    }
+
+    private func addArtist(_ raw: String, preferred: Bool) {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if preferred {
+            guard profile.preferredArtists.count < 3 else { return }
+            profile.preferredArtists.append(name)
+        } else {
+            guard profile.avoidedArtists.count < 5 else { return }
+            profile.avoidedArtists.append(name)
+        }
+        persistProfile()
+    }
+
+    private func persistProfile() {
+        profile.sanitize()
+        profile.save()
+        RecommendationMixer.invalidateCache()
+        model.rebuildRecommendations()
+    }
+
+    private var energyBinding: Binding<String> {
+        Binding(
+            get: { profile.energyLane },
+            set: { profile.energyLane = $0; persistProfile() }
+        )
+    }
+
+    private var languageBinding: Binding<String> {
+        Binding(
+            get: { profile.language },
+            set: { profile.language = $0; persistProfile() }
+        )
+    }
+
+    private var vocalBinding: Binding<String> {
+        Binding(
+            get: { profile.vocal },
+            set: { profile.vocal = $0; persistProfile() }
+        )
+    }
+
+    private var listenCountBinding: Binding<Bool> {
+        Binding(
+            get: { profile.useListenCount },
+            set: { profile.useListenCount = $0; persistProfile() }
+        )
+    }
+
+    private var favoritesBinding: Binding<Bool> {
+        Binding(
+            get: { profile.useFavorites },
+            set: { profile.useFavorites = $0; persistProfile() }
+        )
+    }
+
+    private var frequentBinding: Binding<Bool> {
+        Binding(
+            get: { profile.useFrequent },
+            set: { profile.useFrequent = $0; persistProfile() }
+        )
+    }
+
+    private var stayOnAlbumBinding: Binding<Bool> {
+        Binding(
+            get: { profile.stayOnAlbum },
+            set: { profile.stayOnAlbum = $0; persistProfile() }
+        )
     }
 
     private func settingsDescription(_ text: LocalizedStringKey) -> some View {
@@ -1499,27 +1566,26 @@ private struct RecommendationSettingsView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func restoreDefaults() {
-        historyWeight = 0.70
-        favoriteWeight = 0.80
-        serverWeight = 0.90
-        discoveryWeight = 0.35
-        lastFMWeight = 0.55
-        listenBrainzWeight = 0.55
-        behaviorWeight = 0.85
-        completionWeight = 0.70
-        repeatWeight = 0.55
-        recencyWeight = 0.65
-        contextWeight = 0.60
-        metadataWeight = 0.60
-        playlistAffinityWeight = 0.55
-        albumCompletionWeight = 0.45
-        forgottenFavoritesWeight = 0.50
-        artistRotationWeight = 0.45
-        timeAwarenessWeight = 0.30
-        lyricMoodWeight = 0.50
-        discoveryRatio = 0.35
-        model.rebuildRecommendations()
+}
+
+private struct FlexibleArtistChips: View {
+    let names: [String]
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(names, id: \.self) { name in
+                HStack {
+                    Text(name)
+                        .font(.system(size: 14, weight: .semibold))
+                    Spacer()
+                    Button("삭제", role: .destructive) {
+                        onRemove(name)
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                }
+            }
+        }
     }
 }
 

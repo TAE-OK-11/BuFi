@@ -27,45 +27,45 @@ struct RecommendationWeights: Sendable {
             return min(max(defaults.double(forKey: key), 0), 1)
         }
         return RecommendationWeights(
-            history: value("recommendation-weight-history", fallback: 0.70),
-            favorites: value("recommendation-weight-favorites", fallback: 0.80),
-            serverSimilarity: value("recommendation-weight-server", fallback: 0.90),
-            discovery: value("recommendation-weight-discovery", fallback: 0.35),
-            lastFM: value("recommendation-weight-lastfm", fallback: 0.55),
-            listenBrainz: value("recommendation-weight-listenbrainz", fallback: 0.55),
-            behavior: value("recommendation-weight-behavior", fallback: 0.85),
-            completion: value("recommendation-weight-completion", fallback: 0.70),
-            repeatListening: value("recommendation-weight-repeat", fallback: 0.55),
-            recency: value("recommendation-weight-recency", fallback: 0.65),
-            context: value("recommendation-weight-context", fallback: 0.60),
-            localMetadata: value("recommendation-weight-metadata", fallback: 0.60),
+            history: value("recommendation-weight-history", fallback: 0.68),
+            favorites: value("recommendation-weight-favorites", fallback: 0.82),
+            serverSimilarity: value("recommendation-weight-server", fallback: 0.88),
+            discovery: value("recommendation-weight-discovery", fallback: 0.32),
+            lastFM: value("recommendation-weight-lastfm", fallback: 0.52),
+            listenBrainz: value("recommendation-weight-listenbrainz", fallback: 0.52),
+            behavior: value("recommendation-weight-behavior", fallback: 0.86),
+            completion: value("recommendation-weight-completion", fallback: 0.72),
+            repeatListening: value("recommendation-weight-repeat", fallback: 0.52),
+            recency: value("recommendation-weight-recency", fallback: 0.68),
+            context: value("recommendation-weight-context", fallback: 0.72),
+            localMetadata: value("recommendation-weight-metadata", fallback: 0.62),
             playlistAffinity: value(
                 "recommendation-weight-playlist-affinity",
                 fallback: 0.55
             ),
             albumCompletion: value(
                 "recommendation-weight-album-completion",
-                fallback: 0.45
+                fallback: 0.50
             ),
             forgottenFavorites: value(
                 "recommendation-weight-forgotten-favorites",
-                fallback: 0.50
+                fallback: 0.48
             ),
             artistRotation: value(
                 "recommendation-weight-artist-rotation",
-                fallback: 0.45
+                fallback: 0.55
             ),
             timeAwareness: value(
                 "recommendation-weight-time-awareness",
-                fallback: 0.30
+                fallback: 0.36
             ),
             lyricMood: value(
                 "recommendation-weight-lyric-mood",
-                fallback: 0.50
+                fallback: 0.62
             ),
             discoveryRatio: value(
                 "recommendation-discovery-ratio",
-                fallback: 0.35
+                fallback: 0.32
             )
         )
     }

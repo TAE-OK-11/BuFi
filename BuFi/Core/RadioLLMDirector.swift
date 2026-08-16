@@ -103,9 +103,10 @@ enum RadioLLMDirector {
         weights: RecommendationWeights
     ) async -> [Song] {
         let settings = await LyricIntelligenceSettings.load()
+        let profile = AIRecommendationProfile.load()
         async let baseline = RecommendationMixer.scoreConcurrently(
             snapshot: snapshot,
-            weights: weights,
+            weights: profile.applied(to: weights),
             purpose: .autoplay,
             behavior: behavior,
             seed: seed,
@@ -116,7 +117,8 @@ enum RadioLLMDirector {
             seed: seed,
             recent: behavior.recentSongs,
             lyricIndex: lyricIndex,
-            settings: settings
+            settings: settings,
+            profile: profile
         )
         let algorithm = await baseline
         let brief = parseBrief(await briefText)
@@ -128,7 +130,8 @@ enum RadioLLMDirector {
                     && !excludedIDs.contains($0.id)
                     && $0.externalStreamURL == nil
             },
-            lyricIndex: lyricIndex
+            lyricIndex: lyricIndex,
+            profile: profile
         )
         guard pack.count >= 8 else { return Array(algorithm.prefix(reviewKeep)) }
         if let kept = await review(
@@ -137,7 +140,8 @@ enum RadioLLMDirector {
             seed: seed,
             recent: behavior.recentSongs,
             lyricIndex: lyricIndex,
-            settings: settings
+            settings: settings,
+            profile: profile
         ), !kept.isEmpty {
             return Array(kept.prefix(reviewKeep))
         }
@@ -177,16 +181,14 @@ enum RadioLLMDirector {
     static func fillPack(
         brief: RadioLaneBrief,
         algorithm: [Song],
-        lyricIndex: LyricSignatureIndex
+        lyricIndex: LyricSignatureIndex,
+        profile: AIRecommendationProfile = .unset
     ) -> [Song] {
         let scored = algorithm.map { song in
-            (
-                song,
-                brief.score(
-                    song: song,
-                    signature: lyricIndex.bySongID[song.id]
-                )
-            )
+            let signature = lyricIndex.bySongID[song.id]
+            let value = brief.score(song: song, signature: signature)
+                + profile.score(song: song, signature: signature)
+            return (song, value)
         }.sorted {
             if $0.1 == $1.1 { return $0.0.id < $1.0.id }
             return $0.1 > $1.1
@@ -237,14 +239,19 @@ enum RadioLLMDirector {
         seed: Song,
         recent: [Song],
         lyricIndex: LyricSignatureIndex,
-        settings: LyricIntelligenceSettings
+        settings: LyricIntelligenceSettings,
+        profile: AIRecommendationProfile
     ) async -> String? {
         let playing = card(seed, lyricIndex: lyricIndex)
         let history = recent.prefix(6).map { card($0, lyricIndex: lyricIndex) }
             .joined(separator: "\n")
-        let user = settings.userPrompt.isEmpty
-            ? ""
-            : "\nListener note:\n\(settings.userPrompt)\n"
+        var extras: [String] = []
+        let taste = profile.promptAppendix()
+        if !taste.isEmpty { extras.append(taste) }
+        if !settings.userPrompt.isEmpty {
+            extras.append("Listener note:\n\(settings.userPrompt)")
+        }
+        let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
         let prompt = """
         Continue a personal radio. Inspect the now-playing lane and recent listens, then describe the NEXT songs you want. JSON only:
         {"moods":[],"themes":[],"energy":[0.0,1.0],"valence":[0.0,1.0],"vocal":"","genre":"","sound":[],"avoid":[],"want":""}
@@ -269,15 +276,20 @@ enum RadioLLMDirector {
         seed: Song,
         recent: [Song],
         lyricIndex: LyricSignatureIndex,
-        settings: LyricIntelligenceSettings
+        settings: LyricIntelligenceSettings,
+        profile: AIRecommendationProfile
     ) async -> [Song]? {
         let allowed = Set(pack.map(\.id))
         let candidates = pack.enumerated().map { index, song in
             "\(index + 1). \(card(song, lyricIndex: lyricIndex))"
         }.joined(separator: "\n")
-        let user = settings.userPrompt.isEmpty
-            ? ""
-            : "\nListener note:\n\(settings.userPrompt)\n"
+        var extras: [String] = []
+        let taste = profile.promptAppendix()
+        if !taste.isEmpty { extras.append(taste) }
+        if !settings.userPrompt.isEmpty {
+            extras.append("Listener note:\n\(settings.userPrompt)")
+        }
+        let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
         let prompt = """
         You asked for this radio lane:
         moods:\(brief.moods.joined(separator: ",")) themes:\(brief.themes.joined(separator: ",")) energy:\(brief.energy.lowerBound)-\(brief.energy.upperBound) valence:\(brief.valence.lowerBound)-\(brief.valence.upperBound) vocal:\(brief.vocal) genre:\(brief.genre) sound:\(brief.sound.joined(separator: ",")) want:\(brief.want)
