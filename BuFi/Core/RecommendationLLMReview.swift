@@ -4,7 +4,11 @@ enum RecommendationLLMReview {
     static let enabledKey = "recommendation-llm-review-enabled"
 
     static func isEnabled(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: enabledKey)
+        if defaults.object(forKey: enabledKey) == nil {
+            defaults.set(true, forKey: enabledKey)
+            return true
+        }
+        return defaults.bool(forKey: enabledKey)
     }
 
     static func refine(
