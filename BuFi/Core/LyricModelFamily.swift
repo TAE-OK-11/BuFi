@@ -428,20 +428,20 @@ enum LyricModelPrompts {
     static func radioProgram(
         family: LyricModelFamily,
         keep: Int,
-        lane: String,
+        session: String,
         seed: String,
         recent: String,
         candidates: String,
         extras: String
     ) -> String {
-        _ = family
+        let rules = radioProgramInstructions(keep: keep, purpose: nil, soulful: true)
         return """
-        \(radioProgramInstructions(keep: keep, purpose: nil))
+        \(rules)
 
-        Lane: \(lane)
-        Seed (currently playing — treat this as the narrator you are continuing):
+        \(session)
+        Seed (the record they just chose — this is the show's opening thesis):
         \(seed)
-        Recent (what the listener just heard):
+        Recent (what they already heard this session):
         \(recent)
         Candidates:
         \(candidates)
@@ -449,7 +449,11 @@ enum LyricModelPrompts {
         """
     }
 
-    private static func radioProgramInstructions(keep: Int?, purpose: String?) -> String {
+    private static func radioProgramInstructions(
+        keep: Int?,
+        purpose: String?,
+        soulful: Bool = true
+    ) -> String {
         let keepLine: String
         if let keep {
             keepLine = "Keep exactly \(keep) listed ids. Discard the rest."
@@ -458,27 +462,32 @@ enum LyricModelPrompts {
         } else {
             keepLine = "Keep only listed ids."
         }
+        let craft = soulful
+            ? """
+            Program this like a great personal radio show, not a similarity engine.
+            The next song should feel inevitable — the kind of pick a friend who knows the catalog would send at this hour. Clones of the seed are a failure. Tag overlap without a point of view is a failure.
+
+            Shape the set in three movements:
+            1. Settle (2-3 songs): honor why they started this seed. Same emotional room, different record.
+            2. Deepen: stay inside the story, night, or desire. Change artist, era, or texture so it does not sound generated.
+            3. One turn, then land: one song that is surprising but obviously right if you know both records. Then resolve without snapping back to copies.
+
+            Use your own knowledge of these artists and titles (what the song is known for, who they tour or collab with, title track vs b-side, cultural room). Use stored lyric memory and excerpts as your notes on this exact recording. Trust measured BPM/energy when they disagree with memory. A planned lift or drop is allowed once; do not jerk the body around.
+            """
+            : """
+            Combine pretrained knowledge of the listed artists/titles, stored lyric memory, and measured BPM/energy. Thin cards should be filled from what you know about that title. Sequence a listen, not a shuffle.
+            """
         return """
-        You are a senior music director programming one personal-radio block.
+        You are a music director with taste. \(craft)
 
-        Combine three knowledge sources. Do not ignore any of them:
-        1. Your own pretrained knowledge of the listed artists and titles — discography, era, collaborators, typical genre/lane, cultural context, whether a cut is a ballad/title track/b-side, and how songs usually sit next to each other.
-        2. Stored lyric memory on each card (summary, interpretation, emotional arc, themes, relationship, setting) plus the lyric excerpt. Treat those as your prior notes on this exact recording.
-        3. Measured library facts on the card (BPM, energy, brightness, vocal, genre, favorites, play counts). If your memory and a measured field disagree, trust the measured field.
-
-        If a card is thin, fill the gap from your knowledge of that title/artist. Never invent a song that is not in Candidates. Never invent ids.
+        \(keepLine)
+        Same artist+title is one recording — do not sit a live/acoustic sibling next to the original.
+        Preferred artists are a slight lean, never a block. Avoid three songs by one artist in a row.
+        Never invent a song that is not listed. Never invent ids.
 
         Return one JSON object and start writing it immediately:
         {"ids":[]}
-
-        \(keepLine)
-        Sequence a single listen, not a shuffle:
-        - Continue the seed's lyric story, emotional arc, and the real-world identity of that song (what it is known for).
-        - Walk measured BPM and energy. Do not jump more than about 12 BPM or flip valence unless Recent already did.
-        - Keep vocal gender and K-pop/idol identity continuous, but never lock to one gender.
-        - Same artist+title is one recording. Do not place a live/acoustic sibling next to its original.
-        - Preferred artists are a slight lean, never a block. Avoid three songs by one artist in a row.
-        - No markdown, no analysis text.
+        No markdown, no analysis text.
         """
     }
 }

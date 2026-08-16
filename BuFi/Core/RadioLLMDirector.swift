@@ -143,11 +143,21 @@ enum RadioIDStream {
     }
 }
 
+struct RadioCandidatePack: Sendable {
+    var room: [Song]
+    var nearby: [Song]
+    var turns: [Song]
+
+    var all: [Song] {
+        TrackWorkIdentity.uniqueRecordings(room + nearby + turns)
+    }
+}
+
 enum RadioLLMDirector {
-    static let requestedCount = 30
+    static let requestedCount = 48
     static let reviewKeep = 15
-    static let packSize = 30
-    static let mixerLimit = 30
+    static let packSize = 36
+    static let mixerLimit = 48
     static let streamWaitDeadline: TimeInterval = 1.5
     static let firstPickDeadline: TimeInterval = 3.0
 
@@ -189,9 +199,10 @@ enum RadioLLMDirector {
             profile: profile,
             seed: seed
         )
+        let catalog = pack.all
         let local = sequenceLocally(
             RadioContinuity.balance(
-                pack,
+                catalog,
                 seed: seed,
                 lyricIndex: lyricIndex,
                 limit: reviewKeep
@@ -200,7 +211,7 @@ enum RadioLLMDirector {
             lyricIndex: lyricIndex,
             limit: reviewKeep
         )
-        guard pack.count >= 6 else {
+        guard catalog.count >= 6 else {
             await emit(Array(filtered.prefix(reviewKeep)), using: onPick)
             return Array(filtered.prefix(reviewKeep))
         }
@@ -256,13 +267,15 @@ enum RadioLLMDirector {
         lyricIndex: LyricSignatureIndex,
         profile: AIRecommendationProfile = .unset,
         seed: Song? = nil
-    ) -> [Song] {
+    ) -> RadioCandidatePack {
         let seedBPM = seed.map {
             SoundFeatureExtractor.bpm(
                 song: $0,
                 signature: lyricIndex.bySongID[$0.id]
             )
         } ?? 0
+        let seedEnergy = seed.flatMap { lyricIndex.bySongID[$0.id]?.energy } ?? 0.5
+        let seedArtist = seed.map { LyricLexicalEmbedding.normalized($0.artist) } ?? ""
         let uniqueAlgorithm = TrackWorkIdentity.uniqueRecordings(algorithm)
         let scored = uniqueAlgorithm.map { song in
             let signature = lyricIndex.bySongID[song.id]
@@ -283,34 +296,64 @@ enum RadioLLMDirector {
             if $0.1 == $1.1 { return $0.0.id < $1.0.id }
             return $0.1 > $1.1
         }
-        var requested: [Song] = []
-        var recentArtists: [String] = []
-        var preferredCount = 0
-        for (song, score) in scored {
+        var room: [Song] = []
+        var nearby: [Song] = []
+        var turns: [Song] = []
+        var seen = Set<String>()
+        var roomArtists: [String] = []
+        let roomTarget = 16
+        let nearbyTarget = 12
+        let turnTarget = 8
+
+        func take(_ song: Song, into bucket: inout [Song], artists: inout [String]) -> Bool {
+            guard seen.insert(song.id).inserted else { return false }
+            bucket.append(song)
             let artist = LyricLexicalEmbedding.normalized(song.artist)
-            if recentArtists.suffix(2).allSatisfy({ !$0.isEmpty && $0 == artist }),
-               score < 0.72 {
-                continue
-            }
-            let isPreferred = profile.preferredArtists.contains { name in
-                artist.contains(LyricLexicalEmbedding.normalized(name))
-                    || LyricLexicalEmbedding.normalized(name).contains(artist)
-            }
-            if isPreferred, preferredCount >= 6 {
-                continue
-            }
-            requested.append(song)
-            if isPreferred { preferredCount += 1 }
-            if !artist.isEmpty { recentArtists.append(artist) }
-            if requested.count == packSize { break }
+            if !artist.isEmpty { artists.append(artist) }
+            return true
         }
-        guard let seed else { return requested }
-        return RadioContinuity.balance(
-            requested,
-            seed: seed,
-            lyricIndex: lyricIndex,
-            limit: packSize
-        )
+
+        for (song, score) in scored {
+            guard room.count < roomTarget else { break }
+            let artist = LyricLexicalEmbedding.normalized(song.artist)
+            if roomArtists.suffix(2).allSatisfy({ !$0.isEmpty && $0 == artist }),
+               score < 0.78 {
+                continue
+            }
+            _ = take(song, into: &room, artists: &roomArtists)
+        }
+        var nearbyArtists: [String] = []
+        for (song, score) in scored {
+            guard nearby.count < nearbyTarget else { break }
+            guard !seen.contains(song.id), score >= 0.08 else { continue }
+            let artist = LyricLexicalEmbedding.normalized(song.artist)
+            let energy = lyricIndex.bySongID[song.id]?.energy ?? 0.5
+            let sameArtist = !seedArtist.isEmpty && artist == seedArtist
+            let textureShift = abs(energy - seedEnergy) >= 0.12
+            if sameArtist || textureShift || nearbyArtists.last != artist {
+                _ = take(song, into: &nearby, artists: &nearbyArtists)
+            }
+        }
+        var turnArtists: [String] = []
+        for (song, _) in scored {
+            guard turns.count < turnTarget else { break }
+            guard !seen.contains(song.id) else { continue }
+            let artist = LyricLexicalEmbedding.normalized(song.artist)
+            let signature = lyricIndex.bySongID[song.id]
+            let energy = signature?.energy ?? 0.5
+            let isDeepCut = song.isStarred || (song.playCount ?? 0) >= 4
+            let complementary = abs(energy - seedEnergy) >= 0.22
+            let sameArtistOtherWork = !seedArtist.isEmpty && artist == seedArtist
+            if isDeepCut || complementary || sameArtistOtherWork {
+                _ = take(song, into: &turns, artists: &turnArtists)
+            }
+        }
+        if room.count + nearby.count + turns.count < 8 {
+            for (song, _) in scored where room.count < packSize {
+                _ = take(song, into: &room, artists: &roomArtists)
+            }
+        }
+        return RadioCandidatePack(room: room, nearby: nearby, turns: turns)
     }
 
     static func sequenceLocally(
@@ -368,7 +411,7 @@ enum RadioLLMDirector {
             }
             return .open
         }
-        let energyPad = 0.14
+        let energyPad = 0.28
         let gender = RadioContinuity.vocalGender(song: seed, signature: signature)
         let vocal = (gender == "female" || gender == "male") ? gender : ""
         var genre = signature.details.genre
@@ -394,7 +437,7 @@ enum RadioLLMDirector {
     }
 
     private static func reviewStreaming(
-        pack: [Song],
+        pack: RadioCandidatePack,
         local: [Song],
         brief: RadioLaneBrief,
         seed: Song,
@@ -404,9 +447,10 @@ enum RadioLLMDirector {
         profile: AIRecommendationProfile,
         onPick: (@Sendable (Song) async -> Void)?
     ) async -> [Song] {
-        let allowed = Set(pack.map(\.id))
+        let catalog = pack.all
+        let allowed = Set(catalog.map(\.id))
         let byID = Dictionary(
-            pack.map { ($0.id, $0) },
+            catalog.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         let box = RadioPickBox(onPick: onPick)
@@ -422,7 +466,7 @@ enum RadioLLMDirector {
         async let streamed: String? = LyricInferenceRuntime.streamRadio(
             prompt: prompt,
             settings: settings,
-            maxTokens: 360
+            maxTokens: 420
         ) { partial in
             let ids = RadioIDStream.newIDs(
                 in: partial,
@@ -463,9 +507,18 @@ enum RadioLLMDirector {
         settings: LyricIntelligenceSettings,
         profile: AIRecommendationProfile
     ) -> String {
-        let candidates = pack.enumerated().map { index, song in
-            "\(index + 1). \(card(song, lyricIndex: lyricIndex))"
-        }.joined(separator: "\n")
+        func block(_ title: String, _ songs: [Song]) -> String {
+            guard !songs.isEmpty else { return "" }
+            let lines = songs.enumerated().map { index, song in
+                "\(index + 1). \(card(song, lyricIndex: lyricIndex))"
+            }.joined(separator: "\n")
+            return "\(title)\n\(lines)"
+        }
+        let candidates = [
+            block("In the room (same emotional weather — honor the seed, do not clone it):", pack.room),
+            block("Nearby (same world, different texture, era, or artist):", pack.nearby),
+            block("Left turns (surprising but obviously right if you know both records):", pack.turns)
+        ].filter { !$0.isEmpty }.joined(separator: "\n\n")
         var extras: [String] = []
         let taste = profile.promptAppendix()
         if !taste.isEmpty { extras.append(taste) }
@@ -482,20 +535,19 @@ enum RadioLLMDirector {
         )
         if seedKPop {
             extras.append(
-                "Seed is K-pop/idol. Keep a K-pop majority. Do not jump to Western pop."
+                "The seed lives in K-pop/idol. Stay in that cultural room. Do not jump to random Western pop just because tags overlap."
             )
         }
         if seedGender == "female" || seedGender == "male" {
             extras.append(
-                "Lean \(seedGender) vocals, but include at least one other gender. Never return only one gender."
+                "Lean \(seedGender) vocals the way a DJ would, but include at least one other gender so the set breathes."
             )
         }
         let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
-        let lane = "moods:\(brief.moods.joined(separator: ",")) energy:\(fmt(brief.energy.lowerBound))-\(fmt(brief.energy.upperBound)) vocal:\(brief.vocal) genre:\(brief.genre)"
         return LyricModelPrompts.radioProgram(
             family: LyricModelFamily.resolve(model: settings.radioModel),
             keep: reviewKeep,
-            lane: lane,
+            session: sessionWeather(seed: seed, brief: brief),
             seed: RecommendationPromptCard.make(
                 seed,
                 lyricIndex: lyricIndex,
@@ -504,10 +556,31 @@ enum RadioLLMDirector {
             recent: recent.prefix(4).map {
                 RecommendationPromptCard.make($0, lyricIndex: lyricIndex, excerptLimit: 140)
             }
-                .joined(separator: " | "),
+                .joined(separator: "\n"),
             candidates: candidates,
             extras: user
         )
+    }
+
+    private static func sessionWeather(seed: Song, brief: RadioLaneBrief) -> String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let weekday = Calendar.current.component(.weekday, from: Date())
+        let daypart: String
+        switch hour {
+        case 5..<11: daypart = "morning"
+        case 11..<17: daypart = "afternoon"
+        case 17..<21: daypart = "evening"
+        default: daypart = "late night"
+        }
+        let days = ["", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        let day = weekday >= 1 && weekday < days.count ? days[weekday] : ""
+        let moods = brief.moods.joined(separator: ", ")
+        let themes = brief.themes.joined(separator: ", ")
+        return """
+        Local time: \(day) \(daypart) (\(hour):00).
+        They just chose "\(seed.title)" by \(seed.artist). Program the next fifteen as one radio show for that moment.
+        Seed lane: moods [\(moods)] themes [\(themes)] genre \(brief.genre) vocal \(brief.vocal).
+        """
     }
 
     private static func emit(
