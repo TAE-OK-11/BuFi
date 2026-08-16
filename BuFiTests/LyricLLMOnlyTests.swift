@@ -24,6 +24,27 @@ final class LyricLLMOnlyTests: XCTestCase {
         )
     }
 
+    func testIncompleteResultWithoutLLMSourceStaysPending() {
+        let signature = LyricSignature(
+            songID: "pending",
+            lyricsHash: "abc",
+            moods: [],
+            themes: [],
+            energy: 0.5,
+            valence: 0.5,
+            embedding: [],
+            source: ""
+        )
+
+        XCTAssertFalse(signature.hasStoredLyricAnalysis)
+        XCTAssertFalse(
+            LyricAnalysisCachePolicy.shouldReuseLyric(
+                existing: signature,
+                lyricsHash: "abc"
+            )
+        )
+    }
+
     func testActualLLMResultRemainsReusable() {
         let signature = LyricSignature(
             songID: "llm",
