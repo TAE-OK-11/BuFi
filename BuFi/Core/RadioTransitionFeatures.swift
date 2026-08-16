@@ -1,6 +1,6 @@
 import Foundation
 #if canImport(CoreML)
-import CoreML
+@preconcurrency import CoreML
 #endif
 
 /// Numeric features for a future on-device Core ML transition model.
@@ -100,18 +100,32 @@ enum RadioTransitionFeatures {
 enum RadioCoreMLTransition {
     static let resourceName = "BuFiRadioTransition"
 
-    static var isReady: Bool { loadedModel != nil }
+    static var isReady: Bool { store.model != nil }
 
 #if canImport(CoreML)
-    private static let loadedModel: MLModel? = {
-        let bundle = Bundle.main
-        let url = bundle.url(forResource: resourceName, withExtension: "mlmodelc")
-            ?? bundle.url(forResource: resourceName, withExtension: "mlmodel")
-        guard let url else { return nil }
-        return try? MLModel(contentsOf: url)
-    }()
+    private static let store = ModelStore()
+
+    private final class ModelStore: @unchecked Sendable {
+        let model: MLModel?
+
+        init() {
+            let bundle = Bundle.main
+            let url = bundle.url(
+                forResource: RadioCoreMLTransition.resourceName,
+                withExtension: "mlmodelc"
+            ) ?? bundle.url(
+                forResource: RadioCoreMLTransition.resourceName,
+                withExtension: "mlmodel"
+            )
+            guard let url else {
+                model = nil
+                return
+            }
+            model = try? MLModel(contentsOf: url)
+        }
+    }
 #else
-    private static let loadedModel: Any? = nil
+    private static let store = (model: Optional<Any>.none)
 #endif
 
     static func score(
@@ -120,7 +134,7 @@ enum RadioCoreMLTransition {
         lyricIndex: LyricSignatureIndex
     ) -> Double {
 #if canImport(CoreML)
-        if let model = loadedModel,
+        if let model = store.model,
            let value = predict(
             model,
             features: RadioTransitionFeatures.pairVector(
