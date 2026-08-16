@@ -147,28 +147,58 @@ enum PersonalizedMixLLM {
         applePrompt: String,
         settings: LyricIntelligenceSettings
     ) async -> String? {
-        var attemptedSources = Set<String>()
+        var attempted = Set<String>()
         var trail: [String] = []
 
-        for target in LyricInferenceRuntime.radioTargets(settings) {
-            guard attemptedSources.insert(target.source).inserted else { continue }
+        func attempt(
+            _ target: LyricChatTarget,
+            title: String,
+            maxTokens: Int
+        ) async -> String? {
+            guard attempted.insert(target.circuitKey).inserted else { return nil }
             RecommendationDiagnostics.record(
                 kind: .llm,
                 level: .info,
-                title: String(localized: "AI 재생목록 모델을 호출합니다"),
+                title: title,
                 detail: "\(target.source) \(target.model)"
             )
-            if let text = await LyricInferenceRuntime.chat(
+            switch await LyricInferenceRuntime.radioAttempt(
                 prompt: prompt,
                 target: target,
-                maxTokens: LyricInferenceRuntime.radioTokenBudget(
-                    for: target.model,
-                    requested: 900
-                )
+                maxTokens: maxTokens,
+                onDelta: { _ in }
+            ) {
+            case .text(let text):
+                return text
+            case .rateLimited:
+                trail.append("\(target.source)/\(target.model):429")
+            case .failed:
+                trail.append("\(target.source)/\(target.model)")
+            }
+            return nil
+        }
+
+        for target in LyricInferenceRuntime.radioTargets(settings) {
+            if let text = await attempt(
+                target,
+                title: String(localized: "AI 재생목록 모델을 호출합니다"),
+                maxTokens: 900
             ) {
                 return text
             }
-            trail.append("\(target.source)/\(target.model)")
+        }
+
+        // Exhaust configured cloud providers before using the on-device model.
+        // This keeps the larger-context Gemini/Groq path useful while Apple 3B
+        // remains a privacy-preserving last fallback.
+        for target in LyricInferenceRuntime.fallbackTargets(settings, excluding: .off) {
+            if let text = await attempt(
+                target,
+                title: String(localized: "AI 재생목록 대체 모델을 호출합니다"),
+                maxTokens: 900
+            ) {
+                return text
+            }
         }
 
         RecommendationDiagnostics.record(
@@ -187,24 +217,6 @@ enum PersonalizedMixLLM {
             return text
         }
         trail.append("apple-3b")
-
-        for target in LyricInferenceRuntime.fallbackTargets(settings, excluding: .off) {
-            guard attemptedSources.insert(target.source).inserted else { continue }
-            RecommendationDiagnostics.record(
-                kind: .llm,
-                level: .info,
-                title: String(localized: "AI 재생목록 대체 모델을 호출합니다"),
-                detail: "\(target.source) \(target.model)"
-            )
-            if let text = await LyricInferenceRuntime.chat(
-                prompt: prompt,
-                target: target,
-                maxTokens: 900
-            ) {
-                return text
-            }
-            trail.append("\(target.source)/\(target.model)")
-        }
 
         RecommendationDiagnostics.record(
             kind: .llm,
