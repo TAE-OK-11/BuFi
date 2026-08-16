@@ -8,7 +8,9 @@ enum PersonalizedMixLLM {
         lyricIndex: LyricSignatureIndex,
         date: Date = Date()
     ) async -> [PersonalizedMix] {
+        guard !Task.isCancelled else { return mixes }
         let loadedSettings = await LyricIntelligenceSettings.load()
+        guard !Task.isCancelled else { return mixes }
         let settings = RecommendationAIRouting.resolve(loadedSettings)
         let family = LyricModelFamily.resolve(model: settings.radioModel)
         let calendar = Calendar.current
@@ -46,6 +48,7 @@ enum PersonalizedMixLLM {
             }
             return byID
         }
+        guard !Task.isCancelled else { return mixes }
         var result: [PersonalizedMix] = []
         result.reserveCapacity(mixes.count)
         for mix in selected {
@@ -64,6 +67,7 @@ enum PersonalizedMixLLM {
         today: String,
         lyricIndex: LyricSignatureIndex
     ) async -> PersonalizedMix {
+        guard !Task.isCancelled else { return mix }
         let brief = PersonalizedMixCatalog.brief(
             forKind: mix.kind,
             mixID: mix.id,
@@ -109,6 +113,7 @@ enum PersonalizedMixLLM {
             applePrompt: applePrompt,
             settings: settings
         )
+        guard !Task.isCancelled else { return mix }
         var parsed = raw.map { parse($0, allowed: Set(pool.map(\.id))) }
         if parsed?.ids == nil, let broken = raw,
            let repaired = await LyricInferenceRuntime.repairedJSON(
@@ -117,7 +122,8 @@ enum PersonalizedMixLLM {
            ) {
             parsed = parse(repaired, allowed: Set(pool.map(\.id)))
         }
-        guard let parsed, let ids = parsed.ids, !ids.isEmpty else { return mix }
+        guard !Task.isCancelled,
+              let parsed, let ids = parsed.ids, !ids.isEmpty else { return mix }
         var byID = Dictionary(
             mix.songs.map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -150,25 +156,43 @@ enum PersonalizedMixLLM {
     ) async -> String? {
         var attempted = Set<String>()
         var trail: [String] = []
+        var recordedCancellation = false
+
+        func stopForCancellation() -> Bool {
+            guard Task.isCancelled else { return false }
+            if !recordedCancellation {
+                recordedCancellation = true
+                RecommendationDiagnostics.record(
+                    kind: .llm,
+                    level: .delay,
+                    title: String(localized: "AI 재생목록 작업이 취소되었습니다"),
+                    detail: "stale-home-refinement-or-deadline"
+                )
+            }
+            return true
+        }
 
         func attempt(
             _ target: LyricChatTarget,
             title: String,
             maxTokens: Int
         ) async -> String? {
-            guard attempted.insert(target.circuitKey).inserted else { return nil }
+            guard !stopForCancellation(),
+                  attempted.insert(target.circuitKey).inserted else { return nil }
             RecommendationDiagnostics.record(
                 kind: .llm,
                 level: .info,
                 title: title,
                 detail: "\(target.source) \(target.model)"
             )
-            switch await LyricInferenceRuntime.radioAttempt(
+            let result = await LyricInferenceRuntime.radioAttempt(
                 prompt: prompt,
                 target: target,
                 maxTokens: maxTokens,
                 onDelta: { _ in }
-            ) {
+            )
+            guard !stopForCancellation() else { return nil }
+            switch result {
             case .text(let text):
                 return text
             case .rateLimited:
@@ -187,6 +211,7 @@ enum PersonalizedMixLLM {
             ) {
                 return text
             }
+            if stopForCancellation() { return nil }
         }
 
         // Exhaust configured cloud providers before using the on-device model.
@@ -200,8 +225,10 @@ enum PersonalizedMixLLM {
             ) {
                 return text
             }
+            if stopForCancellation() { return nil }
         }
 
+        if stopForCancellation() { return nil }
         RecommendationDiagnostics.record(
             kind: .llm,
             level: .info,
@@ -217,6 +244,7 @@ enum PersonalizedMixLLM {
             )
             return text
         }
+        if stopForCancellation() { return nil }
         trail.append("apple-3b")
 
         RecommendationDiagnostics.record(
