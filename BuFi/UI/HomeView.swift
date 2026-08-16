@@ -362,12 +362,27 @@ struct HomeView: View {
                   selectedArtistsStorage == selectedArtistMixes else { return }
         }
 
-        let next = await HomePresentation.makeConcurrently(input: input)
+        // Render the deterministic local presentation first. Cloud refinement
+        // then runs without holding the Home screen empty while an LLM answers.
+        let local = await HomePresentation.makeConcurrently(
+            input: input,
+            refineWithLLM: false
+        )
         guard !Task.isCancelled,
               revision == library.revision,
               selectedArtistsStorage == selectedArtistMixes else { return }
-        presentation = next
+        presentation = local
         hasLoadedPresentation = true
+
+        guard RecommendationLLMReview.isEnabled() else { return }
+        let refined = await HomePresentation.makeConcurrently(
+            input: input,
+            refineWithLLM: true
+        )
+        guard !Task.isCancelled,
+              revision == library.revision,
+              selectedArtistsStorage == selectedArtistMixes else { return }
+        presentation = refined
     }
 
     private func countText(_ count: Int) -> String {
@@ -420,7 +435,8 @@ struct HomePresentation: Sendable {
 
     @concurrent
     static func makeConcurrently(
-        input: HomePresentationInput
+        input: HomePresentationInput,
+        refineWithLLM: Bool = true
     ) async -> HomePresentation {
         guard !Task.isCancelled else { return .empty }
         async let lyricIndexTask = LyricIntelligence.shared.index()
@@ -430,8 +446,8 @@ struct HomePresentation: Sendable {
         guard !Task.isCancelled else { return .empty }
         let value = make(input: input, lyricIndex: lyricIndex)
         let mixes: [PersonalizedMix]
-        if RecommendationLLMReview.isEnabled() {
-            mixes = await AsyncDeadline.first(seconds: 2.2) {
+        if refineWithLLM, RecommendationLLMReview.isEnabled() {
+            mixes = await AsyncDeadline.first(seconds: 30) {
                 await PersonalizedMixLLM.apply(
                     to: value.personalizedMixes,
                     snapshot: input.snapshot,
