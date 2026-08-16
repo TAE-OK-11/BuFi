@@ -635,6 +635,42 @@ final class LyricOptimizationTests: XCTestCase {
         XCTAssertEqual(AILyricMood.allCases.count, 10)
     }
 
+    func testTrackWorkIdentityCollapsesSameTitleAndSpacesVariants() {
+        let original = Song(id: "a", title: "Exile", artist: "Taylor Swift", album: "Folklore")
+        let copy = Song(id: "b", title: "Exile", artist: "Taylor Swift", album: "Folklore")
+        let live = Song(id: "c", title: "Exile (Live)", artist: "Taylor Swift", album: "Folklore")
+        let other = Song(id: "d", title: "Cardigan", artist: "Taylor Swift", album: "Folklore")
+        XCTAssertEqual(
+            TrackWorkIdentity.uniqueRecordings([original, copy, live]).map(\.id),
+            ["a", "c"]
+        )
+        XCTAssertEqual(
+            TrackWorkIdentity.coreTitle("Exile (Live)"),
+            TrackWorkIdentity.coreTitle("Exile")
+        )
+        XCTAssertTrue(
+            TrackWorkIdentity.isNearVariant(live, of: [original], window: 2)
+        )
+        XCTAssertFalse(
+            TrackWorkIdentity.isNearVariant(other, of: [original], window: 2)
+        )
+        let brief = RadioLaneBrief.open
+        let pack = RadioLLMDirector.fillPack(
+            brief: brief,
+            algorithm: [original, copy, live, other],
+            lyricIndex: .empty
+        )
+        XCTAssertFalse(pack.contains { $0.id == "b" })
+        XCTAssertTrue(pack.contains { $0.id == "a" })
+        let sequenced = RadioLLMDirector.sequenceLocally(
+            [live, other],
+            seed: original,
+            lyricIndex: .empty,
+            limit: 2
+        )
+        XCTAssertEqual(sequenced.first?.id, other.id)
+    }
+
     func testChatReplyParsesToolCallsWithoutInvokingThem() {
         let reply = LyricJSONExtractor.chatReply(
             from: #"{"choices":[{"message":{"tool_calls":[{"id":"1","function":{"name":"get_lyrics","arguments":"{\"song_id\":\"c1\"}"}}]}}]}"#

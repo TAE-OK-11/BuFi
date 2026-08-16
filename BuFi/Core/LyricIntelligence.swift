@@ -1091,25 +1091,6 @@ actor LyricIntelligence {
         return progress
     }
 
-    func startBackgroundSweep(
-        catalog: [Song],
-        accountScope: String,
-        lyricsProvider: @escaping @Sendable (Song) async -> String,
-        fileProvider: @escaping @Sendable (Song) async -> URL?
-    ) {
-        sweepTask?.cancel()
-        sweepTask = Task { [catalog, accountScope] in
-            try? await Task.sleep(for: .seconds(12))
-            guard !Task.isCancelled, !self.batchProgress.isRunning else { return }
-            _ = await self.analyzePending(
-                catalog: catalog,
-                accountScope: accountScope,
-                lyricsProvider: lyricsProvider,
-                fileProvider: fileProvider
-            )
-        }
-    }
-
     func probeSample(accountScope: String?) async -> LyricIntelligenceProbe {
         if let accountScope {
             await activate(accountScope: accountScope)

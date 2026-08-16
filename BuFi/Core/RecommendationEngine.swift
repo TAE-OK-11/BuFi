@@ -955,12 +955,15 @@ enum RecommendationMixer {
         // Deduplicate while streaming sources; avoid a second flattened corpus.
         // High-priority recommendation lists come first, so a bounded prefix
         // keeps server/external signals and drops only surplus starred rows.
-        let candidates = MediaIdentity.uniqueSongs(
+        let rawCandidates = MediaIdentity.uniqueSongs(
             from: sourceLists,
             limit: purpose == .autoplay
                 ? RecommendationScoringPolicy.autoplayCandidateLimit
                 : RecommendationScoringPolicy.scoringCandidateLimit
         )
+        let candidates = purpose == .autoplay
+            ? TrackWorkIdentity.uniqueRecordings(rawCandidates)
+            : rawCandidates
         guard !candidates.isEmpty else { return [] }
 
         let sourceIndex = RecommendationSourceIndex(snapshot: snapshot)

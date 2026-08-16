@@ -263,7 +263,8 @@ enum RadioLLMDirector {
                 signature: lyricIndex.bySongID[$0.id]
             )
         } ?? 0
-        let scored = algorithm.map { song in
+        let uniqueAlgorithm = TrackWorkIdentity.uniqueRecordings(algorithm)
+        let scored = uniqueAlgorithm.map { song in
             let signature = lyricIndex.bySongID[song.id]
             var value = brief.score(
                 song: song,
@@ -325,12 +326,16 @@ enum RadioLLMDirector {
         while picked.count < limit, !rest.isEmpty {
             var bestIndex = 0
             var best = -1.0
+            let neighbors = [seed] + picked
             for (index, song) in rest.enumerated() {
-                let score = SoundFeatureExtractor.transitionScore(
+                var score = SoundFeatureExtractor.transitionScore(
                     from: last,
                     to: song,
                     lyricIndex: lyricIndex
                 )
+                if TrackWorkIdentity.isNearVariant(song, of: neighbors) {
+                    score -= 0.55
+                }
                 if score > best {
                     best = score
                     bestIndex = index
@@ -426,6 +431,7 @@ enum RadioLLMDirector {
             )
             for id in ids {
                 guard let song = byID[id] else { continue }
+                guard await box.accepts(song) else { continue }
                 await box.push(song)
                 if await box.count == reviewKeep { break }
             }
@@ -440,6 +446,7 @@ enum RadioLLMDirector {
         _ = await streamed
         if await box.count < reviewKeep {
             for song in local {
+                guard await box.accepts(song) else { continue }
                 await box.push(song)
                 if await box.count == reviewKeep { break }
             }
@@ -596,8 +603,19 @@ actor RadioPickBox {
     var count: Int { picked.count }
     var isEmpty: Bool { picked.isEmpty }
 
+    func accepts(_ song: Song) -> Bool {
+        let recording = TrackWorkIdentity.recordingKey(for: song)
+        if picked.contains(where: {
+            TrackWorkIdentity.recordingKey(for: $0) == recording
+        }) {
+            return false
+        }
+        return !TrackWorkIdentity.isNearVariant(song, of: picked, window: 2)
+    }
+
     func push(_ song: Song) async {
         guard seen.insert(song.id).inserted else { return }
+        guard accepts(song) else { return }
         picked.append(song)
         let waiters = self.waiters
         self.waiters.removeAll()

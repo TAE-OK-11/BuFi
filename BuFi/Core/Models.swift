@@ -510,6 +510,100 @@ enum MediaIdentity {
     }
 }
 
+/// Same artist + same title is one recording. Live/acoustic siblings stay
+/// in the pool but should not sit next to each other in a radio block.
+enum TrackWorkIdentity {
+    static func recordingKey(for song: Song) -> String {
+        "\(normalized(song.artist))\u{1e}\(normalized(song.title))"
+    }
+
+    static func workKey(for song: Song) -> String {
+        "\(normalized(song.artist))\u{1e}\(coreTitle(song.title))"
+    }
+
+    static func uniqueRecordings(_ songs: [Song]) -> [Song] {
+        var seen = Set<String>()
+        var result: [Song] = []
+        result.reserveCapacity(songs.count)
+        for song in songs {
+            let key = recordingKey(for: song)
+            guard !key.hasPrefix("\u{1e}"), seen.insert(key).inserted else {
+                continue
+            }
+            result.append(song)
+        }
+        return result
+    }
+
+    static func isNearVariant(
+        _ song: Song,
+        of recent: [Song],
+        window: Int = 2
+    ) -> Bool {
+        let key = workKey(for: song)
+        guard key.split(separator: "\u{1e}").count == 2 else { return false }
+        return recent.suffix(window).contains { workKey(for: $0) == key }
+    }
+
+    static func coreTitle(_ title: String) -> String {
+        var value = normalized(title)
+        var changed = true
+        while changed {
+            changed = false
+            if let range = trailingWrappedRange(in: value) {
+                let inner = normalized(String(value[range]))
+                if containsVariantMarker(inner) {
+                    value = value[..<range.lowerBound]
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    changed = true
+                    continue
+                }
+            }
+            if let dash = value.range(of: " - ", options: .backwards) {
+                let tail = normalized(String(value[dash.upperBound...]))
+                if containsVariantMarker(tail) {
+                    value = value[..<dash.lowerBound]
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    changed = true
+                }
+            }
+        }
+        return value
+    }
+
+    private static func containsVariantMarker(_ value: String) -> Bool {
+        let markers = [
+            "live", "acoustic", "어쿠스틱", "라이브", "remix", "mix",
+            "instrumental", "inst", "demo", "unplugged", "radio edit",
+            "remaster", "remastered", "version", "ver", "session",
+            "piano", "stripped", "reprise", "bonus"
+        ]
+        return markers.contains { value.contains($0) }
+    }
+
+    private static func trailingWrappedRange(
+        in value: String
+    ) -> Range<String.Index>? {
+        let pairs: [(Character, Character)] = [("(", ")"), ("[", "]"), ("{", "}")]
+        for (open, close) in pairs {
+            guard value.last == close,
+                  let start = value.lastIndex(of: open) else {
+                continue
+            }
+            return start..<value.endIndex
+        }
+        return nil
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 /// Collision-safe identity for an in-memory home snapshot. The generation is
 /// monotonic within one HomeLibraryState, while the epoch prevents static
 /// presentation/recommendation caches from reusing a prior model instance.

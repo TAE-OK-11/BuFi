@@ -3939,34 +3939,6 @@ final class AudioEngine: NSObject, ObservableObject {
         loadLyrics(for: song, forceRefresh: true)
     }
 
-    private func scheduleTrackSoundAnalysis(for song: Song) {
-        let accountScope = currentAccountScope
-        let client = self.client
-        let playbackID = currentPlaybackItem?.id
-        Task {
-            try? await Task.sleep(for: .seconds(2.5))
-            guard !Task.isCancelled,
-                  self.currentPlaybackItem?.id == playbackID,
-                  self.currentSong?.id == song.id,
-                  self.player.timeControlStatus == .playing else {
-                return
-            }
-            guard let fileURL = await SoundAnalysisSample.resolve(
-                for: song,
-                client: client
-            ) else { return }
-            let revision = song.audioResourceRevision.isEmpty
-                ? song.id
-                : song.audioResourceRevision
-            await LyricIntelligence.shared.scheduleSoundAnalysis(
-                song: song,
-                fileURL: fileURL,
-                audioRevision: revision,
-                accountScope: accountScope
-            )
-        }
-    }
-
     private func loadLyrics(
         for song: Song,
         forceRefresh: Bool = false
@@ -3975,7 +3947,6 @@ final class AudioEngine: NSObject, ObservableObject {
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
         let playbackItemID = currentPlaybackItem?.id
-        scheduleTrackSoundAnalysis(for: song)
         guard song.externalStreamURL == nil else {
             applyLyricsDocument(.empty, status: .unavailable)
             return
@@ -4014,22 +3985,6 @@ final class AudioEngine: NSObject, ObservableObject {
                         document,
                         status: document.lines.isEmpty ? .unavailable : .available
                     )
-                    if !document.lines.isEmpty {
-                        let accountScope = self.currentAccountScope
-                        Task {
-                            try? await Task.sleep(for: .seconds(2.5))
-                            guard !Task.isCancelled,
-                                  self.currentSong?.id == song.id,
-                                  self.player.timeControlStatus == .playing else {
-                                return
-                            }
-                            await LyricIntelligence.shared.scheduleAnalysis(
-                                song: song,
-                                document: document,
-                                accountScope: accountScope
-                            )
-                        }
-                    }
                     return
                 } catch is CancellationError {
                     return
