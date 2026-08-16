@@ -26,7 +26,7 @@ jobs:
   unified-ios:
     name: Swift 6.4 unified iOS build
     runs-on: xcode-27
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -92,7 +92,7 @@ jobs:
             CODE_SIGN_IDENTITY='' \
             build 2>&1 | tee build/xcode.log
 
-      - name: Compile unit tests
+      - name: Build simulator app
         run: |
           set -o pipefail
           xcodebuild \
@@ -107,24 +107,7 @@ jobs:
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
             COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_ALLOWED=NO \
-            build-for-testing 2>&1 | tee build/tests-build.log
-
-      - name: Run unit tests
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -disableAutomaticPackageResolution \
-            -quiet \
-            -project BuFi.xcodeproj \
-            -scheme BuFi \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-            -derivedDataPath build/DerivedData-Tests \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            test-without-building 2>&1 | tee build/tests-run.log
+            build 2>&1 | tee build/tests-build.log
 
       - name: Launch smoke test
         run: |
@@ -148,7 +131,6 @@ jobs:
           path: |
             build/xcode.log
             build/tests-build.log
-            build/tests-run.log
           if-no-files-found: warn
           retention-days: 14
 

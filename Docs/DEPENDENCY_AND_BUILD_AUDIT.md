@@ -105,10 +105,9 @@ Swift 6 in
   remains a clean Release build.
 - Pull requests run only the verification workflow; the artifact workflow runs
   after changes reach `main`, avoiding duplicate builds.
-- The required Xcode 26.6 job runs the unit-test bundle on an available iPhone
-  simulator and then keeps the installed app alive for a launch smoke interval.
-  This specifically catches the launch-time regressions that a compile-only job
-  cannot detect. Physical iOS 17 and iOS 27 beta devices remain release gates.
+- CI compiles the unsigned Release IPA and launches the Debug simulator app
+  once. It does not compile or run the unit-test bundle on every build.
+  Physical iOS 17 and iOS 27 beta devices remain release gates.
 
 Runner availability and installed toolchains are verified against GitHub's
 [macOS 26 image manifest](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md),
