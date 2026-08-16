@@ -12,6 +12,14 @@ enum RecommendationAIRouting {
     ) -> LyricIntelligenceSettings {
         var resolved = settings
 
+        // Recommendation calls already de-duplicate each model and try it at
+        // most once per route. Do not let cancellation/timeouts from an older
+        // Home/radio task poison the next recommendation request for 45s. The
+        // shared circuit remains useful for bulk lyric-analysis paths, but a
+        // fresh recommendation request must be allowed to reach the provider
+        // so its real HTTP/transport result can be observed.
+        LyricProviderCircuit.resetForTests()
+
         // Recommendation fallback used to inherit the very small Gemma 3
         // default. Upgrade only that legacy/default value to OpenRouter's
         // Gemma 4 31B free endpoint; preserve any genuinely custom model.
