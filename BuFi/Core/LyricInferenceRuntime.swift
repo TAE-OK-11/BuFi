@@ -217,53 +217,14 @@ enum LyricInferenceRuntime {
         prompt: String,
         settings: LyricIntelligenceSettings,
         maxTokens: Int = 360,
+        applePrompt: String? = nil,
         onDelta: @escaping @Sendable (String) async -> Void
     ) async -> String? {
-        let targets = radioTargets(settings)
-        if !targets.isEmpty {
-            let started = Date()
-            var skipSource: String?
-            var trail: [String] = []
-            for target in targets {
-                if let skipSource, skipSource == target.source { continue }
-                switch await radioAttempt(
-                    prompt: prompt,
-                    target: target,
-                    maxTokens: max(maxTokens, 2048),
-                    onDelta: onDelta
-                ) {
-                case .text(let text):
-                    let elapsed = Date().timeIntervalSince(started)
-                    if elapsed >= 4 {
-                        RecommendationDiagnostics.record(
-                            kind: .llm,
-                            level: .delay,
-                            title: String(localized: "LLM 응답이 느렸습니다"),
-                            detail: "\(target.source) \(target.model) \(Int(elapsed * 1000))ms"
-                        )
-                    }
-                    return text
-                case .rateLimited:
-                    skipSource = target.source
-                    trail.append("\(target.source) 429")
-                case .failed:
-                    trail.append("\(target.source)/\(target.model)")
-                }
-            }
-            RecommendationDiagnostics.record(
-                kind: .llm,
-                level: .error,
-                title: String(localized: "LLM 라디오 호출이 모두 실패했습니다"),
-                detail: trail.isEmpty
-                    ? targets.map(\.source).joined(separator: " → ")
-                    : trail.joined(separator: " → ")
-            )
-            return nil
-        }
         if let text = await completeRadio(
             prompt: prompt,
             settings: settings,
-            maxTokens: maxTokens
+            maxTokens: maxTokens,
+            applePrompt: applePrompt
         ) {
             await onDelta(text)
             return text
@@ -274,35 +235,70 @@ enum LyricInferenceRuntime {
     static func completeRadio(
         prompt: String,
         settings: LyricIntelligenceSettings,
-        maxTokens: Int = 700
+        maxTokens: Int = 700,
+        applePrompt: String? = nil
     ) async -> String? {
-        let targets = radioTargets(settings)
-        if !targets.isEmpty {
-            var skipSource: String?
-            for target in targets {
-                if let skipSource, skipSource == target.source { continue }
-                switch await radioAttempt(
-                    prompt: prompt,
-                    target: target,
-                    maxTokens: max(maxTokens, 2048),
-                    onDelta: { _ in }
-                ) {
-                case .text(let text):
-                    return text
-                case .rateLimited:
-                    skipSource = target.source
-                case .failed:
-                    break
-                }
+        let started = Date()
+        var skipSource = Set<String>()
+        var trail: [String] = []
+
+        func finish(_ text: String, source: String, model: String) -> String {
+            let elapsed = Date().timeIntervalSince(started)
+            if elapsed >= 4 {
+                RecommendationDiagnostics.record(
+                    kind: .llm,
+                    level: .delay,
+                    title: String(localized: "LLM 응답이 느렸습니다"),
+                    detail: "\(source) \(model) \(Int(elapsed * 1000))ms"
+                )
             }
-            return nil
+            return text
         }
-        if settings.provider == .off { return nil }
-        return await complete(
-            prompt: prompt,
-            settings: settings,
-            maxTokens: maxTokens
+
+        for target in radioTargets(settings) {
+            if skipSource.contains(target.source) { continue }
+            if let text = await chat(
+                prompt: prompt,
+                target: target,
+                maxTokens: radioTokenBudget(for: target.model, requested: maxTokens)
+            ) {
+                return finish(text, source: target.source, model: target.model)
+            }
+            skipSource.insert(target.source)
+            trail.append("\(target.source)/\(target.model)")
+        }
+
+        for target in fallbackTargets(settings, excluding: .off) {
+            if skipSource.contains(target.source) { continue }
+            if let text = await chat(
+                prompt: prompt,
+                target: target,
+                maxTokens: max(maxTokens, 900)
+            ) {
+                return finish(text, source: target.source, model: target.model)
+            }
+            skipSource.insert(target.source)
+            trail.append("\(target.source)/\(target.model)")
+        }
+
+        let onDevicePrompt = applePrompt ?? prompt
+        if let text = await AppleFoundationLyricClient.complete(onDevicePrompt) {
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .info,
+                title: String(localized: "Apple 3B로 다음 곡을 골랐습니다"),
+                detail: "apple-intelligence-3b"
+            )
+            return finish(text, source: "apple-3b", model: "foundation-3b")
+        }
+        trail.append("apple-3b")
+        RecommendationDiagnostics.record(
+            kind: .llm,
+            level: .error,
+            title: String(localized: "LLM 라디오 호출이 모두 실패했습니다"),
+            detail: trail.isEmpty ? "none" : trail.joined(separator: " → ")
         )
+        return nil
     }
 
     static func radioTargets(_ settings: LyricIntelligenceSettings) -> [LyricChatTarget] {

@@ -217,7 +217,7 @@ enum RadioLLMDirector {
     static let packSize = 30
     static let mixerLimit = 50
     static let streamWaitDeadline: TimeInterval = 1.5
-    static let firstPickDeadline: TimeInterval = 8.0
+    static let firstPickDeadline: TimeInterval = 12.0
 
     static func continueRadio(
         seed: Song,
@@ -571,7 +571,12 @@ enum RadioLLMDirector {
         async let streamed: String? = LyricInferenceRuntime.streamRadio(
             prompt: prompt,
             settings: settings,
-            maxTokens: 2048
+            maxTokens: 900,
+            applePrompt: compactReviewPrompt(
+                pack: pack,
+                seed: seed,
+                lyricIndex: lyricIndex
+            )
         ) { partial in
             let ids = RadioIDStream.newIDs(
                 in: partial,
@@ -669,6 +674,28 @@ enum RadioLLMDirector {
                 .prefix(need.count)
                 .map(\.0)
         )
+    }
+
+    private static func compactReviewPrompt(
+        pack: RadioCandidatePack,
+        seed: Song,
+        lyricIndex: LyricSignatureIndex
+    ) -> String {
+        let lines = pack.all.prefix(20).map { song in
+            let feel = RadioFeelGrammar.feel(
+                song: song,
+                signature: lyricIndex.bySongID[song.id]
+            ).rawValue
+            return "\(song.id) | \(song.title) — \(song.artist) feel:\(feel)"
+        }
+        .joined(separator: "\n")
+        return """
+        Sequence up to \(reviewKeep) listed ids after "\(seed.title)" by \(seed.artist).
+        Same artist+title once. JSON only:
+        {"ids":[]}
+        Candidates:
+        \(lines)
+        """
     }
 
     private static func reviewPrompt(
