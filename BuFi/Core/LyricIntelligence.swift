@@ -1260,9 +1260,6 @@ enum LyricIntelligenceBackend {
             result = nil
         case .onDevice, .applePrivateCloud:
             result = await onDevice(lyrics: lyrics, settings: settings)
-            if result == nil {
-                result = await groqAnalysis(lyrics: lyrics, settings: settings)
-            }
         case .openAI:
             result = await remote(
                 lyrics: lyrics,
@@ -1307,6 +1304,7 @@ enum LyricIntelligenceBackend {
         if let validated = validatedLLMAnalysis(result) {
             return validated
         }
+        guard settings.provider != .off else { return nil }
         return await fallbackLLMAnalysis(
             lyrics: lyrics,
             settings: settings,
@@ -1319,7 +1317,7 @@ enum LyricIntelligenceBackend {
         settings: LyricIntelligenceSettings
     ) async -> Analysis? {
         guard !settings.groqKey.isEmpty else { return nil }
-        guard var analysis = await remote(
+        guard let analysis = await remote(
             lyrics: lyrics,
             endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
             embeddingEndpoint: nil,
