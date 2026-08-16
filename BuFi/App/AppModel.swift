@@ -823,6 +823,7 @@ final class AppModel: ObservableObject {
         )
         let shouldDirect = fetchedSettings.provider != .off
             || !fetchedSettings.groqKey.isEmpty
+            || !fetchedSettings.geminiKey.isEmpty
         let ranked: [Song]
         if shouldDirect {
             ranked = await RadioLLMDirector.continueRadio(

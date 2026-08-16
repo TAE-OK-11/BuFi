@@ -432,11 +432,11 @@ enum RadioLLMDirector {
                 if await box.count == reviewKeep { break }
             }
         }
-        let first = await AsyncDeadline.first(seconds: firstPickDeadline) {
+        _ = await AsyncDeadline.first(seconds: firstPickDeadline) {
             await box.waitUntilNonEmpty()
             return true
         }
-        if first == nil, await box.isEmpty, let fallback = local.first {
+        if await box.isEmpty, let fallback = local.first {
             await box.push(fallback)
         }
         _ = await streamed
@@ -611,7 +611,11 @@ actor RadioPickBox {
         if !picked.isEmpty { return }
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                waiters.append(continuation)
+                if !picked.isEmpty {
+                    continuation.resume()
+                } else {
+                    waiters.append(continuation)
+                }
             }
         } onCancel: {
             Task { await self.releaseWaiters() }

@@ -1030,6 +1030,7 @@ actor LyricIntelligence {
             async let lyricsTask = lyricDone ? "" : lyricsProvider(song)
             async let fileTask = soundDone ? nil : fileProvider(song)
             let lyrics = await lyricsTask
+            let fileURL = await fileTask
             if lyricDone {
                 progress.cached += 1
             } else {
@@ -1067,7 +1068,7 @@ actor LyricIntelligence {
                     progress.noLyrics += 1
                 }
             }
-            if !soundDone, let fileURL = await fileTask {
+            if !soundDone, let fileURL {
                 let beforeMeasured = signatures[song.id]?.details.audioMeasured ?? false
                 let revision = song.audioResourceRevision.isEmpty
                     ? song.id
@@ -1512,7 +1513,7 @@ struct LyricIntelligenceSettings: Sendable {
     static let defaultGroqModel = "openai/gpt-oss-120b"
     static let defaultCerebrasModel = "llama-3.3-70b"
     static let defaultGeminiModel = "gemini-3.7-flash"
-    static let defaultRadioModel = radioPrimaryModel
+    static let defaultRadioModel = "openai/gpt-oss-120b"
     static let geminiFlashModel = "gemini-3.7-flash"
     static let geminiFlashLiteModel = "gemini-3.6-flash-lite"
     static let radioModelKey = "lyric-intelligence-radio-model"

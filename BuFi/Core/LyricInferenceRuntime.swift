@@ -266,7 +266,9 @@ enum LyricInferenceRuntime {
             guard seen.insert(model).inserted else { continue }
             models.append(model)
         }
-        return models.compactMap { radioTarget(model: $0, settings: settings) }
+        return Array(
+            models.compactMap { radioTarget(model: $0, settings: settings) }.prefix(3)
+        )
     }
 
     static func radioTarget(
@@ -286,7 +288,7 @@ enum LyricInferenceRuntime {
                 key: settings.geminiKey,
                 model: model,
                 source: "google-ai",
-                timeout: 8,
+                timeout: 14,
                 allowRetries: false
             )
         }
@@ -295,12 +297,13 @@ enum LyricInferenceRuntime {
             return nil
         }
         let timeout: TimeInterval
-        if model == LyricIntelligenceSettings.radioPrimaryModel {
-            timeout = 8
+        if model.lowercased().contains("gemini")
+            || model == LyricIntelligenceSettings.radioPrimaryModel {
+            timeout = 14
         } else if model == LyricIntelligenceSettings.radioSecondaryModel {
-            timeout = 1.8
+            timeout = 2.2
         } else {
-            timeout = 1.4
+            timeout = 1.8
         }
         return LyricChatTarget(
             endpoint: endpoint,
@@ -426,6 +429,9 @@ enum LyricInferenceRuntime {
             }
             let text = assembled.trimmingCharacters(in: .whitespacesAndNewlines)
             if text.isEmpty {
+                if Task.isCancelled {
+                    return nil
+                }
                 LyricProviderCircuit.recordFailure(target.circuitKey)
                 return nil
             }

@@ -400,9 +400,9 @@ final class LyricOptimizationTests: XCTestCase {
         XCTAssertEqual(radioTargets[0].reasoningEffort, "low")
         XCTAssertEqual(radioTargets[1].reasoningEffort, "none")
         XCTAssertEqual(radioTargets[2].reasoningEffort, "low")
-        XCTAssertEqual(radioTargets.first?.timeout, 8)
+        XCTAssertEqual(radioTargets.first?.timeout, 14)
         XCTAssertEqual(radioTargets.first?.allowRetries, false)
-        XCTAssertEqual(radioTargets.last?.timeout, 1.4)
+        XCTAssertEqual(radioTargets.last?.timeout, 1.8)
         XCTAssertEqual(
             LyricModelFamily.resolve(model: "qwen/qwen3.6-27b"),
             .gptOSS
@@ -424,6 +424,7 @@ final class LyricOptimizationTests: XCTestCase {
             LyricInferenceRuntime.radioTargets(geminiRadio).map(\.source).first,
             "google-ai"
         )
+        XCTAssertEqual(LyricInferenceRuntime.radioTargets(geminiRadio).count, 3)
         geminiRadio.radioModel = RadioModelOption.geminiFlashLite.rawValue
         XCTAssertEqual(
             LyricInferenceRuntime.radioTargets(geminiRadio).first?.model,
