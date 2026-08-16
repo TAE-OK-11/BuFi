@@ -239,7 +239,7 @@ enum LyricInferenceRuntime {
         applePrompt: String? = nil
     ) async -> String? {
         let started = Date()
-        var skipSource = Set<String>()
+        var attempted = Set<String>()
         var trail: [String] = []
 
         func finish(_ text: String, source: String, model: String) -> String {
@@ -256,29 +256,35 @@ enum LyricInferenceRuntime {
         }
 
         for target in radioTargets(settings) {
-            if skipSource.contains(target.source) { continue }
-            if let text = await chat(
+            guard attempted.insert(target.circuitKey).inserted else { continue }
+            switch await radioChat(
                 prompt: prompt,
                 target: target,
                 maxTokens: radioTokenBudget(for: target.model, requested: maxTokens)
             ) {
+            case .text(let text):
                 return finish(text, source: target.source, model: target.model)
+            case .rateLimited:
+                trail.append("\(target.source)/\(target.model):429")
+            case .failed:
+                trail.append("\(target.source)/\(target.model)")
             }
-            skipSource.insert(target.source)
-            trail.append("\(target.source)/\(target.model)")
         }
 
         for target in fallbackTargets(settings, excluding: .off) {
-            if skipSource.contains(target.source) { continue }
-            if let text = await chat(
+            guard attempted.insert(target.circuitKey).inserted else { continue }
+            switch await radioChat(
                 prompt: prompt,
                 target: target,
                 maxTokens: max(maxTokens, 900)
             ) {
+            case .text(let text):
                 return finish(text, source: target.source, model: target.model)
+            case .rateLimited:
+                trail.append("\(target.source)/\(target.model):429")
+            case .failed:
+                trail.append("\(target.source)/\(target.model)")
             }
-            skipSource.insert(target.source)
-            trail.append("\(target.source)/\(target.model)")
         }
 
         let onDevicePrompt = applePrompt ?? prompt
@@ -301,6 +307,24 @@ enum LyricInferenceRuntime {
         return nil
     }
 
+    static func canonicalCloudModel(_ raw: String) -> String {
+        let model = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch model.lowercased() {
+        case "gemini-3.7-flash":
+            return "gemini-3.6-flash"
+        case "gemini-3.6-flash-lite":
+            return "gemini-3.5-flash-lite"
+        case "llama-3.1-8b-instant":
+            return "openai/gpt-oss-20b"
+        case "llama-3.3-70b-versatile":
+            return "openai/gpt-oss-120b"
+        case "qwen/qwen3-32b", "meta-llama/llama-4-scout-17b-16e-instruct":
+            return "qwen/qwen3.6-27b"
+        default:
+            return model
+        }
+    }
+
     static func radioTargets(_ settings: LyricIntelligenceSettings) -> [LyricChatTarget] {
         let selected = RadioModelOption.resolved(settings.radioModel)
         let rest = RadioModelOption.allCases.filter { $0 != selected }
@@ -309,11 +333,12 @@ enum LyricInferenceRuntime {
         var seen = Set<String>()
         var models: [String] = []
         for option in [selected] + mixed {
-            guard seen.insert(option.rawValue).inserted else { continue }
-            models.append(option.rawValue)
+            let model = canonicalCloudModel(option.rawValue)
+            guard seen.insert(model).inserted else { continue }
+            models.append(model)
         }
         return Array(
-            models.compactMap { radioTarget(model: $0, settings: settings) }.prefix(2)
+            models.compactMap { radioTarget(model: $0, settings: settings) }.prefix(4)
         )
     }
 
@@ -372,8 +397,9 @@ enum LyricInferenceRuntime {
         model: String,
         settings: LyricIntelligenceSettings
     ) -> LyricChatTarget? {
+        let resolvedModel = canonicalCloudModel(model)
         let option = RadioModelOption(rawValue: model)
-        if option?.provider == .googleAI || model.lowercased().contains("gemini") {
+        if option?.provider == .googleAI || resolvedModel.lowercased().contains("gemini") {
             guard !settings.geminiKey.isEmpty,
                   let endpoint = URL(
                     string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
@@ -383,7 +409,7 @@ enum LyricInferenceRuntime {
             return LyricChatTarget(
                 endpoint: endpoint,
                 key: settings.geminiKey,
-                model: model,
+                model: resolvedModel,
                 source: "google-ai",
                 timeout: 20,
                 allowRetries: true
@@ -394,9 +420,9 @@ enum LyricInferenceRuntime {
             return nil
         }
         let timeout: TimeInterval
-        if isReasoningRadioModel(model) {
+        if isReasoningRadioModel(resolvedModel) {
             timeout = 22
-        } else if model == LyricIntelligenceSettings.radioSecondaryModel {
+        } else if resolvedModel == LyricIntelligenceSettings.radioSecondaryModel {
             timeout = 14
         } else {
             timeout = 16
@@ -404,9 +430,9 @@ enum LyricInferenceRuntime {
         return LyricChatTarget(
             endpoint: endpoint,
             key: settings.groqKey,
-            model: model,
+            model: resolvedModel,
             source: "groq",
-            reasoningEffort: LyricIntelligenceSettings.reasoningEffort(for: model),
+            reasoningEffort: LyricIntelligenceSettings.reasoningEffort(for: resolvedModel),
             timeout: timeout,
             allowRetries: true
         )
@@ -812,13 +838,14 @@ enum LyricInferenceRuntime {
                   let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
                 return nil
             }
+            let model = canonicalCloudModel(settings.groqModel)
             return LyricChatTarget(
                 endpoint: endpoint,
                 key: settings.groqKey,
-                model: settings.groqModel,
+                model: model,
                 source: "groq",
                 reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
-                    for: settings.groqModel
+                    for: model
                 )
             )
         case .googleAI:
@@ -831,7 +858,7 @@ enum LyricInferenceRuntime {
             return LyricChatTarget(
                 endpoint: endpoint,
                 key: settings.geminiKey,
-                model: settings.geminiModel,
+                model: canonicalCloudModel(settings.geminiModel),
                 source: "google-ai"
             )
         case .cerebras:
