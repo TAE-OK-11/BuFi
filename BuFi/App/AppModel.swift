@@ -1081,7 +1081,7 @@ final class AppModel: ObservableObject {
     func scheduleSeedRecommendationRefresh() {
         seedRecommendationTask?.cancel()
         seedRecommendationTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(450))
+            try? await Task.sleep(for: .milliseconds(1_500))
             guard !Task.isCancelled else { return }
             self?.rebuildRecommendations()
         }

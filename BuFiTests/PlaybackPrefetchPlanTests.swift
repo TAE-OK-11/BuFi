@@ -109,7 +109,7 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
                 elapsed: 0.2,
                 hasCurrentItem: true
             ),
-            .arm(.startup)
+            .cancelWatchdog
         )
         XCTAssertEqual(
             PlaybackWatchdogPolicy.decision(
@@ -373,6 +373,26 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
                 nextQueueIndex: 2,
                 nextOccurrenceID: occurrence
             )
+        )
+    }
+
+    func testPlaybackBufferKeepsAShortMusicLookahead() {
+        XCTAssertEqual(PlaybackBufferPolicy.remoteForwardBuffer, 12)
+        XCTAssertEqual(PlaybackBufferPolicy.localForwardBuffer, 4)
+        XCTAssertEqual(
+            PlaybackBufferPolicy.forwardBufferDuration(isLocalFile: false),
+            12
+        )
+        XCTAssertEqual(
+            PlaybackBufferPolicy.forwardBufferDuration(isLocalFile: true),
+            4
+        )
+        XCTAssertEqual(
+            PlaybackBufferPolicy.forwardBufferDuration(
+                isLocalFile: false,
+                constrained: true
+            ),
+            6
         )
     }
 

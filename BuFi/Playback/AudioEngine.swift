@@ -820,7 +820,7 @@ enum PlaybackWatchdogDecision: Equatable, Sendable {
 
 enum PlaybackWatchdogPolicy {
     static let startupArmWindow: TimeInterval = 1.5
-    static let stallGrace: Duration = .milliseconds(1_800)
+    static let stallGrace: Duration = .milliseconds(3_500)
     static let maximumTransportRetries = 2
 
     static func decision(
@@ -833,7 +833,7 @@ enum PlaybackWatchdogPolicy {
         let inStartupWindow = elapsed.isFinite && elapsed < startupArmWindow
         switch timeControlStatus {
         case .playing:
-            return inStartupWindow ? .arm(.startup) : .cancelWatchdog
+            return .cancelWatchdog
         case .waitingToPlayAtSpecifiedRate, .paused:
             return .arm(inStartupWindow ? .startup : .stall)
         @unknown default:
@@ -938,6 +938,35 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
         return repeatMode == .all
             ? GaplessSuccessorPlan(queueIndex: 0)
             : nil
+    }
+}
+
+/// TIDAL-style AVPlayer buffering: keep a short music-sized lookahead so a
+/// brief radio dip does not underrun, without hoarding minutes of audio.
+enum PlaybackBufferPolicy {
+    static let remoteForwardBuffer: TimeInterval = 12
+    static let localForwardBuffer: TimeInterval = 4
+    static let constrainedForwardBuffer: TimeInterval = 6
+    static let stallConfirmDelay: Duration = .milliseconds(1_200)
+
+    static func forwardBufferDuration(
+        isLocalFile: Bool,
+        constrained: Bool = false
+    ) -> TimeInterval {
+        if constrained { return constrainedForwardBuffer }
+        return isLocalFile ? localForwardBuffer : remoteForwardBuffer
+    }
+
+    static func configure(
+        _ item: AVPlayerItem,
+        isLocalFile: Bool,
+        constrained: Bool = false
+    ) {
+        item.preferredForwardBufferDuration = forwardBufferDuration(
+            isLocalFile: isLocalFile,
+            constrained: constrained
+        )
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
     }
 }
 
@@ -1345,6 +1374,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var audioSessionCommandEpoch: UInt64 = 0
     private var nowPlayingActivationTask: Task<Void, Never>?
     private let audioSessionController = AudioSessionController()
+    private var stallConfirmTask: Task<Void, Never>?
     private var recoveryToken: UUID?
     private weak var handledFailedItem: AVPlayerItem?
     private weak var startupNudgedItem: AVPlayerItem?
@@ -1800,7 +1830,9 @@ final class AudioEngine: NSObject, ObservableObject {
             Task { await client.trimTransientNetworkCaches() }
         }
         recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
-        player.currentItem?.preferredForwardBufferDuration = 0
+        if let item = player.currentItem {
+            PlaybackBufferPolicy.configure(item, isLocalFile: false, constrained: true)
+        }
     }
 
     func handleEnergyConstraints(
@@ -2770,8 +2802,10 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         let item = AVPlayerItem(asset: prepared.asset)
-        item.preferredForwardBufferDuration = 0
-        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        PlaybackBufferPolicy.configure(
+            item,
+            isLocalFile: prepared.asset.url.isFileURL
+        )
         guard player.canInsert(item, after: currentItem) else { return }
         player.insert(item, after: currentItem)
         stagedSuccessorItem = item
@@ -3235,10 +3269,7 @@ final class AudioEngine: NSObject, ObservableObject {
         removeCurrentItemObservers()
         invalidateStagedSuccessor(removeFromPlayer: true)
         let item = AVPlayerItem(asset: asset)
-        // Let AVFoundation adapt buffering to throughput and decoder cost.
-        // Large fixed buffers increase system-resource demand.
-        item.preferredForwardBufferDuration = 0
-        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        PlaybackBufferPolicy.configure(item, isLocalFile: asset.url.isFileURL)
         observeActiveItem(item, resumePosition: resumePosition)
         player.replaceCurrentItem(with: item)
         handledFailedItem = nil
@@ -3497,12 +3528,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     return
                 }
                 if item.isPlaybackBufferEmpty, self.wantsPlayback {
-                    // The active stream owns bandwidth during a stall. Remove
-                    // any staged successor and cancel optional transfers before
-                    // recovery so they cannot prolong the underrun.
-                    self.invalidateStagedSuccessor(removeFromPlayer: true)
-                    self.suspendSpeculativePrefetch()
-                    self.schedulePlaybackRecovery(mode: .stall)
+                    self.confirmPossibleStall()
                 }
             }
         }
@@ -3661,7 +3687,37 @@ final class AudioEngine: NSObject, ObservableObject {
         playbackError = message
     }
 
+    private func cancelStallConfirmation() {
+        stallConfirmTask?.cancel()
+        stallConfirmTask = nil
+    }
+
+    private func confirmPossibleStall() {
+        guard wantsPlayback, stallConfirmTask == nil else { return }
+        if player.timeControlStatus != .playing {
+            isBuffering = true
+        }
+        stallConfirmTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: PlaybackBufferPolicy.stallConfirmDelay)
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.wantsPlayback,
+                  self.player.timeControlStatus != .playing else {
+                return
+            }
+            self.stallConfirmTask = nil
+            self.invalidateStagedSuccessor(removeFromPlayer: true)
+            self.suspendSpeculativePrefetch()
+            self.schedulePlaybackRecovery(mode: .stall)
+        }
+    }
+
     private func cancelPlaybackRecovery() {
+        cancelStallConfirmation()
         playerTaskLifecycle.cancelBackgroundRecovery()
         recoveryToken = nil
         recoveryTask?.cancel()
@@ -3848,7 +3904,15 @@ final class AudioEngine: NSObject, ObservableObject {
     private func scheduleTrackSoundAnalysis(for song: Song) {
         let accountScope = currentAccountScope
         let client = self.client
+        let playbackID = currentPlaybackItem?.id
         Task {
+            try? await Task.sleep(for: .seconds(2.5))
+            guard !Task.isCancelled,
+                  self.currentPlaybackItem?.id == playbackID,
+                  self.currentSong?.id == song.id,
+                  self.player.timeControlStatus == .playing else {
+                return
+            }
             guard let fileURL = await SoundAnalysisSample.resolve(
                 for: song,
                 client: client
@@ -3981,10 +4045,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         || player.currentItem?.status != .readyToPlay
                     )
                 if player.timeControlStatus == .playing {
-                    // A player can claim `.playing` while its media clock is
-                    // frozen at 0:00. Past the startup window a healthy clock
-                    // must not keep the watchdog armed — that reload loop is
-                    // the main intermittent playback failure.
+                    self.cancelStallConfirmation()
                     switch PlaybackWatchdogPolicy.decision(
                         wantsPlayback: self.wantsPlayback,
                         timeControlStatus: player.timeControlStatus,
@@ -4011,12 +4072,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else {
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
-                    // A buffering or recovery transition must give the active
-                    // stream sole use of the radio and server connection. A
-                    // queued successor can itself keep a second media request
-                    // alive, so remove it until the current stream is healthy.
-                    self.invalidateStagedSuccessor(removeFromPlayer: true)
-                    self.suspendSpeculativePrefetch()
+                    self.confirmPossibleStall()
                     switch PlaybackWatchdogPolicy.decision(
                         wantsPlayback: true,
                         timeControlStatus: player.timeControlStatus,
