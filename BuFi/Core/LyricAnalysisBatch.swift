@@ -86,6 +86,7 @@ struct LyricBatchProgress: Equatable, Sendable {
     var processed: Int
     var analyzed: Int
     var cached: Int
+    var failed: Int
     var noLyrics: Int
     var soundAnalyzed: Int
     var currentTitle: String
@@ -97,6 +98,7 @@ struct LyricBatchProgress: Equatable, Sendable {
         processed: 0,
         analyzed: 0,
         cached: 0,
+        failed: 0,
         noLyrics: 0,
         soundAnalyzed: 0,
         currentTitle: "",
@@ -104,8 +106,35 @@ struct LyricBatchProgress: Equatable, Sendable {
         isCancelled: false
     )
 
+    var succeeded: Int { analyzed + cached }
+
+    var isComplete: Bool {
+        total > 0 && succeeded == total && failed == 0 && noLyrics == 0
+    }
+
     var fraction: Double {
         guard total > 0 else { return 0 }
-        return min(1, Double(processed) / Double(total))
+        return min(1, Double(succeeded) / Double(total))
+    }
+}
+
+enum LyricBatchAccounting {
+    enum Outcome: Equatable {
+        case cached
+        case analyzed
+        case failed
+        case noLyrics
+    }
+
+    static func outcome(
+        hadLyrics: Bool,
+        reusedCache: Bool,
+        storedAnalysis: Bool
+    ) -> Outcome {
+        guard hadLyrics else { return .noLyrics }
+        if storedAnalysis {
+            return reusedCache ? .cached : .analyzed
+        }
+        return .failed
     }
 }

@@ -70,4 +70,63 @@ final class LyricLLMOnlyTests: XCTestCase {
             )
         )
     }
+
+    func testLLMSourceWithoutStoryIsNotCompletedAnalysis() {
+        let signature = LyricSignature(
+            songID: "empty",
+            lyricsHash: "abc",
+            moods: ["calm"],
+            themes: [],
+            energy: 0.2,
+            valence: 0.2,
+            embedding: [],
+            source: "groq",
+            summary: "한국어다"
+        )
+        XCTAssertFalse(signature.hasStoredSummary)
+        XCTAssertFalse(signature.hasStoredLyricAnalysis)
+        XCTAssertFalse(
+            LyricAnalysisCachePolicy.shouldReuseLyric(
+                existing: signature,
+                lyricsHash: "abc"
+            )
+        )
+    }
+
+    func testBatchProgressCountsOnlyStoredAnalysesAsSuccess() {
+        XCTAssertEqual(
+            LyricBatchAccounting.outcome(
+                hadLyrics: true,
+                reusedCache: false,
+                storedAnalysis: false
+            ),
+            .failed
+        )
+        XCTAssertEqual(
+            LyricBatchAccounting.outcome(
+                hadLyrics: true,
+                reusedCache: true,
+                storedAnalysis: true
+            ),
+            .cached
+        )
+        XCTAssertEqual(
+            LyricBatchAccounting.outcome(
+                hadLyrics: false,
+                reusedCache: false,
+                storedAnalysis: false
+            ),
+            .noLyrics
+        )
+        var progress = LyricBatchProgress.idle
+        progress.total = 10
+        progress.processed = 10
+        progress.analyzed = 2
+        progress.cached = 1
+        progress.failed = 3
+        progress.noLyrics = 4
+        XCTAssertEqual(progress.succeeded, 3)
+        XCTAssertEqual(progress.fraction, 0.3, accuracy: 0.0001)
+        XCTAssertFalse(progress.isComplete)
+    }
 }

@@ -968,6 +968,11 @@ private struct RecommendationSettingsView: View {
             if batchProgress.isRunning || batchProgress.processed > 0 {
                 ProgressView(value: batchProgress.fraction)
                     .tint(BuFiTheme.accent)
+                settingsDescription(
+                    String(
+                        localized: "분석 성공 \(batchProgress.succeeded)/\(batchProgress.total)"
+                    )
+                )
                 settingsDescription(batchStatusText)
             }
             if !coverage.done.isEmpty {
@@ -1098,9 +1103,12 @@ private struct RecommendationSettingsView: View {
     }
 
     private var batchStatusText: String {
+        let counts = String(
+            localized: "성공 \(batchProgress.succeeded) · 새로 \(batchProgress.analyzed) · 캐시 \(batchProgress.cached) · 실패 \(batchProgress.failed) · 가사 없음 \(batchProgress.noLyrics) · 음향 \(batchProgress.soundAnalyzed)"
+        )
         if batchProgress.isCancelled {
             return String(
-                localized: "중단됨 · \(batchProgress.processed)/\(batchProgress.total) · 새로 \(batchProgress.analyzed) · 캐시 \(batchProgress.cached) · 가사 없음 \(batchProgress.noLyrics)"
+                localized: "중단됨 · 확인 \(batchProgress.processed)/\(batchProgress.total) · \(counts)"
             )
         }
         if batchProgress.isRunning {
@@ -1108,11 +1116,14 @@ private struct RecommendationSettingsView: View {
                 ? String(localized: "준비 중")
                 : batchProgress.currentTitle
             return String(
-                localized: "\(batchProgress.processed)/\(batchProgress.total) · \(current)"
+                localized: "확인 \(batchProgress.processed)/\(batchProgress.total) · \(current)"
             )
         }
+        if batchProgress.isComplete {
+            return String(localized: "분석 완료 · \(counts)")
+        }
         return String(
-            localized: "완료 · \(batchProgress.processed)/\(batchProgress.total) · 새로 \(batchProgress.analyzed) · 캐시 \(batchProgress.cached) · 가사 없음 \(batchProgress.noLyrics) · 음향 \(batchProgress.soundAnalyzed)"
+            localized: "스캔 종료 · 확인 \(batchProgress.processed)/\(batchProgress.total) · \(counts)"
         )
     }
 

@@ -578,8 +578,9 @@ final class LyricIntelligenceTests: XCTestCase {
                 )
             ]
         )
-        XCTAssertEqual(lyricOnly.needsSound.map(\.song.id), ["done"])
-        XCTAssertEqual(lyricOnly.needsResummary.map(\.song.id), ["done"])
+        XCTAssertEqual(lyricOnly.pending.map(\.song.id), ["done"])
+        XCTAssertTrue(lyricOnly.needsResummary.isEmpty)
+        XCTAssertEqual(lyricOnly.lyricDone, 0)
         XCTAssertEqual(lyricOnly.workQueue.map(\.id), ["done"])
         XCTAssertEqual(report.done.first?.sourceTitle, "Apple Intelligence")
         XCTAssertTrue(report.done.first?.hasSound ?? false)
@@ -610,7 +611,8 @@ final class LyricIntelligenceTests: XCTestCase {
             soundLabels: ["singing"],
             soundEmbedding: [0.4],
             audioRevision: "audio-a",
-            soundSource: "coreml-sound-analysis"
+            soundSource: "coreml-sound-analysis",
+            summary: "Walking alone after midnight.\nThe rain keeps your name."
         )
         XCTAssertTrue(
             LyricAnalysisCachePolicy.shouldReuseLyric(

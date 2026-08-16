@@ -142,8 +142,12 @@ struct LyricSignature: Codable, Equatable, Sendable {
 
     var hasStoredLyricAnalysis: Bool {
         // Lexical/heuristic output is not a completed lyric analysis. Only an
-        // actual language-model result may satisfy the cache and coverage layer.
-        !lyricsHash.isEmpty && !source.isEmpty && source != "lexical"
+        // actual language-model result with a usable story may satisfy the
+        // cache and coverage layer.
+        !lyricsHash.isEmpty
+            && !source.isEmpty
+            && source != "lexical"
+            && hasStoredSummary
     }
 
     var hasStoredSoundAnalysis: Bool {
@@ -982,10 +986,12 @@ actor LyricIntelligence {
             progress.currentTitle = song.title
             batchProgress = progress
             let lyrics = await lyricsProvider(song)
-            if lyrics.count >= 24 {
+            let hadLyrics = lyrics.count >= 24
+            var reused = false
+            if hadLyrics {
                 let hash = LyricLexicalEmbedding.hash(lyrics)
                 let missingSummary = !(signatures[song.id]?.hasStoredSummary ?? false)
-                let reused = !force
+                reused = !force
                     && !missingSummary
                     && LyricAnalysisCachePolicy.shouldReuseLyric(
                         existing: signatures[song.id],
@@ -998,12 +1004,19 @@ actor LyricIntelligence {
                     force: force || missingSummary,
                     settings: settings
                 )
-                if reused {
-                    progress.cached += 1
-                } else {
-                    progress.analyzed += 1
-                }
-            } else {
+            }
+            switch LyricBatchAccounting.outcome(
+                hadLyrics: hadLyrics,
+                reusedCache: reused,
+                storedAnalysis: signatures[song.id]?.hasStoredLyricAnalysis == true
+            ) {
+            case .cached:
+                progress.cached += 1
+            case .analyzed:
+                progress.analyzed += 1
+            case .failed:
+                progress.failed += 1
+            case .noLyrics:
                 progress.noLyrics += 1
             }
             if let fileURL = await fileProvider(song) {
