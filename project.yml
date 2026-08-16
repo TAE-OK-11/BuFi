@@ -127,5 +127,6 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_ASSET_PATHS: ""
+        COREML_CODEGEN_LANGUAGE: None
     scheme:
       gatherCoverageData: false

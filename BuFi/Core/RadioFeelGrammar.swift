@@ -3,7 +3,7 @@ import Foundation
 /// Distilled from observed personal-radio sets: after a seed of one feel,
 /// the next tracks stay in that cultural room and walk related feels.
 /// This is a placement grammar, not a song list.
-enum RadioFeel: String, Sendable {
+enum RadioFeel: String, CaseIterable, Sendable {
     case sparkle
     case rush
     case bittersweet
@@ -89,9 +89,7 @@ enum RadioFeelGrammar {
         case (.bittersweet, .hush), (.hush, .bittersweet): return 0.82
         case (.cool, .electro), (.electro, .cool): return 0.88
         case (.cool, .bittersweet), (.bittersweet, .cool): return 0.60
-        case (.electro, .cool): return 0.84
         case (.glow, .hush), (.hush, .glow): return 0.76
-        case (.hush, .bittersweet): return 0.80
         case (.sparkle, .cool), (.cool, .sparkle): return 0.42
         case (.sparkle, .electro), (.electro, .sparkle): return 0.28
         case (.hush, .rush), (.rush, .hush): return 0.12

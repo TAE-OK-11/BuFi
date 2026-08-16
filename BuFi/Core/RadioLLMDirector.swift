@@ -529,7 +529,7 @@ enum RadioLLMDirector {
     }
 
     private static func reviewPrompt(
-        pack: [Song],
+        pack: RadioCandidatePack,
         brief: RadioLaneBrief,
         seed: Song,
         recent: [Song],

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreML)
+import CoreML
+#endif
 
 /// Numeric features for a future on-device Core ML transition model.
 /// Values come from the same signals the live mixer already uses.
@@ -50,6 +53,46 @@ enum RadioTransitionFeatures {
         let values = snapshot(song: song, signature: signature)
         return names.map { values[$0] ?? 0 }
     }
+
+    static let pairNames: [String] = [
+        "energy_gap", "valence_gap", "bpm_gap", "intimacy_gap",
+        "kpop_same", "feel_same", "starred", "plays",
+        "seed_energy", "cand_energy",
+        "seed_feel_sparkle", "seed_feel_rush", "seed_feel_bittersweet",
+        "seed_feel_cool", "seed_feel_electro", "seed_feel_glow", "seed_feel_hush",
+        "cand_feel_sparkle", "cand_feel_rush", "cand_feel_bittersweet",
+        "cand_feel_cool", "cand_feel_electro", "cand_feel_glow", "cand_feel_hush"
+    ]
+
+    static func pairVector(
+        seed: Song,
+        candidate: Song,
+        lyricIndex: LyricSignatureIndex
+    ) -> [Double] {
+        let left = lyricIndex.bySongID[seed.id]
+        let right = lyricIndex.bySongID[candidate.id]
+        let seedSnap = snapshot(song: seed, signature: left)
+        let candSnap = snapshot(song: candidate, signature: right)
+        let seedFeel = RadioFeelGrammar.feel(song: seed, signature: left)
+        let candFeel = RadioFeelGrammar.feel(song: candidate, signature: right)
+        var values: [String: Double] = [
+            "energy_gap": abs((seedSnap["energy"] ?? 0) - (candSnap["energy"] ?? 0)),
+            "valence_gap": abs((seedSnap["valence"] ?? 0) - (candSnap["valence"] ?? 0)),
+            "bpm_gap": abs((seedSnap["bpm"] ?? 0) - (candSnap["bpm"] ?? 0)),
+            "intimacy_gap": abs((seedSnap["intimacy"] ?? 0) - (candSnap["intimacy"] ?? 0)),
+            "kpop_same": seedSnap["kpop"] == candSnap["kpop"] ? 1 : 0,
+            "feel_same": seedFeel == candFeel ? 1 : 0,
+            "starred": candSnap["starred"] ?? 0,
+            "plays": candSnap["plays"] ?? 0,
+            "seed_energy": seedSnap["energy"] ?? 0,
+            "cand_energy": candSnap["energy"] ?? 0
+        ]
+        for feel in RadioFeel.allCases {
+            values["seed_feel_\(feel.rawValue)"] = feel == seedFeel ? 1 : 0
+            values["cand_feel_\(feel.rawValue)"] = feel == candFeel ? 1 : 0
+        }
+        return pairNames.map { values[$0] ?? 0 }
+    }
 }
 
 /// Loads a compiled `BuFiRadioTransition` model when one is bundled.
@@ -57,27 +100,65 @@ enum RadioTransitionFeatures {
 enum RadioCoreMLTransition {
     static let resourceName = "BuFiRadioTransition"
 
-    static var isReady: Bool {
-        Bundle.main.url(
-            forResource: resourceName,
-            withExtension: "mlmodelc"
-        ) != nil
-            || Bundle.main.url(
-                forResource: resourceName,
-                withExtension: "mlmodel"
-            ) != nil
-    }
+    static var isReady: Bool { loadedModel != nil }
+
+#if canImport(CoreML)
+    private static let loadedModel: MLModel? = {
+        let bundle = Bundle.main
+        let url = bundle.url(forResource: resourceName, withExtension: "mlmodelc")
+            ?? bundle.url(forResource: resourceName, withExtension: "mlmodel")
+        guard let url else { return nil }
+        return try? MLModel(contentsOf: url)
+    }()
+#else
+    private static let loadedModel: Any? = nil
+#endif
 
     static func score(
         seed: Song,
         candidate: Song,
         lyricIndex: LyricSignatureIndex
     ) -> Double {
-        if isReady {
-            // Compiled model will replace this stand-in once trained.
+#if canImport(CoreML)
+        if let model = loadedModel,
+           let value = predict(
+            model,
+            features: RadioTransitionFeatures.pairVector(
+                seed: seed,
+                candidate: candidate,
+                lyricIndex: lyricIndex
+            )
+           ) {
+            return max(0, min(1, value))
         }
+#endif
         return rank(seed: seed, candidate: candidate, lyricIndex: lyricIndex)
     }
+
+#if canImport(CoreML)
+    private static func predict(_ model: MLModel, features: [Double]) -> Double? {
+        guard let array = try? MLMultiArray(
+            shape: [NSNumber(value: features.count)],
+            dataType: .double
+        ) else {
+            return nil
+        }
+        for (index, value) in features.enumerated() {
+            array[index] = NSNumber(value: value)
+        }
+        guard let input = try? MLDictionaryFeatureProvider(
+            dictionary: ["features": array]
+        ),
+              let output = try? model.prediction(from: input) else {
+            return nil
+        }
+        if let multi = output.featureValue(for: "score")?.multiArrayValue,
+           multi.count > 0 {
+            return multi[0].doubleValue
+        }
+        return output.featureValue(for: "score")?.doubleValue
+    }
+#endif
 
     static func shortlist(
         seed: Song,
