@@ -407,6 +407,53 @@ final class LyricOptimizationTests: XCTestCase {
             LyricModelFamily.resolve(model: "qwen/qwen3.6-27b"),
             .gptOSS
         )
+        var geminiRadio = LyricIntelligenceSettings(
+            provider: .googleAI,
+            openAIKey: "",
+            openRouterKey: "",
+            openRouterModel: "",
+            groqKey: "gsk",
+            geminiKey: "ai-studio",
+            radioModel: LyricIntelligenceSettings.geminiFlashModel
+        )
+        XCTAssertEqual(
+            LyricInferenceRuntime.radioTargets(geminiRadio).map(\.model).first,
+            "gemini-3.7-flash"
+        )
+        XCTAssertEqual(
+            LyricInferenceRuntime.radioTargets(geminiRadio).map(\.source).first,
+            "google-ai"
+        )
+        geminiRadio.radioModel = RadioModelOption.geminiFlashLite.rawValue
+        XCTAssertEqual(
+            LyricInferenceRuntime.radioTargets(geminiRadio).first?.model,
+            "gemini-3.6-flash-lite"
+        )
+        let suiteRadio = "BuFi.RadioModel.\(UUID().uuidString)"
+        guard let radioDefaults = UserDefaults(suiteName: suiteRadio) else {
+            XCTFail("defaults")
+            return
+        }
+        defer { radioDefaults.removePersistentDomain(forName: suiteRadio) }
+        radioDefaults.set(
+            "gemini-3.7-flash",
+            forKey: LyricIntelligenceSettings.radioModelKey
+        )
+        XCTAssertEqual(
+            LyricIntelligenceSettings.current(defaults: radioDefaults).radioModel,
+            "gemini-3.7-flash"
+        )
+        XCTAssertTrue(
+            LyricModelPrompts.radioProgram(
+                family: .gemini,
+                keep: 15,
+                lane: "k-pop",
+                seed: "seed",
+                recent: "",
+                candidates: "1",
+                extras: ""
+            ).contains("start writing it immediately")
+        )
         let heuristic = RadioLLMDirector.heuristicBrief(
             seed: seed,
             lyricIndex: LyricSignatureIndex(bySongID: ["seed": close])

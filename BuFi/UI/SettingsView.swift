@@ -575,6 +575,8 @@ struct RecommendationSettingsView: View {
     private var cerebrasModel = LyricIntelligenceSettings.defaultCerebrasModel
     @AppStorage("lyric-intelligence-gemini-model")
     private var geminiModel = LyricIntelligenceSettings.defaultGeminiModel
+    @AppStorage("lyric-intelligence-radio-model")
+    private var radioModel = LyricIntelligenceSettings.defaultRadioModel
     @AppStorage("recommendation-llm-review-enabled")
     private var llmReviewEnabled = false
     @AppStorage("lyric-intelligence-user-prompt")
@@ -611,6 +613,13 @@ struct RecommendationSettingsView: View {
                                 model.rebuildRecommendations()
                             }
                         settingsDescription("켜 두면 남은 곡이 얼마 없을 때, 지금 분위기와 가사를 보고 다음 플레이리스트를 이어서 만들어 줘요.")
+                        Picker("라디오 모델", selection: $radioModel) {
+                            ForEach(RadioModelOption.allCases) { option in
+                                Text(option.title).tag(option.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        settingsDescription("다음 곡을 고를 때 쓰는 모델입니다. 가사 분석 제공사와 따로 고를 수 있어요. 키가 있는 쪽만 실제로 호출됩니다.")
                         settingsDescription(lyricEngineDescription)
                         if usesOnDeviceFallback {
                             SecureField(

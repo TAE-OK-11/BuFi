@@ -259,45 +259,58 @@ enum LyricInferenceRuntime {
     }
 
     static func radioTargets(_ settings: LyricIntelligenceSettings) -> [LyricChatTarget] {
-        guard !settings.groqKey.isEmpty,
-              let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
-            return []
+        let selected = RadioModelOption.resolved(settings.radioModel).rawValue
+        var seen = Set<String>()
+        var models: [String] = []
+        for model in [selected] + RadioModelOption.allCases.map(\.rawValue) {
+            guard seen.insert(model).inserted else { continue }
+            models.append(model)
         }
-        return [
-            LyricChatTarget(
+        return models.compactMap { radioTarget(model: $0, settings: settings) }
+    }
+
+    static func radioTarget(
+        model: String,
+        settings: LyricIntelligenceSettings
+    ) -> LyricChatTarget? {
+        let option = RadioModelOption(rawValue: model)
+        if option?.provider == .googleAI || model.lowercased().contains("gemini") {
+            guard !settings.geminiKey.isEmpty,
+                  let endpoint = URL(
+                    string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                  ) else {
+                return nil
+            }
+            return LyricChatTarget(
                 endpoint: endpoint,
-                key: settings.groqKey,
-                model: LyricIntelligenceSettings.radioPrimaryModel,
-                source: "groq",
-                reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
-                    for: LyricIntelligenceSettings.radioPrimaryModel
-                ),
+                key: settings.geminiKey,
+                model: model,
+                source: "google-ai",
                 timeout: 8,
                 allowRetries: false
-            ),
-            LyricChatTarget(
-                endpoint: endpoint,
-                key: settings.groqKey,
-                model: LyricIntelligenceSettings.radioSecondaryModel,
-                source: "groq",
-                reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
-                    for: LyricIntelligenceSettings.radioSecondaryModel
-                ),
-                timeout: 1.8,
-                allowRetries: false
-            ),
-            LyricChatTarget(
-                endpoint: endpoint,
-                key: settings.groqKey,
-                model: LyricIntelligenceSettings.radioFallbackModel,
-                source: "groq",
-                reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
-                    for: LyricIntelligenceSettings.radioFallbackModel
-                ),
-                timeout: 1.4,
-                allowRetries: false
             )
-        ]
+        }
+        guard !settings.groqKey.isEmpty,
+              let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
+            return nil
+        }
+        let timeout: TimeInterval
+        if model == LyricIntelligenceSettings.radioPrimaryModel {
+            timeout = 8
+        } else if model == LyricIntelligenceSettings.radioSecondaryModel {
+            timeout = 1.8
+        } else {
+            timeout = 1.4
+        }
+        return LyricChatTarget(
+            endpoint: endpoint,
+            key: settings.groqKey,
+            model: model,
+            source: "groq",
+            reasoningEffort: LyricIntelligenceSettings.reasoningEffort(for: model),
+            timeout: timeout,
+            allowRetries: false
+        )
     }
 
     static func complete(

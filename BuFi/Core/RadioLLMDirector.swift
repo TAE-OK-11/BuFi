@@ -486,17 +486,17 @@ enum RadioLLMDirector {
             )
         }
         let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
-        return """
-        Program the next radio block. JSON only, start the ids array immediately:
-        {"ids":[]}
-        Keep exactly \(reviewKeep) listed ids. Discard the rest. Order them as a listen: lyric story, vocal, energy, measured BPM. Walk BPM instead of jumping. Preferred artists are a slight lean. Avoid three songs by one artist in a row.
-        Lane: moods:\(brief.moods.joined(separator: ",")) energy:\(fmt(brief.energy.lowerBound))-\(fmt(brief.energy.upperBound)) vocal:\(brief.vocal) genre:\(brief.genre)
-        Seed: \(card(seed, lyricIndex: lyricIndex))
-        Recent: \(recent.prefix(4).map { card($0, lyricIndex: lyricIndex) }.joined(separator: " | "))
-        Candidates:
-        \(candidates)
-        \(user)
-        """
+        let lane = "moods:\(brief.moods.joined(separator: ",")) energy:\(fmt(brief.energy.lowerBound))-\(fmt(brief.energy.upperBound)) vocal:\(brief.vocal) genre:\(brief.genre)"
+        return LyricModelPrompts.radioProgram(
+            family: LyricModelFamily.resolve(model: settings.radioModel),
+            keep: reviewKeep,
+            lane: lane,
+            seed: card(seed, lyricIndex: lyricIndex),
+            recent: recent.prefix(4).map { card($0, lyricIndex: lyricIndex) }
+                .joined(separator: " | "),
+            candidates: candidates,
+            extras: user
+        )
     }
 
     private static func emit(

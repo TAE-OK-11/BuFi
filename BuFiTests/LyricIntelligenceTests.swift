@@ -104,6 +104,16 @@ final class LyricIntelligenceTests: XCTestCase {
             .gptOSS
         )
         XCTAssertEqual(
+            LyricModelFamily.resolve(model: "gemini-3.7-flash"),
+            .gemini
+        )
+        XCTAssertTrue(
+            LyricModelPrompts.lyricAnalysis(
+                lyrics: "창가에서 기다린다",
+                family: .gemini
+            ).contains("narrator")
+        )
+        XCTAssertEqual(
             LyricModelFamily.resolve(model: "llama-3.3-70b-versatile"),
             .llama70B
         )
@@ -182,7 +192,7 @@ final class LyricIntelligenceTests: XCTestCase {
         )
         XCTAssertEqual(
             LyricModelFamily.resolve(model: "gemini-3.7-flash"),
-            .gptOSS
+            .gemini
         )
         let suite = "BuFi.LyricIntelligenceTests.groq.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else {

@@ -4,6 +4,7 @@ enum LyricModelFamily: String, Sendable {
     case appleFoundation
     case llama70B
     case gptOSS
+    case gemini
     case generic
 
     static func resolve(_ settings: LyricIntelligenceSettings) -> LyricModelFamily {
@@ -19,11 +20,13 @@ enum LyricModelFamily: String, Sendable {
 
     static func resolve(model: String) -> LyricModelFamily {
         let value = model.lowercased()
+        if value.contains("gemini") {
+            return .gemini
+        }
         if value.contains("gpt-oss")
             || value.contains("oss-120")
             || value.contains("qwen3.6")
-            || value.contains("qwen/qwen3")
-            || value.contains("gemini") {
+            || value.contains("qwen/qwen3") {
             return .gptOSS
         }
         if value.contains("llama-3.3")
@@ -40,6 +43,7 @@ enum LyricModelFamily: String, Sendable {
         case .appleFoundation: 1_500
         case .llama70B: 3_600
         case .gptOSS: 5_000
+        case .gemini: 4_200
         case .generic: 2_400
         }
     }
@@ -49,6 +53,7 @@ enum LyricModelFamily: String, Sendable {
         case .appleFoundation: 8
         case .llama70B: 16
         case .gptOSS: 18
+        case .gemini: 20
         case .generic: 12
         }
     }
@@ -212,6 +217,26 @@ enum LyricModelPrompts {
             Lyrics:
             \(body)
             """
+        case .gemini:
+            return """
+            You extract grounded lyric meaning for a music recommender. Treat the text as one narrator's story. Use Korean or the lyric language for summary and interpretation.
+
+            Return exactly one JSON object. Start with { . No markdown fences, no preface, no trailing commentary.
+
+            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","explicitContent":"","interpretation":"","emotionalArc":"","relationship":"","season":"","dayparts":[],"content":"","setting":"","narrative":"","social":"","language":"","context":"","style":"","tempo":0.0,"intimacy":0.0,"weather":"","color":"","vocal":"","vocalGender":"","genre":""}
+
+            Constraints:
+            - primaryMoods: 1-3 precise narrator emotions ranked by importance (yearning, nostalgic, anxious, resentful, euphoric). Avoid vague sad/happy when a sharper word fits.
+            - secondaryMoods: 0-2 supporting emotions. themes: ideas/conflicts, not mood synonyms.
+            - energy = intensity of the words. valence = positivity of the feeling. emotion = how strongly it is felt. tempo = how fast the story moves. These are literary, never production.
+            - summary: 2-4 sentences in the lyric language. Paraphrase the speaker, want/conflict, turn, ending. Call the speaker the narrator, never the artist. Do not quote lyric lines.
+            - Distinguish metaphor, fantasy, threat, irony, and hyperbole from literal events.
+            - vocal, vocalGender, genre stay empty unless the words themselves state them.
+            - Leave unsupported fields empty. Do not invent biography, season, weather, or setting.
+
+            Lyrics:
+            \(body)
+            """
         case .generic:
             return """
             Analyze these lyrics for recommendations. JSON only:
@@ -266,6 +291,17 @@ enum LyricModelPrompts {
             Lyrics:
             \(body)
             """
+        case .gemini:
+            return """
+            Retell the lyric story in the lyric language. One JSON object only, start with {.
+
+            {"summary":"..."}
+
+            2-4 sentences. Speaker, desire or conflict, turn, ending. Paraphrase — do not quote. No task or language labels.
+
+            Lyrics:
+            \(body)
+            """
         case .generic:
             return """
             {"summary":"accurate lyric story"}
@@ -309,6 +345,20 @@ enum LyricModelPrompts {
             Emit JSON only, no explanation:
             {"ids":["id"]}
             Listed ids only. Prefer Taste continuity, then a slight contrast that keeps the same body of sound. Crush out-of-lane tracks.
+            Taste:
+            \(taste)
+            Candidates:
+            \(candidates)
+            """
+        case .gemini:
+            return """
+            Sequence a personal radio for purpose=\(purpose). Use listed ids only.
+
+            Return one JSON object and start it immediately:
+            {"ids":["id"]}
+
+            Keep a coherent listen: same lyric lane and emotionalArc as Taste, then vocal/energy/BPM continuity. Preferred artists are a slight lean. Avoid three songs by one artist in a row. Drop out-of-lane tracks. No markdown.
+
             Taste:
             \(taste)
             Candidates:
@@ -383,12 +433,70 @@ enum LyricModelPrompts {
             Candidates:
             \(candidates)
             """
+        case .gemini:
+            return """
+            Build the mix "\(title)" from listed ids only. \(context)
+            Stay in the locked lane — do not invent a new mood:
+            mood: \(brief.mood)
+            theme: \(brief.theme)
+            audio: \(brief.audioFeel)
+            Today's listens are the weather. Sequence one room, not a shuffle.
+
+            One JSON object, start with {:
+            {"ids":["id"],"subtitle":"한 줄"}
+
+            Today:
+            \(today)
+            Candidates:
+            \(candidates)
+            """
         case .generic:
             return """
             {"ids":[],"subtitle":""}
             \(brief.mood) / \(brief.audioFeel)
             \(today)
             \(candidates)
+            """
+        }
+    }
+
+    static func radioProgram(
+        family: LyricModelFamily,
+        keep: Int,
+        lane: String,
+        seed: String,
+        recent: String,
+        candidates: String,
+        extras: String
+    ) -> String {
+        switch family {
+        case .gemini:
+            return """
+            You are programming the next personal-radio block. Listed library ids only.
+
+            Return one JSON object and start writing it immediately:
+            {"ids":[]}
+
+            Keep exactly \(keep) ids. Discard the rest. Order them as one listen: lyric story, vocal continuity, energy, measured BPM walk. Do not jump BPM or mood unless Recent already did. Preferred artists are a slight lean, never a block. Avoid three songs by one artist in a row. Never invent ids. No markdown, no analysis text.
+
+            Lane: \(lane)
+            Seed: \(seed)
+            Recent: \(recent)
+            Candidates:
+            \(candidates)
+            \(extras)
+            """
+        default:
+            return """
+            Program the next radio block. JSON only, start the ids array immediately:
+            {"ids":[]}
+            Keep exactly \(keep) listed ids. Discard the rest. Order them as a listen: lyric story, vocal, energy, measured BPM. Walk BPM instead of jumping. Preferred artists are a slight lean. Avoid three songs by one artist in a row.
+            Lane: \(lane)
+            Seed: \(seed)
+            Recent: \(recent)
+            Candidates:
+            \(candidates)
+            \(extras)
             """
         }
     }

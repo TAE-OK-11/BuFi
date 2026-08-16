@@ -36,6 +36,37 @@ enum LyricIntelligenceProviderKind: String, CaseIterable, Identifiable, Sendable
     }
 }
 
+enum RadioModelOption: String, CaseIterable, Identifiable, Sendable {
+    case groqOSS120 = "openai/gpt-oss-120b"
+    case groqQwen = "qwen/qwen3.6-27b"
+    case groqOSS20 = "openai/gpt-oss-20b"
+    case geminiFlash = "gemini-3.7-flash"
+    case geminiFlashLite = "gemini-3.6-flash-lite"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .groqOSS120: "Groq · GPT-OSS 120B"
+        case .groqQwen: "Groq · Qwen 3.6 27B"
+        case .groqOSS20: "Groq · GPT-OSS 20B"
+        case .geminiFlash: "Gemini 3.7 Flash"
+        case .geminiFlashLite: "Gemini 3.6 Flash Lite"
+        }
+    }
+
+    var provider: LyricIntelligenceProviderKind {
+        switch self {
+        case .groqOSS120, .groqQwen, .groqOSS20: .groq
+        case .geminiFlash, .geminiFlashLite: .googleAI
+        }
+    }
+
+    static func resolved(_ raw: String) -> RadioModelOption {
+        RadioModelOption(rawValue: raw) ?? .groqOSS120
+    }
+}
+
 struct LyricSignature: Codable, Equatable, Sendable {
     var songID: String
     var lyricsHash: String
@@ -1463,6 +1494,7 @@ struct LyricIntelligenceSettings: Sendable {
     var cerebrasModel: String = "llama-3.3-70b"
     var geminiKey: String = ""
     var geminiModel: String = LyricIntelligenceSettings.defaultGeminiModel
+    var radioModel: String = LyricIntelligenceSettings.defaultRadioModel
     var userPrompt: String = ""
 
     static let providerKey = "lyric-intelligence-provider"
@@ -1480,8 +1512,10 @@ struct LyricIntelligenceSettings: Sendable {
     static let defaultGroqModel = "openai/gpt-oss-120b"
     static let defaultCerebrasModel = "llama-3.3-70b"
     static let defaultGeminiModel = "gemini-3.7-flash"
+    static let defaultRadioModel = radioPrimaryModel
     static let geminiFlashModel = "gemini-3.7-flash"
     static let geminiFlashLiteModel = "gemini-3.6-flash-lite"
+    static let radioModelKey = "lyric-intelligence-radio-model"
     static let radioPrimaryModel = "openai/gpt-oss-120b"
     static let radioSecondaryModel = "qwen/qwen3.6-27b"
     static let radioFallbackModel = "openai/gpt-oss-20b"
@@ -1536,6 +1570,11 @@ struct LyricIntelligenceSettings: Sendable {
                 defaults: defaults,
                 key: geminiModelKey,
                 fallback: defaultGeminiModel
+            ),
+            radioModel: storedModel(
+                defaults: defaults,
+                key: radioModelKey,
+                fallback: defaultRadioModel
             ),
             userPrompt: defaults.string(forKey: userPromptKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
