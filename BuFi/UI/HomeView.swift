@@ -423,17 +423,20 @@ struct HomePresentation: Sendable {
         input: HomePresentationInput
     ) async -> HomePresentation {
         guard !Task.isCancelled else { return .empty }
-        let lyricIndex = await LyricIntelligence.shared.index()
-        let recent = await ListeningHistoryStore.shared.recommendationSnapshot()
-            .recentSongs
+        async let lyricIndexTask = LyricIntelligence.shared.index()
+        async let recentTask = ListeningHistoryStore.shared.recommendationSnapshot()
+        let lyricIndex = await lyricIndexTask
+        let recent = await recentTask.recentSongs
         guard !Task.isCancelled else { return .empty }
         let value = make(input: input, lyricIndex: lyricIndex)
-        let mixes = await PersonalizedMixLLM.apply(
-            to: value.personalizedMixes,
-            snapshot: input.snapshot,
-            recent: recent,
-            lyricIndex: lyricIndex
-        )
+        let mixes = await AsyncDeadline.first(seconds: 2.2) {
+            await PersonalizedMixLLM.apply(
+                to: value.personalizedMixes,
+                snapshot: input.snapshot,
+                recent: recent,
+                lyricIndex: lyricIndex
+            )
+        } ?? value.personalizedMixes
         guard !Task.isCancelled else { return .empty }
         return HomePresentation(
             personalizedMixes: mixes,

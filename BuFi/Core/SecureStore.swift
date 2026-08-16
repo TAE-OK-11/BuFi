@@ -106,6 +106,17 @@ actor SecureStore {
         return String(data: data, encoding: .utf8)
     }
 
+    func loadSecrets(accounts: [String]) -> [String: String] {
+        var result: [String: String] = [:]
+        result.reserveCapacity(accounts.count)
+        for account in accounts {
+            if let value = loadSecret(account: account), !value.isEmpty {
+                result[account] = value
+            }
+        }
+        return result
+    }
+
     func deleteSecret(account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

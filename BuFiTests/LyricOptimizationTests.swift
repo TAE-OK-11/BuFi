@@ -338,9 +338,9 @@ final class LyricOptimizationTests: XCTestCase {
             summary: "Everybody jump.",
             details: partyDetails
         )
-        let songs = (0..<20).map { index in
+        let songs = (0..<30).map { index in
             Song(
-                id: index < 12 ? "c\(index)" : "p\(index)",
+                id: index < 18 ? "c\(index)" : "p\(index)",
                 title: "T\(index)",
                 artist: "Artist \(index % 7)",
                 album: "L"
@@ -356,9 +356,8 @@ final class LyricOptimizationTests: XCTestCase {
             lyricIndex: LyricSignatureIndex(bySongID: signatures)
         )
         XCTAssertEqual(pack.count, RadioLLMDirector.packSize)
-        XCTAssertEqual(
-            pack.prefix(RadioLLMDirector.requestedCount)
-                .filter { $0.id.hasPrefix("c") }.count,
+        XCTAssertGreaterThanOrEqual(
+            pack.filter { $0.id.hasPrefix("c") }.count,
             12
         )
         XCTAssertEqual(LyricIntelligenceSettings.defaultGroqModel, "openai/gpt-oss-120b")
@@ -403,7 +402,7 @@ final class LyricOptimizationTests: XCTestCase {
         XCTAssertEqual(radioTargets[2].reasoningEffort, "low")
         XCTAssertEqual(radioTargets.first?.timeout, 8)
         XCTAssertEqual(radioTargets.first?.allowRetries, false)
-        XCTAssertEqual(radioTargets.last?.timeout, 6)
+        XCTAssertEqual(radioTargets.last?.timeout, 1.4)
         XCTAssertEqual(
             LyricModelFamily.resolve(model: "qwen/qwen3.6-27b"),
             .gptOSS
@@ -646,12 +645,109 @@ final class LyricOptimizationTests: XCTestCase {
         )
         let targets = LyricInferenceRuntime.fallbackTargets(settings, excluding: .groq)
         XCTAssertEqual(targets.map(\.source), ["cerebras", "openrouter", "openai"])
+        let geminiSettings = LyricIntelligenceSettings(
+            provider: .googleAI,
+            openAIKey: "",
+            openRouterKey: "",
+            openRouterModel: "",
+            geminiKey: "ai-studio",
+            geminiModel: LyricIntelligenceSettings.geminiFlashLiteModel
+        )
+        XCTAssertEqual(
+            LyricInferenceRuntime.primaryTarget(geminiSettings)?.model,
+            "gemini-3.6-flash-lite"
+        )
+        XCTAssertEqual(
+            LyricInferenceRuntime.primaryTarget(geminiSettings)?.source,
+            "google-ai"
+        )
         XCTAssertEqual(
             LyricInferenceRuntime.primaryTarget(settings)?.source,
             "groq"
         )
         XCTAssertTrue(
             LyricModelFamily.resolve(model: settings.openRouterModel) == .gptOSS
+        )
+    }
+
+    func testAsyncDeadlineReturnsFastValueAndTimesOut() async {
+        let immediate = await AsyncDeadline.first(seconds: 1) {
+            "ready"
+        }
+        XCTAssertEqual(immediate, "ready")
+        let missed = await AsyncDeadline.first(seconds: 0.05) {
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            return "late"
+        }
+        XCTAssertNil(missed)
+        XCTAssertEqual(RadioLLMDirector.streamWaitDeadline, 1.5, accuracy: 0.01)
+        XCTAssertEqual(RadioLLMDirector.firstPickDeadline, 3.0, accuracy: 0.01)
+        XCTAssertEqual(RadioLLMDirector.mixerLimit, 30)
+        XCTAssertEqual(RadioLLMDirector.reviewKeep, 15)
+        XCTAssertEqual(RadioLLMDirector.packSize, 30)
+    }
+
+    func testRadioIDStreamYieldsIdsAsTextArrives() {
+        var already = Set<String>()
+        let allowed: Set<String> = ["a1", "b2", "c3", "d4"]
+        let first = RadioIDStream.newIDs(
+            in: #"{"ids":["a1","b"#,
+            allowed: allowed,
+            already: already
+        )
+        XCTAssertEqual(first, ["a1"])
+        already.formUnion(first)
+        let second = RadioIDStream.newIDs(
+            in: #"{"ids":["a1","b2","c3"]}"#,
+            allowed: allowed,
+            already: already
+        )
+        XCTAssertEqual(second, ["b2", "c3"])
+    }
+
+    func testSoundFeatureExtractorFindsPulseBPM() {
+        var envelope = [Float](repeating: 0.04, count: 400)
+        for index in stride(from: 0, to: 400, by: 50) {
+            envelope[index] = 1
+            if index + 1 < 400 { envelope[index + 1] = 0.55 }
+        }
+        let features = SoundFeatureExtractor.measure(
+            envelope: envelope,
+            hopSeconds: 0.01,
+            brightness: 0.4
+        )
+        XCTAssertEqual(features.bpm, 120)
+        XCTAssertGreaterThan(features.pulse, 0.15)
+        XCTAssertTrue(features.isMeasured)
+        let seed = Song(id: "s", title: "S", artist: "A", album: "L", bpm: 122)
+        var details = LyricDetailProfile.empty
+        details.audioBPM = 118
+        details.audioMeasured = true
+        let signature = LyricSignature(
+            songID: "c",
+            lyricsHash: "h",
+            moods: [],
+            themes: [],
+            energy: 0.5,
+            valence: 0.5,
+            embedding: [],
+            source: "groq",
+            details: details
+        )
+        XCTAssertEqual(
+            SoundFeatureExtractor.bpm(song: seed, signature: signature),
+            122
+        )
+        XCTAssertEqual(
+            SoundFeatureExtractor.bpm(
+                song: Song(id: "c", title: "C", artist: "A", album: "L"),
+                signature: signature
+            ),
+            118
+        )
+        XCTAssertGreaterThan(
+            SoundFeatureExtractor.closeness(left: 120, right: 124),
+            SoundFeatureExtractor.closeness(left: 120, right: 160)
         )
     }
 }

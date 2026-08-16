@@ -573,6 +573,8 @@ struct RecommendationSettingsView: View {
     private var groqModel = LyricIntelligenceSettings.defaultGroqModel
     @AppStorage("lyric-intelligence-cerebras-model")
     private var cerebrasModel = LyricIntelligenceSettings.defaultCerebrasModel
+    @AppStorage("lyric-intelligence-gemini-model")
+    private var geminiModel = LyricIntelligenceSettings.defaultGeminiModel
     @AppStorage("recommendation-llm-review-enabled")
     private var llmReviewEnabled = false
     @AppStorage("lyric-intelligence-user-prompt")
@@ -580,6 +582,7 @@ struct RecommendationSettingsView: View {
     @State private var openAIKey = ""
     @State private var openRouterKey = ""
     @State private var groqKey = ""
+    @State private var geminiKey = ""
     @State private var cerebrasKey = ""
 
     var body: some View {
@@ -700,6 +703,45 @@ struct RecommendationSettingsView: View {
                             .buttonStyle(SettingsActionButtonStyle())
                             .disabled(
                                 groqKey
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                                    .isEmpty
+                            )
+                        }
+                        if lyricProviderRaw == LyricIntelligenceProviderKind.googleAI.rawValue {
+                            Picker("Gemini 모델", selection: $geminiModel) {
+                                Text("Gemini 3.7 Flash (기본)").tag(
+                                    LyricIntelligenceSettings.geminiFlashModel
+                                )
+                                Text("Gemini 3.6 Flash Lite").tag(
+                                    LyricIntelligenceSettings.geminiFlashLiteModel
+                                )
+                            }
+                            .pickerStyle(.menu)
+                            TextField("Gemini 모델 ID", text: $geminiModel)
+                                .settingsTextField()
+                            SecureField(
+                                session.hasGeminiKey
+                                    ? "저장된 Google AI Studio 키 교체"
+                                    : "Google AI Studio API 키",
+                                text: $geminiKey
+                            )
+                            .settingsTextField()
+                            Button(
+                                session.hasGeminiKey
+                                    ? "Google AI Studio 키 갱신"
+                                    : "Google AI Studio 키 저장"
+                            ) {
+                                Task {
+                                    await model.saveLyricAPIKey(
+                                        geminiKey,
+                                        provider: .googleAI
+                                    )
+                                    geminiKey = ""
+                                }
+                            }
+                            .buttonStyle(SettingsActionButtonStyle())
+                            .disabled(
+                                geminiKey
                                     .trimmingCharacters(in: .whitespacesAndNewlines)
                                     .isEmpty
                             )
@@ -1313,7 +1355,9 @@ struct RecommendationSettingsView: View {
         case .openRouter:
             String(localized: "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         case .groq:
-            String(localized: "라디오 기본은 Groq GPT-OSS 120B(추론 medium)이고, 실패하면 같은 키의 Llama 3.3 70B로 넘어갑니다. 가사 분석은 아래에서 고른 모델을 씁니다.")
+            String(localized: "라디오 기본은 Groq GPT-OSS 120B이고, 실패하면 Qwen 3.6 27B와 GPT-OSS 20B로 넘어갑니다. 가사 분석은 아래에서 고른 모델을 씁니다.")
+        case .googleAI:
+            String(localized: "Google AI Studio의 Gemini로 가사를 읽습니다. 기본은 3.7 Flash이고, 더 빠르게 쓰려면 3.6 Flash Lite를 고르면 됩니다.")
         case .cerebras:
             String(localized: "Cerebras도 Llama 3.3 70B와 GPT-OSS 120B에 각각 다른 프롬프트를 씁니다. 결과는 로컬에 남습니다.")
         }

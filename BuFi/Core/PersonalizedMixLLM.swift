@@ -14,21 +14,13 @@ enum PersonalizedMixLLM {
         let calendar = Calendar.current
         let hour = calendar.component(.hour, from: date)
         let month = calendar.component(.month, from: date)
-        let today = recent.prefix(8).map { song in
+        let today = recent.prefix(6).map { song in
             card(song, lyricIndex: lyricIndex)
         }.joined(separator: "\n")
         var remaining = mixes
         var selected: [PersonalizedMix] = []
         if let index = remaining.firstIndex(where: { $0.kind == .daylist }) {
             selected.append(remaining.remove(at: index))
-        }
-        if family != .appleFoundation {
-            for kindIDPrefix in ["happy-mix", "chill-mix", "love-mix", "upbeat-mix"] {
-                guard let index = remaining.firstIndex(where: {
-                    $0.id.hasPrefix(kindIDPrefix)
-                }) else { continue }
-                selected.append(remaining.remove(at: index))
-            }
         }
         let refined = await withTaskGroup(
             of: (String, PersonalizedMix).self,

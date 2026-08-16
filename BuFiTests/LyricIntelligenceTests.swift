@@ -153,8 +153,13 @@ final class LyricIntelligenceTests: XCTestCase {
     func testGroqAndCerebrasAreSelectableProviders() {
         XCTAssertEqual(LyricIntelligenceProviderKind.groq.title, "Groq")
         XCTAssertEqual(LyricIntelligenceProviderKind.cerebras.title, "Cerebras")
+        XCTAssertEqual(
+            LyricIntelligenceProviderKind.googleAI.title,
+            "Google AI Studio"
+        )
         XCTAssertTrue(LyricIntelligenceProviderKind.groq.isVisibleInSettings)
         XCTAssertTrue(LyricIntelligenceProviderKind.cerebras.isVisibleInSettings)
+        XCTAssertTrue(LyricIntelligenceProviderKind.googleAI.isVisibleInSettings)
         XCTAssertEqual(
             LyricIntelligenceSettings.keychainAccount(for: .groq),
             "groq-api-key"
@@ -162,6 +167,22 @@ final class LyricIntelligenceTests: XCTestCase {
         XCTAssertEqual(
             LyricIntelligenceSettings.keychainAccount(for: .cerebras),
             "cerebras-api-key"
+        )
+        XCTAssertEqual(
+            LyricIntelligenceSettings.keychainAccount(for: .googleAI),
+            "google-ai-studio-api-key"
+        )
+        XCTAssertEqual(
+            LyricIntelligenceSettings.defaultGeminiModel,
+            "gemini-3.7-flash"
+        )
+        XCTAssertEqual(
+            LyricIntelligenceSettings.geminiFlashLiteModel,
+            "gemini-3.6-flash-lite"
+        )
+        XCTAssertEqual(
+            LyricModelFamily.resolve(model: "gemini-3.7-flash"),
+            .gptOSS
         )
         let suite = "BuFi.LyricIntelligenceTests.groq.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else {
@@ -602,7 +623,7 @@ final class LyricIntelligenceTests: XCTestCase {
     }
 
     func testCachePolicyReusesMatchingLyricAndSoundOnly() {
-        let stored = LyricSignature(
+        var stored = LyricSignature(
             songID: "one",
             lyricsHash: "lyrics-a",
             moods: ["calm"],
@@ -618,6 +639,9 @@ final class LyricIntelligenceTests: XCTestCase {
             soundSource: "coreml-sound-analysis",
             summary: "Walking alone after midnight.\nThe rain keeps your name."
         )
+        stored.details.audioBPM = 96
+        stored.details.audioEnergy = 0.4
+        stored.details.audioMeasured = true
         XCTAssertTrue(
             LyricAnalysisCachePolicy.shouldReuseLyric(
                 existing: stored,

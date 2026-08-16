@@ -56,7 +56,7 @@ struct LyricAnalysisCoverage: Equatable, Sendable {
                     hasSound: signature.hasStoredSoundAnalysis
                 )
                 done.append(entry)
-                if !entry.hasSound {
+                if !entry.hasSound || !signature.details.audioMeasured {
                     needsSound.append(entry)
                 }
                 if !signature.hasStoredSummary {

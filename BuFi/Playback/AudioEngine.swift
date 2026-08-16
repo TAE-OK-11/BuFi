@@ -1277,7 +1277,11 @@ final class AudioEngine: NSObject, ObservableObject {
     private var queueRestorationGeneration: UInt64 = 0
     private var songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)?
     private var autoplayContinuationProvider:
-        (@MainActor (Song, Set<String>) async -> [Song])?
+        (@MainActor (
+            Song,
+            Set<String>,
+            @escaping @MainActor (Song) -> Void
+        ) async -> [Song])?
     private var songChangeHandler: (@MainActor (Song) -> Void)?
     private var itemObservation: NSKeyValueObservation?
     private weak var logicalCurrentItem: AVPlayerItem?
@@ -1423,7 +1427,11 @@ final class AudioEngine: NSObject, ObservableObject {
         historySession: AccountSessionToken? = nil,
         songFavoriteMutationHandler: (@MainActor (Song) async -> Bool)? = nil,
         autoplayContinuationProvider:
-            (@MainActor (Song, Set<String>) async -> [Song])? = nil,
+            (@MainActor (
+                Song,
+                Set<String>,
+                @escaping @MainActor (Song) -> Void
+            ) async -> [Song])? = nil,
         songChangeHandler: (@MainActor (Song) -> Void)? = nil
     ) {
         playbackSessionGeneration &+= 1
@@ -1965,7 +1973,22 @@ final class AudioEngine: NSObject, ObservableObject {
         let generation = autoplayGeneration
         let excludedIDs = Set(queue.map(\.id))
         autoplayTask = Task { [weak self] in
-            let candidates = await provider(seed, excludedIDs)
+            var streamed = false
+            let candidates = await provider(seed, excludedIDs) { song in
+                guard let self,
+                      generation == self.autoplayGeneration,
+                      self.algorithmicAutoplayEnabled else {
+                    return
+                }
+                if self.appendAutoplaySong(song) {
+                    streamed = true
+                    if self.autoplayShouldAdvance {
+                        self.autoplayShouldAdvance = false
+                        self.isBuffering = false
+                        self.next(isAutoAdvance: true)
+                    }
+                }
+            }
             guard let self,
                   !Task.isCancelled,
                   generation == self.autoplayGeneration else {
@@ -1989,23 +2012,42 @@ final class AudioEngine: NSObject, ObservableObject {
             let shouldAdvance = self.autoplayShouldAdvance
             self.autoplayShouldAdvance = false
 
-            guard !additions.isEmpty else {
-                if shouldAdvance { self.pause() }
-                return
+            if !additions.isEmpty {
+                let appendedEntries = self.playbackState.entries
+                    + additions.map { PlaybackQueueEntry(song: $0) }
+                self.replaceQueue(appendedEntries, index: self.queueIndex)
+                self.updateRemoteCommands()
+                self.updateNowPlaying()
+                self.scheduleNetworkPrefetch()
+                self.scheduleOfflinePrefetch()
+                self.scheduleQueueSave(immediate: true)
             }
-            let appendedEntries = self.playbackState.entries
-                + additions.map { PlaybackQueueEntry(song: $0) }
-            self.replaceQueue(appendedEntries, index: self.queueIndex)
-            self.updateRemoteCommands()
-            self.updateNowPlaying()
-            self.scheduleNetworkPrefetch()
-            self.scheduleOfflinePrefetch()
-            self.scheduleQueueSave(immediate: true)
             if shouldAdvance {
-                self.isBuffering = false
-                self.next(isAutoAdvance: true)
+                if streamed || !additions.isEmpty {
+                    self.isBuffering = false
+                    self.next(isAutoAdvance: true)
+                } else {
+                    self.pause()
+                }
             }
         }
+    }
+
+    @discardableResult
+    private func appendAutoplaySong(_ song: Song) -> Bool {
+        guard song.externalStreamURL == nil,
+              !queue.contains(where: { $0.id == song.id }) else {
+            return false
+        }
+        let appendedEntries = playbackState.entries
+            + [PlaybackQueueEntry(song: song)]
+        replaceQueue(appendedEntries, index: queueIndex)
+        updateRemoteCommands()
+        updateNowPlaying()
+        scheduleNetworkPrefetch()
+        scheduleOfflinePrefetch()
+        scheduleQueueSave(immediate: true)
+        return true
     }
 
     func previous() {

@@ -7,6 +7,7 @@ enum LyricIntelligenceProviderKind: String, CaseIterable, Identifiable, Sendable
     case openAI
     case openRouter
     case groq
+    case googleAI
     case cerebras
 
     var id: String { rawValue }
@@ -19,6 +20,7 @@ enum LyricIntelligenceProviderKind: String, CaseIterable, Identifiable, Sendable
         case .openAI: "OpenAI"
         case .openRouter: "OpenRouter"
         case .groq: "Groq"
+        case .googleAI: "Google AI Studio"
         case .cerebras: "Cerebras"
         }
     }
@@ -212,6 +214,8 @@ struct LyricSignature: Codable, Equatable, Sendable {
             "OpenRouter"
         case "groq":
             "Groq"
+        case "google-ai", "googleai", "gemini":
+            "Google AI Studio"
         case "cerebras":
             "Cerebras"
         case "manual":
@@ -232,7 +236,8 @@ enum LyricAnalysisCachePolicy {
 
     static func shouldReuseSound(existing: LyricSignature?, audioRevision: String) -> Bool {
         guard let existing, !audioRevision.isEmpty else { return false }
-        return existing.audioRevision == audioRevision && existing.hasStoredSoundAnalysis
+        return existing.audioRevision == audioRevision
+            && existing.hasStoredSoundAnalysis
     }
 }
 
@@ -985,42 +990,54 @@ actor LyricIntelligence {
             }
             progress.currentTitle = song.title
             batchProgress = progress
-            let lyrics = await lyricsProvider(song)
-            let hadLyrics = lyrics.count >= 24
-            var reused = false
-            if hadLyrics {
-                let hash = LyricLexicalEmbedding.hash(lyrics)
-                let missingSummary = !(signatures[song.id]?.hasStoredSummary ?? false)
-                reused = !force
-                    && !missingSummary
-                    && LyricAnalysisCachePolicy.shouldReuseLyric(
-                        existing: signatures[song.id],
-                        lyricsHash: hash
-                    )
-                await analyze(
-                    song: song,
-                    lyrics: lyrics,
-                    hash: hash,
-                    force: force || missingSummary,
-                    settings: settings
-                )
-            }
-            switch LyricBatchAccounting.outcome(
-                hadLyrics: hadLyrics,
-                reusedCache: reused,
-                storedAnalysis: signatures[song.id]?.hasStoredLyricAnalysis == true
-            ) {
-            case .cached:
+            let existing = signatures[song.id]
+            let lyricDone = !force
+                && existing?.hasStoredLyricAnalysis == true
+                && existing?.hasStoredSummary == true
+            let soundDone = existing?.hasStoredSoundAnalysis == true
+                && existing?.details.audioMeasured == true
+            async let lyricsTask = lyricDone ? "" : lyricsProvider(song)
+            async let fileTask = soundDone ? nil : fileProvider(song)
+            let lyrics = await lyricsTask
+            if lyricDone {
                 progress.cached += 1
-            case .analyzed:
-                progress.analyzed += 1
-            case .failed:
-                progress.failed += 1
-            case .noLyrics:
-                progress.noLyrics += 1
+            } else {
+                let hadLyrics = lyrics.count >= 24
+                var reused = false
+                if hadLyrics {
+                    let hash = LyricLexicalEmbedding.hash(lyrics)
+                    let missingSummary = !(signatures[song.id]?.hasStoredSummary ?? false)
+                    reused = !force
+                        && !missingSummary
+                        && LyricAnalysisCachePolicy.shouldReuseLyric(
+                            existing: signatures[song.id],
+                            lyricsHash: hash
+                        )
+                    await analyze(
+                        song: song,
+                        lyrics: lyrics,
+                        hash: hash,
+                        force: force || missingSummary,
+                        settings: settings
+                    )
+                }
+                switch LyricBatchAccounting.outcome(
+                    hadLyrics: hadLyrics,
+                    reusedCache: reused,
+                    storedAnalysis: signatures[song.id]?.hasStoredLyricAnalysis == true
+                ) {
+                case .cached:
+                    progress.cached += 1
+                case .analyzed:
+                    progress.analyzed += 1
+                case .failed:
+                    progress.failed += 1
+                case .noLyrics:
+                    progress.noLyrics += 1
+                }
             }
-            if let fileURL = await fileProvider(song) {
-                let before = signatures[song.id]?.hasStoredSoundAnalysis ?? false
+            if !soundDone, let fileURL = await fileTask {
+                let beforeMeasured = signatures[song.id]?.details.audioMeasured ?? false
                 let revision = song.audioResourceRevision.isEmpty
                     ? song.id
                     : song.audioResourceRevision
@@ -1029,7 +1046,7 @@ actor LyricIntelligence {
                     fileURL: fileURL,
                     audioRevision: revision
                 )
-                if !before, signatures[song.id]?.hasStoredSoundAnalysis == true {
+                if !beforeMeasured, signatures[song.id]?.details.audioMeasured == true {
                     progress.soundAnalyzed += 1
                 }
             }
@@ -1217,6 +1234,13 @@ actor LyricIntelligence {
             if signature.details.vocalGender.isEmpty {
                 signature.details.vocalGender = previous.details.vocalGender
             }
+            if !signature.details.audioMeasured, previous.details.audioMeasured {
+                signature.details.audioBPM = previous.details.audioBPM
+                signature.details.audioEnergy = previous.details.audioEnergy
+                signature.details.audioBrightness = previous.details.audioBrightness
+                signature.details.audioPulse = previous.details.audioPulse
+                signature.details.audioMeasured = true
+            }
         }
         signatures[song.id] = signature
         await persist(signature)
@@ -1227,15 +1251,30 @@ actor LyricIntelligence {
         fileURL: URL,
         audioRevision: String
     ) async {
-        if LyricAnalysisCachePolicy.shouldReuseSound(
-            existing: signatures[song.id],
+        let existing = signatures[song.id]
+        let labelsReady = LyricAnalysisCachePolicy.shouldReuseSound(
+            existing: existing,
             audioRevision: audioRevision
-        ) {
+        )
+        if labelsReady, existing?.details.audioMeasured == true {
             return
         }
         guard soundInFlight.insert(song.id).inserted else { return }
         defer { soundInFlight.remove(song.id) }
+        if labelsReady {
+            await applyAudioFeatures(
+                to: song.id,
+                features: localAudioFeatures(fileURL: fileURL, song: song),
+                revision: audioRevision
+            )
+            return
+        }
         guard let analyzed = await SoundAnalysisClassifier.analyzeFile(at: fileURL) else {
+            await applyAudioFeatures(
+                to: song.id,
+                features: localAudioFeatures(fileURL: fileURL, song: song),
+                revision: audioRevision
+            )
             return
         }
         var signature = signatures[song.id] ?? LyricSignature(
@@ -1266,6 +1305,19 @@ actor LyricIntelligence {
                 signature.details = current.details
             }
         }
+        var features = SoundFeatureExtractor.Features(
+            bpm: analyzed.bpm,
+            energy: analyzed.energy,
+            brightness: analyzed.brightness,
+            pulse: analyzed.pulse
+        )
+        if !features.isMeasured || features.bpm == 0 {
+            features = mergeAudioFeatures(
+                features,
+                localAudioFeatures(fileURL: fileURL, song: song)
+            )
+        }
+        writeAudioFeatures(&signature.details, features)
         if signature.details.vocalGender.isEmpty {
             signature.details.vocalGender = SoundAnalysisClassifier.vocalGender(
                 from: analyzed.labels
@@ -1273,6 +1325,67 @@ actor LyricIntelligence {
         }
         signatures[song.id] = signature
         await persist(signature)
+    }
+
+    private func applyAudioFeatures(
+        to songID: String,
+        features: SoundFeatureExtractor.Features,
+        revision: String
+    ) async {
+        guard features.isMeasured || features.bpm > 0 else { return }
+        var signature = signatures[songID] ?? LyricSignature(
+            songID: songID,
+            lyricsHash: "",
+            moods: [],
+            themes: [],
+            energy: 0.5,
+            valence: 0.5,
+            embedding: [],
+            source: ""
+        )
+        if signature.audioRevision.isEmpty {
+            signature.audioRevision = revision
+        }
+        writeAudioFeatures(&signature.details, features)
+        signatures[songID] = signature
+        await persist(signature)
+    }
+
+    private func localAudioFeatures(
+        fileURL: URL,
+        song: Song
+    ) -> SoundFeatureExtractor.Features {
+        var features = SoundFeatureExtractor.estimateFile(at: fileURL)
+            ?? .empty
+        if features.bpm == 0, let bpm = song.bpm, bpm > 0 {
+            features.bpm = bpm
+        }
+        return features
+    }
+
+    private func mergeAudioFeatures(
+        _ primary: SoundFeatureExtractor.Features,
+        _ fallback: SoundFeatureExtractor.Features
+    ) -> SoundFeatureExtractor.Features {
+        SoundFeatureExtractor.Features(
+            bpm: primary.bpm > 0 ? primary.bpm : fallback.bpm,
+            energy: primary.energy > 0 ? primary.energy : fallback.energy,
+            brightness: primary.brightness > 0 ? primary.brightness : fallback.brightness,
+            pulse: primary.pulse > 0 ? primary.pulse : fallback.pulse
+        )
+    }
+
+    private func writeAudioFeatures(
+        _ details: inout LyricDetailProfile,
+        _ features: SoundFeatureExtractor.Features
+    ) {
+        if features.bpm > 0 { details.audioBPM = features.bpm }
+        if features.energy > 0 { details.audioEnergy = features.energy }
+        if features.brightness > 0 { details.audioBrightness = features.brightness }
+        if features.pulse > 0 { details.audioPulse = features.pulse }
+        details.audioMeasured = details.audioBPM > 0
+            || details.audioPulse > 0
+            || details.audioEnergy > 0
     }
 
     private func loadIfNeeded() async {
@@ -1348,20 +1461,27 @@ struct LyricIntelligenceSettings: Sendable {
     var groqModel: String = LyricIntelligenceSettings.defaultGroqModel
     var cerebrasKey: String = ""
     var cerebrasModel: String = "llama-3.3-70b"
+    var geminiKey: String = ""
+    var geminiModel: String = LyricIntelligenceSettings.defaultGeminiModel
     var userPrompt: String = ""
 
     static let providerKey = "lyric-intelligence-provider"
     static let openRouterModelKey = "lyric-intelligence-openrouter-model"
     static let groqModelKey = "lyric-intelligence-groq-model"
     static let cerebrasModelKey = "lyric-intelligence-cerebras-model"
+    static let geminiModelKey = "lyric-intelligence-gemini-model"
     static let userPromptKey = "lyric-intelligence-user-prompt"
     static let openAIAccount = "openai-api-key"
     static let openRouterAccount = "openrouter-api-key"
     static let groqAccount = "groq-api-key"
     static let cerebrasAccount = "cerebras-api-key"
+    static let geminiAccount = "google-ai-studio-api-key"
     static let defaultOpenRouterModel = "google/gemma-3-270m-it"
     static let defaultGroqModel = "openai/gpt-oss-120b"
     static let defaultCerebrasModel = "llama-3.3-70b"
+    static let defaultGeminiModel = "gemini-3.7-flash"
+    static let geminiFlashModel = "gemini-3.7-flash"
+    static let geminiFlashLiteModel = "gemini-3.6-flash-lite"
     static let radioPrimaryModel = "openai/gpt-oss-120b"
     static let radioSecondaryModel = "qwen/qwen3.6-27b"
     static let radioFallbackModel = "openai/gpt-oss-20b"
@@ -1386,7 +1506,8 @@ struct LyricIntelligenceSettings: Sendable {
         openAIKey: String = "",
         openRouterKey: String = "",
         groqKey: String = "",
-        cerebrasKey: String = ""
+        cerebrasKey: String = "",
+        geminiKey: String = ""
     ) -> LyricIntelligenceSettings {
         let raw = defaults.string(forKey: providerKey) ?? ""
         return LyricIntelligenceSettings(
@@ -1410,6 +1531,12 @@ struct LyricIntelligenceSettings: Sendable {
                 key: cerebrasModelKey,
                 fallback: defaultCerebrasModel
             ),
+            geminiKey: geminiKey,
+            geminiModel: storedModel(
+                defaults: defaults,
+                key: geminiModelKey,
+                fallback: defaultGeminiModel
+            ),
             userPrompt: defaults.string(forKey: userPromptKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         )
@@ -1417,12 +1544,16 @@ struct LyricIntelligenceSettings: Sendable {
 
     static func load(defaults: UserDefaults = .standard) async -> LyricIntelligenceSettings {
         let store = SecureStore()
+        let secrets = await store.loadSecrets(accounts: [
+            openAIAccount, openRouterAccount, groqAccount, cerebrasAccount, geminiAccount
+        ])
         return current(
             defaults: defaults,
-            openAIKey: await store.loadSecret(account: openAIAccount) ?? "",
-            openRouterKey: await store.loadSecret(account: openRouterAccount) ?? "",
-            groqKey: await store.loadSecret(account: groqAccount) ?? "",
-            cerebrasKey: await store.loadSecret(account: cerebrasAccount) ?? ""
+            openAIKey: secrets[openAIAccount] ?? "",
+            openRouterKey: secrets[openRouterAccount] ?? "",
+            groqKey: secrets[groqAccount] ?? "",
+            cerebrasKey: secrets[cerebrasAccount] ?? "",
+            geminiKey: secrets[geminiAccount] ?? ""
         )
     }
 
@@ -1436,6 +1567,7 @@ struct LyricIntelligenceSettings: Sendable {
         case .openAI: openAIAccount
         case .openRouter: openRouterAccount
         case .groq: groqAccount
+        case .googleAI: geminiAccount
         case .cerebras: cerebrasAccount
         case .off, .onDevice, .applePrivateCloud: nil
         }
@@ -1496,7 +1628,7 @@ enum LyricIntelligenceBackend {
             result = nil
         case .onDevice, .applePrivateCloud:
             result = await onDevice(lyrics: lyrics)
-        case .openAI, .openRouter, .groq, .cerebras:
+        case .openAI, .openRouter, .groq, .googleAI, .cerebras:
             if let target = LyricInferenceRuntime.primaryTarget(settings) {
                 result = await remote(
                     lyrics: lyrics,
@@ -1505,10 +1637,12 @@ enum LyricIntelligenceBackend {
                 )
             }
         }
-        if let validated = validatedLLMAnalysis(result) {
+        if let validated = validatedLLMAnalysis(result, lyrics: lyrics) {
             return validated
         }
-        guard settings.provider != .off else { return nil }
+        guard settings.provider != .off, result == nil else {
+            return validatedLLMAnalysis(result, lyrics: lyrics)
+        }
         return await fallbackLLMAnalysis(
             lyrics: lyrics,
             settings: settings,
@@ -1526,10 +1660,17 @@ enum LyricIntelligenceBackend {
         return nil
     }
 
-    private static func validatedLLMAnalysis(_ candidate: Analysis?) -> Analysis? {
+    private static func validatedLLMAnalysis(
+        _ candidate: Analysis?,
+        lyrics: String
+    ) -> Analysis? {
         guard var analysis = candidate else { return nil }
         analysis.summary = LyricIntelligencePrompt.normalizedSummary(analysis.summary)
-        guard LyricIntelligencePrompt.isContentSummary(analysis.summary) else {
+        if !LyricIntelligencePrompt.isContentSummary(analysis.summary) {
+            analysis.summary = LyricIntelligencePrompt.heuristicSummary(from: lyrics)
+        }
+        guard !analysis.moods.isEmpty
+            || LyricIntelligencePrompt.isContentSummary(analysis.summary) else {
             return nil
         }
         analysis.details.summary = analysis.summary
@@ -1546,7 +1687,8 @@ enum LyricIntelligenceBackend {
             excluding: provider
         ) {
             if let analysis = validatedLLMAnalysis(
-                await remote(lyrics: lyrics, target: target, settings: settings)
+                await remote(lyrics: lyrics, target: target, settings: settings),
+                lyrics: lyrics
             ) {
                 return analysis
             }

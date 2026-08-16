@@ -603,9 +603,10 @@ private enum SearchPersonalizedMixWork {
         selectedArtists: [String]
     ) async -> [PersonalizedMix] {
         guard !Task.isCancelled else { return [] }
-        let lyricIndex = await LyricIntelligence.shared.index()
-        let recent = await ListeningHistoryStore.shared.recommendationSnapshot()
-            .recentSongs
+        async let lyricIndexTask = LyricIntelligence.shared.index()
+        async let recentTask = ListeningHistoryStore.shared.recommendationSnapshot()
+        let lyricIndex = await lyricIndexTask
+        let recent = await recentTask.recentSongs
         guard !Task.isCancelled else { return [] }
         let value = PersonalizedMixBuilder.make(
             snapshot: snapshot,
@@ -613,12 +614,14 @@ private enum SearchPersonalizedMixWork {
             selectedArtists: selectedArtists,
             lyricIndex: lyricIndex
         )
-        let refined = await PersonalizedMixLLM.apply(
-            to: value,
-            snapshot: snapshot,
-            recent: recent,
-            lyricIndex: lyricIndex
-        )
+        let refined = await AsyncDeadline.first(seconds: 2.2) {
+            await PersonalizedMixLLM.apply(
+                to: value,
+                snapshot: snapshot,
+                recent: recent,
+                lyricIndex: lyricIndex
+            )
+        } ?? value
         return Task.isCancelled ? [] : refined
     }
 }

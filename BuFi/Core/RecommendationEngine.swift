@@ -635,12 +635,23 @@ enum RecommendationSeedAffinity {
             .contains(where: seedGenres.contains) {
             score = max(score, sameArtist ? 0.42 : 0.28)
         }
-        if let left = candidate.bpm, let right = seed.bpm, left > 0, right > 0 {
-            let delta = abs(left - right)
-            if delta <= 8 {
-                score = max(score, 0.62)
-            } else if delta <= 16 {
-                score = max(score, 0.44)
+        let leftBPM = SoundFeatureExtractor.bpm(
+            song: candidate,
+            signature: lyricIndex.bySongID[candidate.id]
+        )
+        let rightBPM = SoundFeatureExtractor.bpm(
+            song: seed,
+            signature: lyricIndex.bySongID[seed.id]
+        )
+        if leftBPM > 0, rightBPM > 0 {
+            let closeness = SoundFeatureExtractor.closeness(
+                left: leftBPM,
+                right: rightBPM
+            )
+            if closeness >= 0.58 {
+                score = max(score, 0.40 + 0.28 * closeness)
+            } else if closeness > 0 {
+                score += closeness * 0.08
             }
         }
         if lyricIndex.bySongID[seed.id] != nil,
@@ -681,7 +692,7 @@ enum RecommendationSeedAffinity {
 
 enum RecommendationScoringPolicy {
     static let scoringCandidateLimit = 360
-    static let autoplayCandidateLimit = 180
+    static let autoplayCandidateLimit = 96
 
     static func boundedCandidates(_ songs: [Song]) -> [Song] {
         guard songs.count > scoringCandidateLimit else { return songs }
@@ -777,9 +788,7 @@ enum RecommendationMixer {
         )
     }
 
-    /// Home and daylist deliberately share one concurrent job and evaluation
-    /// timestamp. Running them in parallel would compete for CPU/radio-adjacent
-    /// work and increase energy use without improving first-result latency.
+    /// Score home and daylist together, then spend the LLM budget on home only.
     @concurrent
     static func sectionsConcurrently(
         snapshot: HomeSnapshot,
@@ -791,7 +800,7 @@ enum RecommendationMixer {
         date: Date = Date()
     ) async -> (recommended: [Song], daylist: [Song]) {
         guard !Task.isCancelled else { return ([], []) }
-        let recommended = await mixConcurrently(
+        async let recommendedScored = scoreConcurrently(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
@@ -800,8 +809,7 @@ enum RecommendationMixer {
             lyricIndex: lyricIndex,
             date: date
         )
-        guard !Task.isCancelled else { return (recommended, []) }
-        let daylist = await mixConcurrently(
+        async let daylistScored = scoreConcurrently(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
@@ -810,6 +818,18 @@ enum RecommendationMixer {
             lyricIndex: lyricIndex,
             limit: 24,
             date: date
+        )
+        let scored = await recommendedScored
+        let daylist = await daylistScored
+        guard !Task.isCancelled else { return (scored, daylist) }
+        let recommended = await RecommendationLLMReview.refine(
+            songs: scored,
+            seed: seed,
+            recent: behavior.recentSongs,
+            favorites: snapshot.starredSongs,
+            lyricIndex: lyricIndex,
+            purpose: .home,
+            limit: 30
         )
         return (recommended, daylist)
     }
@@ -907,7 +927,8 @@ enum RecommendationMixer {
                 seed: $0,
                 snapshot: snapshot,
                 behavior: behavior,
-                lyricIndex: lyricIndex
+                lyricIndex: lyricIndex,
+                includeLyricNeighbors: purpose != .autoplay
             )
         } ?? []
 
@@ -942,6 +963,9 @@ enum RecommendationMixer {
 
         let sourceIndex = RecommendationSourceIndex(snapshot: snapshot)
         guard !Task.isCancelled else { return [] }
+        let recentLyricIDs = behavior.recentSongs.map(\.id)
+        let favoriteLyricIDs = snapshot.starredSongs.map(\.id)
+        let seedLyricID = resolvedSeed?.id
         let behaviorMaxPlayCount = allBehaviors.reduce(0) {
             max($0, $1.playCount)
         }
@@ -1027,7 +1051,11 @@ enum RecommendationMixer {
                 } ?? 0,
                 sourceSignals.recent
             )
-            let metadataScore = localMetadataAffinity(song)
+            var metadataScore = localMetadataAffinity(song)
+            if song.bpm == nil,
+               (lyricIndex.bySongID[song.id]?.details.audioBPM ?? 0) > 0 {
+                metadataScore = min(1, metadataScore + 0.10)
+            }
             let playlistScore = max(
                 sourceSignals.playlist,
                 songBehavior.map {
@@ -1111,14 +1139,23 @@ enum RecommendationMixer {
             weightedTotal += scoringPlan.contribution(.artistRotation, score: rotationScore)
             weightedTotal += scoringPlan.contribution(.timeAwareness, score: timeScore)
             weightedTotal += scoringPlan.contribution(.popularity, score: popularityScore)
+            let lyricScore: Double
+            if purpose == .autoplay, let seedLyricID {
+                lyricScore = lyricIndex.similarity(
+                    between: song.id,
+                    and: seedLyricID
+                )
+            } else {
+                lyricScore = lyricIndex.affinity(
+                    candidateID: song.id,
+                    recentIDs: recentLyricIDs,
+                    favoriteIDs: favoriteLyricIDs,
+                    seedID: seedLyricID
+                )
+            }
             weightedTotal += scoringPlan.contribution(
                 .lyricMood,
-                score: lyricIndex.affinity(
-                    candidateID: song.id,
-                    recentIDs: behavior.recentSongs.map(\.id),
-                    favoriteIDs: snapshot.starredSongs.map(\.id),
-                    seedID: resolvedSeed?.id
-                )
+                score: lyricScore
             )
             let score = scoringPlan.normalizedScore(weightedTotal)
             let metadataConfidence = metadataConfidence(song)
@@ -1199,7 +1236,8 @@ enum RecommendationMixer {
         seed: Song,
         snapshot: HomeSnapshot,
         behavior: RecommendationBehaviorSnapshot,
-        lyricIndex: LyricSignatureIndex
+        lyricIndex: LyricSignatureIndex,
+        includeLyricNeighbors: Bool = true
     ) -> [Song] {
         let seedArtist = RecommendationCandidateMetadata.artistKey(for: seed)
         let seedAlbum = normalized(seed.albumId ?? seed.album)
@@ -1225,18 +1263,21 @@ enum RecommendationMixer {
             }
         }
         var related: [Song] = []
-        if lyricIndex.bySongID[seed.id] != nil {
-            related = lyricIndex.bySongID.values
-                .compactMap { signature -> (Song, Double)? in
-                    guard signature.songID != seed.id,
-                          let song = byID[signature.songID] else {
-                        return nil
-                    }
-                    return (
-                        song,
-                        lyricIndex.similarity(between: seed.id, and: signature.songID)
-                    )
+        if includeLyricNeighbors, lyricIndex.bySongID[seed.id] != nil {
+            var scored: [(Song, Double)] = []
+            scored.reserveCapacity(80)
+            for song in pool {
+                guard song.id != seed.id,
+                      lyricIndex.bySongID[song.id] != nil else {
+                    continue
                 }
+                scored.append((
+                    song,
+                    lyricIndex.similarity(between: seed.id, and: song.id)
+                ))
+                if scored.count == 80 { break }
+            }
+            related = scored
                 .sorted { $0.1 > $1.1 }
                 .prefix(24)
                 .map(\.0)
@@ -1497,7 +1538,7 @@ enum RecommendationMixer {
         }
         let calmTokens = ["chill", "ambient", "acoustic", "jazz", "ballad", "sleep", "잔잔"]
         let activeTokens = ["dance", "edm", "rock", "hip hop", "workout", "upbeat", "댄스"]
-        let bpm = song.bpm ?? 0
+        let bpm = song.bpm ?? (details?.audioBPM ?? 0)
         if hour >= 22 || hour < 6 {
             return calmTokens.contains(where: text.contains) || (bpm > 0 && bpm < 105)
                 ? 1 : 0.35
@@ -1820,6 +1861,19 @@ enum RecommendationMixer {
         limit: Int,
         date: Date
     ) -> String? {
+        if purpose == .autoplay {
+            return [
+                purpose.rawValue,
+                String(limit),
+                seed?.id ?? "",
+                String(behavior.revision),
+                String(lyricIndex.bySongID.count),
+                String(snapshot.serverRecommendedSongs.count),
+                String(snapshot.lastFMRecommendedSongs.count),
+                String(snapshot.listenBrainzRecommendedSongs.count),
+                String(temporalBucket(for: purpose, date: date))
+            ].joined(separator: "|")
+        }
         let snapshotIdentity: String
         if let snapshotRevision {
             snapshotIdentity = [

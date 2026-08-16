@@ -12,7 +12,7 @@ enum LyricModelFamily: String, Sendable {
             return .appleFoundation
         case .off:
             return .generic
-        case .openAI, .openRouter, .groq, .cerebras:
+        case .openAI, .openRouter, .groq, .googleAI, .cerebras:
             return resolve(model: settings.activeModelName)
         }
     }
@@ -22,7 +22,8 @@ enum LyricModelFamily: String, Sendable {
         if value.contains("gpt-oss")
             || value.contains("oss-120")
             || value.contains("qwen3.6")
-            || value.contains("qwen/qwen3") {
+            || value.contains("qwen/qwen3")
+            || value.contains("gemini") {
             return .gptOSS
         }
         if value.contains("llama-3.3")
@@ -166,6 +167,7 @@ extension LyricIntelligenceSettings {
     var activeModelName: String {
         switch provider {
         case .groq: groqModel
+        case .googleAI: geminiModel
         case .cerebras: cerebrasModel
         case .openRouter: openRouterModel
         case .openAI: "gpt-4o-mini"

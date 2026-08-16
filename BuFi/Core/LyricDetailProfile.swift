@@ -29,6 +29,11 @@ struct LyricDetailProfile: Codable, Equatable, Sendable {
     var language: String = ""
     var emotionIntensity: Double = 0.5
     var listenContext: String = ""
+    var audioBPM: Int = 0
+    var audioEnergy: Double = 0
+    var audioBrightness: Double = 0
+    var audioPulse: Double = 0
+    var audioMeasured: Bool = false
 
     enum CodingKeys: String, CodingKey {
         case moods, themes, primaryMoods, secondaryMoods
@@ -37,6 +42,7 @@ struct LyricDetailProfile: Codable, Equatable, Sendable {
         case setting, tempo, intimacy, narrative, weather
         case social, color, vocal, vocalGender, genre, language
         case emotionIntensity, listenContext
+        case audioBPM, audioEnergy, audioBrightness, audioPulse, audioMeasured
     }
 
     static let empty = LyricDetailProfile()
@@ -149,5 +155,16 @@ extension LyricDetailProfile {
             String.self,
             forKey: .listenContext
         ) ?? ""
+        audioBPM = try container.decodeIfPresent(Int.self, forKey: .audioBPM) ?? 0
+        audioEnergy = try container.decodeIfPresent(Double.self, forKey: .audioEnergy) ?? 0
+        audioBrightness = try container.decodeIfPresent(
+            Double.self,
+            forKey: .audioBrightness
+        ) ?? 0
+        audioPulse = try container.decodeIfPresent(Double.self, forKey: .audioPulse) ?? 0
+        audioMeasured = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .audioMeasured
+        ) ?? (audioBPM > 0 || audioPulse > 0)
     }
 }

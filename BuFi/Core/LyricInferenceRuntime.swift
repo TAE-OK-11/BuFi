@@ -179,7 +179,59 @@ struct LyricChatTarget: Sendable {
     }
 }
 
+enum AsyncDeadline {
+    static func first<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async -> T
+    ) async -> T? {
+        await withTaskGroup(of: (Bool, T?).self) { group in
+            group.addTask {
+                (true, await operation())
+            }
+            group.addTask {
+                let nanos = UInt64(max(seconds, 0) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
+                return (false, nil)
+            }
+            defer { group.cancelAll() }
+            guard let first = await group.next() else { return nil }
+            return first.0 ? first.1 : nil
+        }
+    }
+}
+
 enum LyricInferenceRuntime {
+    static func streamRadio(
+        prompt: String,
+        settings: LyricIntelligenceSettings,
+        maxTokens: Int = 360,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async -> String? {
+        let targets = radioTargets(settings)
+        if !targets.isEmpty {
+            for target in targets {
+                if let text = await streamChat(
+                    prompt: prompt,
+                    target: target,
+                    maxTokens: maxTokens,
+                    onDelta: onDelta
+                ) {
+                    return text
+                }
+            }
+            return nil
+        }
+        if let text = await completeRadio(
+            prompt: prompt,
+            settings: settings,
+            maxTokens: maxTokens
+        ) {
+            await onDelta(text)
+            return text
+        }
+        return nil
+    }
+
     static func completeRadio(
         prompt: String,
         settings: LyricIntelligenceSettings,
@@ -231,7 +283,7 @@ enum LyricInferenceRuntime {
                 reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
                     for: LyricIntelligenceSettings.radioSecondaryModel
                 ),
-                timeout: 7,
+                timeout: 1.8,
                 allowRetries: false
             ),
             LyricChatTarget(
@@ -242,7 +294,7 @@ enum LyricInferenceRuntime {
                 reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
                     for: LyricIntelligenceSettings.radioFallbackModel
                 ),
-                timeout: 6,
+                timeout: 1.4,
                 allowRetries: false
             )
         ]
@@ -279,7 +331,7 @@ enum LyricInferenceRuntime {
             return nil
         case .onDevice, .applePrivateCloud:
             return await AppleFoundationLyricClient.complete(prompt)
-        case .openAI, .openRouter, .groq, .cerebras:
+        case .openAI, .openRouter, .groq, .googleAI, .cerebras:
             guard let target = primaryTarget(settings) else { return nil }
             return await chat(prompt: prompt, target: target, maxTokens: maxTokens)
         }
@@ -295,6 +347,98 @@ enum LyricInferenceRuntime {
             if let text = await chat(prompt: prompt, target: target, maxTokens: maxTokens) {
                 return text
             }
+        }
+        return nil
+    }
+
+    static func streamChat(
+        prompt: String,
+        target: LyricChatTarget,
+        maxTokens: Int,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async -> String? {
+        guard !LyricProviderCircuit.isOpen(target.circuitKey),
+              target.endpoint.scheme?.lowercased() == "https" else {
+            return nil
+        }
+        var body: [String: Any] = [
+            "model": target.model,
+            "temperature": 0,
+            "max_tokens": maxTokens,
+            "stream": true,
+            "messages": [
+                [
+                    "role": "system",
+                    "content": "Return one JSON object only. Start the ids array immediately. No markdown."
+                ],
+                ["role": "user", "content": prompt]
+            ]
+        ]
+        if let effort = target.reasoningEffort, !effort.isEmpty {
+            body["reasoning_effort"] = effort
+        }
+        guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
+            return nil
+        }
+        var request = URLRequest(url: target.endpoint)
+        ModernNetworkPolicy.prepareExternalAPIRequest(
+            &request,
+            acceptsZstandard: false
+        )
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(target.key)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = target.timeout
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                LyricProviderCircuit.recordFailure(target.circuitKey)
+                return nil
+            }
+            var assembled = ""
+            for try await line in bytes.lines {
+                if Task.isCancelled { break }
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("data:") else { continue }
+                let payload = trimmed.dropFirst(5)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if payload == "[DONE]" { break }
+                guard let piece = streamDelta(from: payload), !piece.isEmpty else {
+                    continue
+                }
+                assembled += piece
+                await onDelta(assembled)
+            }
+            let text = assembled.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty {
+                LyricProviderCircuit.recordFailure(target.circuitKey)
+                return nil
+            }
+            LyricProviderCircuit.recordSuccess(target.circuitKey)
+            return assembled
+        } catch {
+            LyricProviderCircuit.recordFailure(target.circuitKey)
+            return nil
+        }
+    }
+
+    private static func streamDelta(from raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let root = object as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]] else {
+            return nil
+        }
+        let first = choices.first
+        if let delta = first?["delta"] as? [String: Any],
+           let content = delta["content"] as? String {
+            return content
+        }
+        if let message = first?["message"] as? [String: Any],
+           let content = message["content"] as? String {
+            return content
         }
         return nil
     }
@@ -430,7 +574,7 @@ enum LyricInferenceRuntime {
         excluding provider: LyricIntelligenceProviderKind
     ) -> [LyricChatTarget] {
         let order: [LyricIntelligenceProviderKind] = [
-            .groq, .cerebras, .openRouter, .openAI
+            .groq, .googleAI, .cerebras, .openRouter, .openAI
         ]
         return order.compactMap { kind in
             guard kind != provider else { return nil }
@@ -484,6 +628,19 @@ enum LyricInferenceRuntime {
                 reasoningEffort: LyricIntelligenceSettings.reasoningEffort(
                     for: settings.groqModel
                 )
+            )
+        case .googleAI:
+            guard !settings.geminiKey.isEmpty,
+                  let endpoint = URL(
+                    string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                  ) else {
+                return nil
+            }
+            return LyricChatTarget(
+                endpoint: endpoint,
+                key: settings.geminiKey,
+                model: settings.geminiModel,
+                source: "google-ai"
             )
         case .cerebras:
             guard !settings.cerebrasKey.isEmpty,

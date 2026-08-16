@@ -27,6 +27,7 @@ final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var hasOpenAIKey = false
     @Published fileprivate(set) var hasOpenRouterKey = false
     @Published fileprivate(set) var hasGroqKey = false
+    @Published fileprivate(set) var hasGeminiKey = false
     @Published fileprivate(set) var hasCerebrasKey = false
     @Published var errorMessage: String?
 
@@ -78,6 +79,11 @@ final class AppSessionState: ObservableObject {
     fileprivate func setHasGroqKey(_ value: Bool) {
         guard hasGroqKey != value else { return }
         hasGroqKey = value
+    }
+
+    fileprivate func setHasGeminiKey(_ value: Bool) {
+        guard hasGeminiKey != value else { return }
+        hasGeminiKey = value
     }
 
     fileprivate func setHasCerebrasKey(_ value: Bool) {
@@ -358,6 +364,11 @@ final class AppModel: ObservableObject {
         set { session.setHasGroqKey(newValue) }
     }
 
+    private(set) var hasGeminiKey: Bool {
+        get { session.hasGeminiKey }
+        set { session.setHasGeminiKey(newValue) }
+    }
+
     private(set) var hasCerebrasKey: Bool {
         get { session.hasCerebrasKey }
         set { session.setHasCerebrasKey(newValue) }
@@ -413,6 +424,7 @@ final class AppModel: ObservableObject {
     private static let openAIKeyAccount = LyricIntelligenceSettings.openAIAccount
     private static let openRouterKeyAccount = LyricIntelligenceSettings.openRouterAccount
     private static let groqKeyAccount = LyricIntelligenceSettings.groqAccount
+    private static let geminiKeyAccount = LyricIntelligenceSettings.geminiAccount
     private static let cerebrasKeyAccount = LyricIntelligenceSettings.cerebrasAccount
     private static let listenBrainzTokenAccount = "listenbrainz-token"
     private static let listenBrainzUsernameKey = "listenbrainz-username"
@@ -449,6 +461,9 @@ final class AppModel: ObservableObject {
         )?.isEmpty == false
         hasGroqKey = await secureStore.loadSecret(
             account: Self.groqKeyAccount
+        )?.isEmpty == false
+        hasGeminiKey = await secureStore.loadSecret(
+            account: Self.geminiKeyAccount
         )?.isEmpty == false
         hasCerebrasKey = await secureStore.loadSecret(
             account: Self.cerebrasKeyAccount
@@ -781,56 +796,73 @@ final class AppModel: ObservableObject {
     private func autoplayContinuation(
         after seed: Song,
         excluding excludedIDs: Set<String>,
-        client: OpenSubsonicClient
+        client: OpenSubsonicClient,
+        onPick: (@MainActor (Song) -> Void)? = nil
     ) async -> [Song] {
-        let serverValues = await client.autoplayQueue(
+        let albumID = seed.albumId
+        async let serverValues = client.autoplayQueue(
             seed: seed,
             excluding: excludedIDs
         )
-        var albumSongs: [Song] = []
-        if let albumID = seed.albumId {
-            albumSongs = (try? await client.album(id: albumID))?.songs ?? []
-        }
+        async let albumSongs: [Song] = {
+            guard let albumID else { return [] }
+            return (try? await client.album(id: albumID))?.songs ?? []
+        }()
+        async let behavior = ListeningHistoryStore.shared.recommendationSnapshot()
+        async let lyricIndex = LyricIntelligence.shared.index()
+        async let settings = LyricIntelligenceSettings.load()
+        let fetchedServer = await serverValues
+        let fetchedAlbum = await albumSongs
+        let fetchedBehavior = await behavior
+        let fetchedIndex = await lyricIndex
+        let fetchedSettings = await settings
         guard self.client === client else { return [] }
-        let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
-        guard self.client === client else { return [] }
-        let lyricIndex = await LyricIntelligence.shared.index()
         var snapshot = home
         snapshot.serverRecommendedSongs = Self.uniqueSongs(
-            albumSongs + serverValues + snapshot.serverRecommendedSongs
+            fetchedAlbum + fetchedServer + snapshot.serverRecommendedSongs
         )
-        let settings = await LyricIntelligenceSettings.load()
-        let shouldDirect = settings.provider != .off || !settings.groqKey.isEmpty
+        let shouldDirect = fetchedSettings.provider != .off
+            || !fetchedSettings.groqKey.isEmpty
         let ranked: [Song]
         if shouldDirect {
             ranked = await RadioLLMDirector.continueRadio(
                 seed: seed,
                 excludedIDs: excludedIDs,
                 snapshot: snapshot,
-                behavior: behavior,
-                lyricIndex: lyricIndex,
+                behavior: fetchedBehavior,
+                lyricIndex: fetchedIndex,
                 weights: .current(),
-                lyricsProvider: { song in
-                    let document = try? await client.lyrics(
-                        songID: song.id,
-                        artist: song.artist,
-                        title: song.title
-                    )
-                    return document?.lines
-                        .map(\.text)
-                        .joined(separator: "\n") ?? ""
+                loadedSettings: fetchedSettings,
+                onPick: { song in
+                    await MainActor.run { onPick?(song) }
                 }
             )
         } else {
-            ranked = await Self.recommendations(
+            let scored = await Self.recommendations(
                 snapshot: snapshot,
                 weights: .current(),
                 purpose: .autoplay,
-                behavior: behavior,
+                behavior: fetchedBehavior,
                 seed: seed,
-                lyricIndex: lyricIndex,
-                limit: 32
+                lyricIndex: fetchedIndex,
+                limit: RadioLLMDirector.mixerLimit
             )
+            ranked = RadioLLMDirector.sequenceLocally(
+                RadioContinuity.balance(
+                    scored,
+                    seed: seed,
+                    lyricIndex: fetchedIndex,
+                    limit: RadioLLMDirector.reviewKeep
+                ),
+                seed: seed,
+                lyricIndex: fetchedIndex,
+                limit: RadioLLMDirector.reviewKeep
+            )
+            if let onPick {
+                for song in ranked {
+                    onPick(song)
+                }
+            }
         }
         return ranked
             .filter {
@@ -905,6 +937,8 @@ final class AppModel: ObservableObject {
                 hasOpenRouterKey = !key.isEmpty
             case .groq:
                 hasGroqKey = !key.isEmpty
+            case .googleAI:
+                hasGeminiKey = !key.isEmpty
             case .cerebras:
                 hasCerebrasKey = !key.isEmpty
             default:
@@ -2150,15 +2184,15 @@ final class AppModel: ObservableObject {
         _ snapshot: HomeSnapshot
     ) async -> HomeSnapshot {
         var value = await mergingListeningHistory(into: snapshot)
-        let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
-        let lyricIndex = await LyricIntelligence.shared.index()
+        async let behavior = ListeningHistoryStore.shared.recommendationSnapshot()
+        async let lyricIndex = LyricIntelligence.shared.index()
         let weights = RecommendationWeights.current()
         let sections = await Self.recommendationSections(
             snapshot: value,
             weights: weights,
-            behavior: behavior,
+            behavior: await behavior,
             seed: AudioEngine.shared.currentSong,
-            lyricIndex: lyricIndex
+            lyricIndex: await lyricIndex
         )
         value.recommendedSongs = sections.recommended
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
@@ -2632,12 +2666,13 @@ final class AppModel: ObservableObject {
                         enabled: !self.isStarred(song)
                     )
                 },
-                autoplayContinuationProvider: { [weak self] seed, excludedIDs in
+                autoplayContinuationProvider: { [weak self] seed, excludedIDs, onPick in
                     guard let self else { return [] }
                     return await self.autoplayContinuation(
                         after: seed,
                         excluding: excludedIDs,
-                        client: client
+                        client: client,
+                        onPick: onPick
                     )
                 },
                 songChangeHandler: { [weak self] _ in

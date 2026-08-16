@@ -97,6 +97,10 @@ final class CorePerformancePolicyTests: XCTestCase {
             360
         )
         XCTAssertEqual(
+            RecommendationScoringPolicy.autoplayCandidateLimit,
+            96
+        )
+        XCTAssertEqual(
             RecommendationScoringPolicy.boundedCandidates(Array(songs.prefix(10)))
                 .map(\.id),
             songs.prefix(10).map(\.id)

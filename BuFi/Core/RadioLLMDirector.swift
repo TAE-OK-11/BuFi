@@ -70,6 +70,9 @@ struct RadioLaneBrief: Equatable, Sendable {
                     || signature.moodKeys.contains(LyricLexicalEmbedding.normalized($0))
             }
             value -= min(0.24, Double(avoidHits.count) * 0.08)
+            if signature.details.audioEnergy > 0 {
+                if energy.contains(signature.details.audioEnergy) { value += 0.06 }
+            }
         }
         if !genre.isEmpty {
             let wanted = LyricLexicalEmbedding.normalized(genre)
@@ -90,15 +93,64 @@ struct RadioLaneBrief: Equatable, Sendable {
         }
         return max(0, min(1, value))
     }
+
+    func score(
+        song: Song,
+        signature: LyricSignature?,
+        seedBPM: Int
+    ) -> Double {
+        var value = score(song: song, signature: signature)
+        let bpm = SoundFeatureExtractor.bpm(song: song, signature: signature)
+        value += SoundFeatureExtractor.closeness(left: seedBPM, right: bpm) * 0.14
+        return max(0, min(1, value))
+    }
 }
 
 /// Local lane first, then one Groq pass that only reorders a small pack.
+enum RadioIDStream {
+    static func newIDs(
+        in text: String,
+        allowed: Set<String>,
+        already: Set<String>
+    ) -> [String] {
+        var result: [String] = []
+        var seen = already
+        var current = ""
+        var inString = false
+        var escaped = false
+        for character in text {
+            if inString {
+                if escaped {
+                    current.append(character)
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                    if allowed.contains(current), seen.insert(current).inserted {
+                        result.append(current)
+                    }
+                    current = ""
+                } else if current.count < 80 {
+                    current.append(character)
+                }
+            } else if character == "\"" {
+                inString = true
+                current = ""
+            }
+        }
+        return result
+    }
+}
+
 enum RadioLLMDirector {
-    static let requestedCount = 12
-    static let algorithmCount = 4
-    static let reviewKeep = 12
-    static let packSize = requestedCount + algorithmCount
-    static let mixerLimit = 32
+    static let requestedCount = 30
+    static let algorithmCount = 0
+    static let reviewKeep = 15
+    static let packSize = 30
+    static let mixerLimit = 30
+    static let streamWaitDeadline: TimeInterval = 1.5
+    static let firstPickDeadline: TimeInterval = 3.0
 
     static func continueRadio(
         seed: Song,
@@ -107,9 +159,15 @@ enum RadioLLMDirector {
         behavior: RecommendationBehaviorSnapshot,
         lyricIndex: LyricSignatureIndex,
         weights: RecommendationWeights,
-        lyricsProvider _: (@Sendable (Song) async -> String)? = nil
+        settings loadedSettings: LyricIntelligenceSettings? = nil,
+        lyricsProvider _: (@Sendable (Song) async -> String)? = nil,
+        onPick: (@Sendable (Song) async -> Void)? = nil
     ) async -> [Song] {
-        let settings = await LyricIntelligenceSettings.load()
+        let settings = if let loadedSettings {
+            loadedSettings
+        } else {
+            await LyricIntelligenceSettings.load()
+        }
         let profile = AIRecommendationProfile.load()
         let algorithm = await RecommendationMixer.scoreConcurrently(
             snapshot: snapshot,
@@ -133,31 +191,34 @@ enum RadioLLMDirector {
             profile: profile,
             seed: seed
         )
-        let local = RadioContinuity.balance(
-            pack,
+        let local = sequenceLocally(
+            RadioContinuity.balance(
+                pack,
+                seed: seed,
+                lyricIndex: lyricIndex,
+                limit: reviewKeep
+            ),
             seed: seed,
             lyricIndex: lyricIndex,
             limit: reviewKeep
         )
         guard pack.count >= 6 else {
+            await emit(Array(filtered.prefix(reviewKeep)), using: onPick)
             return Array(filtered.prefix(reviewKeep))
         }
-        if let kept = await review(
+        let picked = await reviewStreaming(
             pack: pack,
+            local: local,
             brief: brief,
             seed: seed,
             recent: behavior.recentSongs,
             lyricIndex: lyricIndex,
             settings: settings,
-            profile: profile
-        ), !kept.isEmpty {
-            return RadioContinuity.balance(
-                kept,
-                seed: seed,
-                lyricIndex: lyricIndex,
-                limit: reviewKeep
-            )
-        }
+            profile: profile,
+            onPick: onPick
+        )
+        if !picked.isEmpty { return Array(picked.prefix(reviewKeep)) }
+        await emit(local, using: onPick)
         return local
     }
 
@@ -198,10 +259,19 @@ enum RadioLLMDirector {
         profile: AIRecommendationProfile = .unset,
         seed: Song? = nil
     ) -> [Song] {
+        let seedBPM = seed.map {
+            SoundFeatureExtractor.bpm(
+                song: $0,
+                signature: lyricIndex.bySongID[$0.id]
+            )
+        } ?? 0
         let scored = algorithm.map { song in
             let signature = lyricIndex.bySongID[song.id]
-            var value = brief.score(song: song, signature: signature)
-                + profile.score(song: song, signature: signature)
+            var value = brief.score(
+                song: song,
+                signature: signature,
+                seedBPM: seedBPM
+            ) + profile.score(song: song, signature: signature)
             if let seed {
                 value += RadioContinuity.laneScore(
                     candidate: song,
@@ -227,28 +297,52 @@ enum RadioLLMDirector {
                 artist.contains(LyricLexicalEmbedding.normalized(name))
                     || LyricLexicalEmbedding.normalized(name).contains(artist)
             }
-            if isPreferred, preferredCount >= 5 {
+            if isPreferred, preferredCount >= 6 {
                 continue
             }
             requested.append(song)
             if isPreferred { preferredCount += 1 }
             if !artist.isEmpty { recentArtists.append(artist) }
-            if requested.count == requestedCount { break }
+            if requested.count == packSize { break }
         }
-        var seen = Set(requested.map(\.id))
-        var extras: [Song] = []
-        for song in algorithm where seen.insert(song.id).inserted {
-            extras.append(song)
-            if extras.count == algorithmCount { break }
-        }
-        let pack = requested + extras
-        guard let seed else { return pack }
+        guard let seed else { return requested }
         return RadioContinuity.balance(
-            pack,
+            requested,
             seed: seed,
             lyricIndex: lyricIndex,
             limit: packSize
         )
+    }
+
+    static func sequenceLocally(
+        _ songs: [Song],
+        seed: Song,
+        lyricIndex: LyricSignatureIndex,
+        limit: Int
+    ) -> [Song] {
+        guard !songs.isEmpty else { return [] }
+        var rest = songs
+        var picked: [Song] = []
+        var last = seed
+        while picked.count < limit, !rest.isEmpty {
+            var bestIndex = 0
+            var best = -1.0
+            for (index, song) in rest.enumerated() {
+                let score = SoundFeatureExtractor.transitionScore(
+                    from: last,
+                    to: song,
+                    lyricIndex: lyricIndex
+                )
+                if score > best {
+                    best = score
+                    bestIndex = index
+                }
+            }
+            let next = rest.remove(at: bestIndex)
+            picked.append(next)
+            last = next
+        }
+        return picked
     }
 
     static func heuristicBrief(
@@ -296,7 +390,66 @@ enum RadioLLMDirector {
         )
     }
 
-    private static func review(
+    private static func reviewStreaming(
+        pack: [Song],
+        local: [Song],
+        brief: RadioLaneBrief,
+        seed: Song,
+        recent: [Song],
+        lyricIndex: LyricSignatureIndex,
+        settings: LyricIntelligenceSettings,
+        profile: AIRecommendationProfile,
+        onPick: (@Sendable (Song) async -> Void)?
+    ) async -> [Song] {
+        let allowed = Set(pack.map(\.id))
+        let byID = Dictionary(
+            pack.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let box = RadioPickBox(onPick: onPick)
+        let prompt = reviewPrompt(
+            pack: pack,
+            brief: brief,
+            seed: seed,
+            recent: recent,
+            lyricIndex: lyricIndex,
+            settings: settings,
+            profile: profile
+        )
+        async let streamed: String? = LyricInferenceRuntime.streamRadio(
+            prompt: prompt,
+            settings: settings,
+            maxTokens: 360
+        ) { partial in
+            let ids = RadioIDStream.newIDs(
+                in: partial,
+                allowed: allowed,
+                already: await box.ids
+            )
+            for id in ids {
+                guard let song = byID[id] else { continue }
+                await box.push(song)
+                if await box.count == reviewKeep { break }
+            }
+        }
+        let first = await AsyncDeadline.first(seconds: firstPickDeadline) {
+            await box.waitUntilNonEmpty()
+            return true
+        }
+        if first == nil, await box.isEmpty, let fallback = local.first {
+            await box.push(fallback)
+        }
+        _ = await streamed
+        if await box.count < reviewKeep {
+            for song in local {
+                await box.push(song)
+                if await box.count == reviewKeep { break }
+            }
+        }
+        return await box.songs
+    }
+
+    private static func reviewPrompt(
         pack: [Song],
         brief: RadioLaneBrief,
         seed: Song,
@@ -304,8 +457,7 @@ enum RadioLLMDirector {
         lyricIndex: LyricSignatureIndex,
         settings: LyricIntelligenceSettings,
         profile: AIRecommendationProfile
-    ) async -> [Song]? {
-        let allowed = Set(pack.map(\.id))
+    ) -> String {
         let candidates = pack.enumerated().map { index, song in
             "\(index + 1). \(card(song, lyricIndex: lyricIndex))"
         }.joined(separator: "\n")
@@ -334,46 +486,27 @@ enum RadioLLMDirector {
             )
         }
         let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
-        let prompt = """
-        Reorder this radio pack. JSON only, no explanation:
+        return """
+        Program the next radio block. JSON only, start the ids array immediately:
         {"ids":[]}
-        Keep exactly \(reviewKeep) listed ids in listen-next order. Stay in this lane: moods:\(brief.moods.joined(separator: ",")) energy:\(fmt(brief.energy.lowerBound))-\(fmt(brief.energy.upperBound)) vocal:\(brief.vocal) genre:\(brief.genre)
-        Prefer lyric/energy continuity over title match. Preferred artists are a slight lean, never a block. Avoid three songs by one artist in a row.
+        Keep exactly \(reviewKeep) listed ids. Discard the rest. Order them as a listen: lyric story, vocal, energy, measured BPM. Walk BPM instead of jumping. Preferred artists are a slight lean. Avoid three songs by one artist in a row.
+        Lane: moods:\(brief.moods.joined(separator: ",")) energy:\(fmt(brief.energy.lowerBound))-\(fmt(brief.energy.upperBound)) vocal:\(brief.vocal) genre:\(brief.genre)
         Seed: \(card(seed, lyricIndex: lyricIndex))
-        Recent: \(recent.prefix(3).map { card($0, lyricIndex: lyricIndex) }.joined(separator: " | "))
+        Recent: \(recent.prefix(4).map { card($0, lyricIndex: lyricIndex) }.joined(separator: " | "))
         Candidates:
         \(candidates)
         \(user)
         """
-        let raw = await LyricInferenceRuntime.completeRadio(
-            prompt: prompt,
-            settings: settings,
-            maxTokens: 280
-        )
-        var ids = raw.flatMap { RecommendationLLMReview.parseIDs($0, allowed: allowed) }
-        if ids == nil, let broken = raw,
-           let repaired = await LyricInferenceRuntime.repairedJSON(
-            from: broken,
-            settings: settings
-           ) {
-            ids = RecommendationLLMReview.parseIDs(repaired, allowed: allowed)
+    }
+
+    private static func emit(
+        _ songs: [Song],
+        using onPick: (@Sendable (Song) async -> Void)?
+    ) async {
+        guard let onPick else { return }
+        for song in songs {
+            await onPick(song)
         }
-        guard let ids, !ids.isEmpty else { return nil }
-        var byID = Dictionary(
-            pack.map { ($0.id, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        var kept: [Song] = []
-        for id in ids {
-            guard let song = byID.removeValue(forKey: id) else { continue }
-            kept.append(song)
-            if kept.count == reviewKeep { return kept }
-        }
-        for song in pack where byID.removeValue(forKey: song.id) != nil {
-            kept.append(song)
-            if kept.count == reviewKeep { break }
-        }
-        return kept
     }
 
     private static func card(_ song: Song, lyricIndex: LyricSignatureIndex) -> String {
@@ -386,7 +519,7 @@ enum RadioLLMDirector {
             .joined(separator: ",")
         let summary = String(
             (signature?.summary.replacingOccurrences(of: "\n", with: " / ") ?? "")
-                .prefix(80)
+                .prefix(72)
         )
         let energy = signature.map { fmt($0.energy) } ?? "-"
         let vocal = RadioContinuity.vocalGender(song: song, signature: signature)
@@ -394,7 +527,13 @@ enum RadioLLMDirector {
         if RadioContinuity.isKPop(song: song, signature: signature) {
             genre = genre.isEmpty ? "k-pop" : genre
         }
-        return "\(song.id)|\(song.title)-\(song.artist)|m:\(moods) e:\(energy) vox:\(vocal) g:\(genre) s:\(sound)|\(summary)"
+        let bpm = SoundFeatureExtractor.bpm(song: song, signature: signature)
+        let audio = signature?.details.audioMeasured == true
+            ? " ae:\(fmt(signature?.details.audioEnergy ?? 0)) br:\(fmt(signature?.details.audioBrightness ?? 0))"
+            : ""
+        let starred = song.isStarred ? " fav" : ""
+        let plays = song.playCount.map { " plays:\($0)" } ?? ""
+        return "\(song.id)|\(song.title)-\(song.artist)|bpm:\(bpm) m:\(moods) e:\(energy) vox:\(vocal) g:\(genre) s:\(sound)\(audio)\(starred)\(plays)|\(summary)"
     }
 
     private static func fmt(_ value: Double) -> String {
@@ -441,5 +580,47 @@ enum RadioLLMDirector {
         if let value = value as? Int { return Double(value) }
         if let value = value as? String { return Double(value) }
         return nil
+    }
+}
+
+actor RadioPickBox {
+    private var picked: [Song] = []
+    private var seen: Set<String> = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let onPick: (@Sendable (Song) async -> Void)?
+
+    init(onPick: (@Sendable (Song) async -> Void)?) {
+        self.onPick = onPick
+    }
+
+    var ids: Set<String> { seen }
+    var songs: [Song] { picked }
+    var count: Int { picked.count }
+    var isEmpty: Bool { picked.isEmpty }
+
+    func push(_ song: Song) async {
+        guard seen.insert(song.id).inserted else { return }
+        picked.append(song)
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        await onPick?(song)
+    }
+
+    func waitUntilNonEmpty() async {
+        if !picked.isEmpty { return }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        } onCancel: {
+            Task { await self.releaseWaiters() }
+        }
+    }
+
+    func releaseWaiters() {
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
     }
 }

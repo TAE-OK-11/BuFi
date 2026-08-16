@@ -18,6 +18,10 @@ enum SoundAnalysisClassifier {
         var labels: [String]
         var embedding: [Float]
         var source: String
+        var bpm: Int = 0
+        var energy: Double = 0
+        var brightness: Double = 0
+        var pulse: Double = 0
     }
 
     static func embedding(from scores: [String: Double]) -> [Float] {
@@ -92,6 +96,13 @@ enum SoundAnalysisClassifier {
                 return nil
             }
 
+            let hop = 512
+            var envelope: [Float] = []
+            envelope.reserveCapacity(2_048)
+            var leftover: [Float] = []
+            leftover.reserveCapacity(hop)
+            var highEnergy = 0.0
+            var allEnergy = 0.0
             var analysisPosition: AVAudioFramePosition = 0
             for start in starts {
                 file.framePosition = start
@@ -107,25 +118,98 @@ enum SoundAnalysisClassifier {
                     guard buffer.frameLength > 0 else { break }
                     analyzer.analyze(buffer, atAudioFramePosition: analysisPosition)
                     analysisPosition += AVAudioFramePosition(buffer.frameLength)
+                    absorb(
+                        buffer,
+                        hop: hop,
+                        envelope: &envelope,
+                        leftover: &leftover,
+                        highEnergy: &highEnergy,
+                        allEnergy: &allEnergy
+                    )
                     remaining -= buffer.frameLength
                 }
             }
 
             analyzer.completeAnalysis()
-            return finished(collector.scores())
+            let hopSeconds = hop > 0 ? Double(hop) / format.sampleRate : 0.0116
+            let brightness = allEnergy > 0 ? highEnergy / allEnergy : 0
+            return finished(
+                collector.scores(),
+                features: SoundFeatureExtractor.measure(
+                    envelope: envelope,
+                    hopSeconds: hopSeconds,
+                    brightness: brightness
+                )
+            )
         } catch {
             return nil
         }
     }
 
-    private static func finished(_ scores: [String: Double]) -> Analysis? {
+    private static func finished(
+        _ scores: [String: Double],
+        features: SoundFeatureExtractor.Features
+    ) -> Analysis? {
         let labels = topLabels(from: scores)
-        guard !labels.isEmpty else { return nil }
+        guard !labels.isEmpty || features.isMeasured else { return nil }
         return Analysis(
             labels: labels,
             embedding: embedding(from: scores),
-            source: "coreml-sound-analysis"
+            source: "coreml-sound-analysis",
+            bpm: features.bpm,
+            energy: features.energy,
+            brightness: features.brightness,
+            pulse: features.pulse
         )
+    }
+
+    private static func absorb(
+        _ buffer: AVAudioPCMBuffer,
+        hop: Int,
+        envelope: inout [Float],
+        leftover: inout [Float],
+        highEnergy: inout Double,
+        allEnergy: inout Double
+    ) {
+        let frames = Int(buffer.frameLength)
+        guard frames > 0, hop > 0 else { return }
+        var mono = leftover
+        leftover.removeAll(keepingCapacity: true)
+        mono.reserveCapacity(mono.count + frames)
+        if let pointer = buffer.floatChannelData?.pointee {
+            for index in 0..<frames {
+                let sample = pointer[index]
+                mono.append(abs(sample))
+                let energy = Double(sample * sample)
+                allEnergy += energy
+                if index % 2 == 1 {
+                    let previous = pointer[index - 1]
+                    let high = sample - previous
+                    highEnergy += Double(high * high)
+                }
+            }
+        } else if let pointer = buffer.int16ChannelData?.pointee {
+            for index in 0..<frames {
+                let sample = Float(pointer[index]) / 32_768
+                mono.append(abs(sample))
+                let energy = Double(sample * sample)
+                allEnergy += energy
+            }
+        } else {
+            return
+        }
+        var start = 0
+        while start + hop <= mono.count {
+            var sum: Float = 0
+            for index in start..<(start + hop) {
+                sum += mono[index]
+            }
+            envelope.append(sum / Float(hop))
+            start += hop
+        }
+        if start < mono.count {
+            leftover.append(contentsOf: mono[start..<mono.count])
+        }
     }
 #endif
 }
