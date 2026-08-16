@@ -1,6 +1,7 @@
 #!/usr/bin/env swift
 import CreateML
 import Foundation
+import TabularData
 
 func die(_ message: String) -> Never {
     FileHandle.standardError.write(Data("\(message)\n".utf8))
@@ -19,21 +20,23 @@ guard FileManager.default.isReadableFile(atPath: csv.path) else {
 }
 
 do {
-    let table = try MLDataTable(contentsOf: csv)
+    let frame = try DataFrame(contentsOfCSVFile: csv)
+    let parameters = MLRecommender.ModelParameters(
+        algorithm: .itemSimilarity(.jaccard),
+        nearestItemsDataFrame: nil
+    )
     let recommender: MLRecommender
     if let configured = try? MLRecommender(
-        trainingData: table,
+        trainingData: frame,
         userColumn: "user",
         itemColumn: "item",
         ratingColumn: "rating",
-        parameters: MLRecommender.ModelParameters(
-            algorithm: .itemSimilarity(.jaccard)
-        )
+        parameters: parameters
     ) {
         recommender = configured
     } else {
         recommender = try MLRecommender(
-            trainingData: table,
+            trainingData: frame,
             userColumn: "user",
             itemColumn: "item",
             ratingColumn: "rating"
