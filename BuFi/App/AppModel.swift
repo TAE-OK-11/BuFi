@@ -799,22 +799,36 @@ final class AppModel: ObservableObject {
         snapshot.serverRecommendedSongs = Self.uniqueSongs(
             albumSongs + serverValues + snapshot.serverRecommendedSongs
         )
-        let ranked = await Self.recommendations(
-            snapshot: snapshot,
-            weights: .current(),
-            purpose: .autoplay,
-            behavior: behavior,
-            seed: seed,
-            lyricIndex: lyricIndex,
-            limit: 32
-        )
+        let settings = await LyricIntelligenceSettings.load()
+        let shouldDirect = settings.provider != .off || !settings.groqKey.isEmpty
+        let ranked: [Song]
+        if shouldDirect {
+            ranked = await RadioLLMDirector.continueRadio(
+                seed: seed,
+                excludedIDs: excludedIDs,
+                snapshot: snapshot,
+                behavior: behavior,
+                lyricIndex: lyricIndex,
+                weights: .current()
+            )
+        } else {
+            ranked = await Self.recommendations(
+                snapshot: snapshot,
+                weights: .current(),
+                purpose: .autoplay,
+                behavior: behavior,
+                seed: seed,
+                lyricIndex: lyricIndex,
+                limit: 32
+            )
+        }
         return ranked
             .filter {
                 !excludedIDs.contains($0.id) &&
                     $0.id != seed.id &&
                     $0.externalStreamURL == nil
             }
-            .prefix(16)
+            .prefix(RadioLLMDirector.reviewKeep)
             .map(applyingFavoriteOverride)
     }
 

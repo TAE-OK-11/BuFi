@@ -1938,7 +1938,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func scheduleAutoplayContinuationIfNeeded() {
         let remaining = max(0, queue.count - queueIndex - 1)
-        guard remaining <= 3 else { return }
+        guard remaining < 3 else { return }
         requestAutoplayContinuation(advanceWhenReady: false)
     }
 

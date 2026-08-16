@@ -137,8 +137,9 @@ struct LyricChatTarget: Sendable {
     var source: String
     var embeddingEndpoint: URL? = nil
     var embeddingModel: String = ""
+    var reasoningEffort: String? = nil
 
-    var circuitKey: String { source }
+    var circuitKey: String { "\(source)|\(model)" }
 
     var prefersJSONObject: Bool {
         let value = model.lowercased()
@@ -150,6 +151,50 @@ struct LyricChatTarget: Sendable {
 }
 
 enum LyricInferenceRuntime {
+    static func completeRadio(
+        prompt: String,
+        settings: LyricIntelligenceSettings,
+        maxTokens: Int = 700
+    ) async -> String? {
+        for target in radioTargets(settings) {
+            if let text = await chat(
+                prompt: prompt,
+                target: target,
+                maxTokens: maxTokens
+            ) {
+                return text
+            }
+        }
+        if settings.provider == .off { return nil }
+        return await complete(
+            prompt: prompt,
+            settings: settings,
+            maxTokens: maxTokens
+        )
+    }
+
+    static func radioTargets(_ settings: LyricIntelligenceSettings) -> [LyricChatTarget] {
+        guard !settings.groqKey.isEmpty,
+              let endpoint = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
+            return []
+        }
+        return [
+            LyricChatTarget(
+                endpoint: endpoint,
+                key: settings.groqKey,
+                model: LyricIntelligenceSettings.radioPrimaryModel,
+                source: "groq",
+                reasoningEffort: "medium"
+            ),
+            LyricChatTarget(
+                endpoint: endpoint,
+                key: settings.groqKey,
+                model: LyricIntelligenceSettings.radioFallbackModel,
+                source: "groq"
+            )
+        ]
+    }
+
     static func complete(
         prompt: String,
         settings: LyricIntelligenceSettings,
@@ -297,7 +342,11 @@ enum LyricInferenceRuntime {
                 endpoint: endpoint,
                 key: settings.groqKey,
                 model: settings.groqModel,
-                source: "groq"
+                source: "groq",
+                reasoningEffort: settings.groqModel.lowercased().contains("gpt-oss")
+                    || settings.groqModel.lowercased().contains("oss-120")
+                    ? "medium"
+                    : nil
             )
         case .cerebras:
             guard !settings.cerebrasKey.isEmpty,
@@ -380,6 +429,9 @@ enum LyricInferenceRuntime {
         ]
         if forceJSONObject {
             body["response_format"] = ["type": "json_object"]
+        }
+        if let effort = target.reasoningEffort, !effort.isEmpty {
+            body["reasoning_effort"] = effort
         }
         if let text = await postChatOnce(
             target: target,

@@ -608,6 +608,8 @@ private struct RecommendationSettingsView: View {
     private var cerebrasModel = LyricIntelligenceSettings.defaultCerebrasModel
     @AppStorage("recommendation-llm-review-enabled")
     private var llmReviewEnabled = false
+    @AppStorage("lyric-intelligence-user-prompt")
+    private var lyricUserPrompt = ""
     @State private var openAIKey = ""
     @State private var openRouterKey = ""
     @State private var groqKey = ""
@@ -745,7 +747,7 @@ private struct RecommendationSettingsView: View {
                                 RecommendationMixer.invalidateCache()
                                 model.rebuildRecommendations()
                             }
-                        settingsDescription("켜면 알고리즘이 후보를 줄인 뒤, 가사 요약·분위기·음향 분석을 LLM이 한 번 더 보고 순서를 다듬습니다. 꺼두면 점수만 씁니다.")
+                        settingsDescription("라디오는 남은 곡이 3곡 미만이면 LLM이 다음 분위기를 JSON으로 정하고, 알고리즘이 15곡+대조 5곡을 채운 뒤 LLM이 16곡만 남깁니다. 홈 목록 검수는 이 스위치를 따릅니다.")
                         settingsDescription(lyricEngineDescription)
                         if usesOnDeviceFallback {
                             SecureField(
@@ -814,8 +816,8 @@ private struct RecommendationSettingsView: View {
                         }
                         if lyricProviderRaw == LyricIntelligenceProviderKind.groq.rawValue {
                             Picker("Groq 모델", selection: $groqModel) {
-                                Text("Llama 3.3 70B").tag("llama-3.3-70b-versatile")
                                 Text("GPT-OSS 120B").tag("openai/gpt-oss-120b")
+                                Text("Llama 3.3 70B").tag("llama-3.3-70b-versatile")
                                 Text("Llama 3.1 8B").tag("llama-3.1-8b-instant")
                             }
                             .pickerStyle(.menu)
@@ -871,6 +873,19 @@ private struct RecommendationSettingsView: View {
                                     .trimmingCharacters(in: .whitespacesAndNewlines)
                                     .isEmpty
                             )
+                        }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("사용자 지정 프롬프트")
+                                .font(.system(size: 15, weight: .semibold))
+                            TextEditor(text: $lyricUserPrompt)
+                                .frame(minHeight: 92)
+                                .padding(8)
+                                .scrollContentBackground(.hidden)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.primary.opacity(0.05))
+                                )
+                            settingsDescription("라디오 브리프와 16곡 검수에 그대로 붙습니다. 비우면 현재 곡의 분위기·태그로만 이어갑니다.")
                         }
                         lyricIntelligenceTestSection
                     }
@@ -1426,7 +1441,7 @@ private struct RecommendationSettingsView: View {
         case .openRouter:
             String(localized: "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         case .groq:
-            String(localized: "Groq는 모델마다 다른 프롬프트를 씁니다. Llama 3.3 70B는 태그·차선 정리에, GPT-OSS 120B는 긴 요약과 플레이리스트 연출에 맞춥니다.")
+            String(localized: "라디오 기본은 Groq GPT-OSS 120B(추론 medium)이고, 실패하면 같은 키의 Llama 3.3 70B로 넘어갑니다. 가사 분석은 아래에서 고른 모델을 씁니다.")
         case .cerebras:
             String(localized: "Cerebras도 Llama 3.3 70B와 GPT-OSS 120B에 각각 다른 프롬프트를 씁니다. 결과는 로컬에 남습니다.")
         }

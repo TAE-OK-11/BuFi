@@ -237,7 +237,7 @@ private struct RecommendationPreset {
             RecommendationPreset(
                 shortTermRatio: 0.78,
                 featureWeights: [
-                    .context: 0.42, .lyricMood: 0.24, .server: 0.18,
+                    .context: 0.40, .lyricMood: 0.28, .server: 0.18,
                     .localMetadata: 0.16, .lastFM: 0.12,
                     .listenBrainz: 0.10, .history: 0.10,
                     .favorites: 0.08, .behavior: 0.10,
@@ -751,6 +751,33 @@ enum RecommendationMixer {
             lyricIndex: lyricIndex,
             purpose: purpose,
             limit: limit
+        )
+    }
+
+    /// Scoring-only mix used while a radio LLM brief is in flight.
+    @concurrent
+    static func scoreConcurrently(
+        snapshot: HomeSnapshot,
+        snapshotRevision: HomeSnapshotRevision? = nil,
+        weights: RecommendationWeights,
+        purpose: RecommendationPurpose = .home,
+        behavior: RecommendationBehaviorSnapshot = .empty,
+        seed: Song? = nil,
+        lyricIndex: LyricSignatureIndex = .empty,
+        limit: Int = 30,
+        date: Date = Date()
+    ) async -> [Song] {
+        guard !Task.isCancelled else { return [] }
+        return mix(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            purpose: purpose,
+            behavior: behavior,
+            seed: seed,
+            lyricIndex: lyricIndex,
+            limit: limit,
+            date: date
         )
     }
 

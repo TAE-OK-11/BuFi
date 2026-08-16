@@ -292,6 +292,123 @@ final class LyricOptimizationTests: XCTestCase {
         )
     }
 
+    func testRadioBriefParsesLaneAndFillsFifteenPlusFive() {
+        let brief = RadioLLMDirector.parseBrief(
+            """
+            ```json
+            {"moods":["yearning"],"themes":["rain"],"energy":[0.2,0.45],"valence":[0.1,0.4],"vocal":"female","genre":"ballad","sound":["guitar","singing"],"avoid":["euphoric"],"want":"stay in the late night rain lane"}
+            ```
+            """
+        )
+        XCTAssertEqual(brief?.moods, ["yearning"])
+        XCTAssertEqual(brief?.vocal, "female")
+        XCTAssertEqual(brief?.energy.lowerBound ?? -1, 0.2, accuracy: 0.001)
+        XCTAssertEqual(brief?.energy.upperBound ?? -1, 0.45, accuracy: 0.001)
+        XCTAssertEqual(brief?.sound, ["guitar", "singing"])
+
+        let seed = Song(id: "seed", title: "Seed", artist: "A", album: "L")
+        var closeDetails = LyricDetailProfile.empty
+        closeDetails.primaryMoods = ["yearning"]
+        closeDetails.vocalGender = "female"
+        let close = LyricSignature(
+            songID: "c1",
+            lyricsHash: "h",
+            moods: ["yearning"],
+            themes: ["rain"],
+            energy: 0.3,
+            valence: 0.2,
+            embedding: [],
+            source: "groq",
+            soundLabels: ["guitar", "singing"],
+            summary: "The narrator waits in the rain.",
+            details: closeDetails
+        )
+        var partyDetails = LyricDetailProfile.empty
+        partyDetails.primaryMoods = ["euphoric"]
+        let party = LyricSignature(
+            songID: "p1",
+            lyricsHash: "h",
+            moods: ["euphoric"],
+            themes: ["dance"],
+            energy: 0.9,
+            valence: 0.9,
+            embedding: [],
+            source: "groq",
+            soundLabels: ["drums"],
+            summary: "Everybody jump.",
+            details: partyDetails
+        )
+        let songs = (0..<20).map { index in
+            Song(
+                id: index < 12 ? "c\(index)" : "p\(index)",
+                title: "T\(index)",
+                artist: "Artist \(index % 7)",
+                album: "L"
+            )
+        }
+        var signatures: [String: LyricSignature] = [:]
+        for song in songs {
+            signatures[song.id] = song.id.hasPrefix("c") ? close : party
+        }
+        let pack = RadioLLMDirector.fillPack(
+            brief: brief ?? .open,
+            algorithm: songs,
+            lyricIndex: LyricSignatureIndex(bySongID: signatures)
+        )
+        XCTAssertEqual(pack.count, 20)
+        XCTAssertEqual(
+            pack.prefix(15).filter { $0.id.hasPrefix("c") }.count,
+            12
+        )
+        XCTAssertEqual(LyricIntelligenceSettings.defaultGroqModel, "openai/gpt-oss-120b")
+        XCTAssertEqual(
+            LyricInferenceRuntime.radioTargets(
+                LyricIntelligenceSettings(
+                    provider: .groq,
+                    openAIKey: "",
+                    openRouterKey: "",
+                    openRouterModel: "",
+                    groqKey: "gsk",
+                    groqModel: "openai/gpt-oss-120b"
+                )
+            ).map(\.model),
+            [
+                LyricIntelligenceSettings.radioPrimaryModel,
+                LyricIntelligenceSettings.radioFallbackModel
+            ]
+        )
+        XCTAssertEqual(
+            LyricInferenceRuntime.radioTargets(
+                LyricIntelligenceSettings(
+                    provider: .groq,
+                    openAIKey: "",
+                    openRouterKey: "",
+                    openRouterModel: "",
+                    groqKey: "gsk",
+                    groqModel: "openai/gpt-oss-120b"
+                )
+            ).first?.reasoningEffort,
+            "medium"
+        )
+        let heuristic = RadioLLMDirector.heuristicBrief(
+            seed: seed,
+            lyricIndex: LyricSignatureIndex(bySongID: ["seed": close])
+        )
+        XCTAssertEqual(heuristic.moods, ["yearning"])
+        XCTAssertEqual(heuristic.vocal, "female")
+        let suite = "BuFi.RadioLLM.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            XCTFail("defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("keep it rainy", forKey: LyricIntelligenceSettings.userPromptKey)
+        XCTAssertEqual(
+            LyricIntelligenceSettings.current(defaults: defaults).userPrompt,
+            "keep it rainy"
+        )
+    }
+
     func testFallbackTargetsSkipThePrimaryProvider() {
         let settings = LyricIntelligenceSettings(
             provider: .groq,

@@ -1332,21 +1332,25 @@ struct LyricIntelligenceSettings: Sendable {
     var openRouterKey: String
     var openRouterModel: String
     var groqKey: String = ""
-    var groqModel: String = "llama-3.3-70b-versatile"
+    var groqModel: String = "openai/gpt-oss-120b"
     var cerebrasKey: String = ""
     var cerebrasModel: String = "llama-3.3-70b"
+    var userPrompt: String = ""
 
     static let providerKey = "lyric-intelligence-provider"
     static let openRouterModelKey = "lyric-intelligence-openrouter-model"
     static let groqModelKey = "lyric-intelligence-groq-model"
     static let cerebrasModelKey = "lyric-intelligence-cerebras-model"
+    static let userPromptKey = "lyric-intelligence-user-prompt"
     static let openAIAccount = "openai-api-key"
     static let openRouterAccount = "openrouter-api-key"
     static let groqAccount = "groq-api-key"
     static let cerebrasAccount = "cerebras-api-key"
     static let defaultOpenRouterModel = "google/gemma-3-270m-it"
-    static let defaultGroqModel = "llama-3.3-70b-versatile"
+    static let defaultGroqModel = "openai/gpt-oss-120b"
     static let defaultCerebrasModel = "llama-3.3-70b"
+    static let radioPrimaryModel = "openai/gpt-oss-120b"
+    static let radioFallbackModel = "llama-3.3-70b-versatile"
 
     static func current(
         defaults: UserDefaults = .standard,
@@ -1376,7 +1380,9 @@ struct LyricIntelligenceSettings: Sendable {
                 defaults: defaults,
                 key: cerebrasModelKey,
                 fallback: defaultCerebrasModel
-            )
+            ),
+            userPrompt: defaults.string(forKey: userPromptKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         )
     }
 
