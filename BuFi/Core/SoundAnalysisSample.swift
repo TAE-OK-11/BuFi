@@ -38,7 +38,7 @@ enum SoundAnalysisSample {
                 }
                 data.append(chunk)
                 if paced, data.count < limit {
-                    Thread.sleep(forTimeInterval: 0.003)
+                    try? await Task.sleep(nanoseconds: 3_000_000)
                 }
             }
             guard data.count > 8_000 else { return url }
