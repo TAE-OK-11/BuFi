@@ -131,7 +131,7 @@ enum SoundAnalysisClassifier {
             }
 
             analyzer.completeAnalysis()
-            let hopSeconds = hop > 0 ? Double(hop) / format.sampleRate : 0.0116
+            let hopSeconds = Double(hop) / format.sampleRate
             let brightness = allEnergy > 0 ? highEnergy / allEnergy : 0
             return finished(
                 collector.scores(),
