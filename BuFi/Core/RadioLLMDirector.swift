@@ -145,7 +145,6 @@ enum RadioIDStream {
 
 enum RadioLLMDirector {
     static let requestedCount = 30
-    static let algorithmCount = 0
     static let reviewKeep = 15
     static let packSize = 30
     static let mixerLimit = 30
@@ -160,7 +159,6 @@ enum RadioLLMDirector {
         lyricIndex: LyricSignatureIndex,
         weights: RecommendationWeights,
         settings loadedSettings: LyricIntelligenceSettings? = nil,
-        lyricsProvider _: (@Sendable (Song) async -> String)? = nil,
         onPick: (@Sendable (Song) async -> Void)? = nil
     ) async -> [Song] {
         let settings = if let loadedSettings {

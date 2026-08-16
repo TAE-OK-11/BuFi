@@ -2201,7 +2201,8 @@ final class AppModel: ObservableObject {
             weights: weights,
             behavior: await behavior,
             seed: AudioEngine.shared.currentSong,
-            lyricIndex: await lyricIndex
+            lyricIndex: await lyricIndex,
+            reviewsWithLLM: false
         )
         value.recommendedSongs = sections.recommended
         value.recommendedArtists = resolvedRecommendedArtists(in: value)

@@ -4017,6 +4017,12 @@ final class AudioEngine: NSObject, ObservableObject {
                     if !document.lines.isEmpty {
                         let accountScope = self.currentAccountScope
                         Task {
+                            try? await Task.sleep(for: .seconds(2.5))
+                            guard !Task.isCancelled,
+                                  self.currentSong?.id == song.id,
+                                  self.player.timeControlStatus == .playing else {
+                                return
+                            }
                             await LyricIntelligence.shared.scheduleAnalysis(
                                 song: song,
                                 document: document,

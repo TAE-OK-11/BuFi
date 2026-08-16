@@ -10,18 +10,24 @@ enum LyricSentenceEmbedding {
     static func vector(from text: String) async -> [Float]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 12 else { return nil }
+        let preferStatic = await MainActor.run {
+            AudioEngine.shared.wantsPlayback
+        }
         return await Task.detached(priority: .utility) {
-            vectorSync(from: trimmed)
+            vectorSync(from: trimmed, preferStatic: preferStatic)
         }.value
     }
 
-    private static func vectorSync(from text: String) -> [Float]? {
+    private static func vectorSync(
+        from text: String,
+        preferStatic: Bool = false
+    ) -> [Float]? {
 #if canImport(NaturalLanguage)
         // Use the same representative head/middle/tail sampler as the LLM so
         // long lyrics are not embedded from the first verse only. 1.2K chars
         // also keeps transformer work noticeably below the previous 1.6K path.
         let snippet = LyricTextSampler.sample(text, limit: 1_200)
-        if shouldUseLightweightPath {
+        if preferStatic || shouldUseLightweightPath {
             return staticSentenceVector(from: snippet)
         }
         if let contextual = contextualVector(from: snippet) {

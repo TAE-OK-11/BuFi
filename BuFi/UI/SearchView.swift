@@ -614,14 +614,19 @@ private enum SearchPersonalizedMixWork {
             selectedArtists: selectedArtists,
             lyricIndex: lyricIndex
         )
-        let refined = await AsyncDeadline.first(seconds: 2.2) {
-            await PersonalizedMixLLM.apply(
-                to: value,
-                snapshot: snapshot,
-                recent: recent,
-                lyricIndex: lyricIndex
-            )
-        } ?? value
+        let refined: [PersonalizedMix]
+        if RecommendationLLMReview.isEnabled() {
+            refined = await AsyncDeadline.first(seconds: 2.2) {
+                await PersonalizedMixLLM.apply(
+                    to: value,
+                    snapshot: snapshot,
+                    recent: recent,
+                    lyricIndex: lyricIndex
+                )
+            } ?? value
+        } else {
+            refined = value
+        }
         return Task.isCancelled ? [] : refined
     }
 }

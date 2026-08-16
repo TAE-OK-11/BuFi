@@ -429,14 +429,19 @@ struct HomePresentation: Sendable {
         let recent = await recentTask.recentSongs
         guard !Task.isCancelled else { return .empty }
         let value = make(input: input, lyricIndex: lyricIndex)
-        let mixes = await AsyncDeadline.first(seconds: 2.2) {
-            await PersonalizedMixLLM.apply(
-                to: value.personalizedMixes,
-                snapshot: input.snapshot,
-                recent: recent,
-                lyricIndex: lyricIndex
-            )
-        } ?? value.personalizedMixes
+        let mixes: [PersonalizedMix]
+        if RecommendationLLMReview.isEnabled() {
+            mixes = await AsyncDeadline.first(seconds: 2.2) {
+                await PersonalizedMixLLM.apply(
+                    to: value.personalizedMixes,
+                    snapshot: input.snapshot,
+                    recent: recent,
+                    lyricIndex: lyricIndex
+                )
+            } ?? value.personalizedMixes
+        } else {
+            mixes = value.personalizedMixes
+        }
         guard !Task.isCancelled else { return .empty }
         return HomePresentation(
             personalizedMixes: mixes,

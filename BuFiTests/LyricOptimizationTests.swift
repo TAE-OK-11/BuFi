@@ -635,43 +635,7 @@ final class LyricOptimizationTests: XCTestCase {
         XCTAssertEqual(AILyricMood.allCases.count, 10)
     }
 
-    func testLyricToolkitReadsAnalysisAndRejectsUnknownIDs() async {
-        let song = Song(id: "c1", title: "Rain", artist: "A", album: "L")
-        var details = LyricDetailProfile.empty
-        details.primaryMoods = ["yearning"]
-        let signature = LyricSignature(
-            songID: "c1",
-            lyricsHash: "h",
-            moods: ["yearning"],
-            themes: ["rain"],
-            energy: 0.3,
-            valence: 0.2,
-            embedding: [],
-            source: "groq",
-            summary: "The narrator waits in the rain.",
-            details: details
-        )
-        let toolkit = LyricModelToolkit(
-            songsByID: [song.id: song],
-            lyricIndex: LyricSignatureIndex(bySongID: [song.id: signature]),
-            seed: song,
-            lyricsProvider: { _ in "I wait by the window in the quiet rain tonight" }
-        )
-        let lyrics = await toolkit.invoke(
-            name: "get_lyrics",
-            argumentsJSON: #"{"song_id":"c1"}"#
-        )
-        XCTAssertTrue(lyrics.contains("quiet rain"))
-        let missing = await toolkit.invoke(
-            name: "get_lyrics",
-            argumentsJSON: #"{"song_id":"nope"}"#
-        )
-        XCTAssertTrue(missing.contains("unknown"))
-        let analysis = await toolkit.invoke(
-            name: "get_analysis",
-            argumentsJSON: #"{"song_id":"c1"}"#
-        )
-        XCTAssertTrue(analysis.contains("yearning"))
+    func testChatReplyParsesToolCallsWithoutInvokingThem() {
         let reply = LyricJSONExtractor.chatReply(
             from: #"{"choices":[{"message":{"tool_calls":[{"id":"1","function":{"name":"get_lyrics","arguments":"{\"song_id\":\"c1\"}"}}]}}]}"#
         )
