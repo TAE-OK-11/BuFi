@@ -59,8 +59,20 @@ actor SecureStore {
         ]
         let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else {
-            throw SecureStoreError.keychain(updateStatus)
+
+        // Older installs can already contain this item with attributes that the
+        // current signer/access group is allowed to read and update but not
+        // mutate. Preserve those attributes and update only the payload before
+        // treating the write as failed.
+        if updateStatus != errSecItemNotFound {
+            let valueOnlyStatus = SecItemUpdate(
+                query as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary
+            )
+            if valueOnlyStatus == errSecSuccess { return }
+            guard valueOnlyStatus == errSecItemNotFound else {
+                throw SecureStoreError.keychain(valueOnlyStatus)
+            }
         }
 
         var value = query
@@ -172,9 +184,21 @@ actor SecureStore {
         ]
         let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else {
-            throw SecureStoreError.keychain(updateStatus)
+
+        // A legacy Keychain row may reject an accessibility-attribute mutation
+        // even though its value is writable. Retry the safe operation we really
+        // need: replace only the secret bytes and keep the existing attributes.
+        if updateStatus != errSecItemNotFound {
+            let valueOnlyStatus = SecItemUpdate(
+                query as CFDictionary,
+                [kSecValueData as String: data] as CFDictionary
+            )
+            if valueOnlyStatus == errSecSuccess { return }
+            guard valueOnlyStatus == errSecItemNotFound else {
+                throw SecureStoreError.keychain(valueOnlyStatus)
+            }
         }
+
         var value = query
         value.merge(update) { _, new in new }
         let status = SecItemAdd(value as CFDictionary, nil)
