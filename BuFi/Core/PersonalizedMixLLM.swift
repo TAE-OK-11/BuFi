@@ -9,8 +9,7 @@ enum PersonalizedMixLLM {
         date: Date = Date()
     ) async -> [PersonalizedMix] {
         let settings = await LyricIntelligenceSettings.load()
-        guard settings.provider != .off else { return mixes }
-        let family = LyricModelFamily.resolve(settings)
+        let family = LyricModelFamily.resolve(model: settings.radioModel)
         let calendar = Calendar.current
         let hour = calendar.component(.hour, from: date)
         let month = calendar.component(.month, from: date)
@@ -97,8 +96,16 @@ enum PersonalizedMixLLM {
                 "\(index + 1). \(card(song, lyricIndex: lyricIndex))"
             }.joined(separator: "\n")
         )
-        let raw = await LyricIntelligenceBackend.complete(
+        let applePrompt = compactApplePrompt(
+            mix: mix,
+            pool: pool,
+            hour: hour,
+            month: month,
+            lyricIndex: lyricIndex
+        )
+        let raw = await completeRecommendation(
             prompt: prompt,
+            applePrompt: applePrompt,
             settings: settings
         )
         var parsed = raw.map { parse($0, allowed: Set(pool.map(\.id))) }
@@ -133,6 +140,104 @@ enum PersonalizedMixLLM {
             theme: mix.theme.isEmpty ? brief.theme : mix.theme,
             audioFeel: mix.audioFeel.isEmpty ? brief.audioFeel : mix.audioFeel
         )
+    }
+
+    private static func completeRecommendation(
+        prompt: String,
+        applePrompt: String,
+        settings: LyricIntelligenceSettings
+    ) async -> String? {
+        var attemptedSources = Set<String>()
+        var trail: [String] = []
+
+        for target in LyricInferenceRuntime.radioTargets(settings) {
+            guard attemptedSources.insert(target.source).inserted else { continue }
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .info,
+                title: String(localized: "AI 재생목록 모델을 호출합니다"),
+                detail: "\(target.source) \(target.model)"
+            )
+            if let text = await LyricInferenceRuntime.chat(
+                prompt: prompt,
+                target: target,
+                maxTokens: LyricInferenceRuntime.radioTokenBudget(
+                    for: target.model,
+                    requested: 900
+                )
+            ) {
+                return text
+            }
+            trail.append("\(target.source)/\(target.model)")
+        }
+
+        RecommendationDiagnostics.record(
+            kind: .llm,
+            level: .info,
+            title: String(localized: "Apple 3B 재생목록 모델을 호출합니다"),
+            detail: "apple-intelligence-3b"
+        )
+        if let text = await AppleFoundationLyricClient.complete(applePrompt) {
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .info,
+                title: String(localized: "Apple 3B로 재생목록을 구성했습니다"),
+                detail: "apple-intelligence-3b"
+            )
+            return text
+        }
+        trail.append("apple-3b")
+
+        for target in LyricInferenceRuntime.fallbackTargets(settings, excluding: .off) {
+            guard attemptedSources.insert(target.source).inserted else { continue }
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .info,
+                title: String(localized: "AI 재생목록 대체 모델을 호출합니다"),
+                detail: "\(target.source) \(target.model)"
+            )
+            if let text = await LyricInferenceRuntime.chat(
+                prompt: prompt,
+                target: target,
+                maxTokens: 900
+            ) {
+                return text
+            }
+            trail.append("\(target.source)/\(target.model)")
+        }
+
+        RecommendationDiagnostics.record(
+            kind: .llm,
+            level: .error,
+            title: String(localized: "AI 재생목록 호출이 모두 실패했습니다"),
+            detail: trail.isEmpty ? "none" : trail.joined(separator: " → ")
+        )
+        return nil
+    }
+
+    private static func compactApplePrompt(
+        mix: PersonalizedMix,
+        pool: [Song],
+        hour: Int,
+        month: Int,
+        lyricIndex: LyricSignatureIndex
+    ) -> String {
+        let candidates = pool.prefix(20).map { song in
+            let signature = lyricIndex.bySongID[song.id]
+            let mood = (signature?.details.primaryMoods.isEmpty == false
+                ? signature?.details.primaryMoods
+                : signature?.moods)?.prefix(2).joined(separator: ",") ?? ""
+            let genre = signature?.details.genre ?? song.genre ?? ""
+            return "\(song.id) | \(song.title) — \(song.artist) | \(genre) | \(mood)"
+        }.joined(separator: "\n")
+        return """
+        Build the playlist "\(mix.title)" for month \(month), hour \(hour).
+        Reorder only listed song ids. Prefer a coherent flow and avoid repeating one artist too much.
+        Return JSON only:
+        {"ids":[],"subtitle":""}
+        Candidates:
+        \(candidates)
+        """
     }
 
     static func parse(
