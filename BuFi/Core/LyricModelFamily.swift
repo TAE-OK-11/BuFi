@@ -153,9 +153,13 @@ enum LyricModelPrompts {
             """
         case .gptOSS:
             return """
-            Role: senior lyric editor for a recommender. Understand the whole excerpt, then output one JSON object only.
-            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"","dayparts":[],"style":"","content":"","setting":"","tempo":0.0,"intimacy":0.0,"narrative":"","weather":"","social":"","color":"","vocal":"","vocalGender":"","genre":"","language":"","emotion":0.0,"context":""}
-            Prefer evidence over guesses. summary is the actual lyric narrative, including its emotional turn or ending. energy and tempo describe the words, not the recording. Never infer singer gender or musical genre only from lyric text.
+            Role: senior lyric analyst for a music recommender. Read the excerpt as one narrative, then return exactly one JSON object and nothing else.
+            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","explicitContent":"","interpretation":"","emotionalArc":"","relationship":"","season":"","dayparts":[],"content":"","setting":"","narrative":"","social":"","language":"","context":"","style":"","tempo":0.0,"intimacy":0.0,"weather":"","color":"","vocal":"","vocalGender":"","genre":""}
+            primaryMoods: 1-3 emotions that define the narrator's core state. secondaryMoods: 0-2 real but less central emotions. Rank both by importance; prefer precise labels such as yearning, resentful, obsessive, nostalgic, anxious, euphoric over generic sad/happy/angry when the lyrics support them.
+            themes are recurring ideas or conflicts, not duplicate mood words. energy=lyrical intensity, valence=emotional positivity, emotion=emotional intensity, tempo=narrative pace. These describe the words, never the recording.
+            explicitContent contains only events, situations or desires directly stated or strongly evidenced by the lyrics. interpretation is the higher-level meaning inferred from that evidence. emotionalArc describes how the narrator's state changes from beginning to end. relationship names the relationship only when supported.
+            summary: 2-4 concise sentences that paraphrase the speaker, desire/conflict, important turn and ending. Do not quote or reproduce lyric lines. Do not call the narrator the artist. Distinguish fantasies, threats, irony, metaphor and hyperbole from literal actions when the text does.
+            Never invent biography, production, instrumentation, genre, singer identity or vocal gender. Leave audio-only fields vocal/vocalGender/genre empty unless explicitly stated in the words. Leave season/daypart/weather/setting empty when unsupported.
             Lyrics:
             \(body)
             """

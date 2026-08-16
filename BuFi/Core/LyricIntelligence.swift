@@ -162,7 +162,19 @@ struct LyricSignature: Codable, Equatable, Sendable {
     }
 
     var sourceTitle: String {
-        switch source {
+        let manualPrefix = "manual:"
+        if source.hasPrefix(manualPrefix) {
+            let original = String(source.dropFirst(manualPrefix.count))
+            let originalTitle = Self.displaySourceTitle(original)
+            return originalTitle.isEmpty
+                ? String(localized: "사용자 수정")
+                : String(localized: "사용자 수정") + " · " + originalTitle
+        }
+        return Self.displaySourceTitle(source)
+    }
+
+    private static func displaySourceTitle(_ raw: String) -> String {
+        switch raw {
         case "apple-intelligence-tagging+default":
             String(localized: "Apple Intelligence (태깅+기본)")
         case "apple-intelligence-tagging":
@@ -183,10 +195,12 @@ struct LyricSignature: Codable, Equatable, Sendable {
             "Groq"
         case "cerebras":
             "Cerebras"
+        case "manual":
+            String(localized: "사용자 수정")
         case "lexical":
             String(localized: "이전 로컬 결과 (LLM 재분석 필요)")
         default:
-            source
+            raw
         }
     }
 }
@@ -463,10 +477,18 @@ enum LyricIntelligencePrompt {
               let dictionary = object as? [String: Any] else {
             return nil
         }
-        let moods = stringList(dictionary["moods"]).prefix(5).map {
-            LyricLexicalEmbedding.normalized($0)
-        }.filter { !$0.isEmpty }
-        let themes = stringList(dictionary["themes"]).prefix(5)
+
+        let primaryMoods = normalizedTags(
+            dictionary["primaryMoods"] ?? dictionary["primary_moods"],
+            limit: 3
+        )
+        let secondaryMoods = normalizedTags(
+            dictionary["secondaryMoods"] ?? dictionary["secondary_moods"],
+            limit: 2
+        )
+        let legacyMoods = normalizedTags(dictionary["moods"], limit: 5)
+        let moods = uniqueTags(primaryMoods + secondaryMoods + legacyMoods, limit: 5)
+        let themes = uniqueTags(stringList(dictionary["themes"]), limit: 5)
         let energy = numeric(dictionary["energy"]) ?? 0.5
         let valence = numeric(dictionary["valence"]) ?? 0.5
         let summary = normalizedSummary(dictionary["summary"] as? String ?? "")
@@ -479,24 +501,22 @@ enum LyricIntelligencePrompt {
             return nil
         }
         var parsed = ParsedLyricAnalysis(
-            moods: Array(moods),
-            themes: Array(themes),
+            moods: moods,
+            themes: themes,
             energy: min(max(energy, 0), 1),
             valence: min(max(valence, 0), 1),
             summary: summary
         )
-        parsed.details = LyricDetailProfile(
-            moods: Array(moods),
-            themes: Array(themes),
+        var details = LyricDetailProfile(
+            moods: moods,
+            themes: themes,
             energy: min(max(energy, 0), 1),
             valence: min(max(valence, 0), 1),
             summary: summary,
             season: token(dictionary["season"]),
-            dayparts: stringList(dictionary["dayparts"]).prefix(4).map {
-                LyricLexicalEmbedding.normalized($0)
-            },
+            dayparts: normalizedTags(dictionary["dayparts"], limit: 4),
             style: token(dictionary["style"]),
-            content: clipped(dictionary["content"] as? String, 120),
+            content: clipped(dictionary["content"] as? String, 160),
             setting: token(dictionary["setting"]),
             tempo: min(max(numeric(dictionary["tempo"]) ?? 0.5, 0), 1),
             intimacy: min(max(numeric(dictionary["intimacy"]) ?? 0.5, 0), 1),
@@ -511,7 +531,45 @@ enum LyricIntelligencePrompt {
             emotionIntensity: min(max(numeric(dictionary["emotion"]) ?? 0.5, 0), 1),
             listenContext: token(dictionary["context"])
         )
+        details.primaryMoods = primaryMoods.isEmpty ? Array(moods.prefix(3)) : primaryMoods
+        details.secondaryMoods = secondaryMoods.isEmpty
+            ? Array(moods.dropFirst(details.primaryMoods.count).prefix(2))
+            : secondaryMoods
+        details.explicitContent = clipped(
+            dictionary["explicitContent"] as? String
+                ?? dictionary["explicit_content"] as? String,
+            320
+        )
+        details.interpretation = clipped(dictionary["interpretation"] as? String, 420)
+        details.emotionalArc = clipped(
+            dictionary["emotionalArc"] as? String
+                ?? dictionary["emotional_arc"] as? String,
+            320
+        )
+        details.relationship = clipped(dictionary["relationship"] as? String, 80)
+        parsed.details = details
         return parsed
+    }
+
+    private static func normalizedTags(_ value: Any?, limit: Int) -> [String] {
+        uniqueTags(
+            stringList(value).map { LyricLexicalEmbedding.normalized($0) },
+            limit: limit
+        )
+    }
+
+    private static func uniqueTags(_ values: [String], limit: Int) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let key = LyricLexicalEmbedding.normalized(trimmed)
+            guard seen.insert(key).inserted else { continue }
+            result.append(trimmed)
+            if result.count >= limit { break }
+        }
+        return result
     }
 
     private static func token(_ value: Any?) -> String {
@@ -688,6 +746,64 @@ actor LyricIntelligence {
     func signature(for songID: String) async -> LyricSignature? {
         await loadIfNeeded()
         return signatures[songID]
+    }
+
+    func saveManualEdit(
+        song: Song,
+        lyrics: String,
+        accountScope: String,
+        moods: [String],
+        themes: [String],
+        energy: Double,
+        valence: Double,
+        summary: String,
+        details: LyricDetailProfile
+    ) async -> LyricSignature? {
+        await activate(accountScope: accountScope)
+        guard var current = signatures[song.id], current.hasStoredLyricAnalysis else {
+            return nil
+        }
+        let cleanedMoods = Array(moods.prefix(5)).map {
+            LyricLexicalEmbedding.normalized(
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }.filter { !$0.isEmpty }
+        let cleanedThemes = Array(themes.prefix(5)).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        let cleanSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseSource = current.source.hasPrefix("manual:")
+            ? String(current.source.dropFirst("manual:".count))
+            : current.source
+
+        current.lyricsHash = LyricLexicalEmbedding.hash(lyrics)
+        current.moods = cleanedMoods
+        current.themes = cleanedThemes
+        current.energy = min(max(energy, 0), 1)
+        current.valence = min(max(valence, 0), 1)
+        current.summary = cleanSummary
+        current.source = "manual:" + baseSource
+        if current.embedding.count == LyricLexicalEmbedding.dimensions {
+            current.embedding = LyricLexicalEmbedding.merge(
+                moods: cleanedMoods,
+                energy: current.energy,
+                valence: current.valence,
+                lyrics: lyrics
+            )
+        }
+        var revisedDetails = details
+        revisedDetails.moods = cleanedMoods
+        revisedDetails.themes = cleanedThemes
+        revisedDetails.energy = current.energy
+        revisedDetails.valence = current.valence
+        revisedDetails.summary = cleanSummary
+        if revisedDetails.primaryMoods.isEmpty {
+            revisedDetails.primaryMoods = Array(cleanedMoods.prefix(3))
+        }
+        current.details = revisedDetails
+        signatures[song.id] = current
+        await persist(current)
+        return current
     }
 
     func coverage(catalog: [Song]) async -> LyricAnalysisCoverage {

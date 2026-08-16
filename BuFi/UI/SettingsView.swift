@@ -555,6 +555,7 @@ private struct RecommendationSettingsView: View {
     @EnvironmentObject private var audio: AudioEngine
     @EnvironmentObject private var playbackState: PlaybackState
     @State private var currentSignature: LyricSignature?
+    @State private var showCurrentAnalysisEditor = false
     @State private var probe: LyricIntelligenceProbe?
     @State private var isProbing = false
     @State private var coverage = LyricAnalysisCoverage.empty
@@ -901,6 +902,26 @@ private struct RecommendationSettingsView: View {
         } message: {
             Text("저장된 가사 요약·분위기·임베딩·음향 분석을 초기화하고 현재 라이브러리를 선택한 엔진으로 처음부터 다시 분석합니다. 원격 엔진은 API 사용량이 발생할 수 있습니다.")
         }
+        .sheet(isPresented: $showCurrentAnalysisEditor) {
+            if let song = playbackState.currentSong {
+                CurrentLyricAnalysisEditor(
+                    song: song,
+                    signature: currentSignature,
+                    onSave: { draft in
+                        await saveCurrentAnalysisEdit(draft)
+                    },
+                    onReanalyze: {
+                        await reanalyzeCurrentSong()
+                    }
+                )
+            } else {
+                ContentUnavailableView(
+                    "재생 중인 곡 없음",
+                    systemImage: "music.note",
+                    description: Text("곡을 재생한 뒤 다시 열어주세요.")
+                )
+            }
+        }
         .onAppear {
             listenBrainzUsername = session.listenBrainzUsername
             if lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
@@ -1047,6 +1068,11 @@ private struct RecommendationSettingsView: View {
             if let probe {
                 settingsDescription(probeResultText(probe))
             }
+            Button("현재 재생곡 분석 데이터") {
+                showCurrentAnalysisEditor = true
+            }
+            .buttonStyle(SettingsActionButtonStyle())
+            .disabled(playbackState.currentSong == nil)
             Button(isProbing ? "분석 중…" : "샘플 가사로 시험") {
                 Task { await runLyricProbe() }
             }
@@ -1198,34 +1224,68 @@ private struct RecommendationSettingsView: View {
     private func startCurrentSongReanalysis() {
         batchTask?.cancel()
         batchTask = Task {
-            guard let song = playbackState.currentSong,
-                  let client = model.client else {
-                return
-            }
-            let lyrics = await Self.lyricsText(for: song, client: client)
-            guard lyrics.count >= 24 else { return }
-            await LyricIntelligence.shared.reanalyze(
+            _ = await reanalyzeCurrentSong()
+        }
+    }
+
+    private func reanalyzeCurrentSong() async -> LyricSignature? {
+        guard let song = playbackState.currentSong,
+              let client = model.client else {
+            return nil
+        }
+        let lyrics = await Self.lyricsText(for: song, client: client)
+        guard lyrics.count >= 24 else { return nil }
+        await LyricIntelligence.shared.reanalyze(
+            song: song,
+            lyrics: lyrics,
+            accountScope: client.accountScope
+        )
+        if let fileURL = await SoundAnalysisSample.resolve(
+            for: song,
+            client: client
+        ) {
+            await LyricIntelligence.shared.scheduleSoundAnalysis(
                 song: song,
-                lyrics: lyrics,
+                fileURL: fileURL,
+                audioRevision: song.audioResourceRevision.isEmpty
+                    ? song.id
+                    : song.audioResourceRevision,
                 accountScope: client.accountScope
             )
-            if let fileURL = await SoundAnalysisSample.resolve(
-                for: song,
-                client: client
-            ) {
-                await LyricIntelligence.shared.scheduleSoundAnalysis(
-                    song: song,
-                    fileURL: fileURL,
-                    audioRevision: song.audioResourceRevision.isEmpty
-                        ? song.id
-                        : song.audioResourceRevision,
-                    accountScope: client.accountScope
-                )
-            }
+        }
+        await refreshCoverage()
+        currentSignature = await currentSongSignature()
+        model.rebuildRecommendations()
+        return currentSignature
+    }
+
+    private func saveCurrentAnalysisEdit(
+        _ draft: LyricAnalysisEditDraft
+    ) async -> LyricSignature? {
+        guard let song = playbackState.currentSong,
+              let client = model.client,
+              let currentSignature else {
+            return nil
+        }
+        let lyrics = await Self.lyricsText(for: song, client: client)
+        guard lyrics.count >= 24 else { return nil }
+        let updated = await LyricIntelligence.shared.saveManualEdit(
+            song: song,
+            lyrics: lyrics,
+            accountScope: client.accountScope,
+            moods: draft.combinedMoods,
+            themes: draft.themeTags,
+            energy: draft.energy,
+            valence: draft.valence,
+            summary: draft.summary,
+            details: draft.makeDetails(base: currentSignature.details)
+        )
+        if let updated {
+            self.currentSignature = updated
             await refreshCoverage()
-            currentSignature = await currentSongSignature()
             model.rebuildRecommendations()
         }
+        return updated
     }
 
     private static func lyricsText(
@@ -1286,8 +1346,23 @@ private struct RecommendationSettingsView: View {
             String(localized: "지금 재생 중: \(song.title)"),
             String(localized: "가사 엔진: \(signature.sourceTitle)")
         ]
-        if !signature.moods.isEmpty {
+        if !signature.details.primaryMoods.isEmpty {
+            parts.append(
+                String(localized: "핵심 분위기: \(signature.details.primaryMoods.joined(separator: ", "))")
+            )
+        } else if !signature.moods.isEmpty {
             parts.append(String(localized: "분위기: \(signature.moods.joined(separator: ", "))"))
+        }
+        if !signature.details.secondaryMoods.isEmpty {
+            parts.append(
+                String(localized: "보조 분위기: \(signature.details.secondaryMoods.joined(separator: ", "))")
+            )
+        }
+        if !signature.themes.isEmpty {
+            parts.append(String(localized: "테마: \(signature.themes.joined(separator: ", "))"))
+        }
+        if !signature.details.emotionalArc.isEmpty {
+            parts.append(String(localized: "감정 흐름: \(signature.details.emotionalArc)"))
         }
         if signature.hasStoredSummary {
             parts.append(String(localized: "요약: \(signature.summary.replacingOccurrences(of: "\n", with: " / "))"))
@@ -1418,6 +1493,290 @@ private struct RecommendationSettingsView: View {
         lyricMoodWeight = 0.50
         discoveryRatio = 0.35
         model.rebuildRecommendations()
+    }
+}
+
+
+private struct LyricAnalysisEditDraft {
+    var primaryMoods: String
+    var secondaryMoods: String
+    var themes: String
+    var energy: Double
+    var valence: Double
+    var emotionIntensity: Double
+    var summary: String
+    var explicitContent: String
+    var interpretation: String
+    var emotionalArc: String
+    var relationship: String
+    var content: String
+    var narrative: String
+    var setting: String
+    var social: String
+    var season: String
+    var dayparts: String
+    var listenContext: String
+
+    init(signature: LyricSignature?) {
+        let details = signature?.details ?? .empty
+        let allMoods = signature?.moods ?? []
+        let primary = details.primaryMoods.isEmpty
+  ? Array(allMoods.prefix(3))
+  : details.primaryMoods
+        let secondary = details.secondaryMoods.isEmpty
+  ? Array(allMoods.dropFirst(primary.count).prefix(2))
+  : details.secondaryMoods
+        primaryMoods = primary.joined(separator: ", ")
+        secondaryMoods = secondary.joined(separator: ", ")
+        themes = (signature?.themes ?? details.themes).joined(separator: ", ")
+        energy = signature?.energy ?? details.energy
+        valence = signature?.valence ?? details.valence
+        emotionIntensity = details.emotionIntensity
+        summary = signature?.summary ?? details.summary
+        explicitContent = details.explicitContent
+        interpretation = details.interpretation
+        emotionalArc = details.emotionalArc
+        relationship = details.relationship
+        content = details.content
+        narrative = details.narrative
+        setting = details.setting
+        social = details.social
+        season = details.season
+        dayparts = details.dayparts.joined(separator: ", ")
+        listenContext = details.listenContext
+    }
+
+    var combinedMoods: [String] {
+        Self.tags(primaryMoods, limit: 3) + Self.tags(secondaryMoods, limit: 2)
+    }
+
+    var themeTags: [String] {
+        Self.tags(themes, limit: 5)
+    }
+
+    func makeDetails(base: LyricDetailProfile) -> LyricDetailProfile {
+        var details = base
+        details.primaryMoods = Self.tags(primaryMoods, limit: 3)
+        details.secondaryMoods = Self.tags(secondaryMoods, limit: 2)
+        details.moods = combinedMoods
+        details.themes = themeTags
+        details.energy = energy
+        details.valence = valence
+        details.emotionIntensity = emotionIntensity
+        details.summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.explicitContent = explicitContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.interpretation = interpretation.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.emotionalArc = emotionalArc.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.relationship = relationship.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.narrative = narrative.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.setting = setting.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.social = social.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.season = season.trimmingCharacters(in: .whitespacesAndNewlines)
+        details.dayparts = Self.tags(dayparts, limit: 4)
+        details.listenContext = listenContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        return details
+    }
+
+    private static func tags(_ raw: String, limit: Int) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for piece in raw.split(separator: ",") {
+  let value = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !value.isEmpty else { continue }
+  let key = LyricLexicalEmbedding.normalized(value)
+  guard seen.insert(key).inserted else { continue }
+  result.append(value)
+  if result.count >= limit { break }
+        }
+        return result
+    }
+}
+
+private struct CurrentLyricAnalysisEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let song: Song
+    let signature: LyricSignature?
+    let onSave: (LyricAnalysisEditDraft) async -> LyricSignature?
+    let onReanalyze: () async -> LyricSignature?
+
+    @State private var draft: LyricAnalysisEditDraft
+    @State private var isSaving = false
+    @State private var isReanalyzing = false
+    @State private var statusMessage = ""
+
+    init(
+        song: Song,
+        signature: LyricSignature?,
+        onSave: @escaping (LyricAnalysisEditDraft) async -> LyricSignature?,
+        onReanalyze: @escaping () async -> LyricSignature?
+    ) {
+        self.song = song
+        self.signature = signature
+        self.onSave = onSave
+        self.onReanalyze = onReanalyze
+        _draft = State(initialValue: LyricAnalysisEditDraft(signature: signature))
+    }
+
+    var body: some View {
+        NavigationStack {
+  ScrollView {
+      VStack(alignment: .leading, spacing: 18) {
+          VStack(alignment: .leading, spacing: 5) {
+              Text(song.title)
+                  .font(.system(size: 24, weight: .bold))
+              Text(song.artist)
+                  .foregroundStyle(.secondary)
+              Text("엔진: \(signature?.sourceTitle ?? String(localized: "분석 없음"))")
+                  .font(.system(size: 13, weight: .semibold))
+                  .foregroundStyle(.secondary)
+          }
+
+          if signature == nil {
+              Text("저장된 LLM 분석이 없습니다. 아래 ‘현재 엔진으로 다시 분석’을 눌러 새 분석을 만들 수 있습니다.")
+                  .font(.system(size: 13))
+                  .foregroundStyle(.secondary)
+          } else {
+              editorField("핵심 분위기", text: $draft.primaryMoods, prompt: "yearning, obsessive, melancholic")
+              editorField("보조 분위기", text: $draft.secondaryMoods, prompt: "resentful, anxious")
+              editorField("테마", text: $draft.themes, prompt: "lost relationship, memory")
+
+              metricSlider("가사 에너지", value: $draft.energy)
+              metricSlider("감정 긍정도", value: $draft.valence)
+              metricSlider("감정 강도", value: $draft.emotionIntensity)
+
+              editorTextArea("요약", text: $draft.summary, minHeight: 120)
+              editorTextArea("가사에 직접 드러난 내용", text: $draft.explicitContent)
+              editorTextArea("AI 해석", text: $draft.interpretation)
+              editorTextArea("감정 흐름", text: $draft.emotionalArc)
+              editorField("관계", text: $draft.relationship, prompt: "former lovers")
+
+              DisclosureGroup("세부 데이터") {
+                  VStack(alignment: .leading, spacing: 12) {
+                      editorField("내용 태그", text: $draft.content, prompt: "longing")
+                      editorField("서사", text: $draft.narrative, prompt: "first-person recollection")
+                      editorField("장소", text: $draft.setting, prompt: "city")
+                      editorField("사회적 상태", text: $draft.social, prompt: "alone")
+                      editorField("계절", text: $draft.season, prompt: "winter")
+                      editorField("시간대", text: $draft.dayparts, prompt: "night, evening")
+                      editorField("추천 상황", text: $draft.listenContext, prompt: "late night")
+                  }
+                  .padding(.top, 10)
+              }
+
+              if let signature, signature.hasStoredSoundAnalysis {
+                  VStack(alignment: .leading, spacing: 4) {
+                      Text("음향 분석 · 읽기 전용")
+                          .font(.system(size: 14, weight: .semibold))
+                      Text(signature.soundLabels.joined(separator: ", "))
+                          .font(.system(size: 12.5))
+                          .foregroundStyle(.secondary)
+                  }
+              }
+
+              Button(isSaving ? "저장 중…" : "수정 내용 저장") {
+                  Task { @MainActor in
+                      isSaving = true
+                      defer { isSaving = false }
+                      if let updated = await onSave(draft) {
+                          draft = LyricAnalysisEditDraft(signature: updated)
+                          statusMessage = String(localized: "수정한 분석을 저장하고 추천에 반영했습니다.")
+                      } else {
+                          statusMessage = String(localized: "수정 내용을 저장하지 못했습니다.")
+                      }
+                  }
+              }
+              .buttonStyle(SettingsActionButtonStyle())
+              .disabled(isSaving || isReanalyzing)
+          }
+
+          Button(isReanalyzing ? "다시 분석 중…" : "현재 엔진으로 다시 분석") {
+              Task { @MainActor in
+                  isReanalyzing = true
+                  defer { isReanalyzing = false }
+                  if let updated = await onReanalyze() {
+                      draft = LyricAnalysisEditDraft(signature: updated)
+                      statusMessage = String(localized: "새 LLM 분석으로 교체했습니다.")
+                  } else {
+                      statusMessage = String(localized: "LLM 분석에 실패했습니다. 기존 데이터는 유지됩니다.")
+                  }
+              }
+          }
+          .buttonStyle(SettingsActionButtonStyle())
+          .disabled(isSaving || isReanalyzing)
+
+          if !statusMessage.isEmpty {
+              Text(statusMessage)
+                  .font(.system(size: 12.5))
+                  .foregroundStyle(.secondary)
+          }
+      }
+      .padding(18)
+  }
+  .background(BuFiScreenBackground())
+  .navigationTitle("현재 곡 분석 데이터")
+  .navigationBarTitleDisplayMode(.inline)
+  .toolbar {
+      ToolbarItem(placement: .topBarTrailing) {
+          Button("완료") { dismiss() }
+      }
+  }
+        }
+        .presentationDetents([.large])
+    }
+
+    private func editorField(
+        _ title: LocalizedStringKey,
+        text: Binding<String>,
+        prompt: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+  Text(title)
+      .font(.system(size: 14, weight: .semibold))
+  TextField(prompt, text: text)
+      .settingsTextField()
+        }
+    }
+
+    private func editorTextArea(
+        _ title: LocalizedStringKey,
+        text: Binding<String>,
+        minHeight: CGFloat = 86
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+  Text(title)
+      .font(.system(size: 14, weight: .semibold))
+  TextEditor(text: text)
+      .font(.system(size: 14))
+      .frame(minHeight: minHeight)
+      .padding(10)
+      .background(
+          Color.primary.opacity(0.055),
+          in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+      )
+      .overlay {
+          RoundedRectangle(cornerRadius: 14, style: .continuous)
+              .stroke(BuFiTheme.separator.opacity(0.30), lineWidth: 0.7)
+      }
+        }
+    }
+
+    private func metricSlider(
+        _ title: LocalizedStringKey,
+        value: Binding<Double>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+  HStack {
+      Text(title)
+          .font(.system(size: 14, weight: .semibold))
+      Spacer()
+      Text(value.wrappedValue, format: .percent.precision(.fractionLength(0)))
+          .foregroundStyle(.secondary)
+          .monospacedDigit()
+  }
+  Slider(value: value, in: 0...1, step: 0.05)
+      .tint(BuFiTheme.accent)
+        }
     }
 }
 
