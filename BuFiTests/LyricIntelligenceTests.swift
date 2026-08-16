@@ -127,6 +127,14 @@ final class LyricIntelligenceTests: XCTestCase {
             SoundAnalysisClassifier.vocalGender(from: ["male speech"]),
             "male"
         )
+        XCTAssertEqual(
+            SoundAnalysisClassifier.vocalGender(from: ["speech > female speech"]),
+            "female"
+        )
+        XCTAssertEqual(
+            SoundAnalysisClassifier.vocalGender(from: ["human", "music"]),
+            ""
+        )
     }
 
     func testPlaylistComposerParsesIDsAndSubtitle() {
@@ -454,7 +462,7 @@ final class LyricIntelligenceTests: XCTestCase {
                 "noise": 0.05,
                 "hum": 0.04
             ]),
-            ["singing", "music", "noise"]
+            ["singing"]
         )
     }
 

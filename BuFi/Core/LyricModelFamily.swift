@@ -96,23 +96,66 @@ enum LyricTextSampler {
         let headCount = max(1, usable * 45 / 100)
         let middleCount = max(1, usable * 20 / 100)
         let tailCount = max(1, usable - headCount - middleCount)
-        let middleStart = max(
-            headCount,
-            min(
-                characters.count - tailCount - middleCount,
-                characters.count / 2 - middleCount / 2
-            )
+        let middleStart = min(
+            max(
+                0,
+                max(
+                    headCount,
+                    min(
+                        characters.count - tailCount - middleCount,
+                        characters.count / 2 - middleCount / 2
+                    )
+                )
+            ),
+            max(0, characters.count - middleCount)
         )
-        let tailStart = characters.count - tailCount
+        let middleEnd = min(characters.count, middleStart + middleCount)
+        let tailStart = min(characters.count, max(0, characters.count - tailCount))
+        guard middleStart < middleEnd else {
+            return String(characters.prefix(limit))
+        }
 
         var sampled: [Character] = []
         sampled.reserveCapacity(limit)
         sampled.append(contentsOf: characters.prefix(headCount))
         sampled.append(contentsOf: divider)
-        sampled.append(contentsOf: characters[middleStart..<(middleStart + middleCount)])
+        sampled.append(contentsOf: characters[middleStart..<middleEnd])
         sampled.append(contentsOf: divider)
         sampled.append(contentsOf: characters[tailStart..<characters.count])
+        let chorus = repeatedLines(in: clean)
+        if !chorus.isEmpty {
+            let chorusBlock = Array("\n[chorus]\n" + chorus.joined(separator: "\n"))
+            if sampled.count + chorusBlock.count <= limit {
+                sampled.append(contentsOf: chorusBlock)
+            } else if sampled.count > chorusBlock.count + 24 {
+                sampled.removeLast(min(chorusBlock.count, sampled.count))
+                sampled.append(contentsOf: chorusBlock)
+            }
+        }
         return String(sampled.prefix(limit))
+    }
+
+    static func repeatedLines(in text: String) -> [String] {
+        var counts: [String: (line: String, count: Int)] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 8 else { continue }
+            let key = LyricLexicalEmbedding.normalized(trimmed)
+            if var existing = counts[key] {
+                existing.count += 1
+                counts[key] = existing
+            } else {
+                counts[key] = (trimmed, 1)
+            }
+        }
+        return counts.values
+            .filter { $0.count >= 2 }
+            .sorted {
+                if $0.count == $1.count { return $0.line < $1.line }
+                return $0.count > $1.count
+            }
+            .prefix(3)
+            .map(\.line)
     }
 }
 
@@ -145,8 +188,9 @@ enum LyricModelPrompts {
         case .llama70B:
             return """
             You catalogue lyrics for a personal recommender. Return exactly one JSON object, no markdown.
-            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"spring|summer|autumn|winter|any","dayparts":[],"style":"","content":"","setting":"","tempo":0.0,"intimacy":0.0,"narrative":"","weather":"","social":"","color":"","vocal":"","vocalGender":"","genre":"","language":"ko|en|ja|other","emotion":0.0,"context":""}
-            Ground every field in the lyrics. energy is lyrical intensity, tempo is narrative pace, valence is emotional positivity. summary retells who feels or does what and how it changes or ends, in the lyric language.
+            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","interpretation":"","emotionalArc":"","relationship":"","season":"spring|summer|autumn|winter|any","dayparts":[],"style":"","content":"","setting":"","tempo":0.0,"intimacy":0.0,"narrative":"","weather":"","social":"","color":"","vocal":"","vocalGender":"","genre":"","language":"ko|en|ja|other","context":""}
+            Ground every field in the lyrics. primaryMoods are 1-3 core narrator emotions ranked by importance; secondaryMoods are 0-2 supporting ones. Prefer precise labels such as yearning, nostalgic, anxious over generic sad/happy when the text supports them.
+            energy is lyrical intensity, tempo is narrative pace, valence is emotional positivity, emotion is intensity. summary retells who feels or does what and how it changes or ends, in the lyric language. interpretation is the higher-level meaning. emotionalArc is begin -> turn -> end.
             Never write language commentary. Do not guess singer gender, production, or genre from lyrics; leave audio-only fields empty unless the text itself proves them.
             Lyrics:
             \(body)
@@ -166,8 +210,8 @@ enum LyricModelPrompts {
         case .generic:
             return """
             Analyze these lyrics for recommendations. JSON only:
-            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"any","dayparts":[],"style":"","content":"","setting":"","weather":"","language":"","emotion":0.0,"context":""}
-            Use only evidence in the lyrics. summary retells the lyric story. Never describe the task or language.
+            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"any","dayparts":[],"style":"","content":"","setting":"","weather":"","language":"","emotion":0.0,"context":"","emotionalArc":""}
+            Use only evidence in the lyrics. summary retells the lyric story and how it changes. emotionalArc is begin -> turn -> end when present. Never describe the task or language.
             Lyrics:
             \(body)
             """
@@ -248,7 +292,7 @@ enum LyricModelPrompts {
             You are finishing a radio queue for purpose=\(purpose).
             Rules: keep only listed ids, no inventions, one JSON object.
             {"ids":["listen-next order"]}
-            Rank by: (1) same emotional lane as Taste, (2) matching energy/vocalGender/genre, (3) seed album/era before random same-artist, (4) demote empty analysis and valence clashes, (5) avoid three songs in a row by one artist.
+            Rank by: (1) same emotional lane as Taste including emotionalArc, (2) matching energy/vocalGender/genre/tempo, (3) seed album/era before random same-artist, (4) demote empty analysis and valence clashes, (5) avoid three songs in a row by one artist, (6) keep a coherent listen rather than shuffling moods.
             Taste:
             \(taste)
             Candidates:

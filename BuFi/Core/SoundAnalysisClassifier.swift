@@ -21,39 +21,15 @@ enum SoundAnalysisClassifier {
     }
 
     static func embedding(from scores: [String: Double]) -> [Float] {
-        var buckets = [Float](repeating: 0, count: dimensions)
-        guard !scores.isEmpty else { return buckets }
-        for (label, confidence) in scores {
-            var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-            for byte in label.utf8 {
-                hash ^= UInt64(byte)
-                hash &*= 0x100_0000_01b3
-            }
-            let index = Int(hash % UInt64(dimensions))
-            let sign: Float = hash & 1 == 0 ? 1 : -1
-            buckets[index] += sign * Float(max(0, min(confidence, 1)))
-        }
-        return LyricLexicalEmbedding.l2Normalized(buckets)
+        SoundLabelSpace.embedding(from: scores)
     }
 
     static func vocalGender(from labels: [String]) -> String {
-        let text = labels.joined(separator: " ").lowercased()
-        let female = text.contains("female") || text.contains("woman")
-        let male = (text.contains("male") && !text.contains("female"))
-            || text.contains("man") && !text.contains("woman")
-        if female, male { return "mixed" }
-        if female { return "female" }
-        if male { return "male" }
-        if text.contains("sing") || text.contains("music") { return "" }
-        return ""
+        SoundLabelSpace.vocalGender(from: labels)
     }
 
-    static func topLabels(from scores: [String: Double], limit: Int = 8) -> [String] {
-        scores
-            .filter { $0.value >= 0.05 }
-            .sorted { $0.value > $1.value }
-            .prefix(limit)
-            .map(\.key)
+    static func topLabels(from scores: [String: Double], limit: Int = 5) -> [String] {
+        Array(SoundLabelSpace.tokens(from: scores).prefix(limit).map(\.token))
     }
 
     static func analyzeFile(at url: URL) async -> Analysis? {

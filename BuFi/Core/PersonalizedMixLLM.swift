@@ -17,30 +17,26 @@ enum PersonalizedMixLLM {
         let today = recent.prefix(8).map { song in
             card(song, lyricIndex: lyricIndex)
         }.joined(separator: "\n")
-        var result: [PersonalizedMix] = []
-        result.reserveCapacity(mixes.count)
         var remaining = mixes
+        var selected: [PersonalizedMix] = []
         if let index = remaining.firstIndex(where: { $0.kind == .daylist }) {
-            let daylist = remaining.remove(at: index)
-            let refined = await compose(
-                mix: daylist,
-                family: family,
-                settings: settings,
-                hour: hour,
-                month: month,
-                today: today,
-                lyricIndex: lyricIndex
-            )
-            result.append(refined)
+            selected.append(remaining.remove(at: index))
         }
         if family != .appleFoundation {
             for kindIDPrefix in ["happy-mix", "chill-mix", "love-mix", "upbeat-mix"] {
                 guard let index = remaining.firstIndex(where: {
                     $0.id.hasPrefix(kindIDPrefix)
                 }) else { continue }
-                let mix = remaining.remove(at: index)
-                result.append(
-                    await compose(
+                selected.append(remaining.remove(at: index))
+            }
+        }
+        let refined = await withTaskGroup(
+            of: (String, PersonalizedMix).self,
+            returning: [String: PersonalizedMix].self
+        ) { group in
+            for mix in selected {
+                group.addTask {
+                    let composed = await compose(
                         mix: mix,
                         family: family,
                         settings: settings,
@@ -49,8 +45,19 @@ enum PersonalizedMixLLM {
                         today: today,
                         lyricIndex: lyricIndex
                     )
-                )
+                    return (mix.id, composed)
+                }
             }
+            var byID: [String: PersonalizedMix] = [:]
+            for await item in group {
+                byID[item.0] = item.1
+            }
+            return byID
+        }
+        var result: [PersonalizedMix] = []
+        result.reserveCapacity(mixes.count)
+        for mix in selected {
+            result.append(refined[mix.id] ?? mix)
         }
         result.append(contentsOf: remaining)
         return result
@@ -71,7 +78,21 @@ enum PersonalizedMixLLM {
             hour: hour,
             month: month
         )
-        let pool = Array(mix.songs.prefix(family.reviewPoolLimit + 8))
+        let rankedPool = mix.songs.sorted { lhs, rhs in
+            let left = brief.score(
+                song: lhs,
+                signature: lyricIndex.bySongID[lhs.id],
+                searchableText: "\(lhs.title) \(lhs.artist) \(lhs.genre ?? "")"
+            )
+            let right = brief.score(
+                song: rhs,
+                signature: lyricIndex.bySongID[rhs.id],
+                searchableText: "\(rhs.title) \(rhs.artist) \(rhs.genre ?? "")"
+            )
+            if left == right { return lhs.id < rhs.id }
+            return left > right
+        }
+        let pool = Array(rankedPool.prefix(family.reviewPoolLimit + 8))
         guard pool.count >= 4 else { return mix }
         let prompt = LyricModelPrompts.playlistCompose(
             family: family,
@@ -84,15 +105,23 @@ enum PersonalizedMixLLM {
                 "\(index + 1). \(card(song, lyricIndex: lyricIndex))"
             }.joined(separator: "\n")
         )
-        guard let raw = await LyricIntelligenceBackend.complete(
+        let raw = await LyricIntelligenceBackend.complete(
             prompt: prompt,
             settings: settings
-        ) else {
-            return mix
+        )
+        var parsed = raw.map { parse($0, allowed: Set(pool.map(\.id))) }
+        if parsed?.ids == nil, let broken = raw,
+           let repaired = await LyricInferenceRuntime.repairedJSON(
+            from: broken,
+            settings: settings
+           ) {
+            parsed = parse(repaired, allowed: Set(pool.map(\.id)))
         }
-        let parsed = parse(raw, allowed: Set(pool.map(\.id)))
-        guard let ids = parsed.ids, !ids.isEmpty else { return mix }
-        var byID = Dictionary(uniqueKeysWithValues: mix.songs.map { ($0.id, $0) })
+        guard let parsed, let ids = parsed.ids, !ids.isEmpty else { return mix }
+        var byID = Dictionary(
+            mix.songs.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var songs: [Song] = []
         for id in ids {
             guard let song = byID.removeValue(forKey: id) else { continue }
@@ -118,14 +147,7 @@ enum PersonalizedMixLLM {
         _ raw: String,
         allowed: Set<String>
     ) -> (ids: [String]?, subtitle: String?) {
-        let json: String
-        if let start = raw.firstIndex(of: "{"),
-           let end = raw.lastIndex(of: "}"),
-           start < end {
-            json = String(raw[start...end])
-        } else {
-            json = raw
-        }
+        let json = LyricJSONExtractor.object(from: raw) ?? raw
         guard let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any] else {
@@ -139,9 +161,13 @@ enum PersonalizedMixLLM {
 
     private static func card(_ song: Song, lyricIndex: LyricSignatureIndex) -> String {
         let signature = lyricIndex.bySongID[song.id]
-        let moods = signature?.moods.prefix(3).joined(separator: ",") ?? ""
+        let moods = (signature?.details.primaryMoods.isEmpty == false
+            ? signature?.details.primaryMoods
+            : signature?.moods)?.prefix(3).joined(separator: ",") ?? ""
         let vocal = signature?.details.vocalGender ?? ""
         let genre = signature?.details.genre ?? song.genre ?? ""
-        return "\(song.id) | \(song.title) — \(song.artist) | \(moods) \(vocal) \(genre)"
+        let energy = signature.map { String(format: "%.2f", $0.energy) } ?? "-"
+        let arc = signature?.details.emotionalArc ?? ""
+        return "\(song.id) | \(song.title) — \(song.artist) | \(moods) e:\(energy) \(vocal) \(genre) \(arc)"
     }
 }

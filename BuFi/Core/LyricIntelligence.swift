@@ -135,8 +135,9 @@ struct LyricSignature: Codable, Equatable, Sendable {
     }
 
     var moodKeys: [String] {
-        moods.map(LyricLexicalEmbedding.normalized)
-            .filter { !$0.isEmpty }
+        uniqueNormalized(
+            moods + details.primaryMoods + details.secondaryMoods
+        )
     }
 
     var hasStoredLyricAnalysis: Bool {
@@ -158,7 +159,21 @@ struct LyricSignature: Codable, Equatable, Sendable {
     }
 
     var themeKeys: [String] {
-        themes.map(LyricLexicalEmbedding.normalized).filter { !$0.isEmpty }
+        uniqueNormalized(
+            themes + [details.content, details.relationship, details.narrative]
+                .filter { !$0.isEmpty }
+        )
+    }
+
+    private func uniqueNormalized(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for value in values {
+            let key = LyricLexicalEmbedding.normalized(value)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            result.append(key)
+        }
+        return result
     }
 
     var sourceTitle: String {
@@ -226,9 +241,32 @@ struct LyricIntelligenceProbe: Equatable, Sendable {
 }
 
 struct LyricSignatureIndex: Sendable {
-    var bySongID: [String: LyricSignature] = [:]
+    let bySongID: [String: LyricSignature]
+    private let unifiedBySongID: [String: [Float]]
 
     static let empty = LyricSignatureIndex()
+
+    init(bySongID: [String: LyricSignature] = [:]) {
+        self.bySongID = bySongID
+        var vectors: [String: [Float]] = [:]
+        vectors.reserveCapacity(bySongID.count)
+        for (id, signature) in bySongID {
+            vectors[id] = LyricLexicalEmbedding.unified(signature)
+        }
+        self.unifiedBySongID = vectors
+    }
+
+    func similarity(between leftID: String, and rightID: String) -> Double {
+        guard let left = bySongID[leftID], let right = bySongID[rightID] else {
+            return 0
+        }
+        return LyricLexicalEmbedding.similarity(
+            left,
+            right,
+            leftUnified: unifiedBySongID[leftID],
+            rightUnified: unifiedBySongID[rightID]
+        )
+    }
 
     func affinity(
         candidateID: String,
@@ -236,12 +274,10 @@ struct LyricSignatureIndex: Sendable {
         favoriteIDs: [String],
         seedID: String? = nil
     ) -> Double {
-        guard let candidate = bySongID[candidateID] else { return 0 }
+        guard bySongID[candidateID] != nil else { return 0 }
         let seedScore: Double
-        if let seedID,
-           seedID != candidateID,
-           let seed = bySongID[seedID] {
-            seedScore = LyricLexicalEmbedding.similarity(candidate, seed)
+        if let seedID, seedID != candidateID, bySongID[seedID] != nil {
+            seedScore = similarity(between: candidateID, and: seedID)
         } else {
             seedScore = 0
         }
@@ -250,8 +286,8 @@ struct LyricSignatureIndex: Sendable {
         var samples = 0
         var total = 0.0
         for id in anchors {
-            guard id != candidateID, let other = bySongID[id] else { continue }
-            let score = LyricLexicalEmbedding.similarity(candidate, other)
+            guard id != candidateID, bySongID[id] != nil else { continue }
+            let score = similarity(between: candidateID, and: id)
             best = max(best, score)
             total += score
             samples += 1
@@ -345,9 +381,11 @@ enum LyricLexicalEmbedding {
             }
         }
         if signature.hasStoredSoundAnalysis {
-            let sound = projected(signature.soundEmbedding, to: dimensions)
+            let stored = projected(signature.soundEmbedding, to: dimensions)
+            let live = SoundLabelSpace.embedding(fromLabels: signature.soundLabels)
             for index in merged.indices {
-                merged[index] = merged[index] * 0.82 + sound[index] * 0.18
+                let sound = stored[index] * 0.35 + live[index] * 0.65
+                merged[index] = merged[index] * 0.82 + sound * 0.18
             }
         }
         if signature.hasStoredSummary || signature.details.hasExtendedFields {
@@ -363,7 +401,8 @@ enum LyricLexicalEmbedding {
             signature.details.genre,
             signature.details.vocal,
             signature.details.style,
-            signature.soundLabels.joined(separator: " ")
+            SoundLabelSpace.canonicalize(signature.soundLabels)
+                .joined(separator: " ")
         ].joined(separator: " ")
         if !voiceAndGenre.trimmingCharacters(in: .whitespaces).isEmpty {
             let extra = vector(from: voiceAndGenre)
@@ -374,20 +413,85 @@ enum LyricLexicalEmbedding {
         return l2Normalized(merged)
     }
 
-    static func similarity(_ left: LyricSignature, _ right: LyricSignature) -> Double {
-        let fused = cosine(unified(left), unified(right))
+    static func similarity(
+        _ left: LyricSignature,
+        _ right: LyricSignature,
+        leftUnified: [Float]? = nil,
+        rightUnified: [Float]? = nil
+    ) -> Double {
+        let fused = cosine(
+            leftUnified ?? unified(left),
+            rightUnified ?? unified(right)
+        )
         let mood = jaccard(left.moodKeys, right.moodKeys)
         let theme = jaccard(left.themeKeys, right.themeKeys)
-        let energy = 1 - min(1, abs(left.energy - right.energy))
-        let valence = 1 - min(1, abs(left.valence - right.valence))
+        let energy = closeness(left.energy, right.energy)
+        let valence = closeness(left.valence, right.valence)
+        let tempo = closeness(left.details.tempo, right.details.tempo)
+        let intimacy = closeness(left.details.intimacy, right.details.intimacy)
+        let vocal = exactMatch(left.details.vocalGender, right.details.vocalGender)
+        let genre = looseMatch(
+            left.details.genre.isEmpty ? left.details.style : left.details.genre,
+            right.details.genre.isEmpty ? right.details.style : right.details.genre
+        )
+        let context = contextMatch(left.details, right.details)
+        let sound = SoundLabelSpace.overlap(left.soundLabels, right.soundLabels)
         return min(
             1,
-            fused * 0.60
-                + mood * 0.16
-                + theme * 0.10
-                + energy * 0.07
-                + valence * 0.07
+            fused * 0.44
+                + mood * 0.13
+                + theme * 0.09
+                + energy * 0.06
+                + valence * 0.06
+                + tempo * 0.04
+                + intimacy * 0.03
+                + vocal * 0.04
+                + genre * 0.04
+                + context * 0.03
+                + sound * 0.04
         )
+    }
+
+    private static func closeness(_ left: Double, _ right: Double) -> Double {
+        1 - min(1, abs(left - right))
+    }
+
+    private static func exactMatch(_ left: String, _ right: String) -> Double {
+        let a = normalized(left)
+        let b = normalized(right)
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        return a == b ? 1 : 0
+    }
+
+    private static func looseMatch(_ left: String, _ right: String) -> Double {
+        let a = normalized(left)
+        let b = normalized(right)
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        if a == b { return 1 }
+        let shorter = a.count <= b.count ? a : b
+        let longer = a.count <= b.count ? b : a
+        guard shorter.count >= 4, longer.contains(shorter) else { return 0 }
+        return 1
+    }
+
+    private static func contextMatch(
+        _ left: LyricDetailProfile,
+        _ right: LyricDetailProfile
+    ) -> Double {
+        var score = 0.0
+        var parts = 0
+        if !left.season.isEmpty, !right.season.isEmpty {
+            parts += 1
+            if left.season == "any" || right.season == "any" || left.season == right.season {
+                score += 1
+            }
+        }
+        if !left.dayparts.isEmpty, !right.dayparts.isEmpty {
+            parts += 1
+            score += jaccard(left.dayparts, right.dayparts)
+        }
+        guard parts > 0 else { return 0 }
+        return score / Double(parts)
     }
 
     static func cosine(_ left: [Float], _ right: [Float]) -> Double {
@@ -678,16 +782,19 @@ enum LyricIntelligencePrompt {
     }
 
     private static func extractJSONObject(from raw: String) -> String? {
-        guard let start = raw.firstIndex(of: "{"),
-              let end = raw.lastIndex(of: "}"),
-              start < end else {
-            return nil
-        }
-        return String(raw[start...end])
+        LyricJSONExtractor.object(from: raw)
     }
 
     private static func stringList(_ value: Any?) -> [String] {
         if let values = value as? [String] { return values }
+        if let values = value as? [Any] {
+            return values.compactMap { item in
+                if let value = item as? String { return value }
+                if let value = item as? Int { return String(value) }
+                if let value = item as? Double { return String(value) }
+                return nil
+            }
+        }
         if let value = value as? String { return [value] }
         return []
     }
@@ -1026,28 +1133,6 @@ actor LyricIntelligence {
                 existing.sentenceEmbedding = sentence
                 dirty = true
             }
-            if !existing.details.hasExtendedFields {
-                let settings = await LyricIntelligenceSettings.load()
-                if settings.provider != .off,
-                   let analyzed = await LyricIntelligenceBackend.analyze(
-                    lyrics: lyrics,
-                    settings: settings
-                   ) {
-                    if existing.moods.isEmpty { existing.moods = analyzed.moods }
-                    if existing.themes.isEmpty { existing.themes = analyzed.themes }
-                    if LyricIntelligencePrompt.isContentSummary(analyzed.summary) {
-                        existing.summary = analyzed.summary
-                    }
-                    existing.details = analyzed.details.withBasics(
-                        moods: existing.moods,
-                        themes: existing.themes,
-                        energy: existing.energy,
-                        valence: existing.valence,
-                        summary: existing.summary
-                    )
-                    dirty = true
-                }
-            }
             if !existing.hasStoredSummary {
                 existing.summary = await Self.filledSummary(lyrics: lyrics)
                 existing.details.summary = existing.summary
@@ -1375,47 +1460,15 @@ enum LyricIntelligenceBackend {
         case .off:
             result = nil
         case .onDevice, .applePrivateCloud:
-            result = await onDevice(lyrics: lyrics, settings: settings)
-        case .openAI:
-            result = await remote(
-                lyrics: lyrics,
-                endpoint: URL(string: "https://api.openai.com/v1/chat/completions"),
-                embeddingEndpoint: URL(string: "https://api.openai.com/v1/embeddings"),
-                key: settings.openAIKey,
-                model: "gpt-4o-mini",
-                embeddingModel: "text-embedding-3-small",
-                source: "openai"
-            )
-        case .openRouter:
-            result = await remote(
-                lyrics: lyrics,
-                endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
-                embeddingEndpoint: URL(string: "https://openrouter.ai/api/v1/embeddings"),
-                key: settings.openRouterKey,
-                model: settings.openRouterModel,
-                embeddingModel: "openai/text-embedding-3-small",
-                source: "openrouter"
-            )
-        case .groq:
-            result = await remote(
-                lyrics: lyrics,
-                endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
-                embeddingEndpoint: nil,
-                key: settings.groqKey,
-                model: settings.groqModel,
-                embeddingModel: "",
-                source: "groq"
-            )
-        case .cerebras:
-            result = await remote(
-                lyrics: lyrics,
-                endpoint: URL(string: "https://api.cerebras.ai/v1/chat/completions"),
-                embeddingEndpoint: nil,
-                key: settings.cerebrasKey,
-                model: settings.cerebrasModel,
-                embeddingModel: "",
-                source: "cerebras"
-            )
+            result = await onDevice(lyrics: lyrics)
+        case .openAI, .openRouter, .groq, .cerebras:
+            if let target = LyricInferenceRuntime.primaryTarget(settings) {
+                result = await remote(
+                    lyrics: lyrics,
+                    target: target,
+                    settings: settings
+                )
+            }
         }
         if let validated = validatedLLMAnalysis(result) {
             return validated
@@ -1428,29 +1481,7 @@ enum LyricIntelligenceBackend {
         )
     }
 
-    private static func groqAnalysis(
-        lyrics: String,
-        settings: LyricIntelligenceSettings
-    ) async -> Analysis? {
-        guard !settings.groqKey.isEmpty else { return nil }
-        guard let analysis = await remote(
-            lyrics: lyrics,
-            endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
-            embeddingEndpoint: nil,
-            key: settings.groqKey,
-            model: settings.groqModel,
-            embeddingModel: "",
-            source: "groq"
-        ) else {
-            return nil
-        }
-        return validatedLLMAnalysis(analysis)
-    }
-
-    private static func onDevice(
-        lyrics: String,
-        settings: LyricIntelligenceSettings
-    ) async -> Analysis? {
+    private static func onDevice(lyrics: String) async -> Analysis? {
         if let apple = await AppleFoundationLyricClient.analyzeLocal3B(lyrics: lyrics) {
             return appleAnalysis(apple)
         }
@@ -1475,91 +1506,49 @@ enum LyricIntelligenceBackend {
         settings: LyricIntelligenceSettings,
         excluding provider: LyricIntelligenceProviderKind
     ) async -> Analysis? {
-        if provider != .groq,
-           let groq = await groqAnalysis(lyrics: lyrics, settings: settings) {
-            return groq
-        }
-        if provider != .cerebras, !settings.cerebrasKey.isEmpty,
-           let cerebras = validatedLLMAnalysis(await remote(
-            lyrics: lyrics,
-            endpoint: URL(string: "https://api.cerebras.ai/v1/chat/completions"),
-            embeddingEndpoint: nil,
-            key: settings.cerebrasKey,
-            model: settings.cerebrasModel,
-            embeddingModel: "",
-            source: "cerebras"
-           )) {
-            return cerebras
-        }
-        if provider != .openRouter, !settings.openRouterKey.isEmpty,
-           let openRouter = validatedLLMAnalysis(await remote(
-            lyrics: lyrics,
-            endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
-            embeddingEndpoint: nil,
-            key: settings.openRouterKey,
-            model: settings.openRouterModel,
-            embeddingModel: "",
-            source: "openrouter"
-           )) {
-            return openRouter
-        }
-        if provider != .openAI, !settings.openAIKey.isEmpty,
-           let openAI = validatedLLMAnalysis(await remote(
-            lyrics: lyrics,
-            endpoint: URL(string: "https://api.openai.com/v1/chat/completions"),
-            embeddingEndpoint: nil,
-            key: settings.openAIKey,
-            model: "gpt-4o-mini",
-            embeddingModel: "",
-            source: "openai"
-           )) {
-            return openAI
+        for target in LyricInferenceRuntime.fallbackTargets(
+            settings,
+            excluding: provider
+        ) {
+            if let analysis = validatedLLMAnalysis(
+                await remote(lyrics: lyrics, target: target, settings: settings)
+            ) {
+                return analysis
+            }
         }
         return nil
     }
 
     private static func remote(
         lyrics: String,
-        endpoint: URL?,
-        embeddingEndpoint: URL?,
-        key: String,
-        model: String,
-        embeddingModel: String,
-        source: String
+        target: LyricChatTarget,
+        settings: LyricIntelligenceSettings
     ) async -> Analysis? {
-        guard !key.isEmpty, let endpoint else { return nil }
         let prompt = LyricIntelligencePrompt.moodAnalysis(
             lyrics: lyrics,
-            family: LyricModelFamily.resolve(model: model)
+            family: LyricModelFamily.resolve(model: target.model)
         )
-        let body: [String: Any] = [
-            "model": model,
-            "temperature": 0,
-            "messages": [
-                ["role": "system", "content": "Return JSON only."],
-                ["role": "user", "content": prompt]
-            ]
-        ]
-        guard let text = await postJSON(
-            url: endpoint,
-            key: key,
-            body: body
+        guard var text = await LyricInferenceRuntime.chat(
+            prompt: prompt,
+            target: target,
+            maxTokens: 900
         ) else {
             return nil
         }
-        let content = chatContent(from: text) ?? text
-        guard let parsed = LyricIntelligencePrompt.parse(content) else {
+        if LyricIntelligencePrompt.parse(text) == nil,
+           let repaired = await LyricInferenceRuntime.repairedJSON(
+            from: text,
+            settings: settings
+           ) {
+            text = repaired
+        }
+        guard let parsed = LyricIntelligencePrompt.parse(text) else {
             return nil
         }
-        var embedding: [Float]?
-        if let embeddingEndpoint {
-            embedding = await remoteEmbedding(
-                lyrics: lyrics,
-                endpoint: embeddingEndpoint,
-                key: key,
-                model: embeddingModel
-            )
-        }
+        let embedding = await LyricInferenceRuntime.embedding(
+            lyrics: lyrics,
+            target: target
+        )
         return Analysis(
             moods: parsed.moods,
             themes: parsed.themes,
@@ -1568,7 +1557,7 @@ enum LyricIntelligenceBackend {
             summary: parsed.summary,
             details: parsed.details,
             embedding: embedding,
-            source: source
+            source: target.source
         )
     }
 
@@ -1576,63 +1565,18 @@ enum LyricIntelligenceBackend {
         prompt: String,
         settings: LyricIntelligenceSettings
     ) async -> String? {
-        switch settings.provider {
-        case .off:
-            return nil
-        case .onDevice, .applePrivateCloud:
-            if let text = await AppleFoundationLyricClient.complete(prompt) {
-                return text
-            }
-            if let groq = await remoteText(
-                prompt: prompt,
-                endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
-                key: settings.groqKey,
-                model: settings.groqModel
-            ) {
-                return groq
-            }
-            return await remoteText(
-                prompt: prompt,
-                endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
-                key: settings.openRouterKey,
-                model: "google/gemma-3-270m-it"
-            )
-        case .openAI:
-            return await remoteText(
-                prompt: prompt,
-                endpoint: URL(string: "https://api.openai.com/v1/chat/completions"),
-                key: settings.openAIKey,
-                model: "gpt-4o-mini"
-            )
-        case .openRouter:
-            return await remoteText(
-                prompt: prompt,
-                endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
-                key: settings.openRouterKey,
-                model: settings.openRouterModel
-            )
-        case .groq:
-            return await remoteText(
-                prompt: prompt,
-                endpoint: URL(string: "https://api.groq.com/openai/v1/chat/completions"),
-                key: settings.groqKey,
-                model: settings.groqModel
-            )
-        case .cerebras:
-            return await remoteText(
-                prompt: prompt,
-                endpoint: URL(string: "https://api.cerebras.ai/v1/chat/completions"),
-                key: settings.cerebrasKey,
-                model: settings.cerebrasModel
-            )
-        }
+        await LyricInferenceRuntime.complete(
+            prompt: prompt,
+            settings: settings,
+            maxTokens: 700
+        )
     }
 
     static func summarize(
         lyrics: String,
         settings: LyricIntelligenceSettings
     ) async -> String? {
-        guard let text = await complete(
+        guard var text = await complete(
             prompt: LyricIntelligencePrompt.summaryOnly(
                 lyrics: lyrics,
                 family: LyricModelFamily.resolve(settings)
@@ -1641,93 +1585,17 @@ enum LyricIntelligenceBackend {
         ) else {
             return nil
         }
+        if LyricIntelligencePrompt.parse(text) == nil,
+           let repaired = await LyricInferenceRuntime.repairedJSON(
+            from: text,
+            settings: settings
+           ) {
+            text = repaired
+        }
         if let parsed = LyricIntelligencePrompt.parse(text), !parsed.summary.isEmpty {
             return parsed.summary
         }
         let normalized = LyricIntelligencePrompt.normalizedSummary(text)
         return normalized.isEmpty ? nil : normalized
-    }
-
-    private static func remoteText(
-        prompt: String,
-        endpoint: URL?,
-        key: String,
-        model: String
-    ) async -> String? {
-        guard !key.isEmpty, let endpoint else { return nil }
-        let body: [String: Any] = [
-            "model": model,
-            "temperature": 0,
-            "messages": [
-                ["role": "system", "content": "Return JSON only."],
-                ["role": "user", "content": prompt]
-            ]
-        ]
-        guard let text = await postJSON(url: endpoint, key: key, body: body) else {
-            return nil
-        }
-        return chatContent(from: text) ?? text
-    }
-
-    private static func remoteEmbedding(
-        lyrics: String,
-        endpoint: URL,
-        key: String,
-        model: String
-    ) async -> [Float]? {
-        let body: [String: Any] = [
-            "model": model,
-            "input": String(lyrics.prefix(4_000))
-        ]
-        guard let raw = await postJSON(url: endpoint, key: key, body: body),
-              let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let root = object as? [String: Any],
-              let items = root["data"] as? [[String: Any]],
-              let first = items.first,
-              let values = first["embedding"] as? [Double] else {
-            return nil
-        }
-        return values.map { Float($0) }
-    }
-
-    private static func chatContent(from raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let root = object as? [String: Any],
-              let choices = root["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            return nil
-        }
-        return content
-    }
-
-    private static func postJSON(
-        url: URL,
-        key: String,
-        body: [String: Any]
-    ) async -> String? {
-        guard url.scheme?.lowercased() == "https",
-              let payload = try? JSONSerialization.data(withJSONObject: body) else {
-            return nil
-        }
-        var request = URLRequest(url: url)
-        ModernNetworkPolicy.prepareExternalAPIRequest(
-            &request,
-            acceptsZstandard: false
-        )
-        request.httpMethod = "POST"
-        request.httpBody = payload
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 18
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              let text = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        return text
     }
 }

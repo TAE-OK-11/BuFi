@@ -653,12 +653,9 @@ enum RecommendationSeedAffinity {
                 score = max(score, 0.44)
             }
         }
-        if let seedSignature = lyricIndex.bySongID[seed.id],
-           let candidateSignature = lyricIndex.bySongID[candidate.id] {
-            let related = LyricLexicalEmbedding.similarity(
-                seedSignature,
-                candidateSignature
-            )
+        if lyricIndex.bySongID[seed.id] != nil,
+           lyricIndex.bySongID[candidate.id] != nil {
+            let related = lyricIndex.similarity(between: seed.id, and: candidate.id)
             score = max(score, related * 0.94)
             score += related * 0.10
         }
@@ -1215,7 +1212,7 @@ enum RecommendationMixer {
             }
         }
         var related: [Song] = []
-        if let seedSignature = lyricIndex.bySongID[seed.id] {
+        if lyricIndex.bySongID[seed.id] != nil {
             related = lyricIndex.bySongID.values
                 .compactMap { signature -> (Song, Double)? in
                     guard signature.songID != seed.id,
@@ -1224,7 +1221,7 @@ enum RecommendationMixer {
                     }
                     return (
                         song,
-                        LyricLexicalEmbedding.similarity(seedSignature, signature)
+                        lyricIndex.similarity(between: seed.id, and: signature.songID)
                     )
                 }
                 .sorted { $0.1 > $1.1 }

@@ -1375,7 +1375,8 @@ private struct RecommendationSettingsView: View {
             )
         }
         if signature.hasStoredSoundAnalysis {
-            let labels = signature.soundLabels.joined(separator: ", ")
+            let labels = SoundLabelSpace.displayNames(signature.soundLabels)
+                .joined(separator: ", ")
             parts.append(String(localized: "음향: \(labels)"))
         } else {
             parts.append(String(localized: "음향: 아직 없음 (다운로드된 곡을 재생하면 채워집니다)"))
@@ -1668,7 +1669,10 @@ private struct CurrentLyricAnalysisEditor: View {
                   VStack(alignment: .leading, spacing: 4) {
                       Text("음향 분석 · 읽기 전용")
                           .font(.system(size: 14, weight: .semibold))
-                      Text(signature.soundLabels.joined(separator: ", "))
+                      Text(
+                          SoundLabelSpace.displayNames(signature.soundLabels)
+                              .joined(separator: ", ")
+                      )
                           .font(.system(size: 12.5))
                           .foregroundStyle(.secondary)
                   }

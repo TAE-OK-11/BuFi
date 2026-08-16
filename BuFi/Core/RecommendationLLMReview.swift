@@ -21,17 +21,30 @@ enum RecommendationLLMReview {
         let settings = await currentSettings()
         guard settings.provider != .off else { return Array(songs.prefix(limit)) }
         let family = LyricModelFamily.resolve(settings)
-        let pool = Array(
-            songs.prefix(min(family.reviewPoolLimit, max(limit + 6, songs.count)))
-        )
+        let pool = Array(songs.prefix(family.reviewPoolLimit))
         guard pool.count >= 3 else { return songs }
+        var laneScores: [String: Double] = [:]
+        laneScores.reserveCapacity(pool.count)
+        for song in pool {
+            laneScores[song.id] = lyricIndex.affinity(
+                candidateID: song.id,
+                recentIDs: recent.map(\.id),
+                favoriteIDs: favorites.map(\.id),
+                seedID: seed?.id
+            )
+        }
         if let cached = cachedOrder(
             songs: pool,
             seed: seed,
             lyricIndex: lyricIndex,
             purpose: purpose
         ) {
-            return apply(order: cached, to: songs, limit: limit)
+            return apply(
+                order: cached,
+                to: songs,
+                limit: limit,
+                laneScores: laneScores
+            )
         }
         let prompt = prompt(
             pool: pool,
@@ -42,10 +55,19 @@ enum RecommendationLLMReview {
             purpose: purpose,
             family: family
         )
-        guard let raw = await LyricIntelligenceBackend.complete(
+        let raw = await LyricIntelligenceBackend.complete(
             prompt: prompt,
             settings: settings
-        ), let order = parseIDs(raw, allowed: Set(pool.map(\.id))), !order.isEmpty else {
+        )
+        var order = raw.flatMap { parseIDs($0, allowed: Set(pool.map(\.id))) }
+        if order == nil, let broken = raw,
+           let repaired = await LyricInferenceRuntime.repairedJSON(
+            from: broken,
+            settings: settings
+           ) {
+            order = parseIDs(repaired, allowed: Set(pool.map(\.id)))
+        }
+        guard let order, !order.isEmpty else {
             return Array(songs.prefix(limit))
         }
         store(
@@ -55,11 +77,16 @@ enum RecommendationLLMReview {
             lyricIndex: lyricIndex,
             purpose: purpose
         )
-        return apply(order: order, to: songs, limit: limit)
+        return apply(
+            order: order,
+            to: songs,
+            limit: limit,
+            laneScores: laneScores
+        )
     }
 
     static func parseIDs(_ raw: String, allowed: Set<String>) -> [String]? {
-        let json = extractJSON(from: raw) ?? raw
+        let json = LyricJSONExtractor.payload(from: raw)
         guard let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) else {
             return nil
@@ -78,11 +105,26 @@ enum RecommendationLLMReview {
         return order.isEmpty ? nil : order
     }
 
-    private static func apply(order: [String], to songs: [Song], limit: Int) -> [Song] {
-        var byID = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
+    static func merged(
+        order: [String],
+        songs: [Song],
+        limit: Int,
+        laneScores: [String: Double]
+    ) -> [Song] {
+        let reviewedIDs = Set(laneScores.keys).union(order)
+        let reviewed = songs.filter { reviewedIDs.contains($0.id) }
+        let blended = LyricOrderBlend.combine(
+            llmOrder: order,
+            songs: reviewed,
+            laneScores: laneScores
+        )
+        var byID = Dictionary(
+            songs.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var result: [Song] = []
         result.reserveCapacity(min(limit, songs.count))
-        for id in order {
+        for id in blended {
             guard let song = byID.removeValue(forKey: id) else { continue }
             result.append(song)
             if result.count == limit { return result }
@@ -93,6 +135,20 @@ enum RecommendationLLMReview {
             if result.count == limit { break }
         }
         return result
+    }
+
+    private static func apply(
+        order: [String],
+        to songs: [Song],
+        limit: Int,
+        laneScores: [String: Double]
+    ) -> [Song] {
+        merged(
+            order: order,
+            songs: songs,
+            limit: limit,
+            laneScores: laneScores
+        )
     }
 
     private static func prompt(
@@ -123,18 +179,25 @@ enum RecommendationLLMReview {
 
     private static func card(for song: Song, lyricIndex: LyricSignatureIndex) -> String {
         let signature = lyricIndex.bySongID[song.id]
-        let moods = signature?.moods.prefix(3).joined(separator: ",") ?? ""
+        let moods = (signature?.details.primaryMoods.isEmpty == false
+            ? signature?.details.primaryMoods
+            : signature?.moods)?.prefix(3).joined(separator: ",") ?? ""
         let themes = signature?.themes.prefix(3).joined(separator: ",") ?? ""
-        let sound = signature?.soundLabels.prefix(3).joined(separator: ",") ?? ""
+        let sound = SoundLabelSpace.canonicalize(signature?.soundLabels ?? [])
+            .prefix(3)
+            .joined(separator: ",")
         let summary = signature?.summary.replacingOccurrences(of: "\n", with: " / ") ?? ""
+        let arc = signature?.details.emotionalArc
+            .replacingOccurrences(of: "\n", with: " / ") ?? ""
         let energy = signature.map { String(format: "%.2f", $0.energy) } ?? "-"
         let valence = signature.map { String(format: "%.2f", $0.valence) } ?? "-"
+        let tempo = signature.map { String(format: "%.2f", $0.details.tempo) } ?? "-"
         let season = signature?.details.season ?? ""
         let day = signature?.details.dayparts.joined(separator: ",") ?? ""
         let style = signature?.details.style ?? ""
         let vocal = signature?.details.vocalGender ?? ""
         let genre = signature?.details.genre ?? song.genre ?? ""
-        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) themes:\(themes) e:\(energy) v:\(valence) season:\(season) day:\(day) style:\(style) vocal:\(vocal) genre:\(genre) sound:\(sound) | \(summary)"
+        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) themes:\(themes) e:\(energy) v:\(valence) tempo:\(tempo) season:\(season) day:\(day) style:\(style) vocal:\(vocal) genre:\(genre) sound:\(sound) arc:\(arc) | \(summary)"
     }
 
     private static func currentSettings() async -> LyricIntelligenceSettings {
@@ -143,6 +206,7 @@ enum RecommendationLLMReview {
 
     private static let cacheLock = NSLock()
     nonisolated(unsafe) private static var cache: [String: [String]] = [:]
+    nonisolated(unsafe) private static var cacheOrder: [String] = []
 
     private static func cacheKey(
         songs: [Song],
@@ -173,7 +237,10 @@ enum RecommendationLLMReview {
         )
         cacheLock.lock()
         defer { cacheLock.unlock() }
-        return cache[key]
+        guard let order = cache[key] else { return nil }
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+        return order
     }
 
     private static func store(
@@ -190,25 +257,15 @@ enum RecommendationLLMReview {
             purpose: purpose
         )
         cacheLock.lock()
-        if cache.count >= 16 {
-            cache.removeAll(keepingCapacity: true)
+        if cache[key] != nil {
+            cacheOrder.removeAll { $0 == key }
+        } else if cache.count >= 24, let oldest = cacheOrder.first {
+            cacheOrder.removeFirst()
+            cache.removeValue(forKey: oldest)
         }
         cache[key] = order
+        cacheOrder.append(key)
         cacheLock.unlock()
-    }
-
-    private static func extractJSON(from raw: String) -> String? {
-        if let start = raw.firstIndex(of: "{"),
-           let end = raw.lastIndex(of: "}"),
-           start < end {
-            return String(raw[start...end])
-        }
-        if let start = raw.firstIndex(of: "["),
-           let end = raw.lastIndex(of: "]"),
-           start < end {
-            return String(raw[start...end])
-        }
-        return nil
     }
 
     private static func stringList(_ value: Any?) -> [String] {

@@ -29,20 +29,43 @@ struct PersonalizedMixBrief: Hashable, Sendable {
             score += min(1, Double(hits) / Double(min(6, tokens.count))) * 0.34
         }
         if let signature {
-            let moodHits = Set(signature.moods.map(LyricLexicalEmbedding.normalized))
+            let moodHits = Set(signature.moodKeys)
                 .intersection(Set(tokens.map(LyricLexicalEmbedding.normalized)))
             score += min(0.22, Double(moodHits.count) * 0.08)
-            let themeHits = Set(signature.themes.map(LyricLexicalEmbedding.normalized))
+            let themeHits = Set(signature.themeKeys)
                 .intersection(Set(tokens.map(LyricLexicalEmbedding.normalized)))
             score += min(0.16, Double(themeHits.count) * 0.06)
+            let primaryHits = Set(signature.details.primaryMoods.map(LyricLexicalEmbedding.normalized))
+                .intersection(Set(tokens.map(LyricLexicalEmbedding.normalized)))
+            score += min(0.10, Double(primaryHits.count) * 0.05)
+            let story = LyricLexicalEmbedding.normalized(
+                signature.details.interpretation + " " + signature.details.emotionalArc
+            )
+            if !story.isEmpty {
+                let storyHits = tokens.reduce(into: 0) { count, token in
+                    if story.contains(LyricLexicalEmbedding.normalized(token)) {
+                        count += 1
+                    }
+                }
+                score += min(0.08, Double(storyHits) * 0.03)
+            }
             if energy.contains(signature.energy) { score += 0.14 }
-            else { score -= min(0.12, abs(signature.energy - energy.lowerBound)) }
+            else {
+                let nearest = min(
+                    abs(signature.energy - energy.lowerBound),
+                    abs(signature.energy - energy.upperBound)
+                )
+                score -= min(0.12, nearest)
+            }
             if valence.contains(signature.valence) { score += 0.12 }
             if vocals.contains(where: {
-                LyricLexicalEmbedding.normalized(signature.details.vocalGender)
-                    .contains(LyricLexicalEmbedding.normalized($0))
-                    || LyricLexicalEmbedding.normalized(signature.details.vocal)
-                        .contains(LyricLexicalEmbedding.normalized($0))
+                let wanted = LyricLexicalEmbedding.normalized($0)
+                guard !wanted.isEmpty else { return false }
+                let gender = LyricLexicalEmbedding.normalized(
+                    signature.details.vocalGender
+                )
+                let voice = LyricLexicalEmbedding.normalized(signature.details.vocal)
+                return gender == wanted || voice == wanted
             }) {
                 score += 0.10
             }
@@ -53,13 +76,41 @@ struct PersonalizedMixBrief: Hashable, Sendable {
             if !Set(dayparts).isDisjoint(with: Set(signature.details.dayparts)) {
                 score += 0.08
             }
-            let sound = signature.soundLabels.joined(separator: " ").lowercased()
-            if audioFeel.lowercased().contains("킥"), sound.contains("drum") {
-                score += 0.04
+            let feel = audioFeel.lowercased()
+            if (feel.contains("킥") || feel.contains("퍼커션") || feel.contains("댄스"))
+                && SoundLabelSpace.matches(
+                    signature.soundLabels,
+                    hints: ["drums", "beat"]
+                ) {
+                score += 0.06
             }
-            if audioFeel.contains("보컬"),
-               sound.contains("sing") || sound.contains("vocal") {
+            if (feel.contains("보컬") || feel.contains("숨"))
+                && SoundLabelSpace.matches(
+                    signature.soundLabels,
+                    hints: ["singing", "choir"]
+                ) {
+                score += 0.06
+            }
+            if (feel.contains("기타") || feel.contains("어쿠스틱"))
+                && SoundLabelSpace.matches(
+                    signature.soundLabels,
+                    hints: ["guitar", "acoustic"]
+                ) {
                 score += 0.05
+            }
+            if (feel.contains("신스") || feel.contains("전자"))
+                && SoundLabelSpace.matches(
+                    signature.soundLabels,
+                    hints: ["synth", "electronic"]
+                ) {
+                score += 0.05
+            }
+            if (feel.contains("리버브") || feel.contains("고요"))
+                && SoundLabelSpace.matches(
+                    signature.soundLabels,
+                    hints: ["ambient"]
+                ) {
+                score += 0.04
             }
         }
         if let genre = song.genre, tokens.contains(where: {
