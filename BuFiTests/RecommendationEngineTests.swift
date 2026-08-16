@@ -809,8 +809,6 @@ final class RecommendationEngineTests: XCTestCase {
         value.lastFM = 0
         value.listenBrainz = 0
         value.behavior = 0
-        value.completion = 0
-        value.repeatListening = 0
         value.recency = 0
         value.context = 0
         value.localMetadata = 0

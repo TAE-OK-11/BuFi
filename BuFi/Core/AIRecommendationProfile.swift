@@ -54,20 +54,20 @@ enum TaylorPenStyle: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .fountain: String(localized: "만년필")
-        case .quill: String(localized: "깃펜")
-        case .glitter: String(localized: "글리터 젤펜")
+        case .fountain: String(localized: "잔잔한 밤")
+        case .quill: String(localized: "드라마틱한 이야기")
+        case .glitter: String(localized: "설레는 팝")
         }
     }
 
     var subtitle: String {
         switch self {
         case .fountain:
-            String(localized: "시적이고 촉촉한 문장. 비, 편지, 늦은 밤.")
+            String(localized: "비 오는 창가, 편지 같은 가사, 낮은 볼륨")
         case .quill:
-            String(localized: "극적이고 서사적. 운명, 복수, 긴 이야기.")
+            String(localized: "운명, 이별, 복수처럼 이야기가 긴 곡")
         case .glitter:
-            String(localized: "반짝이는 팝. 설렘, 춤, 낮의 공기.")
+            String(localized: "낮에 걷기 좋은 팝, 설렘, 춤추고 싶은 곡")
         }
     }
 
@@ -109,10 +109,10 @@ enum AIEnergyLane: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .automatic: String(localized: "지금 곡 따라가기")
-        case .low: String(localized: "낮음")
-        case .mid: String(localized: "중간")
-        case .high: String(localized: "높음")
+        case .automatic: String(localized: "지금 곡처럼")
+        case .low: String(localized: "힘 빼기")
+        case .mid: String(localized: "보통")
+        case .high: String(localized: "신나게")
         }
     }
 
@@ -247,7 +247,7 @@ struct AIRecommendationProfile: Equatable, Codable, Sendable {
         }
         if !selectedPens.isEmpty {
             lines.append(
-                "Taylor writing pens: \(selectedPens.map(\.title).joined(separator: ", "))"
+                "Desired vibe: \(selectedPens.map(\.title).joined(separator: ", "))"
             )
         }
         if selectedEnergy != .automatic {
@@ -271,7 +271,7 @@ struct AIRecommendationProfile: Equatable, Codable, Sendable {
             artist.contains(LyricLexicalEmbedding.normalized($0))
                 || LyricLexicalEmbedding.normalized($0).contains(artist)
         }) {
-            value += 0.22
+            value += 0.07
         }
         if avoidedArtists.contains(where: {
             artist.contains(LyricLexicalEmbedding.normalized($0))
@@ -328,12 +328,11 @@ struct AIRecommendationProfile: Equatable, Codable, Sendable {
             next.forgottenFavorites = 0
         }
         if !useFrequent {
-            next.repeatListening = 0
+            next.behavior *= 0.28
         }
         if !useListenCount {
             next.history *= 0.18
             next.behavior *= 0.22
-            next.completion *= 0.35
         }
         return next
     }

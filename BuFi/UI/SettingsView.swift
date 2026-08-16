@@ -201,17 +201,29 @@ struct SettingsView: View {
 
     private var recommendationSection: some View {
         SettingsGroup(title: "추천") {
-            HStack(spacing: 12) {
-                settingIcon("slider.horizontal.3")
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("알고리즘 탭에서 설정")
-                        .font(.system(size: 16, weight: .semibold))
-                    Text("기존 추천과 AI 라디오를 따로 조정합니다")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+            NavigationLink {
+                AlgorithmHubView()
+                    .environmentObject(model)
+                    .environmentObject(session)
+                    .environmentObject(audio)
+            } label: {
+                HStack(spacing: 12) {
+                    settingIcon("slider.horizontal.3")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("추천")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("기본 추천과 AI 추천을 따로 맞춰요")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.tertiary)
                 }
-                Spacer()
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
     }
@@ -573,29 +585,29 @@ struct RecommendationSettingsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
-                BuFiPageHeader(title: "AI 알고리즘")
-                settingsDescription("비워 두면 지금 듣는 곡의 분위기만 따라갑니다. 손댄 항목만 라디오에 섞입니다.")
+                BuFiPageHeader(title: "AI 추천")
+                settingsDescription("아무것도 고르지 않아도 괜찮아요. 지금 듣는 곡 느낌으로 이어서 틀어 줘요.")
                     .padding(.horizontal, 18)
 
                 aiTasteSection
                 aiArtistSection
                 aiSignalSection
 
-                SettingsGroup(title: "가사 지능") {
+                SettingsGroup(title: "가사를 어떻게 읽을지") {
                     VStack(alignment: .leading, spacing: 14) {
-                        Picker("분석 엔진", selection: $lyricProviderRaw) {
+                        Picker("누가 가사를 읽을지", selection: $lyricProviderRaw) {
                             ForEach(LyricIntelligenceProviderKind.visibleCases) { kind in
                                 Text(kind.title).tag(kind.rawValue)
                             }
                         }
                         .pickerStyle(.menu)
-                        Toggle("LLM 추천 검수", isOn: $llmReviewEnabled)
+                        Toggle("다음 곡을 더 꼼꼼히 고르기", isOn: $llmReviewEnabled)
                             .font(.system(size: 15, weight: .semibold))
                             .onChange(of: llmReviewEnabled) { _, _ in
                                 RecommendationMixer.invalidateCache()
                                 model.rebuildRecommendations()
                             }
-                        settingsDescription("라디오는 남은 곡이 3곡 미만이면 LLM이 다음 분위기를 JSON으로 정하고, 알고리즘이 15곡+대조 5곡을 채운 뒤 LLM이 16곡만 남깁니다. 홈 목록 검수는 이 스위치를 따릅니다.")
+                        settingsDescription("켜 두면 남은 곡이 얼마 없을 때, 지금 분위기와 가사를 보고 다음 플레이리스트를 이어서 만들어 줘요.")
                         settingsDescription(lyricEngineDescription)
                         if usesOnDeviceFallback {
                             SecureField(
@@ -664,9 +676,9 @@ struct RecommendationSettingsView: View {
                         }
                         if lyricProviderRaw == LyricIntelligenceProviderKind.groq.rawValue {
                             Picker("Groq 모델", selection: $groqModel) {
-                                Text("GPT-OSS 120B").tag("openai/gpt-oss-120b")
-                                Text("Llama 3.3 70B").tag("llama-3.3-70b-versatile")
-                                Text("Llama 3.1 8B").tag("llama-3.1-8b-instant")
+                                Text("GPT-OSS 120B (기본)").tag("openai/gpt-oss-120b")
+                                Text("GPT-OSS 20B").tag("openai/gpt-oss-20b")
+                                Text("Llama 3.1 8B Instant").tag("llama-3.1-8b-instant")
                             }
                             .pickerStyle(.menu)
                             TextField("Groq 모델 ID", text: $groqModel)
@@ -723,7 +735,7 @@ struct RecommendationSettingsView: View {
                             )
                         }
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("사용자 지정 프롬프트")
+                            Text("하고 싶은 말")
                                 .font(.system(size: 15, weight: .semibold))
                             TextEditor(text: $lyricUserPrompt)
                                 .frame(minHeight: 92)
@@ -733,7 +745,7 @@ struct RecommendationSettingsView: View {
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                                         .fill(Color.primary.opacity(0.05))
                                 )
-                            settingsDescription("라디오 브리프와 16곡 검수에 그대로 붙습니다. 비우면 현재 곡의 분위기·태그로만 이어갑니다.")
+                            settingsDescription("예: 밤에 듣기 좋은 곡만, 너무 시끄럽지 않게. 비워 두면 지금 곡 느낌만 봐요.")
                         }
                         lyricIntelligenceTestSection
                     }
@@ -1307,7 +1319,7 @@ struct RecommendationSettingsView: View {
     }
 
     private var aiTasteSection: some View {
-        SettingsGroup(title: "가사 느낌") {
+        SettingsGroup(title: "이런 느낌으로") {
             VStack(alignment: .leading, spacing: 12) {
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 88), spacing: 8)],
@@ -1322,9 +1334,9 @@ struct RecommendationSettingsView: View {
                         }
                     }
                 }
-                settingsDescription("최대 3개. 고르지 않으면 지금 곡의 감정을 따라갑니다.")
+                settingsDescription("최대 3개까지 고를 수 있어요. 안 고르면 지금 듣는 곡 감정을 따라가요.")
 
-                Text("테일러 펜")
+                Text("이런 분위기로 이어 듣기")
                     .font(.system(size: 15, weight: .semibold))
                 ForEach(TaylorPenStyle.allCases) { pen in
                     Button {
@@ -1347,20 +1359,20 @@ struct RecommendationSettingsView: View {
                     .buttonStyle(.plain)
                 }
 
-                Picker("에너지", selection: energyBinding) {
+                Picker("신나는 정도", selection: energyBinding) {
                     ForEach(AIEnergyLane.allCases) { lane in
                         Text(lane.title).tag(lane.rawValue)
                     }
                 }
-                Picker("언어", selection: languageBinding) {
+                Picker("가사 언어", selection: languageBinding) {
                     ForEach(AILyricLanguage.allCases) { language in
                         Text(language.title).tag(language.rawValue)
                     }
                 }
-                Picker("보컬", selection: vocalBinding) {
+                Picker("목소리", selection: vocalBinding) {
                     Text("상관없음").tag("")
-                    Text("여성").tag("female")
-                    Text("남성").tag("male")
+                    Text("여성 보컬").tag("female")
+                    Text("남성 보컬").tag("male")
                 }
             }
         }
@@ -1368,10 +1380,10 @@ struct RecommendationSettingsView: View {
     }
 
     private var aiArtistSection: some View {
-        SettingsGroup(title: "아티스트") {
+        SettingsGroup(title: "가수") {
             VStack(alignment: .leading, spacing: 12) {
                 artistEditor(
-                    title: "선호 아티스트",
+                    title: "더 듣고 싶은 가수",
                     draft: $preferredDraft,
                     names: profile.preferredArtists,
                     limit: 3
@@ -1382,7 +1394,7 @@ struct RecommendationSettingsView: View {
                     persistProfile()
                 }
                 artistEditor(
-                    title: "기피 아티스트",
+                    title: "덜 듣고 싶은 가수",
                     draft: $avoidedDraft,
                     names: profile.avoidedArtists,
                     limit: 5
@@ -1398,13 +1410,13 @@ struct RecommendationSettingsView: View {
     }
 
     private var aiSignalSection: some View {
-        SettingsGroup(title: "기존 취향 반영") {
+        SettingsGroup(title: "내 기록 활용하기") {
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("들은 수 반영", isOn: listenCountBinding)
-                Toggle("좋아요 반영", isOn: favoritesBinding)
-                Toggle("자주 들은 곡 반영", isOn: frequentBinding)
-                Toggle("같은 앨범 이어 듣기", isOn: stayOnAlbumBinding)
-                settingsDescription("세 가지는 기본으로 켜져 있습니다. 끄면 AI 라디오가 그 신호를 거의 쓰지 않습니다.")
+                Toggle("많이 들은 곡 챙기기", isOn: listenCountBinding)
+                Toggle("좋아요 한 곡 챙기기", isOn: favoritesBinding)
+                Toggle("자주 반복한 곡 챙기기", isOn: frequentBinding)
+                Toggle("같은 앨범 이어서 듣기", isOn: stayOnAlbumBinding)
+                settingsDescription("기본은 모두 켜져 있어요. 끄면 그 기록은 거의 보지 않아요.")
             }
             .font(.system(size: 15, weight: .semibold))
         }
@@ -1426,7 +1438,7 @@ struct RecommendationSettingsView: View {
                 FlexibleArtistChips(names: names, onRemove: remove)
             }
             HStack {
-                TextField("이름 추가", text: draft)
+                TextField("가수 이름", text: draft)
                     .settingsTextField()
                 Button("추가") {
                     add(draft.wrappedValue)
@@ -1437,7 +1449,7 @@ struct RecommendationSettingsView: View {
                         || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
             }
-            Text("최대 \(limit)명")
+            Text("최대 \(limit)명까지 넣을 수 있어요")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }

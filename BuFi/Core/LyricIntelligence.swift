@@ -1345,7 +1345,7 @@ struct LyricIntelligenceSettings: Sendable {
     var openRouterKey: String
     var openRouterModel: String
     var groqKey: String = ""
-    var groqModel: String = "openai/gpt-oss-120b"
+    var groqModel: String = LyricIntelligenceSettings.defaultGroqModel
     var cerebrasKey: String = ""
     var cerebrasModel: String = "llama-3.3-70b"
     var userPrompt: String = ""
@@ -1363,7 +1363,8 @@ struct LyricIntelligenceSettings: Sendable {
     static let defaultGroqModel = "openai/gpt-oss-120b"
     static let defaultCerebrasModel = "llama-3.3-70b"
     static let radioPrimaryModel = "openai/gpt-oss-120b"
-    static let radioFallbackModel = "llama-3.3-70b-versatile"
+    static let radioFallbackModel = "openai/gpt-oss-20b"
+    static let radioReasoningEffort = "low"
 
     static func current(
         defaults: UserDefaults = .standard,

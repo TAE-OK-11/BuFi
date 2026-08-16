@@ -301,7 +301,7 @@ enum LyricModelPrompts {
         case .gptOSS:
             return """
             Role: radio programmer. Purpose: \(purpose).
-            Think about lane (mood, vocal, genre, energy) then emit JSON only:
+            Emit JSON only, no explanation:
             {"ids":["id"]}
             Listed ids only. Prefer Taste continuity, then a slight contrast that keeps the same body of sound. Crush out-of-lane tracks.
             Taste:

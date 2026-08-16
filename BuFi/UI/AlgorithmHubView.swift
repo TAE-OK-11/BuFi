@@ -6,51 +6,51 @@ struct AlgorithmHubView: View {
     @EnvironmentObject private var audio: AudioEngine
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    BuFiPageHeader(title: "알고리즘")
-                    Text("추천을 두 갈래로 나눴습니다. 기존 점수 엔진과 AI 라디오는 서로 다른 손잡이를 씁니다.")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 18)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                BuFiPageHeader(title: "추천 설정")
+                Text("듣는 방식을 골라 주세요. 둘 다 손대지 않아도 기본값으로 잘 돌아가요.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 18)
 
-                    NavigationLink {
-                        ClassicAlgorithmSettingsView()
-                            .environmentObject(model)
-                    } label: {
-                        algorithmCard(
-                            icon: "chart.bar.fill",
-                            title: "기존 알고리즘",
-                            subtitle: "청취 기록, 좋아요, Sonic, Last.fm 가중치"
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-
-                    NavigationLink {
-                        RecommendationSettingsView()
-                            .environmentObject(model)
-                            .environmentObject(session)
-                            .environmentObject(audio)
-                            .environmentObject(audio.playbackState)
-                    } label: {
-                        algorithmCard(
-                            icon: "sparkles",
-                            title: "AI 알고리즘",
-                            subtitle: "가사 감정, 펜 스타일, 아티스트 취향, LLM 라디오"
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
+                NavigationLink {
+                    ClassicAlgorithmSettingsView()
+                        .environmentObject(model)
+                        .environmentObject(session)
+                } label: {
+                    algorithmCard(
+                        icon: "chart.bar.fill",
+                        title: "기본 추천",
+                        subtitle: "내가 듣던 곡, 좋아요, 비슷한 노래를 중심으로"
+                    )
                 }
-                .padding(.top, 18)
-                .buFiMiniPlayerContentClearance()
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+
+                NavigationLink {
+                    RecommendationSettingsView()
+                        .environmentObject(model)
+                        .environmentObject(session)
+                        .environmentObject(audio)
+                        .environmentObject(audio.playbackState)
+                } label: {
+                    algorithmCard(
+                        icon: "sparkles",
+                        title: "AI 추천",
+                        subtitle: "지금 기분과 가사를 보고 다음 곡을 이어 줘요"
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
             }
-            .background(BuFiScreenBackground())
-            .toolbar(.hidden, for: .navigationBar)
-            .tint(BuFiTheme.accent)
+            .padding(.top, 18)
+            .buFiMiniPlayerContentClearance()
         }
+        .background(BuFiScreenBackground())
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(BuFiTheme.accent)
     }
 
     private func algorithmCard(
@@ -97,11 +97,7 @@ struct ClassicAlgorithmSettingsView: View {
     @AppStorage("recommendation-weight-listenbrainz")
     private var listenBrainzWeight = 0.52
     @AppStorage("recommendation-weight-behavior")
-    private var behaviorWeight = 0.86
-    @AppStorage("recommendation-weight-completion")
-    private var completionWeight = 0.72
-    @AppStorage("recommendation-weight-repeat")
-    private var repeatWeight = 0.52
+    private var behaviorWeight = 0.88
     @AppStorage("recommendation-weight-recency")
     private var recencyWeight = 0.68
     @AppStorage("recommendation-weight-context")
@@ -126,48 +122,46 @@ struct ClassicAlgorithmSettingsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
-                BuFiPageHeader(title: "기존 알고리즘")
+                BuFiPageHeader(title: "기본 추천")
 
-                SettingsGroup(title: "취향") {
+                SettingsGroup(title: "내가 듣던 음악") {
                     VStack(spacing: 18) {
-                        weightRow("청취 기록", value: $historyWeight)
-                        weightRow("좋아요", value: $favoriteWeight)
-                        weightRow("재생 행동", value: $behaviorWeight)
-                        weightRow("완주율", value: $completionWeight)
-                        weightRow("반복 재생", value: $repeatWeight)
-                        weightRow("최근 취향", value: $recencyWeight)
+                        weightRow("예전에 듣던 곡", value: $historyWeight)
+                        weightRow("좋아요 한 곡", value: $favoriteWeight)
+                        weightRow("스킵·반복·완주 습관", value: $behaviorWeight)
+                        weightRow("요즘 빠진 곡", value: $recencyWeight)
                     }
                 }
                 .padding(.horizontal, 16)
 
-                SettingsGroup(title: "지금 이 순간") {
+                SettingsGroup(title: "지금 듣는 중") {
                     VStack(spacing: 18) {
-                        weightRow("현재 세션 흐름", value: $contextWeight)
+                        weightRow("방금 들은 흐름", value: $contextWeight)
                         weightRow("가사 분위기", value: $lyricMoodWeight)
-                        weightRow("시간대 맞춤", value: $timeAwarenessWeight)
-                        weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
+                        weightRow("지금 시간대", value: $timeAwarenessWeight)
+                        weightRow("같은 앨범 이어서", value: $albumCompletionWeight)
                     }
                 }
                 .padding(.horizontal, 16)
 
-                SettingsGroup(title: "발견") {
+                SettingsGroup(title: "새로운 곡") {
                     VStack(spacing: 18) {
-                        weightRow("새로운 음악", value: $discoveryWeight)
-                        weightRow("새로운 곡·아티스트 비율", value: $discoveryRatio)
+                        weightRow("처음 보는 곡 비중", value: $discoveryWeight)
+                        weightRow("새로운 가수 섞기", value: $discoveryRatio)
                         weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
-                        weightRow("아티스트 순환", value: $artistRotationWeight)
+                        weightRow("같은 가수 너무 많이 안 나오게", value: $artistRotationWeight)
                     }
                 }
                 .padding(.horizontal, 16)
 
-                SettingsGroup(title: "메타·외부") {
+                SettingsGroup(title: "비슷한 곡 찾기") {
                     VStack(spacing: 18) {
-                        weightRow("서버 유사곡·Sonic", value: $serverWeight)
-                        weightRow("장르·BPM·분위기", value: $metadataWeight)
-                        weightRow("플레이리스트 연관성", value: $playlistAffinityWeight)
-                        weightRow("Last.fm 유사곡", value: $lastFMWeight)
-                        weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
-                        Button("기본값으로 복원") { restoreDefaults() }
+                        weightRow("서버가 고른 비슷한 곡", value: $serverWeight)
+                        weightRow("장르·템포 맞추기", value: $metadataWeight)
+                        weightRow("플레이리스트에 같이 있던 곡", value: $playlistAffinityWeight)
+                        weightRow("Last.fm 비슷한 곡", value: $lastFMWeight)
+                        weightRow("ListenBrainz 비슷한 곡", value: $listenBrainzWeight)
+                        Button("처음 설정으로 되돌리기") { restoreDefaults() }
                             .font(.system(size: 15, weight: .semibold))
                     }
                 }
@@ -209,7 +203,7 @@ struct ClassicAlgorithmSettingsView: View {
                         Task { await model.saveLastFMAPIKey("") }
                     }
                 }
-                note("track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
+                note("비슷한 곡을 불러오려면 API 키만 있으면 돼요. 따로 로그인할 필요는 없어요.")
             }
         }
         .padding(.horizontal, 16)
@@ -250,7 +244,7 @@ struct ClassicAlgorithmSettingsView: View {
                         }
                     }
                 }
-                note("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 있는 곡만 매칭합니다.")
+                note("다른 사람이 같이 들은 곡을 가져와서, 내 서버에 있는 노래만 골라 줘요.")
             }
         }
         .padding(.horizontal, 16)
@@ -292,9 +286,7 @@ struct ClassicAlgorithmSettingsView: View {
         discoveryWeight = 0.32
         lastFMWeight = 0.52
         listenBrainzWeight = 0.52
-        behaviorWeight = 0.86
-        completionWeight = 0.72
-        repeatWeight = 0.52
+        behaviorWeight = 0.88
         recencyWeight = 0.68
         contextWeight = 0.72
         metadataWeight = 0.62

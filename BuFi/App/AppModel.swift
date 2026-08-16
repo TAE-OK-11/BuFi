@@ -809,7 +809,17 @@ final class AppModel: ObservableObject {
                 snapshot: snapshot,
                 behavior: behavior,
                 lyricIndex: lyricIndex,
-                weights: .current()
+                weights: .current(),
+                lyricsProvider: { song in
+                    let document = try? await client.lyrics(
+                        songID: song.id,
+                        artist: song.artist,
+                        title: song.title
+                    )
+                    return document?.lines
+                        .map(\.text)
+                        .joined(separator: "\n") ?? ""
+                }
             )
         } else {
             ranked = await Self.recommendations(

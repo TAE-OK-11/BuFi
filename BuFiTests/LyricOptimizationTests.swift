@@ -355,12 +355,17 @@ final class LyricOptimizationTests: XCTestCase {
             algorithm: songs,
             lyricIndex: LyricSignatureIndex(bySongID: signatures)
         )
-        XCTAssertEqual(pack.count, 20)
+        XCTAssertEqual(pack.count, RadioLLMDirector.packSize)
         XCTAssertEqual(
-            pack.prefix(15).filter { $0.id.hasPrefix("c") }.count,
+            pack.prefix(RadioLLMDirector.requestedCount)
+                .filter { $0.id.hasPrefix("c") }.count,
             12
         )
         XCTAssertEqual(LyricIntelligenceSettings.defaultGroqModel, "openai/gpt-oss-120b")
+        XCTAssertEqual(
+            LyricIntelligenceSettings.radioFallbackModel,
+            "openai/gpt-oss-20b"
+        )
         XCTAssertEqual(
             LyricInferenceRuntime.radioTargets(
                 LyricIntelligenceSettings(
@@ -377,19 +382,20 @@ final class LyricOptimizationTests: XCTestCase {
                 LyricIntelligenceSettings.radioFallbackModel
             ]
         )
-        XCTAssertEqual(
-            LyricInferenceRuntime.radioTargets(
-                LyricIntelligenceSettings(
-                    provider: .groq,
-                    openAIKey: "",
-                    openRouterKey: "",
-                    openRouterModel: "",
-                    groqKey: "gsk",
-                    groqModel: "openai/gpt-oss-120b"
-                )
-            ).first?.reasoningEffort,
-            "medium"
+        let radioTargets = LyricInferenceRuntime.radioTargets(
+            LyricIntelligenceSettings(
+                provider: .groq,
+                openAIKey: "",
+                openRouterKey: "",
+                openRouterModel: "",
+                groqKey: "gsk",
+                groqModel: "openai/gpt-oss-120b"
+            )
         )
+        XCTAssertEqual(radioTargets.first?.reasoningEffort, "low")
+        XCTAssertEqual(radioTargets.first?.timeout, 8)
+        XCTAssertEqual(radioTargets.first?.allowRetries, false)
+        XCTAssertEqual(radioTargets.last?.timeout, 6)
         let heuristic = RadioLLMDirector.heuristicBrief(
             seed: seed,
             lyricIndex: LyricSignatureIndex(bySongID: ["seed": close])
@@ -407,6 +413,136 @@ final class LyricOptimizationTests: XCTestCase {
             LyricIntelligenceSettings.current(defaults: defaults).userPrompt,
             "keep it rainy"
         )
+    }
+
+    func testRadioContinuityKeepsKPopAndMixesGender() {
+        let seed = Song(
+            id: "seed",
+            title: "아이돌",
+            artist: "NewJeans",
+            album: "Get Up",
+            genre: "K-Pop"
+        )
+        var female = LyricDetailProfile.empty
+        female.vocalGender = "female"
+        female.genre = "k-pop"
+        female.language = "ko"
+        var male = LyricDetailProfile.empty
+        male.vocalGender = "male"
+        male.genre = "k-pop"
+        male.language = "ko"
+        var western = LyricDetailProfile.empty
+        western.vocalGender = "male"
+        western.genre = "rock"
+        western.language = "en"
+        func signature(
+            id: String,
+            details: LyricDetailProfile,
+            energy: Double
+        ) -> LyricSignature {
+            LyricSignature(
+                songID: id,
+                lyricsHash: "h",
+                moods: ["euphoric"],
+                themes: ["dance"],
+                energy: energy,
+                valence: 0.7,
+                embedding: [],
+                source: "groq",
+                summary: "dance",
+                details: details
+            )
+        }
+        let seedSignature = signature(id: "seed", details: female, energy: 0.7)
+        XCTAssertTrue(RadioContinuity.isKPop(song: seed, signature: seedSignature))
+        XCTAssertEqual(
+            RadioContinuity.vocalGender(song: seed, signature: seedSignature),
+            "female"
+        )
+
+        let hangul = Song(
+            id: "h1",
+            title: "슈퍼샤이",
+            artist: "뉴진스",
+            album: "Get Up",
+            genre: "Pop"
+        )
+        XCTAssertTrue(RadioContinuity.isKPop(song: hangul, signature: nil))
+
+        let songs: [Song] = (0..<8).map { index in
+            if index < 6 {
+                return Song(
+                    id: "f\(index)",
+                    title: "Girl \(index)",
+                    artist: "Idol \(index)",
+                    album: "K",
+                    genre: "K-Pop"
+                )
+            }
+            return Song(
+                id: "m\(index)",
+                title: "Boy \(index)",
+                artist: "Group \(index)",
+                album: "K",
+                genre: "K-Pop"
+            )
+        } + [
+            Song(id: "rock", title: "West", artist: "Band", album: "W", genre: "Rock")
+        ]
+        var signatures: [String: LyricSignature] = ["seed": seedSignature]
+        for song in songs {
+            if song.id.hasPrefix("f") {
+                signatures[song.id] = signature(id: song.id, details: female, energy: 0.7)
+            } else if song.id.hasPrefix("m") {
+                signatures[song.id] = signature(id: song.id, details: male, energy: 0.7)
+            } else {
+                signatures[song.id] = signature(id: song.id, details: western, energy: 0.6)
+            }
+        }
+        let index = LyricSignatureIndex(bySongID: signatures)
+        let balanced = RadioContinuity.balance(
+            songs,
+            seed: seed,
+            lyricIndex: index,
+            limit: 6
+        )
+        let genders = Set(balanced.map {
+            RadioContinuity.vocalGender(song: $0, signature: index.bySongID[$0.id])
+        })
+        XCTAssertTrue(genders.contains("female"))
+        XCTAssertTrue(genders.contains("male"))
+        XCTAssertGreaterThan(
+            balanced.filter {
+                RadioContinuity.isKPop(song: $0, signature: index.bySongID[$0.id])
+            }.count,
+            balanced.count / 2
+        )
+        XCTAssertGreaterThan(
+            RadioContinuity.laneScore(
+                candidate: songs[0],
+                seed: seed,
+                lyricIndex: index
+            ),
+            RadioContinuity.laneScore(
+                candidate: songs.last!,
+                seed: seed,
+                lyricIndex: index
+            )
+        )
+    }
+
+    func testAIProfileAppliedDropsListenSignalsWithoutLegacyWeights() {
+        var profile = AIRecommendationProfile.unset
+        profile.useFrequent = false
+        profile.useListenCount = false
+        var weights = RecommendationWeights.current(
+            UserDefaults(suiteName: "BuFi.AIProfileApplied.\(UUID().uuidString)")!
+        )
+        weights.history = 1
+        weights.behavior = 1
+        let applied = profile.applied(to: weights)
+        XCTAssertLessThan(applied.history, 0.2)
+        XCTAssertLessThan(applied.behavior, 0.1)
     }
 
     func testAIProfileDefaultsNeedNoSetupAndRespectAvoidedArtists() {
@@ -430,9 +566,61 @@ final class LyricOptimizationTests: XCTestCase {
             tuned.score(song: taylor, signature: nil),
             tuned.score(song: limp, signature: nil)
         )
-        XCTAssertTrue(tuned.promptAppendix().contains("만년필") || tuned.promptAppendix().contains("fountain") || tuned.promptAppendix().contains("Taylor"))
+        XCTAssertLessThan(tuned.score(song: taylor, signature: nil), 0.12)
+        XCTAssertGreaterThan(tuned.score(song: taylor, signature: nil), 0)
+        XCTAssertTrue(
+            tuned.promptAppendix().contains("잔잔한 밤")
+                || tuned.promptAppendix().contains("Taylor")
+        )
         XCTAssertEqual(TaylorPenStyle.allCases.count, 3)
         XCTAssertEqual(AILyricMood.allCases.count, 10)
+    }
+
+    func testLyricToolkitReadsAnalysisAndRejectsUnknownIDs() async {
+        let song = Song(id: "c1", title: "Rain", artist: "A", album: "L")
+        var details = LyricDetailProfile.empty
+        details.primaryMoods = ["yearning"]
+        let signature = LyricSignature(
+            songID: "c1",
+            lyricsHash: "h",
+            moods: ["yearning"],
+            themes: ["rain"],
+            energy: 0.3,
+            valence: 0.2,
+            embedding: [],
+            source: "groq",
+            summary: "The narrator waits in the rain.",
+            details: details
+        )
+        let toolkit = LyricModelToolkit(
+            songsByID: [song.id: song],
+            lyricIndex: LyricSignatureIndex(bySongID: [song.id: signature]),
+            seed: song,
+            lyricsProvider: { _ in "I wait by the window in the quiet rain tonight" }
+        )
+        let lyrics = await toolkit.invoke(
+            name: "get_lyrics",
+            argumentsJSON: #"{"song_id":"c1"}"#
+        )
+        XCTAssertTrue(lyrics.contains("quiet rain"))
+        let missing = await toolkit.invoke(
+            name: "get_lyrics",
+            argumentsJSON: #"{"song_id":"nope"}"#
+        )
+        XCTAssertTrue(missing.contains("unknown"))
+        let analysis = await toolkit.invoke(
+            name: "get_analysis",
+            argumentsJSON: #"{"song_id":"c1"}"#
+        )
+        XCTAssertTrue(analysis.contains("yearning"))
+        let reply = LyricJSONExtractor.chatReply(
+            from: #"{"choices":[{"message":{"tool_calls":[{"id":"1","function":{"name":"get_lyrics","arguments":"{\"song_id\":\"c1\"}"}}]}}]}"#
+        )
+        if case .tools(let calls) = reply {
+            XCTAssertEqual(calls.first?.name, "get_lyrics")
+        } else {
+            XCTFail("expected tool call")
+        }
     }
 
     func testFallbackTargetsSkipThePrimaryProvider() {

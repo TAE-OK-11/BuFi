@@ -30,13 +30,7 @@ enum LyricJSONExtractor {
     }
 
     static func chatContent(from raw: String) -> String? {
-        guard let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let root = object as? [String: Any],
-              let choices = root["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any] else {
-            return nil
-        }
+        guard let message = chatMessage(from: raw) else { return nil }
         if let content = message["content"] as? String {
             return content
         }
@@ -49,6 +43,39 @@ enum LyricJSONExtractor {
             return text.isEmpty ? nil : text
         }
         return nil
+    }
+
+    static func chatReply(from raw: String) -> LyricChatReply? {
+        guard let message = chatMessage(from: raw) else { return nil }
+        if let calls = message["tool_calls"] as? [[String: Any]] {
+            let parsed: [LyricToolCall] = calls.compactMap { call in
+                let function = call["function"] as? [String: Any]
+                let name = function?["name"] as? String ?? ""
+                let arguments = function?["arguments"] as? String ?? "{}"
+                let id = (call["id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? name
+                guard !name.isEmpty else { return nil }
+                return LyricToolCall(id: id, name: name, arguments: arguments)
+            }
+            if !parsed.isEmpty { return .tools(parsed) }
+        }
+        if let content = chatContent(from: raw)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !content.isEmpty {
+            return .text(content)
+        }
+        return nil
+    }
+
+    static func chatMessage(from raw: String) -> [String: Any]? {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let root = object as? [String: Any],
+              let choices = root["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any] else {
+            return nil
+        }
+        return message
     }
 
     private static func balanced(
@@ -138,6 +165,8 @@ struct LyricChatTarget: Sendable {
     var embeddingEndpoint: URL? = nil
     var embeddingModel: String = ""
     var reasoningEffort: String? = nil
+    var timeout: TimeInterval = 28
+    var allowRetries: Bool = true
 
     var circuitKey: String { "\(source)|\(model)" }
 
@@ -156,14 +185,18 @@ enum LyricInferenceRuntime {
         settings: LyricIntelligenceSettings,
         maxTokens: Int = 700
     ) async -> String? {
-        for target in radioTargets(settings) {
-            if let text = await chat(
-                prompt: prompt,
-                target: target,
-                maxTokens: maxTokens
-            ) {
-                return text
+        let targets = radioTargets(settings)
+        if !targets.isEmpty {
+            for target in targets {
+                if let text = await chat(
+                    prompt: prompt,
+                    target: target,
+                    maxTokens: maxTokens
+                ) {
+                    return text
+                }
             }
+            return nil
         }
         if settings.provider == .off { return nil }
         return await complete(
@@ -184,13 +217,18 @@ enum LyricInferenceRuntime {
                 key: settings.groqKey,
                 model: LyricIntelligenceSettings.radioPrimaryModel,
                 source: "groq",
-                reasoningEffort: "medium"
+                reasoningEffort: LyricIntelligenceSettings.radioReasoningEffort,
+                timeout: 8,
+                allowRetries: false
             ),
             LyricChatTarget(
                 endpoint: endpoint,
                 key: settings.groqKey,
                 model: LyricIntelligenceSettings.radioFallbackModel,
-                source: "groq"
+                source: "groq",
+                reasoningEffort: LyricIntelligenceSettings.radioReasoningEffort,
+                timeout: 6,
+                allowRetries: false
             )
         ]
     }
@@ -262,6 +300,91 @@ enum LyricInferenceRuntime {
             return text
         }
         LyricProviderCircuit.recordFailure(target.circuitKey)
+        return nil
+    }
+
+    static func completeRadioWithTools(
+        prompt: String,
+        settings: LyricIntelligenceSettings,
+        toolkit: LyricModelToolkit,
+        maxTokens: Int = 700
+    ) async -> String? {
+        for target in radioTargets(settings) {
+            if let text = await chatWithTools(
+                prompt: prompt,
+                target: target,
+                toolkit: toolkit,
+                maxTokens: maxTokens
+            ) {
+                return text
+            }
+        }
+        return await completeRadio(
+            prompt: prompt,
+            settings: settings,
+            maxTokens: maxTokens
+        )
+    }
+
+    static func chatWithTools(
+        prompt: String,
+        target: LyricChatTarget,
+        toolkit: LyricModelToolkit,
+        maxTokens: Int
+    ) async -> String? {
+        guard !LyricProviderCircuit.isOpen(target.circuitKey) else { return nil }
+        var messages: [[String: Any]] = [
+            [
+                "role": "system",
+                "content": "Use tools to read lyrics or analysis before you rank. Then return one JSON object only."
+            ],
+            ["role": "user", "content": prompt]
+        ]
+        var lyricCalls = 0
+        for _ in 0..<3 {
+            guard let raw = await postChatMessages(
+                messages: messages,
+                target: target,
+                maxTokens: maxTokens,
+                tools: LyricModelToolkit.toolSchemas
+            ) else {
+                LyricProviderCircuit.recordFailure(target.circuitKey)
+                return nil
+            }
+            guard let reply = LyricJSONExtractor.chatReply(from: raw) else {
+                LyricProviderCircuit.recordFailure(target.circuitKey)
+                return nil
+            }
+            switch reply {
+            case .text(let text):
+                LyricProviderCircuit.recordSuccess(target.circuitKey)
+                return text
+            case .tools(let calls):
+                if let assistant = LyricJSONExtractor.chatMessage(from: raw) {
+                    messages.append(assistant)
+                }
+                for call in calls {
+                    if call.name == "get_lyrics" {
+                        lyricCalls += 1
+                    }
+                    let payload: String
+                    if call.name == "get_lyrics", lyricCalls > LyricModelToolkit.maxLyricCalls {
+                        payload = #"{"error":"lyric lookup limit reached"}"#
+                    } else {
+                        payload = await toolkit.invoke(
+                            name: call.name,
+                            argumentsJSON: call.arguments
+                        )
+                    }
+                    messages.append([
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": payload
+                    ])
+                }
+            }
+        }
+        LyricProviderCircuit.recordSuccess(target.circuitKey)
         return nil
     }
 
@@ -345,7 +468,8 @@ enum LyricInferenceRuntime {
                 source: "groq",
                 reasoningEffort: settings.groqModel.lowercased().contains("gpt-oss")
                     || settings.groqModel.lowercased().contains("oss-120")
-                    ? "medium"
+                    || settings.groqModel.lowercased().contains("oss-20")
+                    ? LyricIntelligenceSettings.radioReasoningEffort
                     : nil
             )
         case .cerebras:
@@ -415,37 +539,60 @@ enum LyricInferenceRuntime {
         maxTokens: Int,
         forceJSONObject: Bool
     ) async -> String? {
-        var body: [String: Any] = [
-            "model": target.model,
-            "temperature": 0,
-            "max_tokens": maxTokens,
-            "messages": [
+        await postChatMessages(
+            messages: [
                 [
                     "role": "system",
                     "content": "Return one JSON object only. No markdown, no preamble."
                 ],
                 ["role": "user", "content": prompt]
-            ]
+            ],
+            target: target,
+            maxTokens: maxTokens,
+            tools: nil,
+            forceJSONObject: forceJSONObject
+        )
+    }
+
+    private static func postChatMessages(
+        messages: [[String: Any]],
+        target: LyricChatTarget,
+        maxTokens: Int,
+        tools: [[String: Any]]?,
+        forceJSONObject: Bool = false
+    ) async -> String? {
+        var body: [String: Any] = [
+            "model": target.model,
+            "temperature": 0,
+            "max_tokens": maxTokens,
+            "messages": messages
         ]
-        if forceJSONObject {
+        if let tools, !tools.isEmpty {
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        } else if forceJSONObject, target.prefersJSONObject {
             body["response_format"] = ["type": "json_object"]
         }
         if let effort = target.reasoningEffort, !effort.isEmpty {
             body["reasoning_effort"] = effort
         }
+        let keepEnvelope = tools != nil
         if let text = await postChatOnce(
             target: target,
             body: body,
-            timeout: 22
+            timeout: target.timeout,
+            keepEnvelope: keepEnvelope
         ) {
             return text
         }
+        guard target.allowRetries else { return nil }
         if forceJSONObject {
             body.removeValue(forKey: "response_format")
             if let text = await postChatOnce(
                 target: target,
                 body: body,
-                timeout: 22
+                timeout: min(22, target.timeout),
+                keepEnvelope: keepEnvelope
             ) {
                 return text
             }
@@ -454,8 +601,9 @@ enum LyricInferenceRuntime {
         return await postChatOnce(
             target: target,
             body: body,
-            timeout: 22,
-            retry: true
+            timeout: min(22, target.timeout),
+            retry: true,
+            keepEnvelope: keepEnvelope
         )
     }
 
@@ -463,13 +611,15 @@ enum LyricInferenceRuntime {
         target: LyricChatTarget,
         body: [String: Any],
         timeout: TimeInterval,
-        retry: Bool = false
+        retry: Bool = false,
+        keepEnvelope: Bool = false
     ) async -> String? {
         if let text = await decodedChat(
             url: target.endpoint,
             key: target.key,
             body: body,
-            timeout: timeout
+            timeout: timeout,
+            keepEnvelope: keepEnvelope
         ) {
             return text
         }
@@ -479,7 +629,8 @@ enum LyricInferenceRuntime {
             url: target.endpoint,
             key: target.key,
             body: body,
-            timeout: timeout
+            timeout: timeout,
+            keepEnvelope: keepEnvelope
         )
     }
 
@@ -487,7 +638,8 @@ enum LyricInferenceRuntime {
         url: URL,
         key: String,
         body: [String: Any],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        keepEnvelope: Bool = false
     ) async -> String? {
         guard let raw = await postJSON(
             url: url,
@@ -496,6 +648,9 @@ enum LyricInferenceRuntime {
             timeout: timeout
         ) else {
             return nil
+        }
+        if keepEnvelope {
+            return raw
         }
         let content = LyricJSONExtractor.chatContent(from: raw) ?? raw
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -47,7 +47,8 @@ struct RadioLaneBrief: Equatable, Sendable {
                 let wanted = LyricLexicalEmbedding.normalized(vocal)
                 let have = LyricLexicalEmbedding.normalized(signature.details.vocalGender)
                 if have == wanted { value += 0.12 }
-                else if !have.isEmpty { value -= 0.08 }
+                else if have == "mixed" { value += 0.03 }
+                else if !have.isEmpty { value -= 0.06 }
             }
             if SoundLabelSpace.matches(signature.soundLabels, hints: sound) {
                 value += 0.14
@@ -74,11 +75,16 @@ struct RadioLaneBrief: Equatable, Sendable {
             let wanted = LyricLexicalEmbedding.normalized(genre)
             let have = [
                 song.genre,
-                song.genres?.map(\.name).joined(separator: " ")
+                song.genres?.map(\.name).joined(separator: " "),
+                signature?.details.genre
             ]
             .compactMap { $0 }
             .map(LyricLexicalEmbedding.normalized)
             if have.contains(where: { $0.contains(wanted) || wanted.contains($0) }) {
+                value += 0.10
+            }
+            if wanted.contains("kpop") || wanted.contains("케이팝"),
+               RadioContinuity.isKPop(song: song, signature: signature) {
                 value += 0.10
             }
         }
@@ -86,13 +92,13 @@ struct RadioLaneBrief: Equatable, Sendable {
     }
 }
 
-/// Two-step radio: the model writes a lane brief while the mixer pre-ranks
-/// the library, then reviews a 15+5 pack and keeps 16 listen-next tracks.
+/// Local lane first, then one Groq pass that only reorders a small pack.
 enum RadioLLMDirector {
-    static let requestedCount = 15
-    static let algorithmCount = 5
-    static let reviewKeep = 16
+    static let requestedCount = 12
+    static let algorithmCount = 4
+    static let reviewKeep = 12
     static let packSize = requestedCount + algorithmCount
+    static let mixerLimit = 32
 
     static func continueRadio(
         seed: Song,
@@ -100,40 +106,42 @@ enum RadioLLMDirector {
         snapshot: HomeSnapshot,
         behavior: RecommendationBehaviorSnapshot,
         lyricIndex: LyricSignatureIndex,
-        weights: RecommendationWeights
+        weights: RecommendationWeights,
+        lyricsProvider _: (@Sendable (Song) async -> String)? = nil
     ) async -> [Song] {
         let settings = await LyricIntelligenceSettings.load()
         let profile = AIRecommendationProfile.load()
-        async let baseline = RecommendationMixer.scoreConcurrently(
+        let algorithm = await RecommendationMixer.scoreConcurrently(
             snapshot: snapshot,
             weights: profile.applied(to: weights),
             purpose: .autoplay,
             behavior: behavior,
             seed: seed,
             lyricIndex: lyricIndex,
-            limit: 48
+            limit: mixerLimit
         )
-        async let briefText = requestBrief(
-            seed: seed,
-            recent: behavior.recentSongs,
-            lyricIndex: lyricIndex,
-            settings: settings,
-            profile: profile
-        )
-        let algorithm = await baseline
-        let brief = parseBrief(await briefText)
-            ?? heuristicBrief(seed: seed, lyricIndex: lyricIndex)
+        let brief = heuristicBrief(seed: seed, lyricIndex: lyricIndex)
+        let filtered = algorithm.filter {
+            $0.id != seed.id
+                && !excludedIDs.contains($0.id)
+                && $0.externalStreamURL == nil
+        }
         let pack = fillPack(
             brief: brief,
-            algorithm: algorithm.filter {
-                $0.id != seed.id
-                    && !excludedIDs.contains($0.id)
-                    && $0.externalStreamURL == nil
-            },
+            algorithm: filtered,
             lyricIndex: lyricIndex,
-            profile: profile
+            profile: profile,
+            seed: seed
         )
-        guard pack.count >= 8 else { return Array(algorithm.prefix(reviewKeep)) }
+        let local = RadioContinuity.balance(
+            pack,
+            seed: seed,
+            lyricIndex: lyricIndex,
+            limit: reviewKeep
+        )
+        guard pack.count >= 6 else {
+            return Array(filtered.prefix(reviewKeep))
+        }
         if let kept = await review(
             pack: pack,
             brief: brief,
@@ -143,9 +151,14 @@ enum RadioLLMDirector {
             settings: settings,
             profile: profile
         ), !kept.isEmpty {
-            return Array(kept.prefix(reviewKeep))
+            return RadioContinuity.balance(
+                kept,
+                seed: seed,
+                lyricIndex: lyricIndex,
+                limit: reviewKeep
+            )
         }
-        return Array(pack.prefix(reviewKeep))
+        return local
     }
 
     static func parseBrief(_ raw: String?) -> RadioLaneBrief? {
@@ -182,12 +195,20 @@ enum RadioLLMDirector {
         brief: RadioLaneBrief,
         algorithm: [Song],
         lyricIndex: LyricSignatureIndex,
-        profile: AIRecommendationProfile = .unset
+        profile: AIRecommendationProfile = .unset,
+        seed: Song? = nil
     ) -> [Song] {
         let scored = algorithm.map { song in
             let signature = lyricIndex.bySongID[song.id]
-            let value = brief.score(song: song, signature: signature)
+            var value = brief.score(song: song, signature: signature)
                 + profile.score(song: song, signature: signature)
+            if let seed {
+                value += RadioContinuity.laneScore(
+                    candidate: song,
+                    seed: seed,
+                    lyricIndex: lyricIndex
+                )
+            }
             return (song, value)
         }.sorted {
             if $0.1 == $1.1 { return $0.0.id < $1.0.id }
@@ -195,13 +216,22 @@ enum RadioLLMDirector {
         }
         var requested: [Song] = []
         var recentArtists: [String] = []
+        var preferredCount = 0
         for (song, score) in scored {
             let artist = LyricLexicalEmbedding.normalized(song.artist)
             if recentArtists.suffix(2).allSatisfy({ !$0.isEmpty && $0 == artist }),
                score < 0.72 {
                 continue
             }
+            let isPreferred = profile.preferredArtists.contains { name in
+                artist.contains(LyricLexicalEmbedding.normalized(name))
+                    || LyricLexicalEmbedding.normalized(name).contains(artist)
+            }
+            if isPreferred, preferredCount >= 5 {
+                continue
+            }
             requested.append(song)
+            if isPreferred { preferredCount += 1 }
             if !artist.isEmpty { recentArtists.append(artist) }
             if requested.count == requestedCount { break }
         }
@@ -211,15 +241,46 @@ enum RadioLLMDirector {
             extras.append(song)
             if extras.count == algorithmCount { break }
         }
-        return requested + extras
+        let pack = requested + extras
+        guard let seed else { return pack }
+        return RadioContinuity.balance(
+            pack,
+            seed: seed,
+            lyricIndex: lyricIndex,
+            limit: packSize
+        )
     }
 
     static func heuristicBrief(
         seed: Song,
         lyricIndex: LyricSignatureIndex
     ) -> RadioLaneBrief {
-        guard let signature = lyricIndex.bySongID[seed.id] else { return .open }
+        guard let signature = lyricIndex.bySongID[seed.id] else {
+            if RadioContinuity.isKPop(song: seed, signature: nil) {
+                return RadioLaneBrief(
+                    moods: [],
+                    themes: [],
+                    energy: 0...1,
+                    valence: 0...1,
+                    vocal: "",
+                    genre: "k-pop",
+                    sound: [],
+                    avoid: [],
+                    want: "stay in the k-pop lane"
+                )
+            }
+            return .open
+        }
         let energyPad = 0.14
+        let gender = RadioContinuity.vocalGender(song: seed, signature: signature)
+        let vocal = (gender == "female" || gender == "male") ? gender : ""
+        var genre = signature.details.genre
+        if RadioContinuity.isKPop(song: seed, signature: signature) {
+            let key = LyricLexicalEmbedding.normalized(genre)
+            if key.isEmpty || !(key.contains("kpop") || key.contains("케이팝")) {
+                genre = "k-pop"
+            }
+        }
         return RadioLaneBrief(
             moods: Array((signature.details.primaryMoods.isEmpty
                 ? signature.moods
@@ -227,46 +288,11 @@ enum RadioLLMDirector {
             themes: Array(signature.themes.prefix(3)),
             energy: max(0, signature.energy - energyPad)...min(1, signature.energy + energyPad),
             valence: max(0, signature.valence - energyPad)...min(1, signature.valence + energyPad),
-            vocal: signature.details.vocalGender,
-            genre: signature.details.genre,
+            vocal: vocal,
+            genre: genre,
             sound: SoundLabelSpace.canonicalize(signature.soundLabels),
             avoid: [],
             want: signature.summary
-        )
-    }
-
-    private static func requestBrief(
-        seed: Song,
-        recent: [Song],
-        lyricIndex: LyricSignatureIndex,
-        settings: LyricIntelligenceSettings,
-        profile: AIRecommendationProfile
-    ) async -> String? {
-        let playing = card(seed, lyricIndex: lyricIndex)
-        let history = recent.prefix(6).map { card($0, lyricIndex: lyricIndex) }
-            .joined(separator: "\n")
-        var extras: [String] = []
-        let taste = profile.promptAppendix()
-        if !taste.isEmpty { extras.append(taste) }
-        if !settings.userPrompt.isEmpty {
-            extras.append("Listener note:\n\(settings.userPrompt)")
-        }
-        let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
-        let prompt = """
-        Continue a personal radio. Inspect the now-playing lane and recent listens, then describe the NEXT songs you want. JSON only:
-        {"moods":[],"themes":[],"energy":[0.0,1.0],"valence":[0.0,1.0],"vocal":"","genre":"","sound":[],"avoid":[],"want":""}
-        moods/themes/sound stay inside the current lane. energy/valence are inclusive ranges. vocal is female, male, or empty. avoid is what would break the room. want is one sentence about how the next block should feel.
-        Do not invent ids. Do not jump genre unless the recent list already did.
-        Now playing:
-        \(playing)
-        Recent:
-        \(history.isEmpty ? "(none)" : history)
-        \(user)
-        """
-        return await LyricInferenceRuntime.completeRadio(
-            prompt: prompt,
-            settings: settings,
-            maxTokens: 420
         )
     }
 
@@ -289,18 +315,32 @@ enum RadioLLMDirector {
         if !settings.userPrompt.isEmpty {
             extras.append("Listener note:\n\(settings.userPrompt)")
         }
+        let seedKPop = RadioContinuity.isKPop(
+            song: seed,
+            signature: lyricIndex.bySongID[seed.id]
+        )
+        let seedGender = RadioContinuity.vocalGender(
+            song: seed,
+            signature: lyricIndex.bySongID[seed.id]
+        )
+        if seedKPop {
+            extras.append(
+                "Seed is K-pop/idol. Keep a K-pop majority. Do not jump to Western pop."
+            )
+        }
+        if seedGender == "female" || seedGender == "male" {
+            extras.append(
+                "Lean \(seedGender) vocals, but include at least one other gender. Never return only one gender."
+            )
+        }
         let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
         let prompt = """
-        You asked for this radio lane:
-        moods:\(brief.moods.joined(separator: ",")) themes:\(brief.themes.joined(separator: ",")) energy:\(brief.energy.lowerBound)-\(brief.energy.upperBound) valence:\(brief.valence.lowerBound)-\(brief.valence.upperBound) vocal:\(brief.vocal) genre:\(brief.genre) sound:\(brief.sound.joined(separator: ",")) want:\(brief.want)
-        Here are \(pack.count) library tracks. The first \(min(requestedCount, pack.count)) match your brief; the rest are algorithm contrast.
-        Keep exactly \(reviewKeep) listed ids in listen-next order. JSON only:
+        Reorder this radio pack. JSON only, no explanation:
         {"ids":[]}
-        Stay in the lane. Prefer a coherent arc over shuffle. Avoid three songs by one artist in a row.
-        Seed:
-        \(card(seed, lyricIndex: lyricIndex))
-        Recent:
-        \(recent.prefix(4).map { card($0, lyricIndex: lyricIndex) }.joined(separator: "\n"))
+        Keep exactly \(reviewKeep) listed ids in listen-next order. Stay in this lane: moods:\(brief.moods.joined(separator: ",")) energy:\(fmt(brief.energy.lowerBound))-\(fmt(brief.energy.upperBound)) vocal:\(brief.vocal) genre:\(brief.genre)
+        Prefer lyric/energy continuity over title match. Preferred artists are a slight lean, never a block. Avoid three songs by one artist in a row.
+        Seed: \(card(seed, lyricIndex: lyricIndex))
+        Recent: \(recent.prefix(3).map { card($0, lyricIndex: lyricIndex) }.joined(separator: " | "))
         Candidates:
         \(candidates)
         \(user)
@@ -308,7 +348,7 @@ enum RadioLLMDirector {
         let raw = await LyricInferenceRuntime.completeRadio(
             prompt: prompt,
             settings: settings,
-            maxTokens: 500
+            maxTokens: 280
         )
         var ids = raw.flatMap { RecommendationLLMReview.parseIDs($0, allowed: allowed) }
         if ids == nil, let broken = raw,
@@ -340,16 +380,25 @@ enum RadioLLMDirector {
         let signature = lyricIndex.bySongID[song.id]
         let moods = (signature?.details.primaryMoods.isEmpty == false
             ? signature?.details.primaryMoods
-            : signature?.moods)?.prefix(3).joined(separator: ",") ?? ""
+            : signature?.moods)?.prefix(2).joined(separator: ",") ?? ""
         let sound = SoundLabelSpace.canonicalize(signature?.soundLabels ?? [])
-            .prefix(3)
+            .prefix(2)
             .joined(separator: ",")
-        let summary = signature?.summary.replacingOccurrences(of: "\n", with: " / ") ?? ""
-        let energy = signature.map { String(format: "%.2f", $0.energy) } ?? "-"
-        let valence = signature.map { String(format: "%.2f", $0.valence) } ?? "-"
-        let vocal = signature?.details.vocalGender ?? ""
-        let genre = signature?.details.genre ?? song.genre ?? ""
-        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) e:\(energy) v:\(valence) vocal:\(vocal) genre:\(genre) sound:\(sound) | \(summary)"
+        let summary = String(
+            (signature?.summary.replacingOccurrences(of: "\n", with: " / ") ?? "")
+                .prefix(80)
+        )
+        let energy = signature.map { fmt($0.energy) } ?? "-"
+        let vocal = RadioContinuity.vocalGender(song: song, signature: signature)
+        var genre = signature?.details.genre ?? song.genre ?? ""
+        if RadioContinuity.isKPop(song: song, signature: signature) {
+            genre = genre.isEmpty ? "k-pop" : genre
+        }
+        return "\(song.id)|\(song.title)-\(song.artist)|m:\(moods) e:\(energy) vox:\(vocal) g:\(genre) s:\(sound)|\(summary)"
+    }
+
+    private static func fmt(_ value: Double) -> String {
+        String(format: "%.2f", value)
     }
 
     private static func token(_ value: Any?) -> String {

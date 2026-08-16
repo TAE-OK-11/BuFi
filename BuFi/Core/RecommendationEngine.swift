@@ -8,8 +8,6 @@ struct RecommendationWeights: Sendable {
     var lastFM: Double
     var listenBrainz: Double
     var behavior: Double
-    var completion: Double
-    var repeatListening: Double
     var recency: Double
     var context: Double
     var localMetadata: Double
@@ -33,9 +31,7 @@ struct RecommendationWeights: Sendable {
             discovery: value("recommendation-weight-discovery", fallback: 0.32),
             lastFM: value("recommendation-weight-lastfm", fallback: 0.52),
             listenBrainz: value("recommendation-weight-listenbrainz", fallback: 0.52),
-            behavior: value("recommendation-weight-behavior", fallback: 0.86),
-            completion: value("recommendation-weight-completion", fallback: 0.72),
-            repeatListening: value("recommendation-weight-repeat", fallback: 0.52),
+            behavior: value("recommendation-weight-behavior", fallback: 0.88),
             recency: value("recommendation-weight-recency", fallback: 0.68),
             context: value("recommendation-weight-context", fallback: 0.72),
             localMetadata: value("recommendation-weight-metadata", fallback: 0.62),
@@ -89,8 +85,6 @@ private enum RecommendationFeature: Int, CaseIterable, Hashable {
     case lastFM
     case listenBrainz
     case behavior
-    case completion
-    case repeatListening
     case recency
     case context
     case localMetadata
@@ -176,9 +170,7 @@ private struct RecommendationPreset {
                     .listenBrainz: 0.10,
                     .discovery: 0.05,
                     .server: 0.18,
-                    .behavior: 0.22,
-                    .completion: 0.16,
-                    .repeatListening: 0.10,
+                    .behavior: 0.36,
                     .context: 0.15,
                     .localMetadata: 0.10,
                     .playlistAffinity: 0.08,
@@ -195,8 +187,7 @@ private struct RecommendationPreset {
                 shortTermRatio: 0.30,
                 featureWeights: [
                     .history: 0.34, .favorites: 0.28, .server: 0.16,
-                    .behavior: 0.22, .completion: 0.18,
-                    .repeatListening: 0.15, .localMetadata: 0.12,
+                    .behavior: 0.38, .localMetadata: 0.12,
                     .forgottenFavorites: 0.09, .playlistAffinity: 0.08,
                     .artistRotation: 0.07, .lyricMood: 0.08
                 ]
@@ -228,21 +219,20 @@ private struct RecommendationPreset {
             RecommendationPreset(
                 shortTermRatio: 0.42,
                 featureWeights: [
-                    .popularity: 0.40, .completion: 0.20,
-                    .repeatListening: 0.20, .favorites: 0.20,
-                    .history: 0.18, .behavior: 0.16
+                    .popularity: 0.40, .favorites: 0.20,
+                    .history: 0.18, .behavior: 0.42
                 ]
             )
         case .autoplay:
             RecommendationPreset(
-                shortTermRatio: 0.78,
+                shortTermRatio: 0.80,
                 featureWeights: [
-                    .context: 0.40, .lyricMood: 0.28, .server: 0.18,
-                    .localMetadata: 0.16, .lastFM: 0.12,
-                    .listenBrainz: 0.10, .history: 0.10,
-                    .favorites: 0.08, .behavior: 0.10,
-                    .completion: 0.08, .discovery: 0.08,
-                    .artistRotation: 0.08, .timeAwareness: 0.08
+                    .context: 0.42, .lyricMood: 0.32, .server: 0.16,
+                    .localMetadata: 0.12, .lastFM: 0.10,
+                    .listenBrainz: 0.10, .history: 0.08,
+                    .favorites: 0.06, .behavior: 0.14,
+                    .discovery: 0.08,
+                    .artistRotation: 0.10, .timeAwareness: 0.06
                 ]
             )
         }
@@ -659,6 +649,11 @@ enum RecommendationSeedAffinity {
             score = max(score, related * 0.94)
             score += related * 0.10
         }
+        score += RadioContinuity.laneScore(
+            candidate: candidate,
+            seed: seed,
+            lyricIndex: lyricIndex
+        )
         return min(1, score)
     }
 
@@ -686,6 +681,7 @@ enum RecommendationSeedAffinity {
 
 enum RecommendationScoringPolicy {
     static let scoringCandidateLimit = 360
+    static let autoplayCandidateLimit = 180
 
     static func boundedCandidates(_ songs: [Song]) -> [Song] {
         guard songs.count > scoringCandidateLimit else { return songs }
@@ -938,15 +934,14 @@ enum RecommendationMixer {
         // keeps server/external signals and drops only surplus starred rows.
         let candidates = MediaIdentity.uniqueSongs(
             from: sourceLists,
-            limit: RecommendationScoringPolicy.scoringCandidateLimit
+            limit: purpose == .autoplay
+                ? RecommendationScoringPolicy.autoplayCandidateLimit
+                : RecommendationScoringPolicy.scoringCandidateLimit
         )
         guard !candidates.isEmpty else { return [] }
 
         let sourceIndex = RecommendationSourceIndex(snapshot: snapshot)
         guard !Task.isCancelled else { return [] }
-        let maxRepeat = max(1, allBehaviors.reduce(0) {
-            max($0, log1p(Double($1.repeatCount)))
-        })
         let behaviorMaxPlayCount = allBehaviors.reduce(0) {
             max($0, $1.playCount)
         }
@@ -1026,13 +1021,6 @@ enum RecommendationMixer {
                 sourceSignals.topArtist
             )
             let behaviorScore = behaviorAffinity(songBehavior)
-            let completionScore = completionAffinity(
-                songBehavior?.averageCompletion
-            )
-            let repeatScore = min(
-                1,
-                log1p(Double(songBehavior?.repeatCount ?? 0)) / maxRepeat
-            )
             let recencyScore = max(
                 songBehavior.map {
                     timeDecay(since: $0.lastPlayed, now: evaluationDate)
@@ -1093,8 +1081,6 @@ enum RecommendationMixer {
                 score: sourceSignals.listenBrainz
             )
             weightedTotal += scoringPlan.contribution(.behavior, score: behaviorScore)
-            weightedTotal += scoringPlan.contribution(.completion, score: completionScore)
-            weightedTotal += scoringPlan.contribution(.repeatListening, score: repeatScore)
             weightedTotal += scoringPlan.contribution(.recency, score: recencyScore)
             let sessionScore = sessionIntent.continuationScore(
                 for: metadata,
@@ -1271,8 +1257,6 @@ enum RecommendationMixer {
             .lastFM: weights.lastFM,
             .listenBrainz: weights.listenBrainz,
             .behavior: weights.behavior,
-            .completion: weights.completion,
-            .repeatListening: weights.repeatListening,
             .recency: weights.recency,
             .context: weights.context,
             .localMetadata: weights.localMetadata,
@@ -1395,6 +1379,8 @@ enum RecommendationMixer {
             + Double(value.searchPlayCount) * 0.15
             + Double(value.albumSelectionCount) * 0.12
             + Double(value.completedCount) * 0.5
+            + completionAffinity(value.averageCompletion) * 1.4
+            + min(1, log1p(Double(value.repeatCount)) / 3) * 1.1
             + Double(value.autoplayCount) * 0.15
         let negative =
             Double(value.earlySkipCount) * 0.8
@@ -1901,7 +1887,7 @@ enum RecommendationMixer {
         let weightValues = [
             weights.history, weights.favorites, weights.serverSimilarity,
             weights.discovery, weights.lastFM, weights.listenBrainz,
-            weights.behavior, weights.completion, weights.repeatListening,
+            weights.behavior,
             weights.recency, weights.context, weights.localMetadata,
             weights.playlistAffinity, weights.albumCompletion,
             weights.forgottenFavorites, weights.artistRotation,
