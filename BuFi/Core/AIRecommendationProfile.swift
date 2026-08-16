@@ -229,6 +229,8 @@ struct AIRecommendationProfile: Equatable, Codable, Sendable {
     }
 
     func promptAppendix() -> String {
+        guard self != .unset else { return "" }
+
         var lines: [String] = []
         let moodTitles = selectedMoods.map(\.title)
         if !moodTitles.isEmpty {
@@ -256,6 +258,8 @@ struct AIRecommendationProfile: Equatable, Codable, Sendable {
         }
         if stayOnAlbum {
             lines.append("Prefer finishing the current album when the seed still belongs there.")
+        } else {
+            lines.append("Do not favor staying on the current album; follow the other recommendation signals instead.")
         }
         return lines.joined(separator: "\n")
     }
