@@ -1052,7 +1052,7 @@ private struct RecommendationSettingsView: View {
             }
             .buttonStyle(SettingsActionButtonStyle())
             .disabled(isProbing)
-            settingsDescription("한 번 누르면 지금 고른 엔진으로 샘플 가사를 분석합니다. 같은 버튼을 다시 누르면 캐시에서 읽어야 정상입니다.")
+            settingsDescription("누를 때마다 지금 고른 엔진으로 새 LLM 세션을 만들어 샘플 가사를 실제 분석합니다. LLM이 모두 실패하면 분석 완료로 저장하지 않습니다.")
         }
     }
 
@@ -1310,8 +1310,8 @@ private struct RecommendationSettingsView: View {
 
     private func probeResultText(_ probe: LyricIntelligenceProbe) -> String {
         let cache = probe.reusedCache
-            ? String(localized: "캐시에서 읽음 (모델을 다시 호출하지 않음)")
-            : String(localized: "새로 분석함")
+            ? String(localized: "캐시에서 읽음")
+            : String(localized: "새 LLM 호출")
         guard let signature = probe.signature else {
             return String(localized: "시험 결과: 분석을 저장하지 못했습니다. 가사 지능이 꺼져 있는지 확인하세요.")
         }
@@ -1344,7 +1344,7 @@ private struct RecommendationSettingsView: View {
         case .off:
             String(localized: "가사 분석을 하지 않습니다. 이미 저장한 결과는 로컬 DB에 남습니다.")
         case .onDevice, .applePrivateCloud:
-            String(localized: "자동은 Apple Intelligence 3B 로컬 모델로 분위기·계절·시간대·스타일·내용 등 20개 항목을 분석합니다. 안 되면 태깅 모델, 그다음 Gemma 3입니다. Privacy Cloud는 지금은 쓰지 않습니다.")
+            String(localized: "자동은 Apple Intelligence 3B를 곡마다 새 세션으로 호출합니다. 실패하면 저장된 Groq·Cerebras·OpenRouter·OpenAI 키의 LLM으로 순차 대체하며, 모든 LLM이 실패하면 완료 처리하지 않고 재시도 대상으로 남깁니다.")
         case .openAI:
             String(localized: "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
         case .openRouter:

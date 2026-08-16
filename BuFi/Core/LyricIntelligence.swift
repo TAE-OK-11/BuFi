@@ -140,7 +140,9 @@ struct LyricSignature: Codable, Equatable, Sendable {
     }
 
     var hasStoredLyricAnalysis: Bool {
-        !lyricsHash.isEmpty && !source.isEmpty
+        // Lexical/heuristic output is not a completed lyric analysis. Only an
+        // actual language-model result may satisfy the cache and coverage layer.
+        !lyricsHash.isEmpty && !source.isEmpty && source != "lexical"
     }
 
     var hasStoredSoundAnalysis: Bool {
@@ -182,7 +184,7 @@ struct LyricSignature: Codable, Equatable, Sendable {
         case "cerebras":
             "Cerebras"
         case "lexical":
-            String(localized: "로컬 어휘 (모델 없음)")
+            String(localized: "이전 로컬 결과 (LLM 재분석 필요)")
         default:
             source
         }
@@ -837,14 +839,14 @@ actor LyricIntelligence {
             artist: "BuFi",
             album: "Probe"
         )
-        let reused = LyricAnalysisCachePolicy.shouldReuseLyric(
-            existing: signatures[song.id],
-            lyricsHash: hash
-        )
-        await analyze(song: song, lyrics: lyrics, hash: hash)
+        // A probe is a real engine test, not a cache test. Remove the in-memory
+        // probe result first and force a fresh LLM request every time.
+        signatures.removeValue(forKey: song.id)
+        await analyze(song: song, lyrics: lyrics, hash: hash, force: true)
+        let fresh = signatures[song.id]
         return LyricIntelligenceProbe(
-            reusedCache: reused,
-            signature: signatures[song.id],
+            reusedCache: false,
+            signature: fresh?.hasStoredLyricAnalysis == true ? fresh : nil,
             provider: LyricIntelligenceSettings.current().provider,
             appleOnDevice: AppleFoundationLyricClient.onDeviceStatus(),
             privateCloud: AppleFoundationLyricClient.privateCloudStatus()
@@ -950,76 +952,56 @@ actor LyricIntelligence {
             resolvedSettings = await LyricIntelligenceSettings.load()
         }
         guard resolvedSettings.provider != .off else { return }
-        var signature = signatures[song.id] ?? LyricSignature(
-            songID: song.id,
-            lyricsHash: hash,
-            moods: [],
-            themes: [],
-            energy: 0.5,
-            valence: 0.5,
-            embedding: [],
-            source: "lexical"
-        )
-        signature.lyricsHash = hash
-        signature.embedding = LyricLexicalEmbedding.merge(
-            moods: signature.moods,
-            energy: signature.energy,
-            valence: signature.valence,
-            lyrics: lyrics
-        )
-        if let analyzed = await LyricIntelligenceBackend.analyze(
+        let previous = signatures[song.id]
+        // Never relabel old fields as a new result. A fresh lyric analysis starts
+        // from a clean record and is committed only after an LLM succeeds.
+        guard let analyzed = await LyricIntelligenceBackend.analyze(
             lyrics: lyrics,
             settings: resolvedSettings
-        ) {
-            signature.moods = analyzed.moods
-            signature.themes = analyzed.themes
-            signature.energy = analyzed.energy
-            signature.valence = analyzed.valence
-            signature.source = analyzed.source
-            if LyricIntelligencePrompt.isContentSummary(analyzed.summary) {
-                signature.summary = analyzed.summary
-            }
-            if analyzed.details.hasExtendedFields || !analyzed.details.moods.isEmpty {
-                signature.details = analyzed.details.withBasics(
-                    moods: analyzed.moods,
-                    themes: analyzed.themes,
-                    energy: analyzed.energy,
-                    valence: analyzed.valence,
-                    summary: analyzed.summary
-                )
-            }
-            if let remote = analyzed.embedding, remote.count >= 8 {
-                signature.embedding = remote
-            } else {
-                signature.embedding = LyricLexicalEmbedding.merge(
-                    moods: analyzed.moods,
-                    energy: analyzed.energy,
-                    valence: analyzed.valence,
-                    lyrics: lyrics
-                )
-            }
+        ) else {
+            // Keep a previously valid LLM result intact. After a full reset there
+            // is nothing valid to keep, so coverage remains pending and retries.
+            return
+        }
+
+        var signature = LyricSignature(
+            songID: song.id,
+            lyricsHash: hash,
+            moods: analyzed.moods,
+            themes: analyzed.themes,
+            energy: analyzed.energy,
+            valence: analyzed.valence,
+            embedding: [],
+            source: analyzed.source,
+            summary: analyzed.summary,
+            details: analyzed.details
+        )
+        if let remote = analyzed.embedding, remote.count >= 8 {
+            signature.embedding = remote
         } else {
-            signature.source = "lexical"
+            signature.embedding = LyricLexicalEmbedding.merge(
+                moods: analyzed.moods,
+                energy: analyzed.energy,
+                valence: analyzed.valence,
+                lyrics: lyrics
+            )
         }
-        if !signature.hasStoredSummary {
-            signature.summary = await Self.filledSummary(lyrics: lyrics)
-        }
-        if !signature.hasSentenceEmbedding {
-            signature.sentenceEmbedding =
-                await LyricSentenceEmbedding.vector(from: lyrics) ?? []
-        }
-        if let current = signatures[song.id] {
-            if signature.soundLabels.isEmpty {
-                signature.soundLabels = current.soundLabels
-                signature.soundEmbedding = current.soundEmbedding
-                signature.audioRevision = current.audioRevision
-                signature.soundSource = current.soundSource
-            }
+        signature.sentenceEmbedding =
+            await LyricSentenceEmbedding.vector(from: lyrics) ?? []
+
+        // Sound analysis is independent from lyric LLM output and may safely be
+        // carried forward. Sentence embeddings can also be reused if generation
+        // was deferred by thermal/low-power policy.
+        if let previous {
+            signature.soundLabels = previous.soundLabels
+            signature.soundEmbedding = previous.soundEmbedding
+            signature.audioRevision = previous.audioRevision
+            signature.soundSource = previous.soundSource
             if signature.sentenceEmbedding.count < 8 {
-                signature.sentenceEmbedding = current.sentenceEmbedding
+                signature.sentenceEmbedding = previous.sentenceEmbedding
             }
-            if !signature.hasStoredSummary {
-                signature.summary = current.summary
+            if signature.details.vocalGender.isEmpty {
+                signature.details.vocalGender = previous.details.vocalGender
             }
         }
         signatures[song.id] = signature
@@ -1127,7 +1109,9 @@ actor LyricIntelligence {
            LyricIntelligencePrompt.isContentSummary(summary) {
             return summary
         }
-        return LyricIntelligencePrompt.heuristicSummary(from: lyrics)
+        // Do not manufacture an apparent analysis from copied lyric lines.
+        // Missing LLM output stays missing and remains eligible for retry.
+        return ""
     }
 
     private static var storageURL: URL {
@@ -1320,23 +1304,14 @@ enum LyricIntelligenceBackend {
                 source: "cerebras"
             )
         }
-        guard var analysis = result else {
-            if settings.provider != .off, settings.provider != .groq {
-                return await groqAnalysis(lyrics: lyrics, settings: settings)
-            }
-            return nil
+        if let validated = validatedLLMAnalysis(result) {
+            return validated
         }
-        analysis.summary = LyricIntelligencePrompt.resolvedSummary(
-            analysis.summary,
-            lyrics: lyrics
+        return await fallbackLLMAnalysis(
+            lyrics: lyrics,
+            settings: settings,
+            excluding: settings.provider
         )
-        analysis.details.summary = analysis.summary
-        if settings.provider != .groq,
-           !LyricIntelligencePrompt.isContentSummary(analysis.summary),
-           let groq = await groqAnalysis(lyrics: lyrics, settings: settings) {
-            return groq
-        }
-        return analysis
     }
 
     private static func groqAnalysis(
@@ -1355,12 +1330,7 @@ enum LyricIntelligenceBackend {
         ) else {
             return nil
         }
-        analysis.summary = LyricIntelligencePrompt.resolvedSummary(
-            analysis.summary,
-            lyrics: lyrics
-        )
-        analysis.details.summary = analysis.summary
-        return analysis
+        return validatedLLMAnalysis(analysis)
     }
 
     private static func onDevice(
@@ -1373,46 +1343,65 @@ enum LyricIntelligenceBackend {
         if let apple = await AppleFoundationLyricClient.analyze(lyrics: lyrics) {
             return appleAnalysis(apple)
         }
-        if let groq = await groqAnalysis(lyrics: lyrics, settings: settings) {
+        return nil
+    }
+
+    private static func validatedLLMAnalysis(_ candidate: Analysis?) -> Analysis? {
+        guard var analysis = candidate else { return nil }
+        analysis.summary = LyricIntelligencePrompt.normalizedSummary(analysis.summary)
+        guard LyricIntelligencePrompt.isContentSummary(analysis.summary) else {
+            return nil
+        }
+        analysis.details.summary = analysis.summary
+        return analysis
+    }
+
+    private static func fallbackLLMAnalysis(
+        lyrics: String,
+        settings: LyricIntelligenceSettings,
+        excluding provider: LyricIntelligenceProviderKind
+    ) async -> Analysis? {
+        if provider != .groq,
+           let groq = await groqAnalysis(lyrics: lyrics, settings: settings) {
             return groq
         }
-        if !settings.openRouterKey.isEmpty,
-           let gemma = await remote(
+        if provider != .cerebras, !settings.cerebrasKey.isEmpty,
+           let cerebras = validatedLLMAnalysis(await remote(
+            lyrics: lyrics,
+            endpoint: URL(string: "https://api.cerebras.ai/v1/chat/completions"),
+            embeddingEndpoint: nil,
+            key: settings.cerebrasKey,
+            model: settings.cerebrasModel,
+            embeddingModel: "",
+            source: "cerebras"
+           )) {
+            return cerebras
+        }
+        if provider != .openRouter, !settings.openRouterKey.isEmpty,
+           let openRouter = validatedLLMAnalysis(await remote(
             lyrics: lyrics,
             endpoint: URL(string: "https://openrouter.ai/api/v1/chat/completions"),
             embeddingEndpoint: nil,
             key: settings.openRouterKey,
-            model: "google/gemma-3-270m-it",
-            embeddingModel: "openai/text-embedding-3-small",
-            source: "gemma-3-270m"
-           ) {
-            return gemma
+            model: settings.openRouterModel,
+            embeddingModel: "",
+            source: "openrouter"
+           )) {
+            return openRouter
         }
-        return Analysis(
-            moods: heuristicMoods(in: lyrics),
-            themes: [],
-            energy: 0.5,
-            valence: 0.5,
-            summary: LyricIntelligencePrompt.heuristicSummary(from: lyrics),
-            embedding: nil,
-            source: "lexical"
-        )
-    }
-
-    private static func heuristicMoods(in lyrics: String) -> [String] {
-        let text = LyricLexicalEmbedding.normalized(lyrics)
-        var moods: [String] = []
-        let lexicon: [(String, [String])] = [
-            ("sad", ["cry", "tears", "lonely", "grief", "슬픔", "눈물"]),
-            ("happy", ["smile", "dance", "joy", "sunshine", "행복", "웃"]),
-            ("calm", ["quiet", "slow", "ocean", "sleep", "잔잔", "밤"]),
-            ("angry", ["hate", "rage", "fight", "fire", "화나"]),
-            ("romantic", ["love", "heart", "kiss", "사랑", "마음"])
-        ]
-        for (mood, tokens) in lexicon where tokens.contains(where: text.contains) {
-            moods.append(mood)
+        if provider != .openAI, !settings.openAIKey.isEmpty,
+           let openAI = validatedLLMAnalysis(await remote(
+            lyrics: lyrics,
+            endpoint: URL(string: "https://api.openai.com/v1/chat/completions"),
+            embeddingEndpoint: nil,
+            key: settings.openAIKey,
+            model: "gpt-4o-mini",
+            embeddingModel: "",
+            source: "openai"
+           )) {
+            return openAI
         }
-        return moods.isEmpty ? ["neutral"] : moods
+        return nil
     }
 
     private static func remote(
