@@ -195,7 +195,7 @@ struct AIRecommendationProfile: Equatable, Codable, Sendable {
         var value = self
         value.sanitize()
         if let data = try? JSONEncoder().encode(value) {
-            defaults.set(data, forKey: storageKey)
+            defaults.set(data, forKey: Self.storageKey)
         }
     }
 
