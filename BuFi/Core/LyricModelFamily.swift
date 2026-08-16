@@ -439,13 +439,16 @@ enum LyricModelPrompts {
             \(RadioFeelGrammar.geminiRadioBrief)
 
             These candidates already survived the library engine (50) and the
-            on-device ranker (30). Throw out anything that would make a
-            soulless, samey block. Keep exactly \(keep) listed ids.
+            on-device ranker (30). Throw out anything off-lane. Keep up to \(keep)
+            listed ids that belong in this show — fewer is fine if the rest do not fit.
+            If you still need more songs in-lane, add a need object with the weights
+            those replacements must match (feel, moods, energy, genre, vocal, want).
+            K-pop: walk to similar artists in the same room, not a random idol shuffle.
             Same artist+title is one recording — do not sit a live/acoustic sibling next to the original.
             Preferred artists are a slight lean, never a block.
 
             Return one JSON object and start writing it immediately:
-            {"ids":[]}
+            {"ids":[],"need":{"count":0}}
             No markdown, no analysis text.
 
             \(session)

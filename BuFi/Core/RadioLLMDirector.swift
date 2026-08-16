@@ -143,6 +143,62 @@ enum RadioIDStream {
     }
 }
 
+struct RadioNeed: Sendable {
+    var count: Int
+    var feel: String
+    var moods: [String]
+    var genre: String
+    var vocal: String
+    var energy: ClosedRange<Double>?
+    var want: String
+
+    func score(song: Song, lyricIndex: LyricSignatureIndex) -> Double {
+        let signature = lyricIndex.bySongID[song.id]
+        var value = 0.0
+        if !feel.isEmpty {
+            let have = RadioFeelGrammar.feel(song: song, signature: signature).rawValue
+            value += have == feel ? 0.36 : 0
+        }
+        if let energy, let signature {
+            value += energy.contains(signature.energy) ? 0.18 : 0
+        }
+        if !genre.isEmpty {
+            let wanted = LyricLexicalEmbedding.normalized(genre)
+            let blob = LyricLexicalEmbedding.normalized(
+                [song.genre, signature?.details.genre]
+                    .compactMap { $0 }
+                    .joined(separator: " ")
+            )
+            if blob.contains(wanted) || wanted.contains("kpop")
+                && RadioContinuity.isKPop(song: song, signature: signature) {
+                value += 0.22
+            }
+        }
+        if !vocal.isEmpty {
+            let have = RadioContinuity.vocalGender(song: song, signature: signature)
+            value += have == vocal ? 0.12 : 0
+        }
+        if !moods.isEmpty, let signature {
+            let have = Set(signature.moodKeys)
+            let hits = moods.filter {
+                have.contains(LyricLexicalEmbedding.normalized($0))
+            }.count
+            value += min(0.18, Double(hits) * 0.08)
+        }
+        if !want.isEmpty, let signature {
+            let blob = LyricLexicalEmbedding.normalized(
+                signature.summary + " " + signature.details.tagBlob
+            )
+            let tokens = want.split { !$0.isLetter && !$0.isNumber }
+                .map { LyricLexicalEmbedding.normalized(String($0)) }
+                .filter { $0.count > 2 }
+            let hits = tokens.filter { blob.contains($0) }.count
+            value += min(0.12, Double(hits) * 0.03)
+        }
+        return value
+    }
+}
+
 struct RadioCandidatePack: Sendable {
     var room: [Song]
     var nearby: [Song]
@@ -157,7 +213,7 @@ enum RadioLLMDirector {
     static let requestedCount = 50
     static let enginePool = 50
     static let coreMLKeep = 30
-    static let reviewKeep = 15
+    static let reviewKeep = 8
     static let packSize = 30
     static let mixerLimit = 50
     static let streamWaitDeadline: TimeInterval = 1.5
@@ -194,12 +250,17 @@ enum RadioLLMDirector {
                 && !excludedIDs.contains($0.id)
                 && $0.externalStreamURL == nil
         }
+        let session = Array(behavior.recentSongs.prefix(5))
         let ranked = RadioCoreMLTransition.shortlist(
             seed: seed,
             candidates: filtered,
             lyricIndex: lyricIndex,
-            keep: coreMLKeep
+            keep: coreMLKeep,
+            session: session
         )
+        let leftover = filtered.filter { song in
+            !ranked.contains(where: { $0.id == song.id })
+        }
         let pack = fillPack(
             brief: brief,
             algorithm: ranked,
@@ -226,6 +287,7 @@ enum RadioLLMDirector {
         let picked = await reviewStreaming(
             pack: pack,
             local: local,
+            leftover: leftover,
             brief: brief,
             seed: seed,
             recent: behavior.recentSongs,
@@ -469,6 +531,7 @@ enum RadioLLMDirector {
     private static func reviewStreaming(
         pack: RadioCandidatePack,
         local: [Song],
+        leftover: [Song],
         brief: RadioLaneBrief,
         seed: Song,
         recent: [Song],
@@ -517,7 +580,23 @@ enum RadioLLMDirector {
         if await box.isEmpty, let fallback = local.first {
             await box.push(fallback)
         }
-        _ = await streamed
+        let raw = await streamed
+        if await box.count < reviewKeep,
+           let need = parseNeed(raw),
+           need.count > 0 {
+            let replacements = refill(
+                need: need,
+                leftover: leftover + pack.all,
+                excluding: await box.ids,
+                seed: seed,
+                lyricIndex: lyricIndex
+            )
+            for song in replacements {
+                guard await box.accepts(song) else { continue }
+                await box.push(song)
+                if await box.count == reviewKeep { break }
+            }
+        }
         if await box.count < reviewKeep {
             for song in local {
                 guard await box.accepts(song) else { continue }
@@ -526,6 +605,52 @@ enum RadioLLMDirector {
             }
         }
         return await box.songs
+    }
+
+    private static func parseNeed(_ raw: String?) -> RadioNeed? {
+        guard let raw,
+              let json = LyricJSONExtractor.object(from: raw),
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any],
+              let need = dictionary["need"] as? [String: Any] else {
+            return nil
+        }
+        let count = Int(number(need["count"]) ?? 0)
+        guard count > 0 else { return nil }
+        return RadioNeed(
+            count: min(count, reviewKeep),
+            feel: token(need["feel"]),
+            moods: stringList(need["moods"]),
+            genre: token(need["genre"]),
+            vocal: token(need["vocal"]),
+            energy: need["energy"] == nil
+                ? nil
+                : parseRange(need["energy"], fallback: 0...1),
+            want: token(need["want"])
+        )
+    }
+
+    private static func refill(
+        need: RadioNeed,
+        leftover: [Song],
+        excluding: Set<String>,
+        seed: Song,
+        lyricIndex: LyricSignatureIndex
+    ) -> [Song] {
+        let pool = leftover.filter { !excluding.contains($0.id) }
+        let ranked = pool.map { song -> (Song, Double) in
+            (song, need.score(song: song, lyricIndex: lyricIndex))
+        }.sorted {
+            if $0.1 == $1.1 { return $0.0.id < $1.0.id }
+            return $0.1 > $1.1
+        }
+        return Array(
+            ranked
+                .filter { $0.1 >= 0.28 }
+                .prefix(need.count)
+                .map(\.0)
+        )
     }
 
     private static func reviewPrompt(
@@ -565,7 +690,7 @@ enum RadioLLMDirector {
         )
         if seedKPop {
             extras.append(
-                "The seed lives in K-pop/idol. Stay in that cultural room. Do not jump to random Western pop just because tags overlap."
+                "The seed lives in K-pop. Walk to similar adjacent artists in the same room — same generation, neighboring sound, shared vocal color. Do not shuffle random idol groups or jump to Western pop because both are tagged pop."
             )
         }
         if seedGender == "female" || seedGender == "male" {
@@ -608,7 +733,7 @@ enum RadioLLMDirector {
         let themes = brief.themes.joined(separator: ", ")
         return """
         Local time: \(day) \(daypart) (\(hour):00).
-        They just chose "\(seed.title)" by \(seed.artist). Program the next fifteen as one radio show for that moment.
+        They just chose "\(seed.title)" by \(seed.artist). Program the next \(reviewKeep) as one short radio block for the whole recent session, not a 15-song station from this single title.
         Seed lane: moods [\(moods)] themes [\(themes)] genre \(brief.genre) vocal \(brief.vocal).
         """
     }

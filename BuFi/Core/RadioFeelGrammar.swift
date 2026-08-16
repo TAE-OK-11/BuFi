@@ -146,7 +146,13 @@ enum RadioFeelGrammar {
     glow → glow, hush, or a gentle sparkle lift.
     hush → hush or bittersweet; never rush/electro next.
 
+    K-pop should walk next door, not teleport. From the seed act, step to adjacent artists that share generation, company-adjacent sound, vocal color, or the same room (bright crush vs concept performance). Same-group returns are heartbeats every few tracks. Do not jump a sunny 4th-gen crush set into high-concept electro, or a concept stage into cute festival sparkle, just because both are tagged K-pop.
+
     If a card is thin, fill it from what you know about that title. Never invent ids. Never invent a song that is not listed.
+
+    If some of the 30 are off-lane, drop them. Then ask for replacements by emitting the weights you still need:
+    {"ids":["id"],"need":{"count":3,"feel":"sparkle","moods":["yearning"],"energy":[0.4,0.7],"genre":"k-pop","vocal":"female","want":"adjacent idol groups in the same room"}}
+    Only request what would keep the walk natural. The app will send matching tracks from the leftover pool.
     """
 
     private static func blob(song: Song, signature: LyricSignature?) -> String {

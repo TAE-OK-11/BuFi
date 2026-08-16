@@ -178,14 +178,32 @@ enum RadioCoreMLTransition {
         seed: Song,
         candidates: [Song],
         lyricIndex: LyricSignatureIndex,
-        keep: Int
+        keep: Int,
+        session: [Song] = []
     ) -> [Song] {
         let unique = TrackWorkIdentity.uniqueRecordings(candidates)
+        let opening = session.last ?? seed
+        let recent = Array(([seed] + session).prefix(4))
         let ranked = unique.map { song in
-            (
-                song,
-                score(seed: seed, candidate: song, lyricIndex: lyricIndex)
-            )
+            var value = score(
+                seed: seed,
+                candidate: song,
+                lyricIndex: lyricIndex
+            ) * 0.38
+            let recentMean = recent.reduce(0.0) { total, anchor in
+                total + score(
+                    seed: anchor,
+                    candidate: song,
+                    lyricIndex: lyricIndex
+                )
+            } / Double(max(recent.count, 1))
+            value += recentMean * 0.36
+            value += score(
+                seed: opening,
+                candidate: song,
+                lyricIndex: lyricIndex
+            ) * 0.26
+            return (song, value)
         }.sorted {
             if $0.1 == $1.1 { return $0.0.id < $1.0.id }
             return $0.1 > $1.1
