@@ -944,6 +944,13 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
 /// TIDAL-style AVPlayer buffering: keep a short music-sized lookahead so a
 /// brief radio dip does not underrun, without hoarding minutes of audio.
 enum PlaybackBufferPolicy {
+    enum Phase: Equatable, Sendable {
+        case startup
+        case settled
+        case constrained
+    }
+
+    static let startupForwardBuffer: TimeInterval = 0
     static let remoteForwardBuffer: TimeInterval = 12
     static let localForwardBuffer: TimeInterval = 4
     static let constrainedForwardBuffer: TimeInterval = 6
@@ -951,20 +958,26 @@ enum PlaybackBufferPolicy {
 
     static func forwardBufferDuration(
         isLocalFile: Bool,
-        constrained: Bool = false
+        phase: Phase = .settled
     ) -> TimeInterval {
-        if constrained { return constrainedForwardBuffer }
-        return isLocalFile ? localForwardBuffer : remoteForwardBuffer
+        switch phase {
+        case .startup:
+            return startupForwardBuffer
+        case .constrained:
+            return constrainedForwardBuffer
+        case .settled:
+            return isLocalFile ? localForwardBuffer : remoteForwardBuffer
+        }
     }
 
     static func configure(
         _ item: AVPlayerItem,
         isLocalFile: Bool,
-        constrained: Bool = false
+        phase: Phase = .startup
     ) {
         item.preferredForwardBufferDuration = forwardBufferDuration(
             isLocalFile: isLocalFile,
-            constrained: constrained
+            phase: phase
         )
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
     }
@@ -1831,7 +1844,11 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
         if let item = player.currentItem {
-            PlaybackBufferPolicy.configure(item, isLocalFile: false, constrained: true)
+            PlaybackBufferPolicy.configure(
+                item,
+                isLocalFile: false,
+                phase: .constrained
+            )
         }
     }
 
@@ -2804,7 +2821,8 @@ final class AudioEngine: NSObject, ObservableObject {
         let item = AVPlayerItem(asset: prepared.asset)
         PlaybackBufferPolicy.configure(
             item,
-            isLocalFile: prepared.asset.url.isFileURL
+            isLocalFile: prepared.asset.url.isFileURL,
+            phase: .settled
         )
         guard player.canInsert(item, after: currentItem) else { return }
         player.insert(item, after: currentItem)
@@ -3272,7 +3290,11 @@ final class AudioEngine: NSObject, ObservableObject {
         removeCurrentItemObservers()
         invalidateStagedSuccessor(removeFromPlayer: true)
         let item = AVPlayerItem(asset: asset)
-        PlaybackBufferPolicy.configure(item, isLocalFile: asset.url.isFileURL)
+        PlaybackBufferPolicy.configure(
+            item,
+            isLocalFile: asset.url.isFileURL,
+            phase: .startup
+        )
         observeActiveItem(item, resumePosition: resumePosition)
         player.replaceCurrentItem(with: item)
         handledFailedItem = nil
@@ -3549,7 +3571,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard item.isPlaybackLikelyToKeepUp,
                       !self.isSeekInFlight,
                       self.pendingSeekPosition == nil else { return }
-                if self.wantsPlayback, self.player.timeControlStatus != .playing {
+                if self.wantsPlayback, self.player.timeControlStatus == .playing {
+                    self.expandSettledForwardBufferIfNeeded()
+                } else if self.wantsPlayback, self.player.timeControlStatus != .playing {
                     self.configureAudioSession()
                     self.playLatencyOptimized()
                     self.recomputeTimelineFromPlayer()
@@ -3688,6 +3712,17 @@ final class AudioEngine: NSObject, ObservableObject {
         updateNowPlaying()
         scheduleQueueSave(immediate: true)
         playbackError = message
+    }
+
+    private func expandSettledForwardBufferIfNeeded() {
+        guard let item = player.currentItem ?? logicalCurrentItem else { return }
+        let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
+        let settled = PlaybackBufferPolicy.forwardBufferDuration(
+            isLocalFile: isLocal,
+            phase: .settled
+        )
+        guard item.preferredForwardBufferDuration + 0.01 < settled else { return }
+        PlaybackBufferPolicy.configure(item, isLocalFile: isLocal, phase: .settled)
     }
 
     private func cancelStallConfirmation() {
@@ -4048,6 +4083,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         || player.currentItem?.status != .readyToPlay
                     )
                 if player.timeControlStatus == .playing {
+                    self.expandSettledForwardBufferIfNeeded()
                     self.cancelStallConfirmation()
                     switch PlaybackWatchdogPolicy.decision(
                         wantsPlayback: self.wantsPlayback,

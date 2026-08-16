@@ -377,20 +377,34 @@ final class PlaybackPrefetchPlanTests: XCTestCase {
     }
 
     func testPlaybackBufferKeepsAShortMusicLookahead() {
+        XCTAssertEqual(PlaybackBufferPolicy.startupForwardBuffer, 0)
         XCTAssertEqual(PlaybackBufferPolicy.remoteForwardBuffer, 12)
         XCTAssertEqual(PlaybackBufferPolicy.localForwardBuffer, 4)
         XCTAssertEqual(
-            PlaybackBufferPolicy.forwardBufferDuration(isLocalFile: false),
+            PlaybackBufferPolicy.forwardBufferDuration(
+                isLocalFile: false,
+                phase: .startup
+            ),
+            0
+        )
+        XCTAssertEqual(
+            PlaybackBufferPolicy.forwardBufferDuration(
+                isLocalFile: false,
+                phase: .settled
+            ),
             12
         )
         XCTAssertEqual(
-            PlaybackBufferPolicy.forwardBufferDuration(isLocalFile: true),
+            PlaybackBufferPolicy.forwardBufferDuration(
+                isLocalFile: true,
+                phase: .settled
+            ),
             4
         )
         XCTAssertEqual(
             PlaybackBufferPolicy.forwardBufferDuration(
                 isLocalFile: false,
-                constrained: true
+                phase: .constrained
             ),
             6
         )
