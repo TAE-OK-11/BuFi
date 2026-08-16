@@ -22,11 +22,22 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import textwrap
           source = Path('.github/workflows/one-shot-lyric-prompt-editor.yml').read_text()
           marker = "python3 <<'PY'\n"
-          script = source.split(marker, 1)[1].split("\n          PY", 1)[0]
-          exec(compile(textwrap.dedent(script), 'lyric_patch.py', 'exec'))
+          block = source.split(marker, 1)[1].split("\n          PY", 1)[0]
+          script = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in block.splitlines()
+          )
+          exec(compile(script, 'lyric_patch.py', 'exec'))
+
+          # The staged editor body is a Python raw string. Normalize only
+          # accidental doubled Swift interpolation/key-path escapes it emitted.
+          settings = Path('BuFi/UI/SettingsView.swift')
+          text = settings.read_text()
+          text = text.replace('\\\\(', '\\(')
+          text = text.replace('@Environment(\\\\.dismiss)', '@Environment(\\.dismiss)')
+          settings.write_text(text)
           PY
       - name: Commit source changes
         shell: bash
