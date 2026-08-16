@@ -95,38 +95,62 @@ enum RadioTransitionFeatures {
     }
 }
 
-/// Loads a compiled `BuFiRadioTransition` model when one is bundled.
-/// Until that file exists, callers keep using RadioFeelGrammar.
+/// Loads the Create ML item recommender and the pair ranker.
 enum RadioCoreMLTransition {
-    static let resourceName = "BuFiRadioTransition"
+    static let resourceName = "BuFiRadioRecommender"
+    static let rankerResourceName = "BuFiRadioTransition"
 
-    static var isReady: Bool { store.model != nil }
+    static var isReady: Bool { store.recommender != nil || store.ranker != nil }
 
 #if canImport(CoreML)
     private static let store = ModelStore()
 
     private final class ModelStore: @unchecked Sendable {
-        let model: MLModel?
+        let recommender: MLModel?
+        let ranker: MLModel?
 
         init() {
+            recommender = Self.load(RadioCoreMLTransition.resourceName)
+            ranker = Self.load(RadioCoreMLTransition.rankerResourceName)
+        }
+
+        private static func load(_ name: String) -> MLModel? {
             let bundle = Bundle.main
-            let url = bundle.url(
-                forResource: RadioCoreMLTransition.resourceName,
-                withExtension: "mlmodelc"
-            ) ?? bundle.url(
-                forResource: RadioCoreMLTransition.resourceName,
-                withExtension: "mlmodel"
-            )
-            guard let url else {
-                model = nil
-                return
-            }
-            model = try? MLModel(contentsOf: url)
+            let url = bundle.url(forResource: name, withExtension: "mlmodelc")
+                ?? bundle.url(forResource: name, withExtension: "mlmodel")
+            guard let url else { return nil }
+            return try? MLModel(contentsOf: url)
         }
     }
 #else
-    private static let store = (model: Optional<Any>.none)
+    private static let store = (recommender: Optional<Any>.none, ranker: Optional<Any>.none)
 #endif
+
+    static func itemKey(for song: Song) -> String {
+        "\(normalize(song.title))|\(normalize(song.artist))"
+    }
+
+    static func normalize(_ raw: String) -> String {
+        let folded = raw.folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
+            .lowercased()
+        var stripped = ""
+        var skipping = false
+        for character in folded {
+            if character == "(" {
+                skipping = true
+                continue
+            }
+            if character == ")" {
+                skipping = false
+                continue
+            }
+            if skipping { continue }
+            if character.isLetter || character.isNumber {
+                stripped.append(character)
+            }
+        }
+        return stripped
+    }
 
     static func score(
         seed: Song,
@@ -134,7 +158,7 @@ enum RadioCoreMLTransition {
         lyricIndex: LyricSignatureIndex
     ) -> Double {
 #if canImport(CoreML)
-        if let model = store.model {
+        if let model = store.ranker {
             let started = Date()
             if let value = predict(
                 model,
@@ -189,6 +213,113 @@ enum RadioCoreMLTransition {
         }
         return output.featureValue(for: "score")?.doubleValue
     }
+
+    private static func recommend(
+        seed: Song,
+        session: [Song],
+        candidates: [Song],
+        keep: Int
+    ) -> [Song]? {
+        guard let model = store.recommender else { return nil }
+        let byKey = Dictionary(
+            candidates.map { (itemKey(for: $0), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var query: [AnyHashable: NSNumber] = [:]
+        query[itemKey(for: seed)] = 5
+        for (index, song) in session.prefix(4).enumerated() {
+            query[itemKey(for: song)] = NSNumber(value: max(1, 4 - index))
+        }
+        let restrict = Array(byKey.keys)
+        let started = Date()
+        guard let output = predictRecommender(
+            model,
+            items: query,
+            restrict: restrict,
+            k: keep
+        ) else {
+            RecommendationDiagnostics.record(
+                kind: .coreml,
+                level: .error,
+                title: String(localized: "추천 모델 추론 실패"),
+                detail: seed.title
+            )
+            return nil
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        if elapsed >= 0.08 {
+            RecommendationDiagnostics.record(
+                kind: .coreml,
+                level: .delay,
+                title: String(localized: "추천 모델이 느렸습니다"),
+                detail: "\(Int(elapsed * 1000))ms"
+            )
+        }
+        var picked: [Song] = []
+        var seen = Set<String>()
+        for key in output {
+            guard let song = byKey[key], seen.insert(song.id).inserted else { continue }
+            picked.append(song)
+            if picked.count == keep { break }
+        }
+        if picked.count < min(keep, 8) {
+            return nil
+        }
+        if picked.count < keep {
+            let rest = candidates.filter { !seen.contains($0.id) }
+            let extras = rest.sorted {
+                let left = score(seed: seed, candidate: $0, lyricIndex: .empty)
+                let right = score(seed: seed, candidate: $1, lyricIndex: .empty)
+                return left == right ? $0.id < $1.id : left > right
+            }
+            for song in extras where seen.insert(song.id).inserted {
+                picked.append(song)
+                if picked.count == keep { break }
+            }
+        }
+        return picked
+    }
+
+    private static func predictRecommender(
+        _ model: MLModel,
+        items: [AnyHashable: NSNumber],
+        restrict: [String],
+        k: Int
+    ) -> [String]? {
+        guard let itemValue = try? MLFeatureValue(dictionary: items) else {
+            return nil
+        }
+        let sequence = MLSequence.stringSequence(restrict)
+        let attempts: [[String: Any]] = [
+            [
+                "items": itemValue,
+                "k": k,
+                "restrictItems": MLFeatureValue(sequence: sequence)
+            ],
+            [
+                "items": itemValue,
+                "k": Int64(k),
+                "restrictitems": MLFeatureValue(sequence: sequence)
+            ],
+            [
+                "interactions": itemValue,
+                "k": k
+            ]
+        ]
+        for dictionary in attempts {
+            guard let input = try? MLDictionaryFeatureProvider(dictionary: dictionary),
+                  let output = try? model.prediction(from: input) else {
+                continue
+            }
+            for name in ["recommendations", "recommended_item_ids", "items"] {
+                if let values = output.featureValue(for: name)?.sequenceValue?.stringValues,
+                   !values.isEmpty {
+                    return values
+                }
+            }
+        }
+        return nil
+    }
 #endif
 
     static func shortlist(
@@ -198,7 +329,7 @@ enum RadioCoreMLTransition {
         keep: Int,
         session: [Song] = []
     ) -> [Song] {
-        if store.model == nil {
+        if store.recommender == nil, store.ranker == nil {
             RecommendationDiagnostics.record(
                 kind: .coreml,
                 level: .info,
@@ -207,6 +338,14 @@ enum RadioCoreMLTransition {
             )
         }
         let unique = TrackWorkIdentity.uniqueRecordings(candidates)
+        if let recommended = recommend(
+            seed: seed,
+            session: session,
+            candidates: unique,
+            keep: keep
+        ) {
+            return recommended
+        }
         let opening = session.last ?? seed
         let recent = Array(([seed] + session).prefix(4))
         let ranked = unique.map { song in

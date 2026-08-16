@@ -1,0 +1,37 @@
+name: Train radio recommender
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - Scripts/export-radio-recommender-data.py
+      - Scripts/TrainRadioRecommender.swift
+      - Scripts/radio-recommender.csv
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    name: Create ML MLRecommender
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Train model
+        run: |
+          python3 Scripts/export-radio-recommender-data.py
+          swift Scripts/TrainRadioRecommender.swift \
+            Scripts/radio-recommender.csv \
+            BuFi/Resources/BuFiRadioRecommender.mlmodel
+
+      - name: Upload model
+        uses: actions/upload-artifact@v7
+        with:
+          name: BuFiRadioRecommender
+          path: |
+            BuFi/Resources/BuFiRadioRecommender.mlmodel
+            Scripts/radio-recommender.csv
+          if-no-files-found: error
+          retention-days: 30
