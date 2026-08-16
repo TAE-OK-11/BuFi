@@ -35,8 +35,8 @@ NEXT = {
     ("sparkle", "sparkle"): 0.78,
     ("sparkle", "rush"): 0.86,
     ("rush", "sparkle"): 0.86,
-    ("sparkle", "bittersweet"): 0.72,
-    ("bittersweet", "sparkle"): 0.72,
+    ("sparkle", "bittersweet"): 0.80,
+    ("bittersweet", "sparkle"): 0.80,
     ("sparkle", "glow"): 0.58,
     ("glow", "sparkle"): 0.58,
     ("rush", "rush"): 0.78,
@@ -115,8 +115,15 @@ def row(seed: str, cand: str, rng: np.random.Generator) -> tuple[list[float], fl
         ce,
     ] + one_hot(seed) + one_hot(cand)
     label = next_score(seed, cand)
-    label += (1.0 - abs(se - ce)) * 0.08
-    label += 0.06 if kpop_same else -0.12
+    label += (1.0 - abs(se - ce)) * 0.10
+    if kpop_same:
+        label += 0.12
+        if seed in {"sparkle", "rush"} and cand in {"cool", "electro"}:
+            label -= 0.18
+        if seed in {"cool", "electro"} and cand in {"sparkle"}:
+            label -= 0.16
+    else:
+        label -= 0.14
     label = float(np.clip(label, 0, 1))
     return features, label
 
@@ -127,7 +134,16 @@ def main() -> None:
     ys: list[float] = []
     for seed in FEELS:
         for cand in FEELS:
-            copies = 24 if seed == cand or (seed, cand) in NEXT else 10
+            copies = 36 if seed == cand or (seed, cand) in NEXT else 8
+            if (seed, cand) in {
+                ("sparkle", "bittersweet"),
+                ("bittersweet", "sparkle"),
+                ("sparkle", "rush"),
+                ("rush", "sparkle"),
+                ("cool", "electro"),
+                ("electro", "cool"),
+            }:
+                copies += 16
             for _ in range(copies):
                 features, label = row(seed, cand, rng)
                 xs.append(features)

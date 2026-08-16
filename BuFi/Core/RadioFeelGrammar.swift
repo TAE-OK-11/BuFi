@@ -81,7 +81,7 @@ enum RadioFeelGrammar {
         if from == to { return 0.78 }
         switch (from, to) {
         case (.sparkle, .rush), (.rush, .sparkle): return 0.86
-        case (.sparkle, .bittersweet), (.bittersweet, .sparkle): return 0.72
+        case (.sparkle, .bittersweet), (.bittersweet, .sparkle): return 0.80
         case (.sparkle, .glow), (.glow, .sparkle): return 0.58
         case (.rush, .cool), (.cool, .rush): return 0.64
         case (.rush, .electro), (.electro, .rush): return 0.70
@@ -119,40 +119,19 @@ enum RadioFeelGrammar {
     /// Longer Gemini director brief. Teaches rooms and handoffs from observed
     /// personal-radio sets without naming those catalogs as a playlist to copy.
     static let geminiRadioBrief = """
-    You are not ranking similar tracks. You are programming the next block of a personal radio show with a point of view — the feeling a great radio has when the next song was obviously the one.
+    Program a short personal radio block. You have taste and freedom inside these rules only.
 
-    Each candidate card has a feel: sparkle, rush, bittersweet, cool, electro, glow, hush. Read that first. Then use lyric memory, excerpts, measured BPM, and your own knowledge of the artist/title.
+    Rules:
+    1. Sequence a listen, not a similarity list. The next song should feel inevitable, not copied.
+    2. Stay in the seed's cultural room (Western pop radio vs bright idol crush vs concept/performance K-pop vs high-concept electro). "Pop" as a tag is not a room change.
+    3. K-pop walks to similar adjacent artists — same generation or neighboring sound — not a random idol shuffle.
+    4. Use feel, lyric memory, excerpts, BPM, and your own knowledge of the titles. Thin cards: infer from what you know. Never invent ids.
+    5. Same artist+title is one recording. Do not park live/acoustic next to the original. Same artist may return later; do not run three in a row.
+    6. You may lift, drop, or surprise once if it still belongs. Do not jerk the body or flip the story for no reason.
+    7. Drop off-lane candidates. If you still need songs, ask with need weights. Fewer than the requested count is fine.
 
-    Cultural rooms (do not cross these just because both songs are "pop"):
-    1. Western teen / crush radio — confident funk-pop, glitter girl-pop, feel-good male pop, 2010s radio nostalgia, almost-love choruses. After a sparkle or rush seed in this room, stay here. Sprinkle bittersweet every few songs as texture, then come back up. Male and female voices mix if they share this sunny/crush air. The seed artist may return as an anchor, not as a same-song clone factory. Do not jump into dark concept K-pop or hyper-electro.
-    2. Bright 4th-gen idol / festival crush — youthful, guitar-pop, "we are here together" energy. After that kind of seed, keep the sun. Recur the same group as a heartbeat every few tracks. Girl groups and boy groups can sit together when they share this brightness. A soft idol vocal is a breath, not a collapse into hush. Do not drift into cool/electro concept-performance.
-    3. Concept / performance K-pop — stylish, girl-crush, art-pop, high-fashion dance. After that seed, stay in the lineage: sister title-tracks, same-act members, generations that share the attitude. One glow-vocal is spice. Do not flip into cute festival sparkle.
-    4. High-concept electro — intense synth, performance-dance, cinematic drop. First picks are often same-artist sisters or dance-heavy peers in that voltage. Cool is adjacent. Sparkle-cute is wrong.
-
-    How a living set actually moves:
-    - Opening: honor why they pressed this seed. Same room, different record. A sister-feel peer beats a clone.
-    - Blocks hand off. The last feeling of one stretch becomes the first feeling of the next — do not reset to generic similar.
-    - Same artist every few songs is an anchor. Never three in a row unless you are opening with two sisters from the same act, then leave.
-    - After 3–5 high-energy cuts, one softer breath (bittersweet or glow), then return. Never dump a hush ballad after a rush anthem.
-    - Gender lean follows the seed, but the other gender belongs when they live in the same room.
-    - A planned lift or drop once is taste. A random BPM/valence slam is a broken show.
-
-    Feel-after-feel:
-    sparkle → sparkle or rush; bittersweet as spice; not electro/hush.
-    rush → rush or sparkle; cool/electro only if the seed already lives there.
-    bittersweet → bittersweet, sparkle, or glow; not a club drop.
-    cool → cool or electro; lineage stays; one glow breath.
-    electro → electro or cool; same-artist sisters welcome; not cute sparkle.
-    glow → glow, hush, or a gentle sparkle lift.
-    hush → hush or bittersweet; never rush/electro next.
-
-    K-pop should walk next door, not teleport. From the seed act, step to adjacent artists that share generation, company-adjacent sound, vocal color, or the same room (bright crush vs concept performance). Same-group returns are heartbeats every few tracks. Do not jump a sunny 4th-gen crush set into high-concept electro, or a concept stage into cute festival sparkle, just because both are tagged K-pop.
-
-    If a card is thin, fill it from what you know about that title. Never invent ids. Never invent a song that is not listed.
-
-    If some of the 30 are off-lane, drop them. Then ask for replacements by emitting the weights you still need:
-    {"ids":["id"],"need":{"count":3,"feel":"sparkle","moods":["yearning"],"energy":[0.4,0.7],"genre":"k-pop","vocal":"female","want":"adjacent idol groups in the same room"}}
-    Only request what would keep the walk natural. The app will send matching tracks from the leftover pool.
+    need example:
+    {"ids":["id"],"need":{"count":3,"feel":"sparkle","moods":["yearning"],"energy":[0.4,0.7],"genre":"k-pop","vocal":"female","want":"adjacent artists in the same room"}}
     """
 
     private static func blob(song: Song, signature: LyricSignature?) -> String {

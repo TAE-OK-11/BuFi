@@ -209,6 +209,7 @@ enum LyricInferenceRuntime {
     ) async -> String? {
         let targets = radioTargets(settings)
         if !targets.isEmpty {
+            let started = Date()
             for target in targets {
                 if let text = await streamChat(
                     prompt: prompt,
@@ -216,9 +217,24 @@ enum LyricInferenceRuntime {
                     maxTokens: maxTokens,
                     onDelta: onDelta
                 ) {
+                    let elapsed = Date().timeIntervalSince(started)
+                    if elapsed >= 3 {
+                        RecommendationDiagnostics.record(
+                            kind: .llm,
+                            level: .delay,
+                            title: String(localized: "LLM 응답이 느렸습니다"),
+                            detail: "\(target.source) \(target.model) \(Int(elapsed * 1000))ms"
+                        )
+                    }
                     return text
                 }
             }
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .error,
+                title: String(localized: "LLM 라디오 호출이 모두 실패했습니다"),
+                detail: targets.map(\.source).joined(separator: " → ")
+            )
             return nil
         }
         if let text = await completeRadio(
@@ -411,6 +427,13 @@ enum LyricInferenceRuntime {
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
                 LyricProviderCircuit.recordFailure(target.circuitKey)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                RecommendationDiagnostics.record(
+                    kind: .llm,
+                    level: .error,
+                    title: String(localized: "LLM HTTP 오류"),
+                    detail: "\(target.source) \(target.model) HTTP \(status)"
+                )
                 return nil
             }
             var assembled = ""
@@ -433,12 +456,27 @@ enum LyricInferenceRuntime {
                     return nil
                 }
                 LyricProviderCircuit.recordFailure(target.circuitKey)
+                RecommendationDiagnostics.record(
+                    kind: .llm,
+                    level: .error,
+                    title: String(localized: "LLM 스트림이 비었습니다"),
+                    detail: "\(target.source) \(target.model)"
+                )
                 return nil
             }
             LyricProviderCircuit.recordSuccess(target.circuitKey)
             return assembled
         } catch {
             LyricProviderCircuit.recordFailure(target.circuitKey)
+            let timedOut = (error as? URLError)?.code == .timedOut
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: timedOut ? .delay : .error,
+                title: timedOut
+                    ? String(localized: "LLM 타임아웃")
+                    : String(localized: "LLM 호출 실패"),
+                detail: "\(target.source) \(target.model) \(error.localizedDescription)"
+            )
             return nil
         }
     }

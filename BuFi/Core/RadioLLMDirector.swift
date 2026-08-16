@@ -281,6 +281,12 @@ enum RadioLLMDirector {
             limit: reviewKeep
         )
         guard catalog.count >= 6 else {
+            RecommendationDiagnostics.record(
+                kind: .radio,
+                level: .error,
+                title: String(localized: "라디오 후보가 부족합니다"),
+                detail: "\(catalog.count)"
+            )
             await emit(Array(filtered.prefix(reviewKeep)), using: onPick)
             return Array(filtered.prefix(reviewKeep))
         }
@@ -297,6 +303,12 @@ enum RadioLLMDirector {
             onPick: onPick
         )
         if !picked.isEmpty { return Array(picked.prefix(reviewKeep)) }
+        RecommendationDiagnostics.record(
+            kind: .radio,
+            level: .error,
+            title: String(localized: "LLM 라디오가 비어 로컬 순서로 넘어갑니다"),
+            detail: seed.title
+        )
         await emit(local, using: onPick)
         return local
     }
@@ -578,6 +590,12 @@ enum RadioLLMDirector {
             return true
         }
         if await box.isEmpty, let fallback = local.first {
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .delay,
+                title: String(localized: "첫 곡 기한이 지나 로컬 곡을 넣었습니다"),
+                detail: fallback.title
+            )
             await box.push(fallback)
         }
         let raw = await streamed
@@ -684,19 +702,8 @@ enum RadioLLMDirector {
             song: seed,
             signature: lyricIndex.bySongID[seed.id]
         )
-        let seedGender = RadioContinuity.vocalGender(
-            song: seed,
-            signature: lyricIndex.bySongID[seed.id]
-        )
         if seedKPop {
-            extras.append(
-                "The seed lives in K-pop. Walk to similar adjacent artists in the same room — same generation, neighboring sound, shared vocal color. Do not shuffle random idol groups or jump to Western pop because both are tagged pop."
-            )
-        }
-        if seedGender == "female" || seedGender == "male" {
-            extras.append(
-                "Lean \(seedGender) vocals the way a DJ would, but include at least one other gender so the set breathes."
-            )
+            extras.append("Seed is K-pop: prefer adjacent artists in the same room.")
         }
         let user = extras.isEmpty ? "" : "\n\(extras.joined(separator: "\n"))\n"
         return LyricModelPrompts.radioProgram(

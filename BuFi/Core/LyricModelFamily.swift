@@ -438,25 +438,18 @@ enum LyricModelPrompts {
             return """
             \(RadioFeelGrammar.geminiRadioBrief)
 
-            These candidates already survived the library engine (50) and the
-            on-device ranker (30). Throw out anything off-lane. Keep up to \(keep)
-            listed ids that belong in this show — fewer is fine if the rest do not fit.
-            If you still need more songs in-lane, add a need object with the weights
-            those replacements must match (feel, moods, energy, genre, vocal, want).
-            K-pop: walk to similar artists in the same room, not a random idol shuffle.
-            Same artist+title is one recording — do not sit a live/acoustic sibling next to the original.
-            Preferred artists are a slight lean, never a block.
+            Keep up to \(keep) listed ids. Prefer a living order over filling the quota.
+            Preferred artists are a slight lean only.
 
-            Return one JSON object and start writing it immediately:
+            Return one JSON object immediately:
             {"ids":[],"need":{"count":0}}
-            No markdown, no analysis text.
 
             \(session)
-            Seed (opening thesis of the show):
+            Seed:
             \(seed)
-            Recent (already heard — hand off from this weather, do not ignore it):
+            Recent:
             \(recent)
-            Candidates (grouped by room / nearby / left turn — pick a living sequence from all three):
+            Candidates:
             \(candidates)
             \(extras)
             """

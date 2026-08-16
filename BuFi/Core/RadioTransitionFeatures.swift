@@ -134,16 +134,33 @@ enum RadioCoreMLTransition {
         lyricIndex: LyricSignatureIndex
     ) -> Double {
 #if canImport(CoreML)
-        if let model = store.model,
-           let value = predict(
-            model,
-            features: RadioTransitionFeatures.pairVector(
-                seed: seed,
-                candidate: candidate,
-                lyricIndex: lyricIndex
+        if let model = store.model {
+            let started = Date()
+            if let value = predict(
+                model,
+                features: RadioTransitionFeatures.pairVector(
+                    seed: seed,
+                    candidate: candidate,
+                    lyricIndex: lyricIndex
+                )
+            ) {
+                let elapsed = Date().timeIntervalSince(started)
+                if elapsed >= 0.08 {
+                    RecommendationDiagnostics.record(
+                        kind: .coreml,
+                        level: .delay,
+                        title: String(localized: "CoreML 추론이 느렸습니다"),
+                        detail: "\(Int(elapsed * 1000))ms"
+                    )
+                }
+                return max(0, min(1, value))
+            }
+            RecommendationDiagnostics.record(
+                kind: .coreml,
+                level: .error,
+                title: String(localized: "CoreML 추론 실패"),
+                detail: seed.title
             )
-           ) {
-            return max(0, min(1, value))
         }
 #endif
         return rank(seed: seed, candidate: candidate, lyricIndex: lyricIndex)
@@ -181,6 +198,14 @@ enum RadioCoreMLTransition {
         keep: Int,
         session: [Song] = []
     ) -> [Song] {
+        if store.model == nil {
+            RecommendationDiagnostics.record(
+                kind: .coreml,
+                level: .info,
+                title: String(localized: "CoreML 모델 없이 규칙 점수를 씁니다"),
+                detail: resourceName
+            )
+        }
         let unique = TrackWorkIdentity.uniqueRecordings(candidates)
         let opening = session.last ?? seed
         let recent = Array(([seed] + session).prefix(4))
@@ -249,9 +274,16 @@ enum RadioCoreMLTransition {
         value += max(0, 0.10 - valenceGap * 0.16)
         value += max(0, 0.10 - bpmGap * 0.35)
         if seedFeatures["kpop"] == nextFeatures["kpop"] {
-            value += 0.10
+            value += 0.14
+            let seedFeel = RadioFeelGrammar.feel(song: seed, signature: left)
+            let candFeel = RadioFeelGrammar.feel(song: candidate, signature: right)
+            if seedFeatures["kpop"] == 1,
+               (seedFeel == .sparkle || seedFeel == .rush),
+               (candFeel == .cool || candFeel == .electro) {
+                value -= 0.18
+            }
         } else {
-            value -= 0.16
+            value -= 0.18
         }
         if nextFeatures["starred"] == 1 { value += 0.04 }
         value += (nextFeatures["plays"] ?? 0) * 0.03

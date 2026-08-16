@@ -564,6 +564,7 @@ struct RecommendationSettingsView: View {
     @State private var confirmFullLyricReanalysis = false
     @State private var scanExportText = ""
     @State private var isExportingScan = false
+    @State private var diagEvents: [RecommendationDiagEvent] = []
     @State private var profile = AIRecommendationProfile.load()
     @State private var preferredDraft = ""
     @State private var avoidedDraft = ""
@@ -597,6 +598,7 @@ struct RecommendationSettingsView: View {
                     .padding(.horizontal, 18)
 
                 aiInUseSection
+                recommendationDiagSection
                 aiTasteSection
                 aiArtistSection
                 aiSignalSection
@@ -852,7 +854,13 @@ struct RecommendationSettingsView: View {
                 )
             }
         }
+        .onReceive(NotificationCenter.default.publisher(
+            for: RecommendationDiagnostics.didChange
+        )) { _ in
+            diagEvents = RecommendationDiagnostics.events()
+        }
         .onAppear {
+            diagEvents = RecommendationDiagnostics.events()
             profile = AIRecommendationProfile.load()
             if lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
                !LyricIntelligenceProviderKind.applePrivateCloud.isVisibleInSettings {
@@ -1456,6 +1464,50 @@ struct RecommendationSettingsView: View {
         case LyricIntelligenceSettings.geminiFlashLiteModel: "Gemini 3.6 Flash Lite"
         default: geminiModel
         }
+    }
+
+    private var recommendationDiagSection: some View {
+        SettingsGroup(title: "추천 오류 기록") {
+            VStack(alignment: .leading, spacing: 10) {
+                if diagEvents.isEmpty {
+                    settingsDescription("아직 오류가 없어요. LLM 호출이 실패하거나 CoreML이 늦으면 여기에 남습니다.")
+                } else {
+                    ForEach(diagEvents.prefix(20)) { event in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(diagTime(event.at)) · \(event.kindTitle) \(event.levelTitle)")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(event.level == .error ? Color.red : .secondary)
+                            Text(event.title)
+                                .font(.system(size: 14, weight: .semibold))
+                            if !event.detail.isEmpty {
+                                Text(event.detail)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    if diagEvents.count > 20 {
+                        settingsDescription("외 \(diagEvents.count - 20)건")
+                    }
+                    ShareLink("기록 보내기", item: RecommendationDiagnostics.exportText())
+                        .font(.system(size: 15, weight: .semibold))
+                    Button("기록 지우기", role: .destructive) {
+                        RecommendationDiagnostics.clear()
+                        diagEvents = []
+                    }
+                    .font(.system(size: 15, weight: .semibold))
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func diagTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ko_KR")
+        formatter.dateFormat = "M/d HH:mm:ss"
+        return formatter.string(from: date)
     }
 
     private var aiInUseSection: some View {
