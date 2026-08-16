@@ -23,8 +23,7 @@ enum RecommendationLLMReview {
         guard !songs.isEmpty, limit > 0 else { return songs }
         guard isEnabled() else { return Array(songs.prefix(limit)) }
         let settings = await currentSettings()
-        guard settings.provider != .off else { return Array(songs.prefix(limit)) }
-        let family = LyricModelFamily.resolve(settings)
+        let family = LyricModelFamily.resolve(model: settings.radioModel)
         let pool = Array(songs.prefix(family.reviewPoolLimit))
         guard pool.count >= 3 else { return songs }
         var laneScores: [String: Double] = [:]
@@ -59,9 +58,18 @@ enum RecommendationLLMReview {
             purpose: purpose,
             family: family
         )
-        let raw = await LyricIntelligenceBackend.complete(
+        let raw = await LyricInferenceRuntime.completeRadio(
             prompt: prompt,
-            settings: settings
+            settings: settings,
+            maxTokens: 900,
+            applePrompt: compactApplePrompt(
+                pool: pool,
+                seed: seed,
+                recent: recent,
+                purpose: purpose,
+                lyricIndex: lyricIndex,
+                limit: limit
+            )
         )
         var order = raw.flatMap { parseIDs($0, allowed: Set(pool.map(\.id))) }
         if order == nil, let broken = raw,
@@ -179,6 +187,36 @@ enum RecommendationLLMReview {
             taste: taste.isEmpty ? "(none)" : taste,
             candidates: candidates
         )
+    }
+
+    private static func compactApplePrompt(
+        pool: [Song],
+        seed: Song?,
+        recent: [Song],
+        purpose: RecommendationPurpose,
+        lyricIndex: LyricSignatureIndex,
+        limit: Int
+    ) -> String {
+        let recentLine = recent.prefix(4)
+            .map { "\($0.title) — \($0.artist)" }
+            .joined(separator: " | ")
+        let candidates = pool.prefix(20).map { song in
+            let signature = lyricIndex.bySongID[song.id]
+            let moods = (signature?.details.primaryMoods.isEmpty == false
+                ? signature?.details.primaryMoods
+                : signature?.moods)?.prefix(2).joined(separator: ",") ?? ""
+            let genre = signature?.details.genre ?? song.genre ?? ""
+            return "\(song.id) | \(song.title) — \(song.artist) | \(genre) | \(moods)"
+        }.joined(separator: "\n")
+        return """
+        Pick up to \(limit) song ids for \(purpose.rawValue).
+        Seed: \(seed.map { "\($0.title) — \($0.artist)" } ?? "none")
+        Recent: \(recentLine.isEmpty ? "none" : recentLine)
+        Reorder only listed ids. Keep the flow coherent and avoid needless artist repetition.
+        JSON only: {"ids":[]}
+        Candidates:
+        \(candidates)
+        """
     }
 
     private static func card(for song: Song, lyricIndex: LyricSignatureIndex) -> String {
