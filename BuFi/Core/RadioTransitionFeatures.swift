@@ -289,33 +289,48 @@ enum RadioCoreMLTransition {
         guard let itemValue = try? MLFeatureValue(dictionary: items) else {
             return nil
         }
-        let sequence = MLSequence.stringSequence(restrict)
+        let allowed = Set(restrict)
         let attempts: [[String: Any]] = [
-            [
-                "items": itemValue,
-                "k": k,
-                "restrictItems": MLFeatureValue(sequence: sequence)
-            ],
-            [
-                "items": itemValue,
-                "k": Int64(k),
-                "restrictitems": MLFeatureValue(sequence: sequence)
-            ],
-            [
-                "interactions": itemValue,
-                "k": k
-            ]
+            ["items": itemValue, "k": Int64(max(k, 1))],
+            ["items": itemValue, "k": max(k, 1)],
+            ["interactions": itemValue, "k": Int64(max(k, 1))]
         ]
         for dictionary in attempts {
             guard let input = try? MLDictionaryFeatureProvider(dictionary: dictionary),
                   let output = try? model.prediction(from: input) else {
                 continue
             }
-            for name in ["recommendations", "recommended_item_ids", "items"] {
-                if let values = output.featureValue(for: name)?.sequenceValue?.stringValues,
-                   !values.isEmpty {
-                    return values
-                }
+            if let ranked = recommenderIDs(from: output, allowed: allowed),
+               !ranked.isEmpty {
+                return ranked
+            }
+        }
+        return nil
+    }
+
+    private static func recommenderIDs(
+        from output: MLFeatureProvider,
+        allowed: Set<String>
+    ) -> [String]? {
+        for name in ["recommendations", "recommended_item_ids", "items"] {
+            if let values = output.featureValue(for: name)?.sequenceValue?.stringValues {
+                let ranked = values.filter { allowed.contains($0) }
+                if !ranked.isEmpty { return ranked }
+            }
+            if let dictionary = output.featureValue(for: name)?.dictionaryValue {
+                let ranked = dictionary
+                    .compactMap { key, value -> (String, Double)? in
+                        guard let id = key as? String, allowed.contains(id) else {
+                            return nil
+                        }
+                        return (id, value.doubleValue)
+                    }
+                    .sorted {
+                        if $0.1 == $1.1 { return $0.0 < $1.0 }
+                        return $0.1 > $1.1
+                    }
+                    .map(\.0)
+                if !ranked.isEmpty { return ranked }
             }
         }
         return nil
