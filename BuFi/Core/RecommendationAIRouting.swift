@@ -4,11 +4,28 @@ import Foundation
 /// analysis. A legacy/default Groq radio value should not keep Gemini dormant
 /// after the user adds a Gemini key.
 enum RecommendationAIRouting {
+    static let openRouterGemma4FreeModel = "google/gemma-4-31b-it:free"
+
     static func resolve(
         _ settings: LyricIntelligenceSettings,
         defaults: UserDefaults = .standard
     ) -> LyricIntelligenceSettings {
         var resolved = settings
+
+        // Recommendation fallback used to inherit the very small Gemma 3
+        // default. Upgrade only that legacy/default value to OpenRouter's
+        // Gemma 4 31B free endpoint; preserve any genuinely custom model.
+        let openRouterKey = settings.openRouterKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let openRouterModel = settings.openRouterModel
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !openRouterKey.isEmpty,
+           openRouterModel.isEmpty
+            || openRouterModel == LyricIntelligenceSettings.defaultOpenRouterModel
+            || openRouterModel == "google/gemma-3-270m-it" {
+            resolved.openRouterModel = openRouterGemma4FreeModel
+        }
+
         let geminiKey = settings.geminiKey
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !geminiKey.isEmpty else { return resolved }
