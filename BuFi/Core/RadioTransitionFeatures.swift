@@ -21,24 +21,27 @@ enum RadioTransitionFeatures {
     ) -> [String: Double] {
         let details = signature?.details
         let bpm = Double(SoundFeatureExtractor.bpm(song: song, signature: signature))
-        let energy = SoundFeatureExtractor.energy(song: song, signature: signature)
-        let valence = signature?.valence ?? 0.5
-        let intimacy = details?.intimacy ?? 0.5
+        let energy = finiteUnit(
+            SoundFeatureExtractor.energy(song: song, signature: signature),
+            fallback: 0.5
+        )
+        let valence = finiteUnit(signature?.valence ?? 0.5, fallback: 0.5)
+        let intimacy = finiteUnit(details?.intimacy ?? 0.5, fallback: 0.5)
         let feel = RadioFeelGrammar.feel(song: song, signature: signature)
         let vocal = RadioContinuity.vocalGender(song: song, signature: signature)
         let plays = Double(song.playCount ?? 0)
         var values: [String: Double] = [
-            "bpm": min(1, bpm / 200),
+            "bpm": finiteUnit(bpm / 200),
             "energy": energy,
             "valence": valence,
             "intimacy": intimacy,
-            "audioEnergy": details?.audioEnergy ?? 0,
-            "audioBrightness": details?.audioBrightness ?? 0,
-            "audioPulse": details?.audioPulse ?? 0,
+            "audioEnergy": finiteUnit(details?.audioEnergy ?? 0),
+            "audioBrightness": finiteUnit(details?.audioBrightness ?? 0),
+            "audioPulse": finiteUnit(details?.audioPulse ?? 0),
             "audioMeasured": details?.audioMeasured == true ? 1 : 0,
             "kpop": RadioContinuity.isKPop(song: song, signature: signature) ? 1 : 0,
             "starred": song.isStarred ? 1 : 0,
-            "plays": min(1, log(1 + plays) / 5)
+            "plays": finiteUnit(log(1 + max(0, plays)) / 5)
         ]
         for name in names where name.hasPrefix("feel_") {
             values[name] = name == "feel_\(feel.rawValue)" ? 1 : 0
@@ -51,7 +54,7 @@ enum RadioTransitionFeatures {
 
     static func vector(song: Song, signature: LyricSignature?) -> [Double] {
         let values = snapshot(song: song, signature: signature)
-        return names.map { values[$0] ?? 0 }
+        return names.map { finite(values[$0] ?? 0) }
     }
 
     static let pairNames: [String] = [
@@ -91,7 +94,15 @@ enum RadioTransitionFeatures {
             values["seed_feel_\(feel.rawValue)"] = feel == seedFeel ? 1 : 0
             values["cand_feel_\(feel.rawValue)"] = feel == candFeel ? 1 : 0
         }
-        return pairNames.map { values[$0] ?? 0 }
+        return pairNames.map { finite(values[$0] ?? 0) }
+    }
+
+    private static func finite(_ value: Double, fallback: Double = 0) -> Double {
+        value.isFinite ? value : fallback
+    }
+
+    private static func finiteUnit(_ value: Double, fallback: Double = 0) -> Double {
+        min(1, max(0, finite(value, fallback: fallback)))
     }
 }
 
@@ -108,10 +119,29 @@ enum RadioCoreMLTransition {
     private final class ModelStore: @unchecked Sendable {
         let recommender: MLModel?
         let ranker: MLModel?
+        private let lock = NSLock()
+        private var rankerDisabled = false
 
         init() {
             recommender = Self.load(RadioCoreMLTransition.resourceName)
             ranker = Self.load(RadioCoreMLTransition.rankerResourceName)
+        }
+
+        func usableRanker() -> MLModel? {
+            lock.lock()
+            defer { lock.unlock() }
+            return rankerDisabled ? nil : ranker
+        }
+
+        /// A compiled ranker should accept every sanitized 24-value vector.
+        /// If Core ML rejects one, stop hammering the same broken runtime path
+        /// for every candidate in this process and fall back to the rule ranker.
+        func disableRanker() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !rankerDisabled else { return false }
+            rankerDisabled = true
+            return true
         }
 
         private static func load(_ name: String) -> MLModel? {
@@ -158,16 +188,15 @@ enum RadioCoreMLTransition {
         lyricIndex: LyricSignatureIndex
     ) -> Double {
 #if canImport(CoreML)
-        if let model = store.ranker {
+        if let model = store.usableRanker() {
             let started = Date()
-            if let value = predict(
-                model,
-                features: RadioTransitionFeatures.pairVector(
-                    seed: seed,
-                    candidate: candidate,
-                    lyricIndex: lyricIndex
-                )
-            ) {
+            let features = RadioTransitionFeatures.pairVector(
+                seed: seed,
+                candidate: candidate,
+                lyricIndex: lyricIndex
+            )
+            switch predict(model, features: features) {
+            case .value(let value):
                 let elapsed = Date().timeIntervalSince(started)
                 if elapsed >= 0.08 {
                     RecommendationDiagnostics.record(
@@ -178,40 +207,82 @@ enum RadioCoreMLTransition {
                     )
                 }
                 return max(0, min(1, value))
+            case .failure(let reason):
+                if store.disableRanker() {
+                    RecommendationDiagnostics.record(
+                        kind: .coreml,
+                        level: .error,
+                        title: String(localized: "CoreML 추론 실패"),
+                        detail: "\(seed.title) → \(candidate.title) · \(reason)"
+                    )
+                    RecommendationDiagnostics.record(
+                        kind: .coreml,
+                        level: .info,
+                        title: String(localized: "CoreML 대신 규칙 점수를 사용합니다"),
+                        detail: rankerResourceName
+                    )
+                }
             }
-            RecommendationDiagnostics.record(
-                kind: .coreml,
-                level: .error,
-                title: String(localized: "CoreML 추론 실패"),
-                detail: seed.title
-            )
         }
 #endif
         return rank(seed: seed, candidate: candidate, lyricIndex: lyricIndex)
     }
 
 #if canImport(CoreML)
-    private static func predict(_ model: MLModel, features: [Double]) -> Double? {
-        guard let array = try? MLMultiArray(
-            shape: [NSNumber(value: features.count)],
-            dataType: .double
-        ) else {
-            return nil
+    private enum RankerPrediction {
+        case value(Double)
+        case failure(String)
+    }
+
+    private static func predict(_ model: MLModel, features: [Double]) -> RankerPrediction {
+        guard features.count == RadioTransitionFeatures.pairNames.count else {
+            return .failure(
+                "feature-count \(features.count) != \(RadioTransitionFeatures.pairNames.count)"
+            )
         }
-        for (index, value) in features.enumerated() {
-            array[index] = NSNumber(value: value)
+        guard features.allSatisfy(\.isFinite) else {
+            return .failure("non-finite feature vector")
         }
-        guard let input = try? MLDictionaryFeatureProvider(
-            dictionary: ["features": array]
-        ),
-              let output = try? model.prediction(from: input) else {
-            return nil
+        guard let inputDescription = model.modelDescription.inputDescriptionsByName["features"],
+              let constraint = inputDescription.multiArrayConstraint else {
+            return .failure("missing CoreML input features")
         }
-        if let multi = output.featureValue(for: "score")?.multiArrayValue,
-           multi.count > 0 {
-            return multi[0].doubleValue
+        let expectedCount = constraint.shape.reduce(1) { partial, value in
+            partial * value.intValue
         }
-        return output.featureValue(for: "score")?.doubleValue
+        guard expectedCount == features.count else {
+            return .failure(
+                "model-shape \(constraint.shape) expects \(expectedCount), got \(features.count)"
+            )
+        }
+        do {
+            let array = try MLMultiArray(
+                shape: constraint.shape,
+                dataType: constraint.dataType
+            )
+            for (index, value) in features.enumerated() {
+                array[index] = NSNumber(value: value)
+            }
+            let input = try MLDictionaryFeatureProvider(
+                dictionary: ["features": array]
+            )
+            let output = try model.prediction(from: input)
+            if let multi = output.featureValue(for: "score")?.multiArrayValue,
+               multi.count > 0 {
+                let value = multi[0].doubleValue
+                return value.isFinite ? .value(value) : .failure("non-finite score output")
+            }
+            if let feature = output.featureValue(for: "score"), feature.type == .double {
+                let value = feature.doubleValue
+                return value.isFinite ? .value(value) : .failure("non-finite score output")
+            }
+            return .failure("missing score output")
+        } catch {
+            let nsError = error as NSError
+            return .failure(
+                "\(nsError.domain)#\(nsError.code) \(nsError.localizedDescription)"
+            )
+        }
     }
 
     private static func recommend(
