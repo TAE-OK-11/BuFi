@@ -149,9 +149,9 @@ enum LyricTextSampler {
             }
         }
         return counts.values
-            .filter { $0.count >= 2 }
+            .filter { $0.count >= 2 && $0.line.count <= 96 }
             .sorted {
-                if $0.count == $1.count { return $0.line < $1.line }
+                if $0.count == $1.count { return $0.line.count < $1.line.count }
                 return $0.count > $1.count
             }
             .prefix(3)
