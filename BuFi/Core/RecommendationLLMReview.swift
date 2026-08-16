@@ -178,26 +178,7 @@ enum RecommendationLLMReview {
     }
 
     private static func card(for song: Song, lyricIndex: LyricSignatureIndex) -> String {
-        let signature = lyricIndex.bySongID[song.id]
-        let moods = (signature?.details.primaryMoods.isEmpty == false
-            ? signature?.details.primaryMoods
-            : signature?.moods)?.prefix(3).joined(separator: ",") ?? ""
-        let themes = signature?.themes.prefix(3).joined(separator: ",") ?? ""
-        let sound = SoundLabelSpace.canonicalize(signature?.soundLabels ?? [])
-            .prefix(3)
-            .joined(separator: ",")
-        let summary = signature?.summary.replacingOccurrences(of: "\n", with: " / ") ?? ""
-        let arc = signature?.details.emotionalArc
-            .replacingOccurrences(of: "\n", with: " / ") ?? ""
-        let energy = signature.map { String(format: "%.2f", $0.energy) } ?? "-"
-        let valence = signature.map { String(format: "%.2f", $0.valence) } ?? "-"
-        let tempo = signature.map { String(format: "%.2f", $0.details.tempo) } ?? "-"
-        let season = signature?.details.season ?? ""
-        let day = signature?.details.dayparts.joined(separator: ",") ?? ""
-        let style = signature?.details.style ?? ""
-        let vocal = signature?.details.vocalGender ?? ""
-        let genre = signature?.details.genre ?? song.genre ?? ""
-        return "\(song.id) | \(song.title) — \(song.artist) | moods:\(moods) themes:\(themes) e:\(energy) v:\(valence) tempo:\(tempo) season:\(season) day:\(day) style:\(style) vocal:\(vocal) genre:\(genre) sound:\(sound) arc:\(arc) | \(summary)"
+        RecommendationPromptCard.make(song, lyricIndex: lyricIndex, excerptLimit: 160)
     }
 
     private static func currentSettings() async -> LyricIntelligenceSettings {

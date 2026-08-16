@@ -496,8 +496,14 @@ enum RadioLLMDirector {
             family: LyricModelFamily.resolve(model: settings.radioModel),
             keep: reviewKeep,
             lane: lane,
-            seed: card(seed, lyricIndex: lyricIndex),
-            recent: recent.prefix(4).map { card($0, lyricIndex: lyricIndex) }
+            seed: RecommendationPromptCard.make(
+                seed,
+                lyricIndex: lyricIndex,
+                excerptLimit: 240
+            ),
+            recent: recent.prefix(4).map {
+                RecommendationPromptCard.make($0, lyricIndex: lyricIndex, excerptLimit: 140)
+            }
                 .joined(separator: " | "),
             candidates: candidates,
             extras: user
@@ -515,30 +521,7 @@ enum RadioLLMDirector {
     }
 
     private static func card(_ song: Song, lyricIndex: LyricSignatureIndex) -> String {
-        let signature = lyricIndex.bySongID[song.id]
-        let moods = (signature?.details.primaryMoods.isEmpty == false
-            ? signature?.details.primaryMoods
-            : signature?.moods)?.prefix(2).joined(separator: ",") ?? ""
-        let sound = SoundLabelSpace.canonicalize(signature?.soundLabels ?? [])
-            .prefix(2)
-            .joined(separator: ",")
-        let summary = String(
-            (signature?.summary.replacingOccurrences(of: "\n", with: " / ") ?? "")
-                .prefix(72)
-        )
-        let energy = signature.map { fmt($0.energy) } ?? "-"
-        let vocal = RadioContinuity.vocalGender(song: song, signature: signature)
-        var genre = signature?.details.genre ?? song.genre ?? ""
-        if RadioContinuity.isKPop(song: song, signature: signature) {
-            genre = genre.isEmpty ? "k-pop" : genre
-        }
-        let bpm = SoundFeatureExtractor.bpm(song: song, signature: signature)
-        let audio = signature?.details.audioMeasured == true
-            ? " ae:\(fmt(signature?.details.audioEnergy ?? 0)) br:\(fmt(signature?.details.audioBrightness ?? 0))"
-            : ""
-        let starred = song.isStarred ? " fav" : ""
-        let plays = song.playCount.map { " plays:\($0)" } ?? ""
-        return "\(song.id)|\(song.title)-\(song.artist)|bpm:\(bpm) m:\(moods) e:\(energy) vox:\(vocal) g:\(genre) s:\(sound)\(audio)\(starred)\(plays)|\(summary)"
+        RecommendationPromptCard.make(song, lyricIndex: lyricIndex)
     }
 
     private static func fmt(_ value: Double) -> String {

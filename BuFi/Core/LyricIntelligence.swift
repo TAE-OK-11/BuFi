@@ -1244,6 +1244,10 @@ actor LyricIntelligence {
                 existing.details.summary = existing.summary
                 dirty = dirty || existing.hasStoredSummary
             }
+            if existing.details.lyricExcerpt.isEmpty {
+                existing.details.lyricExcerpt = LyricTextSampler.sample(lyrics, limit: 280)
+                dirty = true
+            }
             if dirty {
                 signatures[song.id] = existing
                 await persist(existing)
@@ -1295,6 +1299,9 @@ actor LyricIntelligence {
         }
         signature.sentenceEmbedding =
             await LyricSentenceEmbedding.vector(from: lyrics) ?? []
+        if signature.details.lyricExcerpt.isEmpty {
+            signature.details.lyricExcerpt = LyricTextSampler.sample(lyrics, limit: 280)
+        }
 
         // Sound analysis is independent from lyric LLM output and may safely be
         // carried forward. Sentence embeddings can also be reused if generation

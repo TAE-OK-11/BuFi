@@ -317,57 +317,22 @@ enum LyricModelPrompts {
         taste: String,
         candidates: String
     ) -> String {
+        let brief = radioProgramInstructions(keep: nil, purpose: purpose)
         switch family {
         case .appleFoundation:
             return """
-            Rank these library tracks. JSON only:
-            {"ids":["id"]}
-            Same mood as taste. No new ids.
+            \(brief)
             Taste:
             \(taste)
             Tracks:
             \(candidates)
             """
-        case .llama70B:
+        default:
             return """
-            You are finishing a radio queue for purpose=\(purpose).
-            Rules: keep only listed ids, no inventions, one JSON object.
-            {"ids":["listen-next order"]}
-            Rank by: (1) same emotional lane as Taste including emotionalArc, (2) matching energy/vocalGender/genre/tempo, (3) seed album/era before random same-artist, (4) demote empty analysis and valence clashes, (5) avoid three songs in a row by one artist, (6) keep a coherent listen rather than shuffling moods.
+            \(brief)
             Taste:
             \(taste)
             Candidates:
-            \(candidates)
-            """
-        case .gptOSS:
-            return """
-            Role: radio programmer. Purpose: \(purpose).
-            Emit JSON only, no explanation:
-            {"ids":["id"]}
-            Listed ids only. Prefer Taste continuity, then a slight contrast that keeps the same body of sound. Crush out-of-lane tracks.
-            Taste:
-            \(taste)
-            Candidates:
-            \(candidates)
-            """
-        case .gemini:
-            return """
-            Sequence a personal radio for purpose=\(purpose). Use listed ids only.
-
-            Return one JSON object and start it immediately:
-            {"ids":["id"]}
-
-            Keep a coherent listen: same lyric lane and emotionalArc as Taste, then vocal/energy/BPM continuity. Preferred artists are a slight lean. Avoid three songs by one artist in a row. Drop out-of-lane tracks. No markdown.
-
-            Taste:
-            \(taste)
-            Candidates:
-            \(candidates)
-            """
-        case .generic:
-            return """
-            Rank for \(purpose). JSON {"ids":[]} only. Taste then candidates:
-            \(taste)
             \(candidates)
             """
         }
@@ -469,35 +434,126 @@ enum LyricModelPrompts {
         candidates: String,
         extras: String
     ) -> String {
-        switch family {
-        case .gemini:
-            return """
-            You are programming the next personal-radio block. Listed library ids only.
+        _ = family
+        return """
+        \(radioProgramInstructions(keep: keep, purpose: nil))
 
-            Return one JSON object and start writing it immediately:
-            {"ids":[]}
+        Lane: \(lane)
+        Seed (currently playing — treat this as the narrator you are continuing):
+        \(seed)
+        Recent (what the listener just heard):
+        \(recent)
+        Candidates:
+        \(candidates)
+        \(extras)
+        """
+    }
 
-            Keep exactly \(keep) ids. Discard the rest. Order them as one listen: lyric story, vocal continuity, energy, measured BPM walk. Do not jump BPM or mood unless Recent already did. Preferred artists are a slight lean, never a block. Avoid three songs by one artist in a row. Never invent ids. No markdown, no analysis text.
-
-            Lane: \(lane)
-            Seed: \(seed)
-            Recent: \(recent)
-            Candidates:
-            \(candidates)
-            \(extras)
-            """
-        default:
-            return """
-            Program the next radio block. JSON only, start the ids array immediately:
-            {"ids":[]}
-            Keep exactly \(keep) listed ids. Discard the rest. Order them as a listen: lyric story, vocal, energy, measured BPM. Walk BPM instead of jumping. Preferred artists are a slight lean. Avoid three songs by one artist in a row.
-            Lane: \(lane)
-            Seed: \(seed)
-            Recent: \(recent)
-            Candidates:
-            \(candidates)
-            \(extras)
-            """
+    private static func radioProgramInstructions(keep: Int?, purpose: String?) -> String {
+        let keepLine: String
+        if let keep {
+            keepLine = "Keep exactly \(keep) listed ids. Discard the rest."
+        } else if let purpose {
+            keepLine = "Purpose: \(purpose). Rank the listed ids only."
+        } else {
+            keepLine = "Keep only listed ids."
         }
+        return """
+        You are a senior music director programming one personal-radio block.
+
+        Combine three knowledge sources. Do not ignore any of them:
+        1. Your own pretrained knowledge of the listed artists and titles — discography, era, collaborators, typical genre/lane, cultural context, whether a cut is a ballad/title track/b-side, and how songs usually sit next to each other.
+        2. Stored lyric memory on each card (summary, interpretation, emotional arc, themes, relationship, setting) plus the lyric excerpt. Treat those as your prior notes on this exact recording.
+        3. Measured library facts on the card (BPM, energy, brightness, vocal, genre, favorites, play counts). If your memory and a measured field disagree, trust the measured field.
+
+        If a card is thin, fill the gap from your knowledge of that title/artist. Never invent a song that is not in Candidates. Never invent ids.
+
+        Return one JSON object and start writing it immediately:
+        {"ids":[]}
+
+        \(keepLine)
+        Sequence a single listen, not a shuffle:
+        - Continue the seed's lyric story, emotional arc, and the real-world identity of that song (what it is known for).
+        - Walk measured BPM and energy. Do not jump more than about 12 BPM or flip valence unless Recent already did.
+        - Keep vocal gender and K-pop/idol identity continuous, but never lock to one gender.
+        - Same artist+title is one recording. Do not place a live/acoustic sibling next to its original.
+        - Preferred artists are a slight lean, never a block. Avoid three songs by one artist in a row.
+        - No markdown, no analysis text.
+        """
+    }
+}
+
+enum RecommendationPromptCard {
+    static func make(
+        _ song: Song,
+        lyricIndex: LyricSignatureIndex,
+        excerptLimit: Int = 180
+    ) -> String {
+        let signature = lyricIndex.bySongID[song.id]
+        let details = signature?.details
+        let moods = (details?.primaryMoods.isEmpty == false
+            ? details?.primaryMoods
+            : signature?.moods)?.prefix(3).joined(separator: ",") ?? ""
+        let themes = (signature?.themes.isEmpty == false
+            ? signature?.themes
+            : details?.themes)?.prefix(3).joined(separator: ",") ?? ""
+        let sound = SoundLabelSpace.canonicalize(signature?.soundLabels ?? [])
+            .prefix(3)
+            .joined(separator: ",")
+        let vocal = RadioContinuity.vocalGender(song: song, signature: signature)
+        var genre = details?.genre ?? song.genre ?? ""
+        if RadioContinuity.isKPop(song: song, signature: signature) {
+            genre = genre.isEmpty ? "k-pop" : genre
+        }
+        let bpm = SoundFeatureExtractor.bpm(song: song, signature: signature)
+        let energy = signature.map { String(format: "%.2f", $0.energy) } ?? "-"
+        let valence = signature.map { String(format: "%.2f", $0.valence) } ?? "-"
+        let summary = clipped(
+            signature?.summary.replacingOccurrences(of: "\n", with: " / "),
+            limit: 140
+        )
+        let interpretation = clipped(details?.interpretation, limit: 100)
+        let arc = clipped(details?.emotionalArc, limit: 80)
+        let excerpt = clipped(
+            details?.lyricExcerpt.replacingOccurrences(of: "\n", with: " / "),
+            limit: excerptLimit
+        )
+        var parts = [
+            "\(song.id) | \(song.title) — \(song.artist)",
+            "album:\(song.album) bpm:\(bpm) e:\(energy) v:\(valence) vox:\(vocal) g:\(genre)"
+        ]
+        if !moods.isEmpty { parts.append("moods:\(moods)") }
+        if !themes.isEmpty { parts.append("themes:\(themes)") }
+        if !sound.isEmpty { parts.append("sound:\(sound)") }
+        if let details, details.audioMeasured {
+            parts.append(
+                String(
+                    format: "audio e:%.2f br:%.2f pulse:%.2f",
+                    details.audioEnergy,
+                    details.audioBrightness,
+                    details.audioPulse
+                )
+            )
+        }
+        if song.isStarred { parts.append("fav") }
+        if let plays = song.playCount { parts.append("plays:\(plays)") }
+        if !summary.isEmpty { parts.append("memory:\(summary)") }
+        if !interpretation.isEmpty { parts.append("read:\(interpretation)") }
+        if !arc.isEmpty { parts.append("arc:\(arc)") }
+        if let relationship = details?.relationship, !relationship.isEmpty {
+            parts.append("rel:\(relationship)")
+        }
+        if let setting = details?.setting, !setting.isEmpty {
+            parts.append("set:\(setting)")
+        }
+        if !excerpt.isEmpty { parts.append("lyrics:\(excerpt)") }
+        return parts.joined(separator: " | ")
+    }
+
+    private static func clipped(_ value: String?, limit: Int) -> String {
+        let text = (value ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        return text.count <= limit ? text : String(text.prefix(limit))
     }
 }

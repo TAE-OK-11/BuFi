@@ -152,14 +152,6 @@ enum PersonalizedMixLLM {
     }
 
     private static func card(_ song: Song, lyricIndex: LyricSignatureIndex) -> String {
-        let signature = lyricIndex.bySongID[song.id]
-        let moods = (signature?.details.primaryMoods.isEmpty == false
-            ? signature?.details.primaryMoods
-            : signature?.moods)?.prefix(3).joined(separator: ",") ?? ""
-        let vocal = signature?.details.vocalGender ?? ""
-        let genre = signature?.details.genre ?? song.genre ?? ""
-        let energy = signature.map { String(format: "%.2f", $0.energy) } ?? "-"
-        let arc = signature?.details.emotionalArc ?? ""
-        return "\(song.id) | \(song.title) — \(song.artist) | \(moods) e:\(energy) \(vocal) \(genre) \(arc)"
+        RecommendationPromptCard.make(song, lyricIndex: lyricIndex, excerptLimit: 120)
     }
 }

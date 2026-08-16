@@ -34,6 +34,7 @@ struct LyricDetailProfile: Codable, Equatable, Sendable {
     var audioBrightness: Double = 0
     var audioPulse: Double = 0
     var audioMeasured: Bool = false
+    var lyricExcerpt: String = ""
 
     enum CodingKeys: String, CodingKey {
         case moods, themes, primaryMoods, secondaryMoods
@@ -43,6 +44,7 @@ struct LyricDetailProfile: Codable, Equatable, Sendable {
         case social, color, vocal, vocalGender, genre, language
         case emotionIntensity, listenContext
         case audioBPM, audioEnergy, audioBrightness, audioPulse, audioMeasured
+        case lyricExcerpt
     }
 
     static let empty = LyricDetailProfile()
@@ -166,5 +168,9 @@ extension LyricDetailProfile {
             Bool.self,
             forKey: .audioMeasured
         ) ?? (audioBPM > 0 || audioPulse > 0)
+        lyricExcerpt = try container.decodeIfPresent(
+            String.self,
+            forKey: .lyricExcerpt
+        ) ?? ""
     }
 }
