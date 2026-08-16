@@ -154,10 +154,12 @@ struct RadioCandidatePack: Sendable {
 }
 
 enum RadioLLMDirector {
-    static let requestedCount = 48
+    static let requestedCount = 50
+    static let enginePool = 50
+    static let coreMLKeep = 30
     static let reviewKeep = 15
-    static let packSize = 36
-    static let mixerLimit = 48
+    static let packSize = 30
+    static let mixerLimit = 50
     static let streamWaitDeadline: TimeInterval = 1.5
     static let firstPickDeadline: TimeInterval = 3.0
 
@@ -184,7 +186,7 @@ enum RadioLLMDirector {
             behavior: behavior,
             seed: seed,
             lyricIndex: lyricIndex,
-            limit: mixerLimit
+            limit: enginePool
         )
         let brief = heuristicBrief(seed: seed, lyricIndex: lyricIndex)
         let filtered = algorithm.filter {
@@ -192,9 +194,15 @@ enum RadioLLMDirector {
                 && !excludedIDs.contains($0.id)
                 && $0.externalStreamURL == nil
         }
+        let ranked = RadioCoreMLTransition.shortlist(
+            seed: seed,
+            candidates: filtered,
+            lyricIndex: lyricIndex,
+            keep: coreMLKeep
+        )
         let pack = fillPack(
             brief: brief,
-            algorithm: filtered,
+            algorithm: ranked,
             lyricIndex: lyricIndex,
             profile: profile,
             seed: seed
@@ -301,9 +309,9 @@ enum RadioLLMDirector {
         var turns: [Song] = []
         var seen = Set<String>()
         var roomArtists: [String] = []
-        let roomTarget = 16
-        let nearbyTarget = 12
-        let turnTarget = 8
+        let roomTarget = 14
+        let nearbyTarget = 10
+        let turnTarget = 6
 
         func take(_ song: Song, into bucket: inout [Song], artists: inout [String]) -> Bool {
             guard seen.insert(song.id).inserted else { return false }
@@ -330,7 +338,18 @@ enum RadioLLMDirector {
             let energy = lyricIndex.bySongID[song.id]?.energy ?? 0.5
             let sameArtist = !seedArtist.isEmpty && artist == seedArtist
             let textureShift = abs(energy - seedEnergy) >= 0.12
-            if sameArtist || textureShift || nearbyArtists.last != artist {
+            let feelFit: Double
+            if let seed {
+                feelFit = RadioFeelGrammar.placement(
+                    from: seed,
+                    to: song,
+                    lyricIndex: lyricIndex
+                )
+            } else {
+                feelFit = 0.5
+            }
+            if sameArtist || textureShift || feelFit >= 0.55
+                || nearbyArtists.last != artist {
                 _ = take(song, into: &nearby, artists: &nearbyArtists)
             }
         }
@@ -371,11 +390,22 @@ enum RadioLLMDirector {
             var best = -1.0
             let neighbors = [seed] + picked
             for (index, song) in rest.enumerated() {
-                var score = SoundFeatureExtractor.transitionScore(
+                var score = RadioFeelGrammar.placement(
                     from: last,
                     to: song,
                     lyricIndex: lyricIndex
                 )
+                score += SoundFeatureExtractor.transitionScore(
+                    from: last,
+                    to: song,
+                    lyricIndex: lyricIndex
+                ) * 0.35
+                let learned = RadioCoreMLTransition.score(
+                    seed: last,
+                    candidate: song,
+                    lyricIndex: lyricIndex
+                )
+                score = learned * 0.45 + score * 0.55
                 if TrackWorkIdentity.isNearVariant(song, of: neighbors) {
                     score -= 0.55
                 }

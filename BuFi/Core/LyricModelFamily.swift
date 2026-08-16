@@ -434,6 +434,30 @@ enum LyricModelPrompts {
         candidates: String,
         extras: String
     ) -> String {
+        if family == .gemini {
+            return """
+            \(RadioFeelGrammar.geminiRadioBrief)
+
+            These candidates already survived the library engine (50) and the
+            on-device ranker (30). Throw out anything that would make a
+            soulless, samey block. Keep exactly \(keep) listed ids.
+            Same artist+title is one recording — do not sit a live/acoustic sibling next to the original.
+            Preferred artists are a slight lean, never a block.
+
+            Return one JSON object and start writing it immediately:
+            {"ids":[]}
+            No markdown, no analysis text.
+
+            \(session)
+            Seed (opening thesis of the show):
+            \(seed)
+            Recent (already heard — hand off from this weather, do not ignore it):
+            \(recent)
+            Candidates (grouped by room / nearby / left turn — pick a living sequence from all three):
+            \(candidates)
+            \(extras)
+            """
+        }
         let rules = radioProgramInstructions(keep: keep, purpose: nil, soulful: true)
         return """
         \(rules)
@@ -473,6 +497,8 @@ enum LyricModelPrompts {
             3. One turn, then land: one song that is surprising but obviously right if you know both records. Then resolve without snapping back to copies.
 
             Use your own knowledge of these artists and titles (what the song is known for, who they tour or collab with, title track vs b-side, cultural room). Use stored lyric memory and excerpts as your notes on this exact recording. Trust measured BPM/energy when they disagree with memory. A planned lift or drop is allowed once; do not jerk the body around.
+
+            \(RadioFeelGrammar.promptAppendix)
             """
             : """
             Combine pretrained knowledge of the listed artists/titles, stored lyric memory, and measured BPM/energy. Thin cards should be filled from what you know about that title. Sequence a listen, not a shuffle.
@@ -531,6 +557,8 @@ enum RecommendationPromptCard {
             "\(song.id) | \(song.title) — \(song.artist)",
             "album:\(song.album) bpm:\(bpm) e:\(energy) v:\(valence) vox:\(vocal) g:\(genre)"
         ]
+        let feel = RadioFeelGrammar.feel(song: song, signature: signature).rawValue
+        parts.append("feel:\(feel)")
         if !moods.isEmpty { parts.append("moods:\(moods)") }
         if !themes.isEmpty { parts.append("themes:\(themes)") }
         if !sound.isEmpty { parts.append("sound:\(sound)") }

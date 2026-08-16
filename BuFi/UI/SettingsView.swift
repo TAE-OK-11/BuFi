@@ -562,6 +562,8 @@ struct RecommendationSettingsView: View {
     @State private var batchProgress = LyricBatchProgress.idle
     @State private var batchTask: Task<Void, Never>?
     @State private var confirmFullLyricReanalysis = false
+    @State private var scanExportText = ""
+    @State private var isExportingScan = false
     @State private var profile = AIRecommendationProfile.load()
     @State private var preferredDraft = ""
     @State private var avoidedDraft = ""
@@ -950,6 +952,16 @@ struct RecommendationSettingsView: View {
                         || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
                 )
             }
+            Button(isExportingScan ? "스캔 결과 모으는 중…" : "스캔한 가사·BPM 한꺼번에 보내기") {
+                Task { await prepareScanExport() }
+            }
+            .buttonStyle(SettingsActionButtonStyle())
+            .disabled(isExportingScan || coverage.known == 0)
+            if !scanExportText.isEmpty {
+                ShareLink("스캔 결과 공유하기", item: scanExportText)
+                    .font(.system(size: 15, weight: .semibold))
+                settingsDescription("가사 발췌, BPM, 분위기, 음향, 숫자 가중치가 한 파일로 들어 있습니다. 이걸 보내 주시면 노션 리스트와 맞춰 학습할 수 있습니다.")
+            }
             settingsDescription("지금 곡은 저장된 결과를 지우고 다시 돌립니다. 안 된 곡·요약이 비거나 이상한 곡·음향 없는 곡은 이어서 분석합니다. ‘전체 새로 분석’은 저장된 가사·요약·임베딩·음향 결과를 비운 뒤 현재 엔진으로 모든 곡을 처음부터 다시 돌립니다.")
         }
     }
@@ -1051,6 +1063,17 @@ struct RecommendationSettingsView: View {
             ? String(localized: "음향 있음")
             : String(localized: "음향 없음")
         return "\(entry.sourceTitle) · \(entry.song.artist) · \(sound)"
+    }
+
+    private func prepareScanExport() async {
+        isExportingScan = true
+        defer { isExportingScan = false }
+        let catalog = await model.intelligenceCatalog()
+        if let scope = model.client?.accountScope {
+            await LyricIntelligence.shared.activate(accountScope: scope)
+        }
+        let index = await LyricIntelligence.shared.index()
+        scanExportText = LibraryScanExport.make(catalog: catalog, index: index)
     }
 
     private func refreshCoverage() async {
