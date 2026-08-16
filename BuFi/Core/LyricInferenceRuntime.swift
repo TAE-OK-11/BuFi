@@ -31,7 +31,7 @@ enum LyricJSONExtractor {
 
     static func chatContent(from raw: String) -> String? {
         guard let message = chatMessage(from: raw) else { return nil }
-        if let content = message["content"] as? String {
+        if let content = message["content"] as? String, !content.isEmpty {
             return content
         }
         if let parts = message["content"] as? [[String: Any]] {
@@ -40,7 +40,13 @@ enum LyricJSONExtractor {
                 if let text = part["content"] as? String { return text }
                 return nil
             }.joined()
-            return text.isEmpty ? nil : text
+            if !text.isEmpty { return text }
+        }
+        if let reasoning = message["reasoning"] as? String, !reasoning.isEmpty {
+            return reasoning
+        }
+        if let reasoning = message["reasoning_content"] as? String, !reasoning.isEmpty {
+            return reasoning
         }
         return nil
     }
@@ -201,6 +207,12 @@ enum AsyncDeadline {
 }
 
 enum LyricInferenceRuntime {
+    enum RadioAttempt {
+        case text(String)
+        case rateLimited
+        case failed
+    }
+
     static func streamRadio(
         prompt: String,
         settings: LyricIntelligenceSettings,
@@ -210,15 +222,19 @@ enum LyricInferenceRuntime {
         let targets = radioTargets(settings)
         if !targets.isEmpty {
             let started = Date()
+            var skipSource: String?
+            var trail: [String] = []
             for target in targets {
-                if let text = await streamChat(
+                if let skipSource, skipSource == target.source { continue }
+                switch await radioAttempt(
                     prompt: prompt,
                     target: target,
-                    maxTokens: maxTokens,
+                    maxTokens: max(maxTokens, 2048),
                     onDelta: onDelta
                 ) {
+                case .text(let text):
                     let elapsed = Date().timeIntervalSince(started)
-                    if elapsed >= 3 {
+                    if elapsed >= 4 {
                         RecommendationDiagnostics.record(
                             kind: .llm,
                             level: .delay,
@@ -227,13 +243,20 @@ enum LyricInferenceRuntime {
                         )
                     }
                     return text
+                case .rateLimited:
+                    skipSource = target.source
+                    trail.append("\(target.source) 429")
+                case .failed:
+                    trail.append("\(target.source)/\(target.model)")
                 }
             }
             RecommendationDiagnostics.record(
                 kind: .llm,
                 level: .error,
                 title: String(localized: "LLM 라디오 호출이 모두 실패했습니다"),
-                detail: targets.map(\.source).joined(separator: " → ")
+                detail: trail.isEmpty
+                    ? targets.map(\.source).joined(separator: " → ")
+                    : trail.joined(separator: " → ")
             )
             return nil
         }
@@ -255,13 +278,21 @@ enum LyricInferenceRuntime {
     ) async -> String? {
         let targets = radioTargets(settings)
         if !targets.isEmpty {
+            var skipSource: String?
             for target in targets {
-                if let text = await chat(
+                if let skipSource, skipSource == target.source { continue }
+                switch await radioAttempt(
                     prompt: prompt,
                     target: target,
-                    maxTokens: maxTokens
+                    maxTokens: max(maxTokens, 2048),
+                    onDelta: { _ in }
                 ) {
+                case .text(let text):
                     return text
+                case .rateLimited:
+                    skipSource = target.source
+                case .failed:
+                    break
                 }
             }
             return nil
@@ -275,16 +306,70 @@ enum LyricInferenceRuntime {
     }
 
     static func radioTargets(_ settings: LyricIntelligenceSettings) -> [LyricChatTarget] {
-        let selected = RadioModelOption.resolved(settings.radioModel).rawValue
+        let selected = RadioModelOption.resolved(settings.radioModel)
+        let rest = RadioModelOption.allCases.filter { $0 != selected }
+        let mixed = rest.filter { $0.provider != selected.provider }
+            + rest.filter { $0.provider == selected.provider }
         var seen = Set<String>()
         var models: [String] = []
-        for model in [selected] + RadioModelOption.allCases.map(\.rawValue) {
-            guard seen.insert(model).inserted else { continue }
-            models.append(model)
+        for option in [selected] + mixed {
+            guard seen.insert(option.rawValue).inserted else { continue }
+            models.append(option.rawValue)
         }
         return Array(
-            models.compactMap { radioTarget(model: $0, settings: settings) }.prefix(3)
+            models.compactMap { radioTarget(model: $0, settings: settings) }.prefix(2)
         )
+    }
+
+    static func radioAttempt(
+        prompt: String,
+        target: LyricChatTarget,
+        maxTokens: Int,
+        onDelta: @escaping @Sendable (String) async -> Void
+    ) async -> RadioAttempt {
+        let tokens = radioTokenBudget(for: target.model, requested: maxTokens)
+        // gpt-oss spends the budget on hidden reasoning. Streaming that
+        // path returns 200 with an empty content field, then the old
+        // fallback hammered Qwen/Gemini and looked like a quota outage.
+        if !isReasoningRadioModel(target.model) {
+            switch await streamChat(
+                prompt: prompt,
+                target: target,
+                maxTokens: tokens,
+                onDelta: onDelta
+            ) {
+            case .text(let text):
+                return .text(text)
+            case .rateLimited:
+                return .rateLimited
+            case .empty, .failed:
+                break
+            }
+        }
+        switch await radioChat(
+            prompt: prompt,
+            target: target,
+            maxTokens: tokens
+        ) {
+        case .text(let text):
+            await onDelta(text)
+            return .text(text)
+        case .rateLimited:
+            return .rateLimited
+        case .failed:
+            return .failed
+        }
+    }
+
+    static func isReasoningRadioModel(_ model: String) -> Bool {
+        let value = model.lowercased()
+        return value.contains("gpt-oss")
+            || value.contains("oss-120")
+            || value.contains("oss-20")
+    }
+
+    static func radioTokenBudget(for model: String, requested: Int) -> Int {
+        isReasoningRadioModel(model) ? max(requested, 4096) : max(requested, 1024)
     }
 
     static func radioTarget(
@@ -304,8 +389,8 @@ enum LyricInferenceRuntime {
                 key: settings.geminiKey,
                 model: model,
                 source: "google-ai",
-                timeout: 14,
-                allowRetries: false
+                timeout: 20,
+                allowRetries: true
             )
         }
         guard !settings.groqKey.isEmpty,
@@ -313,13 +398,12 @@ enum LyricInferenceRuntime {
             return nil
         }
         let timeout: TimeInterval
-        if model.lowercased().contains("gemini")
-            || model == LyricIntelligenceSettings.radioPrimaryModel {
-            timeout = 14
+        if isReasoningRadioModel(model) {
+            timeout = 22
         } else if model == LyricIntelligenceSettings.radioSecondaryModel {
-            timeout = 2.2
+            timeout = 14
         } else {
-            timeout = 1.8
+            timeout = 16
         }
         return LyricChatTarget(
             endpoint: endpoint,
@@ -328,7 +412,7 @@ enum LyricInferenceRuntime {
             source: "groq",
             reasoningEffort: LyricIntelligenceSettings.reasoningEffort(for: model),
             timeout: timeout,
-            allowRetries: false
+            allowRetries: true
         )
     }
 
@@ -383,15 +467,22 @@ enum LyricInferenceRuntime {
         return nil
     }
 
+    enum StreamChatResult {
+        case text(String)
+        case rateLimited
+        case empty
+        case failed
+    }
+
     static func streamChat(
         prompt: String,
         target: LyricChatTarget,
         maxTokens: Int,
         onDelta: @escaping @Sendable (String) async -> Void
-    ) async -> String? {
+    ) async -> StreamChatResult {
         guard !LyricProviderCircuit.isOpen(target.circuitKey),
               target.endpoint.scheme?.lowercased() == "https" else {
-            return nil
+            return .failed
         }
         var body: [String: Any] = [
             "model": target.model,
@@ -408,9 +499,10 @@ enum LyricInferenceRuntime {
         ]
         if let effort = target.reasoningEffort, !effort.isEmpty {
             body["reasoning_effort"] = effort
+            body["include_reasoning"] = false
         }
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
-            return nil
+            return .failed
         }
         var request = URLRequest(url: target.endpoint)
         ModernNetworkPolicy.prepareExternalAPIRequest(
@@ -419,22 +511,21 @@ enum LyricInferenceRuntime {
         )
         request.httpMethod = "POST"
         request.httpBody = payload
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(target.key)", forHTTPHeaderField: "Authorization")
+        applyChatHeaders(&request, target: target)
         request.timeoutInterval = target.timeout
         do {
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if !(200..<300).contains(status) {
+                let snippet = await httpSnippet(from: bytes)
                 LyricProviderCircuit.recordFailure(target.circuitKey)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 RecommendationDiagnostics.record(
                     kind: .llm,
                     level: .error,
                     title: String(localized: "LLM HTTP 오류"),
-                    detail: "\(target.source) \(target.model) HTTP \(status)"
+                    detail: "\(target.source) \(target.model) HTTP \(status) \(snippet)"
                 )
-                return nil
+                return status == 429 ? .rateLimited : .failed
             }
             var assembled = ""
             for try await line in bytes.lines {
@@ -453,19 +544,18 @@ enum LyricInferenceRuntime {
             let text = assembled.trimmingCharacters(in: .whitespacesAndNewlines)
             if text.isEmpty {
                 if Task.isCancelled {
-                    return nil
+                    return .failed
                 }
-                LyricProviderCircuit.recordFailure(target.circuitKey)
                 RecommendationDiagnostics.record(
                     kind: .llm,
                     level: .error,
                     title: String(localized: "LLM 스트림이 비었습니다"),
                     detail: "\(target.source) \(target.model)"
                 )
-                return nil
+                return .empty
             }
             LyricProviderCircuit.recordSuccess(target.circuitKey)
-            return assembled
+            return .text(assembled)
         } catch {
             LyricProviderCircuit.recordFailure(target.circuitKey)
             let timedOut = (error as? URLError)?.code == .timedOut
@@ -477,7 +567,7 @@ enum LyricInferenceRuntime {
                     : String(localized: "LLM 호출 실패"),
                 detail: "\(target.source) \(target.model) \(error.localizedDescription)"
             )
-            return nil
+            return .failed
         }
     }
 
@@ -490,14 +580,148 @@ enum LyricInferenceRuntime {
         }
         let first = choices.first
         if let delta = first?["delta"] as? [String: Any],
-           let content = delta["content"] as? String {
+           let content = streamText(delta["content"]) {
             return content
         }
         if let message = first?["message"] as? [String: Any],
-           let content = message["content"] as? String {
+           let content = streamText(message["content"]) {
             return content
         }
+        if let delta = first?["delta"] as? [String: Any],
+           let content = streamText(delta["text"]) {
+            return content
+        }
+        if let delta = first?["delta"] as? [String: Any],
+           let reasoning = streamText(delta["reasoning"]),
+           reasoning.contains("\"ids\"") || reasoning.contains("{") {
+            return reasoning
+        }
         return nil
+    }
+
+    private static func streamText(_ value: Any?) -> String? {
+        if let text = value as? String {
+            return text.isEmpty ? nil : text
+        }
+        if let parts = value as? [[String: Any]] {
+            let text = parts.compactMap { part -> String? in
+                if let text = part["text"] as? String { return text }
+                if let text = part["content"] as? String { return text }
+                return nil
+            }.joined()
+            return text.isEmpty ? nil : text
+        }
+        return nil
+    }
+
+    private static func radioChat(
+        prompt: String,
+        target: LyricChatTarget,
+        maxTokens: Int
+    ) async -> RadioAttempt {
+        guard !LyricProviderCircuit.isOpen(target.circuitKey),
+              target.endpoint.scheme?.lowercased() == "https" else {
+            return .failed
+        }
+        var body: [String: Any] = [
+            "model": target.model,
+            "temperature": 0,
+            "max_tokens": maxTokens,
+            "messages": [
+                [
+                    "role": "system",
+                    "content": "Return one JSON object only. No markdown, no preamble."
+                ],
+                ["role": "user", "content": prompt]
+            ]
+        ]
+        if let effort = target.reasoningEffort, !effort.isEmpty {
+            body["reasoning_effort"] = effort
+            body["include_reasoning"] = false
+        }
+        switch await postRaw(
+            url: target.endpoint,
+            key: target.key,
+            source: target.source,
+            body: body,
+            timeout: target.timeout
+        ) {
+        case .text(let raw):
+            let content = LyricJSONExtractor.chatContent(from: raw) ?? raw
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                LyricProviderCircuit.recordFailure(target.circuitKey)
+                RecommendationDiagnostics.record(
+                    kind: .llm,
+                    level: .error,
+                    title: String(localized: "LLM 응답이 비었습니다"),
+                    detail: "\(target.source) \(target.model)"
+                )
+                return .failed
+            }
+            LyricProviderCircuit.recordSuccess(target.circuitKey)
+            return .text(content)
+        case .http(let status, let snippet):
+            LyricProviderCircuit.recordFailure(target.circuitKey)
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .error,
+                title: String(localized: "LLM HTTP 오류"),
+                detail: "\(target.source) \(target.model) HTTP \(status) \(snippet)"
+            )
+            return status == 429 ? .rateLimited : .failed
+        case .failed(let message):
+            LyricProviderCircuit.recordFailure(target.circuitKey)
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .error,
+                title: String(localized: "LLM 호출 실패"),
+                detail: "\(target.source) \(target.model) \(message)"
+            )
+            return .failed
+        }
+    }
+
+    private static func applyChatHeaders(
+        _ request: inout URLRequest,
+        target: LyricChatTarget
+    ) {
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(target.key)", forHTTPHeaderField: "Authorization")
+        if target.source == "google-ai" {
+            request.setValue(target.key, forHTTPHeaderField: "x-goog-api-key")
+        }
+    }
+
+    private static func applyChatHeaders(
+        _ request: inout URLRequest,
+        key: String,
+        source: String
+    ) {
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if source == "google-ai" {
+            request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        }
+    }
+
+    private static func httpSnippet(from bytes: URLSession.AsyncBytes) async -> String {
+        var snippet = ""
+        do {
+            for try await line in bytes.lines {
+                snippet += line
+                if snippet.count >= 240 { break }
+            }
+        } catch {
+            if snippet.isEmpty { return error.localizedDescription }
+        }
+        return compactHTTPSnippet(snippet)
+    }
+
+    private static func compactHTTPSnippet(_ raw: String) -> String {
+        let collapsed = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(collapsed.prefix(240))
     }
 
     static func chat(
@@ -717,6 +941,7 @@ enum LyricInferenceRuntime {
         }
         if let effort = target.reasoningEffort, !effort.isEmpty {
             body["reasoning_effort"] = effort
+            body["include_reasoning"] = false
         }
         let keepEnvelope = tools != nil
         if let text = await postChatOnce(
@@ -799,15 +1024,42 @@ enum LyricInferenceRuntime {
         return trimmed.isEmpty ? nil : content
     }
 
+    private enum RawPost {
+        case text(String)
+        case http(Int, String)
+        case failed(String)
+    }
+
     private static func postJSON(
         url: URL,
         key: String,
         body: [String: Any],
         timeout: TimeInterval
     ) async -> String? {
+        switch await postRaw(
+            url: url,
+            key: key,
+            source: url.host?.contains("googleapis") == true ? "google-ai" : "",
+            body: body,
+            timeout: timeout
+        ) {
+        case .text(let text):
+            return text
+        case .http, .failed:
+            return nil
+        }
+    }
+
+    private static func postRaw(
+        url: URL,
+        key: String,
+        source: String,
+        body: [String: Any],
+        timeout: TimeInterval
+    ) async -> RawPost {
         guard url.scheme?.lowercased() == "https",
               let payload = try? JSONSerialization.data(withJSONObject: body) else {
-            return nil
+            return .failed("invalid request")
         }
         var request = URLRequest(url: url)
         ModernNetworkPolicy.prepareExternalAPIRequest(
@@ -816,16 +1068,19 @@ enum LyricInferenceRuntime {
         )
         request.httpMethod = "POST"
         request.httpBody = payload
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        applyChatHeaders(&request, key: key, source: source)
         request.timeoutInterval = timeout
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              let text = String(data: data, encoding: .utf8) else {
-            return nil
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let text = String(data: data, encoding: .utf8) ?? ""
+            if (200..<300).contains(status) {
+                return text.isEmpty ? .failed("empty body") : .text(text)
+            }
+            return .http(status, compactHTTPSnippet(text))
+        } catch {
+            return .failed(error.localizedDescription)
         }
-        return text
     }
 }
 

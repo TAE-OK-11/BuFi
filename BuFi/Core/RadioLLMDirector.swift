@@ -217,7 +217,7 @@ enum RadioLLMDirector {
     static let packSize = 30
     static let mixerLimit = 50
     static let streamWaitDeadline: TimeInterval = 1.5
-    static let firstPickDeadline: TimeInterval = 3.0
+    static let firstPickDeadline: TimeInterval = 8.0
 
     static func continueRadio(
         seed: Song,
@@ -571,7 +571,7 @@ enum RadioLLMDirector {
         async let streamed: String? = LyricInferenceRuntime.streamRadio(
             prompt: prompt,
             settings: settings,
-            maxTokens: 420
+            maxTokens: 2048
         ) { partial in
             let ids = RadioIDStream.newIDs(
                 in: partial,
