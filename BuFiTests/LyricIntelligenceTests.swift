@@ -423,7 +423,9 @@ final class LyricIntelligenceTests: XCTestCase {
         XCTAssertEqual(signature.moods, ["calm"])
         XCTAssertTrue(signature.sentenceEmbedding.isEmpty)
         XCTAssertTrue(signature.soundLabels.isEmpty)
-        XCTAssertTrue(signature.hasStoredLyricAnalysis)
+        // Legacy lexical JSON must remain decodable for migration, but it is
+        // intentionally not a completed lyric analysis anymore.
+        XCTAssertFalse(signature.hasStoredLyricAnalysis)
         XCTAssertFalse(signature.hasStoredSoundAnalysis)
     }
 
