@@ -16,8 +16,12 @@ enum PersonalizedMixLLM {
         let calendar = Calendar.current
         let hour = calendar.component(.hour, from: date)
         let month = calendar.component(.month, from: date)
-        let today = recent.prefix(6).map { song in
-            card(song, lyricIndex: lyricIndex)
+        let today = recent.prefix(3).map { song in
+            RecommendationCompactCard.make(
+                song,
+                lyricIndex: lyricIndex,
+                memoryLimit: 48
+            )
         }.joined(separator: "\n")
         var remaining = mixes
         var selected: [PersonalizedMix] = []
@@ -88,7 +92,13 @@ enum PersonalizedMixLLM {
             if left == right { return lhs.id < rhs.id }
             return left > right
         }
-        let pool = Array(rankedPool.prefix(family.reviewPoolLimit + 8))
+        // The local scorer already narrowed the lane. Sending 20-28 verbose
+        // records made the model re-read information it did not need just to
+        // sequence a short mix. Keep a healthy 10-14 song shortlist instead.
+        let poolLimit = family == .appleFoundation
+            ? 10
+            : min(14, max(10, family.reviewPoolLimit))
+        let pool = Array(rankedPool.prefix(poolLimit))
         guard pool.count >= 4 else { return mix }
         let prompt = LyricModelPrompts.playlistCompose(
             family: family,
@@ -183,7 +193,7 @@ enum PersonalizedMixLLM {
                 kind: .llm,
                 level: .info,
                 title: title,
-                detail: "\(target.source) \(target.model)"
+                detail: "\(target.source) \(target.model) · prompt \(prompt.count) chars"
             )
             let result = await LyricInferenceRuntime.radioAttempt(
                 prompt: prompt,
@@ -233,7 +243,7 @@ enum PersonalizedMixLLM {
             kind: .llm,
             level: .info,
             title: String(localized: "Apple 3B 재생목록 모델을 호출합니다"),
-            detail: "apple-intelligence-3b"
+            detail: "apple-intelligence-3b · prompt \(applePrompt.count) chars"
         )
         if let text = await AppleFoundationLyricClient.complete(applePrompt) {
             RecommendationDiagnostics.record(
@@ -263,7 +273,7 @@ enum PersonalizedMixLLM {
         month: Int,
         lyricIndex: LyricSignatureIndex
     ) -> String {
-        let candidates = pool.prefix(20).map { song in
+        let candidates = pool.prefix(12).map { song in
             let signature = lyricIndex.bySongID[song.id]
             let mood = (signature?.details.primaryMoods.isEmpty == false
                 ? signature?.details.primaryMoods
@@ -298,6 +308,10 @@ enum PersonalizedMixLLM {
     }
 
     private static func card(_ song: Song, lyricIndex: LyricSignatureIndex) -> String {
-        RecommendationPromptCard.make(song, lyricIndex: lyricIndex, excerptLimit: 120)
+        RecommendationCompactCard.make(
+            song,
+            lyricIndex: lyricIndex,
+            memoryLimit: 64
+        )
     }
 }
