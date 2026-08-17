@@ -189,18 +189,24 @@ enum LyricModelPrompts {
         case .appleFoundation:
             return """
             Analyze lyric meaning for music recommendations. Return one JSON object only.
-            {"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 그 이름을 부른다.\\n빗소리가 방을 채운다.","season":"autumn","dayparts":["night"],"style":"","content":"그리움","setting":"","tempo":0.3,"intimacy":0.8,"narrative":"confession","weather":"rain","social":"alone","color":"blue","vocal":"","vocalGender":"","genre":"","language":"ko","emotion":0.7,"context":"late night"}
-            Use 1-4 short moods/themes. energy=lyrical intensity; valence=emotional positivity. summary=the lyric story, not metadata.
-            Use season/daypart/weather only when the words support them. Do not invent audio facts: vocal, vocalGender and genre stay empty unless explicit in the text.
+            {"moods":["yearning"],"themes":["longing"],"energy":0.45,"valence":0.28,"emotion":0.78,"tempo":0.35,"intimacy":0.82,"summary":"창가에서 그 이름을 기다리며 그리움을 견딘다.","emotionalArc":"steady","relationship":"romantic","season":"autumn","dayparts":["night"],"style":"","content":"그리움","setting":"","narrative":"longing","weather":"rain","social":"alone","color":"blue","vocal":"","vocalGender":"","genre":"","language":"ko","context":"late night"}
+            Numbers are 0.0...1.0: energy=lyrical force, valence=positivity, emotion=strength, tempo=story movement, intimacy=emotional closeness.
+            Prefer mood words from: euphoric, bright, warm, yearning, nostalgic, melancholic, anxious, angry, defiant, sensual, calm, lonely.
+            Prefer themes from: romance, breakup, longing, memory, identity, growth, freedom, conflict, friendship, nightlife, loss, celebration, escape.
+            emotionalArc is one of steady,rising,falling,recovery,collapse,bittersweet,oscillating. narrative is confession,memory,argument,celebration,escape,reflection,fantasy,longing,story,none.
+            Use only lyric evidence. Do not invent audio facts: vocal, vocalGender and genre stay empty unless explicit in the text.
             Lyrics:
             \(body)
             """
         case .llama70B:
             return """
             You catalogue lyrics for a personal recommender. Return exactly one JSON object, no markdown.
-            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","interpretation":"","emotionalArc":"","relationship":"","season":"spring|summer|autumn|winter|any","dayparts":[],"style":"","content":"","setting":"","tempo":0.0,"intimacy":0.0,"narrative":"","weather":"","social":"","color":"","vocal":"","vocalGender":"","genre":"","language":"ko|en|ja|other","context":""}
-            Ground every field in the lyrics. primaryMoods are 1-3 core narrator emotions ranked by importance; secondaryMoods are 0-2 supporting ones. Prefer precise labels such as yearning, nostalgic, anxious over generic sad/happy when the text supports them.
-            energy is lyrical intensity, tempo is narrative pace, valence is emotional positivity, emotion is intensity. summary retells who feels or does what and how it changes or ends, in the lyric language. interpretation is the higher-level meaning. emotionalArc is begin -> turn -> end.
+            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","interpretation":"","emotionalArc":"steady","relationship":"none","season":"spring|summer|autumn|winter|any","dayparts":[],"style":"","content":"","setting":"","tempo":0.0,"intimacy":0.0,"narrative":"reflection","weather":"","social":"alone|pair|group|crowd|public|unknown","color":"","vocal":"","vocalGender":"","genre":"","language":"ko|en|ja|other","context":""}
+            Score every numeric field 0.0...1.0: energy=lyrical force, valence=emotional positivity, emotion=emotional intensity, tempo=narrative movement, intimacy=emotional closeness.
+            Use 1-3 primary and 0-2 secondary moods. Prefer this controlled vocabulary when it fits: euphoric, bright, warm, yearning, nostalgic, melancholic, anxious, angry, defiant, sensual, calm, lonely.
+            Prefer themes from: romance, breakup, longing, memory, identity, growth, freedom, conflict, friendship, nightlife, loss, celebration, escape. Do not use a mood word as a theme.
+            emotionalArc must be one of steady,rising,falling,recovery,collapse,bittersweet,oscillating. relationship should be romantic,breakup,crush,friendship,family,self,rivalry,none when supported. narrative should be confession,memory,argument,celebration,escape,reflection,fantasy,longing,story,none.
+            summary retells who feels or does what and how it changes or ends, in the lyric language. interpretation is the higher-level meaning.
             Never write language commentary. Do not guess singer gender, production, or genre from lyrics; leave audio-only fields empty unless the text itself proves them.
             Lyrics:
             \(body)
@@ -208,10 +214,13 @@ enum LyricModelPrompts {
         case .gptOSS:
             return """
             Role: senior lyric analyst for a music recommender. Read the excerpt as one narrative, then return exactly one JSON object and nothing else.
-            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","explicitContent":"","interpretation":"","emotionalArc":"","relationship":"","season":"","dayparts":[],"content":"","setting":"","narrative":"","social":"","language":"","context":"","style":"","tempo":0.0,"intimacy":0.0,"weather":"","color":"","vocal":"","vocalGender":"","genre":""}
-            primaryMoods: 1-3 emotions that define the narrator's core state. secondaryMoods: 0-2 real but less central emotions. Rank both by importance; prefer precise labels such as yearning, resentful, obsessive, nostalgic, anxious, euphoric over generic sad/happy/angry when the lyrics support them.
-            themes are recurring ideas or conflicts, not duplicate mood words. energy=lyrical intensity, valence=emotional positivity, emotion=emotional intensity, tempo=narrative pace. These describe the words, never the recording.
-            explicitContent contains only events, situations or desires directly stated or strongly evidenced by the lyrics. interpretation is the higher-level meaning inferred from that evidence. emotionalArc describes how the narrator's state changes from beginning to end. relationship names the relationship only when supported.
+            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","explicitContent":"","interpretation":"","emotionalArc":"steady","relationship":"none","season":"","dayparts":[],"content":"","setting":"","narrative":"reflection","social":"unknown","language":"","context":"","style":"","tempo":0.0,"intimacy":0.0,"weather":"","color":"","vocal":"","vocalGender":"","genre":""}
+            Recommendation feature contract:
+            - energy, valence, emotion, tempo, intimacy are always numbers 0.0...1.0. energy=force of the words; valence=positivity; emotion=intensity; tempo=how quickly the narrative moves; intimacy=how emotionally close/exposed the narrator is.
+            - primaryMoods (1-3) and secondaryMoods (0-2): prefer euphoric, bright, warm, yearning, nostalgic, melancholic, anxious, angry, defiant, sensual, calm, lonely. Rank by importance.
+            - themes: prefer romance, breakup, longing, memory, identity, growth, freedom, conflict, friendship, nightlife, loss, celebration, escape. Themes are ideas/conflicts, not mood synonyms.
+            - emotionalArc is exactly one of steady,rising,falling,recovery,collapse,bittersweet,oscillating. relationship prefers romantic,breakup,crush,friendship,family,self,rivalry,none. narrative prefers confession,memory,argument,celebration,escape,reflection,fantasy,longing,story,none. social prefers alone,pair,group,crowd,public,unknown.
+            explicitContent contains only events, situations or desires directly stated or strongly evidenced by the lyrics. interpretation is the higher-level meaning inferred from that evidence.
             summary: 2-4 concise sentences that paraphrase the speaker, desire/conflict, important turn and ending. Do not quote or reproduce lyric lines. Do not call the narrator the artist. Distinguish fantasies, threats, irony, metaphor and hyperbole from literal actions when the text does.
             Never invent biography, production, instrumentation, genre, singer identity or vocal gender. Leave audio-only fields vocal/vocalGender/genre empty unless explicitly stated in the words. Leave season/daypart/weather/setting empty when unsupported.
             Lyrics:
@@ -219,29 +228,31 @@ enum LyricModelPrompts {
             """
         case .gemini:
             return """
-            You extract grounded lyric meaning for a music recommender. Treat the text as one narrator's story. Use Korean or the lyric language for summary and interpretation.
+            You extract grounded lyric meaning as structured features for a music recommender. Treat the text as one narrator's story. Use Korean or the lyric language for summary and interpretation.
 
             Return exactly one JSON object. Start with { . No markdown fences, no preface, no trailing commentary.
 
-            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","explicitContent":"","interpretation":"","emotionalArc":"","relationship":"","season":"","dayparts":[],"content":"","setting":"","narrative":"","social":"","language":"","context":"","style":"","tempo":0.0,"intimacy":0.0,"weather":"","color":"","vocal":"","vocalGender":"","genre":""}
+            {"primaryMoods":[],"secondaryMoods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"summary":"","explicitContent":"","interpretation":"","emotionalArc":"steady","relationship":"none","season":"","dayparts":[],"content":"","setting":"","narrative":"reflection","social":"unknown","language":"","context":"","style":"","tempo":0.0,"intimacy":0.0,"weather":"","color":"","vocal":"","vocalGender":"","genre":""}
 
-            Constraints:
-            - primaryMoods: 1-3 precise narrator emotions ranked by importance (yearning, nostalgic, anxious, resentful, euphoric). Avoid vague sad/happy when a sharper word fits.
-            - secondaryMoods: 0-2 supporting emotions. themes: ideas/conflicts, not mood synonyms.
-            - energy = intensity of the words. valence = positivity of the feeling. emotion = how strongly it is felt. tempo = how fast the story moves. These are literary, never production.
-            - summary: 2-4 sentences in the lyric language. Paraphrase the speaker, want/conflict, turn, ending. Call the speaker the narrator, never the artist. Do not quote lyric lines.
+            Recommendation feature contract:
+            - Always score energy, valence, emotion, tempo, intimacy from 0.0 to 1.0. energy=force of the words; valence=positivity; emotion=intensity; tempo=narrative movement; intimacy=emotional closeness/exposure. Do not infer recording energy from lyrics.
+            - primaryMoods: 1-3 ranked labels. secondaryMoods: 0-2. Prefer: euphoric, bright, warm, yearning, nostalgic, melancholic, anxious, angry, defiant, sensual, calm, lonely.
+            - themes prefer: romance, breakup, longing, memory, identity, growth, freedom, conflict, friendship, nightlife, loss, celebration, escape. Do not duplicate mood labels as themes.
+            - emotionalArc must be one of: steady, rising, falling, recovery, collapse, bittersweet, oscillating.
+            - relationship prefers: romantic, breakup, crush, friendship, family, self, rivalry, none. narrative prefers: confession, memory, argument, celebration, escape, reflection, fantasy, longing, story, none. social prefers: alone, pair, group, crowd, public, unknown.
+            - summary: 2-4 sentences in the lyric language. Paraphrase narrator, desire/conflict, turn, ending. Do not quote lyric lines.
             - Distinguish metaphor, fantasy, threat, irony, and hyperbole from literal events.
-            - vocal, vocalGender, genre stay empty unless the words themselves state them.
-            - Leave unsupported fields empty. Do not invent biography, season, weather, or setting.
+            - vocal, vocalGender, genre stay empty unless the words themselves state them. Leave unsupported season/weather/setting fields empty.
 
             Lyrics:
             \(body)
             """
         case .generic:
             return """
-            Analyze these lyrics for recommendations. JSON only:
-            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"summary":"","season":"any","dayparts":[],"style":"","content":"","setting":"","weather":"","language":"","emotion":0.0,"context":"","emotionalArc":""}
-            Use only evidence in the lyrics. summary retells the lyric story and how it changes. emotionalArc is begin -> turn -> end when present. Never describe the task or language.
+            Analyze these lyrics as recommendation features. JSON only:
+            {"moods":[],"themes":[],"energy":0.0,"valence":0.0,"emotion":0.0,"tempo":0.0,"intimacy":0.0,"summary":"","season":"any","dayparts":[],"style":"","content":"","setting":"","weather":"","language":"","context":"","emotionalArc":"steady"}
+            Use 0.0...1.0 numeric scales. Prefer moods from euphoric,bright,warm,yearning,nostalgic,melancholic,anxious,angry,defiant,sensual,calm,lonely and themes from romance,breakup,longing,memory,identity,growth,freedom,conflict,friendship,nightlife,loss,celebration,escape.
+            emotionalArc is one of steady,rising,falling,recovery,collapse,bittersweet,oscillating. Use only evidence in the lyrics. summary retells the lyric story. Never describe the task or language.
             Lyrics:
             \(body)
             """
@@ -254,8 +265,8 @@ enum LyricModelPrompts {
         case .appleFoundation:
             return """
             Extract grounded lyric meaning for recommendations. One JSON object only:
-            {"moods":["calm"],"themes":["night"],"energy":0.3,"valence":0.2,"summary":"창가에서 기다린다.\\n비가 이름을 적신다.","season":"autumn","dayparts":["night"],"content":"그리움","setting":"city","weather":"rain","language":"ko","emotion":0.7,"context":"late night"}
-            Use only evidence in the words. energy=lyrical intensity, valence=emotional positivity. summary is story only.
+            {"moods":["yearning"],"themes":["longing"],"energy":0.45,"valence":0.28,"emotion":0.78,"tempo":0.35,"intimacy":0.82,"summary":"창가에서 기다린다.\\n비가 이름을 적신다.","emotionalArc":"steady","season":"autumn","dayparts":["night"],"content":"그리움","setting":"city","weather":"rain","language":"ko","context":"late night"}
+            Numbers are 0.0...1.0. Prefer the controlled mood/theme vocabulary from the full analysis prompt. Use only evidence in the words. summary is story only.
             Lyrics:
             \(body)
             """
