@@ -162,9 +162,8 @@ actor LocalLibraryCatalog {
     ) -> Song? {
         // Title + artist only. Album / year / extra artist metadata stays
         // off this path so Last.fm and ListenBrainz keep their own order.
-        if let mbid = Self.normalizedKey(candidate.recordingMBID),
-           let id = songsByMBID[mbid],
-           let song = entries[id]?.song {
+        let mbid = Self.normalizedKey(candidate.recordingMBID)
+        if !mbid.isEmpty, let id = songsByMBID[mbid], let song = entries[id]?.song {
             return song
         }
         let title = Self.normalizedKey(candidate.title)
@@ -323,15 +322,19 @@ actor LocalLibraryCatalog {
     private static func loadEmbedding(
         for language: NLLanguage
     ) -> NLContextualEmbedding? {
-        guard let embedding = try? NLContextualEmbedding(language: language) else {
+        guard let embedding = optionalEmbedding(
+            NLContextualEmbedding(language: language)
+        ) else {
             return nil
         }
-        do {
-            try embedding.load()
-            return embedding
-        } catch {
-            return nil
-        }
+        embedding.load()
+        return embedding
+    }
+
+    private static func optionalEmbedding(
+        _ embedding: NLContextualEmbedding?
+    ) -> NLContextualEmbedding? {
+        embedding
     }
 
     private static func dominantLanguage(in text: String) -> NLLanguage {

@@ -711,13 +711,13 @@ private struct RecommendationSettingsView: View {
         let listenBrainz = !session.listenBrainzUsername.isEmpty
         switch (lastFM, listenBrainz) {
         case (true, true):
-            "Last.fm과 ListenBrainz를 서버 음악·내 취향과 함께 씁니다."
+            return "Last.fm과 ListenBrainz를 서버 음악·내 취향과 함께 씁니다."
         case (true, false):
-            "Last.fm을 서버 음악·내 취향과 함께 씁니다."
+            return "Last.fm을 서버 음악·내 취향과 함께 씁니다."
         case (false, true):
-            "ListenBrainz를 서버 음악·내 취향과 함께 씁니다."
+            return "ListenBrainz를 서버 음악·내 취향과 함께 씁니다."
         case (false, false):
-            "외부 서비스 없이 서버 음악과 내 취향만으로 추천합니다."
+            return "외부 서비스 없이 서버 음악과 내 취향만으로 추천합니다."
         }
     }
 

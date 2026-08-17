@@ -752,7 +752,7 @@ final class AppModel: ObservableObject {
             purpose: .autoplay,
             behavior: behavior,
             seed: seed,
-            limit: 32
+            limit: 40
         )
         return Self.uniqueSongs(ranked + serverValues)
             .filter {
@@ -2015,7 +2015,7 @@ final class AppModel: ObservableObject {
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
         seed: Song? = nil,
-        limit: Int = 30
+        limit: Int = 40
     ) async -> [Song] {
         await RecommendationMixer.mixConcurrently(
             snapshot: snapshot,

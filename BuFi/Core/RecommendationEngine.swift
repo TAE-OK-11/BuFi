@@ -625,7 +625,7 @@ enum RecommendationSeedAffinity {
 }
 
 enum RecommendationScoringPolicy {
-    static let scoringCandidateLimit = 240
+    static let scoringCandidateLimit = 280
 
     static func boundedCandidates(_ songs: [Song]) -> [Song] {
         guard songs.count > scoringCandidateLimit else { return songs }
@@ -667,7 +667,7 @@ enum RecommendationMixer {
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
         seed: Song? = nil,
-        limit: Int = 30,
+        limit: Int = 40,
         date: Date = Date()
     ) async -> [Song] {
         guard !Task.isCancelled else { return [] }
@@ -700,6 +700,7 @@ enum RecommendationMixer {
             snapshotRevision: snapshotRevision,
             weights: weights,
             behavior: behavior,
+            limit: 40,
             date: date
         )
         guard !Task.isCancelled else { return (recommended, []) }
@@ -709,7 +710,7 @@ enum RecommendationMixer {
             weights: weights,
             purpose: .daylist,
             behavior: behavior,
-            limit: 24,
+            limit: 32,
             date: date
         )
         return (recommended, daylist)
@@ -722,7 +723,7 @@ enum RecommendationMixer {
         purpose: RecommendationPurpose = .home,
         behavior: RecommendationBehaviorSnapshot = .empty,
         seed: Song? = nil,
-        limit: Int = 30,
+        limit: Int = 40,
         date: Date = Date()
     ) -> [Song] {
         guard limit > 0, !Task.isCancelled else { return [] }
@@ -1452,9 +1453,27 @@ enum RecommendationMixer {
             var bestIndex: Int?
             var bestAdjustedScore = -Double.infinity
 
+            let recentWorks = Set(
+                result.suffix(5).compactMap { item -> String? in
+                    let key = TrackWorkIdentity.workKey(for: item.song)
+                    return key.hasPrefix("\u{1e}") || key.hasSuffix("\u{1e}")
+                        ? nil
+                        : key
+                }
+            )
             for index in values.indices where isRemaining[index] {
                 let value = values[index]
+                let workKey = TrackWorkIdentity.workKey(for: value.song)
+                let tooCloseToVariant = !workKey.hasPrefix("\u{1e}")
+                    && !workKey.hasSuffix("\u{1e}")
+                    && recentWorks.contains(workKey)
+                if tooCloseToVariant, remainingCount > 1 {
+                    continue
+                }
                 var adjusted = value.score
+                if tooCloseToVariant {
+                    adjusted *= 0.12
+                }
                 if value.albumKey == result.last?.albumKey,
                    let album = result.last?.albumKey,
                    !album.isEmpty {
@@ -1546,23 +1565,42 @@ enum RecommendationMixer {
     private static func deduplicated(
         _ values: [RankedRecommendation]
     ) -> [RankedRecommendation] {
-        var keys = Set<String>()
-        return values.filter { value in
-            keys.insert(value.deduplicationKey).inserted
+        // Taylor's Version replaces the original. Acoustic / deluxe / remake
+        // siblings stay in the pool and are spaced later in placement.
+        var chosen: [String: Int] = [:]
+        var result: [RankedRecommendation] = []
+        result.reserveCapacity(values.count)
+        for value in values {
+            let key = workDeduplicationKey(for: value.song)
+            if let index = chosen[key] {
+                let existing = result[index].song
+                let incomingIsTV = TrackWorkIdentity.editionRank(for: value.song) >= 3
+                let existingIsTV = TrackWorkIdentity.editionRank(for: existing) >= 3
+                if incomingIsTV || existingIsTV {
+                    if TrackWorkIdentity.prefers(value.song, over: existing) {
+                        result[index] = value
+                    }
+                    continue
+                }
+                result.append(value)
+                continue
+            }
+            chosen[key] = result.count
+            result.append(value)
         }
+        return result
+    }
+
+    fileprivate static func workDeduplicationKey(for song: Song) -> String {
+        let key = TrackWorkIdentity.workKey(for: song)
+        if key.hasPrefix("\u{1e}") || key.hasSuffix("\u{1e}") {
+            return "id:\(song.id)"
+        }
+        return key
     }
 
     fileprivate static func deduplicationKey(for song: Song) -> String {
-        if let mbid = song.musicBrainzId, !mbid.isEmpty {
-            return "mbid:\(normalized(mbid))"
-        }
-        if let isrc = song.isrc?.first, !isrc.isEmpty {
-            return "isrc:\(normalized(isrc))"
-        }
-        return [
-            normalized(song.artist),
-            canonicalTitle(song.title)
-        ].joined(separator: "\u{1F}")
+        workDeduplicationKey(for: song)
     }
 
     private static func canonicalTitle(_ value: String) -> String {
@@ -2140,7 +2178,7 @@ enum PersonalizedMixBuilder {
         snapshotRevision: HomeSnapshotRevision? = nil,
         date: Date = Date(),
         calendar: Calendar = .current,
-        songLimit: Int = 24,
+        songLimit: Int = 32,
         selectedArtists: [String] = []
     ) -> [PersonalizedMix] {
         guard songLimit > 0 else { return [] }
@@ -2772,15 +2810,20 @@ actor ExternalRecommendationClient {
               ) else {
             return []
         }
-        let candidates = (response.similartracks?.track ?? []).compactMap { item in
-            guard !item.name.isEmpty, !item.artist.name.isEmpty else { return nil }
-            return ExternalRecommendationCandidate(
-                title: item.name,
-                artist: item.artist.name,
-                album: nil,
-                recordingMBID: nil,
-                score: Double(item.match) ?? 0.5,
-                source: .lastFM
+        let tracks = response.similartracks?.track ?? []
+        var candidates: [ExternalRecommendationCandidate] = []
+        candidates.reserveCapacity(tracks.count)
+        for item in tracks {
+            guard !item.name.isEmpty, !item.artist.name.isEmpty else { continue }
+            candidates.append(
+                ExternalRecommendationCandidate(
+                    title: item.name,
+                    artist: item.artist.name,
+                    album: nil,
+                    recordingMBID: nil,
+                    score: Double(item.match) ?? 0.5,
+                    source: .lastFM
+                )
             )
         }
         await resolveArtistPersonas(

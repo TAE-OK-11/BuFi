@@ -559,13 +559,29 @@ enum TrackWorkIdentity {
         return recent.suffix(window).contains { workKey(for: $0) == key }
     }
 
+    static func editionRank(for song: Song) -> Int {
+        let blob = editionText(song.title) + " " + editionText(song.album)
+        if blob.contains("taylors version") || blob.contains("from the vault") {
+            return 3
+        }
+        if blob.contains("remake") || blob.contains("리메이크")
+            || blob.contains("rerecord") || blob.contains("re record") {
+            return 2
+        }
+        return 1
+    }
+
+    static func prefers(_ song: Song, over other: Song) -> Bool {
+        editionRank(for: song) > editionRank(for: other)
+    }
+
     static func coreTitle(_ title: String) -> String {
-        var value = normalized(title)
+        var value = editionText(title)
         var changed = true
         while changed {
             changed = false
             if let range = trailingWrappedRange(in: value) {
-                let inner = normalized(String(value[range]))
+                let inner = editionText(String(value[range]))
                 if containsVariantMarker(inner) {
                     value = value[..<range.lowerBound]
                         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -574,7 +590,7 @@ enum TrackWorkIdentity {
                 }
             }
             if let dash = value.range(of: " - ", options: .backwards) {
-                let tail = normalized(String(value[dash.upperBound...]))
+                let tail = editionText(String(value[dash.upperBound...]))
                 if containsVariantMarker(tail) {
                     value = value[..<dash.lowerBound]
                         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -585,12 +601,19 @@ enum TrackWorkIdentity {
         return value
     }
 
+    private static func editionText(_ value: String) -> String {
+        normalized(value)
+            .replacingOccurrences(of: "['’‘`´]", with: "", options: .regularExpression)
+    }
+
     private static func containsVariantMarker(_ value: String) -> Bool {
         let markers = [
             "live", "acoustic", "어쿠스틱", "라이브", "remix", "mix",
             "instrumental", "inst", "demo", "unplugged", "radio edit",
             "remaster", "remastered", "version", "ver", "session",
-            "piano", "stripped", "reprise", "bonus"
+            "piano", "stripped", "reprise", "bonus",
+            "taylors version", "from the vault",
+            "remake", "리메이크", "rerecord", "re record"
         ]
         return markers.contains { value.contains($0) }
     }
