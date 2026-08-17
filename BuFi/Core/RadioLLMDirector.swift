@@ -215,7 +215,10 @@ enum RadioLLMDirector {
     static let coreMLKeep = 30
     static let reviewKeep = 8
     static let packSize = 30
-    static let mixerLimit = 96
+    // Pull a broad raw pool first. Queue exclusions happen after this cut; using
+    // only 96 here could leave zero candidates even with hundreds of library
+    // songs still available once the autoplay queue had accumulated history.
+    static let mixerLimit = 360
     static let streamWaitDeadline: TimeInterval = 1.5
     static let firstPickDeadline: TimeInterval = 12.0
 
@@ -242,7 +245,7 @@ enum RadioLLMDirector {
             behavior: behavior,
             seed: seed,
             lyricIndex: lyricIndex,
-            limit: enginePool
+            limit: mixerLimit
         )
         let brief = heuristicBrief(seed: seed, lyricIndex: lyricIndex)
         let filtered = algorithm.filter {
@@ -288,14 +291,23 @@ enum RadioLLMDirector {
             limit: reviewKeep
         )
         guard catalog.count >= 6 else {
+            let fallback = local.isEmpty
+                ? Array(engineCandidates.prefix(reviewKeep))
+                : local
             RecommendationDiagnostics.record(
                 kind: .radio,
-                level: .error,
-                title: String(localized: "라디오 후보가 부족합니다"),
-                detail: "\(catalog.count)"
+                level: .info,
+                title: String(localized: "라디오 후보가 적어 로컬 순서로 이어갑니다"),
+                detail: "catalog=\(catalog.count) engine=\(engineCandidates.count)"
             )
-            await emit(Array(engineCandidates.prefix(reviewKeep)), using: onPick)
-            return Array(engineCandidates.prefix(reviewKeep))
+            // At an end-of-queue request, one streamed fallback is enough to
+            // release the player's buffering wait immediately. Returning the
+            // full block still lets a background prefetch request append the
+            // rest without hammering MainActor with several synchronous picks.
+            if let first = fallback.first, let onPick {
+                await onPick(first)
+            }
+            return fallback
         }
         let picked = await reviewStreaming(
             pack: pack,
@@ -785,6 +797,7 @@ enum RadioLLMDirector {
     ) async {
         guard let onPick else { return }
         for song in songs {
+            guard !Task.isCancelled else { return }
             await onPick(song)
         }
     }
