@@ -29,7 +29,6 @@ private struct RootSyncTaskIdentity: Hashable, Sendable {
     let syncInterval: TimeInterval
     let lowPowerMode: Bool
     let thermalKey: String
-    let isPlaying: Bool
 }
 
 struct RootView: View {
@@ -275,8 +274,7 @@ struct RootView: View {
             isSceneActive: scenePhase == .active,
             syncInterval: syncInterval,
             lowPowerMode: lowPowerMode,
-            thermalKey: thermalKey,
-            isPlaying: playbackActivity.isPlaying
+            thermalKey: thermalKey
         )
     }
 

@@ -77,6 +77,7 @@ struct MusicDetailView: View {
     @State private var subtitle = ""
     @State private var coverArt: String?
     @State private var songs: [Song] = []
+    @State private var songRowLayout = SongRowLayout.standard
     @State private var albums: [Album] = []
     @State private var isLoading = true
     @State private var selectedSong: Song?
@@ -465,7 +466,6 @@ struct MusicDetailView: View {
             .frame(maxWidth: .infinity)
             .padding(.top, 34)
         } else {
-            let rowLayout = preferredSongRowLayout
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
                     ForEach(songs.indices, id: \.self) { index in
@@ -476,7 +476,7 @@ struct MusicDetailView: View {
                             queueIndex: index,
                             playbackOrigin: isArtist ? .manual : .album,
                             artworkSize: isArtist ? 54 : 44,
-                            layout: rowLayout,
+                            layout: songRowLayout,
                             fallbackTrackNumber: index + 1,
                             onMore: { selectedSong = song }
                         )
@@ -576,25 +576,33 @@ struct MusicDetailView: View {
         )
     }
 
-    private var preferredSongRowLayout: SongRowLayout {
-        guard !isArtist, !songs.isEmpty else { return .standard }
-        if case .album = route { return .compactAlbum }
-
-        let firstAlbumID = songs.first?.albumId
-        let firstAlbumName = songs.first?.album
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let isSingleAlbum = songs.allSatisfy { song in
-            if let firstAlbumID, !firstAlbumID.isEmpty {
-                return song.albumId == firstAlbumID
+    private static func songRowLayout(
+        for songs: [Song],
+        route: MusicRoute
+    ) -> SongRowLayout {
+        switch route {
+        case .artist:
+            return .standard
+        case .album:
+            return songs.isEmpty ? .standard : .compactAlbum
+        case .playlist:
+            guard !songs.isEmpty else { return .standard }
+            let firstAlbumID = songs.first?.albumId
+            let firstAlbumName = songs.first?.album
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let isSingleAlbum = songs.allSatisfy { song in
+                if let firstAlbumID, !firstAlbumID.isEmpty {
+                    return song.albumId == firstAlbumID
+                }
+                guard let firstAlbumName, !firstAlbumName.isEmpty else { return false }
+                return song.album.trimmingCharacters(in: .whitespacesAndNewlines) == firstAlbumName
             }
-            guard let firstAlbumName, !firstAlbumName.isEmpty else { return false }
-            return song.album.trimmingCharacters(in: .whitespacesAndNewlines) == firstAlbumName
+            let tracksWithNumbers = songs.reduce(into: 0) { count, song in
+                if song.track != nil { count += 1 }
+            }
+            let enoughTrackMetadata = tracksWithNumbers >= max(1, (songs.count * 2) / 3)
+            return isSingleAlbum && enoughTrackMetadata ? .compactAlbum : .standard
         }
-        let tracksWithNumbers = songs.reduce(into: 0) { count, song in
-            if song.track != nil { count += 1 }
-        }
-        let enoughTrackMetadata = tracksWithNumbers >= max(1, (songs.count * 2) / 3)
-        return isSingleAlbum && enoughTrackMetadata ? .compactAlbum : .standard
     }
 
     private var canFavorite: Bool {
@@ -645,6 +653,7 @@ struct MusicDetailView: View {
         coverArt = nil
         albums = []
         songs = []
+        songRowLayout = .standard
         artistBiography = ""
         artistAlbumCount = 0
         discography = .empty
@@ -676,6 +685,7 @@ struct MusicDetailView: View {
                     coverArt = canonical.coverArt
                 }
                 songs = detail.songs
+                songRowLayout = Self.songRowLayout(for: detail.songs, route: route)
             case .playlist(let playlist):
                 title = playlist.name
                 subtitle = [
@@ -707,6 +717,7 @@ struct MusicDetailView: View {
                     coverArt = canonical.coverArt
                 }
                 songs = detail.songs
+                songRowLayout = Self.songRowLayout(for: detail.songs, route: route)
             case .artist(let artist):
                 title = artist.name
                 subtitle = String(localized: "아티스트")
@@ -716,6 +727,7 @@ struct MusicDetailView: View {
                 guard !Task.isCancelled, route == loadingRoute else { return }
                 coverArt = detail.artist.coverArt ?? coverArt
                 songs = detail.topSongs
+                songRowLayout = Self.songRowLayout(for: detail.topSongs, route: route)
                 albums = detail.albums
                 artistAlbumCount = detail.artist.albumCount ?? detail.albums.count
                 let preparedArtistContent = await ArtistDetailPresentation.make(

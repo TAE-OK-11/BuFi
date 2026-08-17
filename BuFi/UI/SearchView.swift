@@ -299,7 +299,7 @@ struct SearchView: View {
             ],
             spacing: 10
         ) {
-            ForEach(searchShortcuts) { shortcut in
+            ForEach(Self.searchShortcuts) { shortcut in
                 Button {
                     browseMode = shortcut.mode
                     focused = false
@@ -441,38 +441,36 @@ struct SearchView: View {
         max(132, (UIScreen.main.bounds.width - 52) / 2)
     }
 
-    private var searchShortcuts: [SearchShortcut] {
-        [
-            SearchShortcut(
-                mode: .favoriteSongs,
-                title: "좋아요 곡",
-                subtitle: String(localized: "저장한 음악"),
-                systemImage: "heart.fill",
-                tint: BuFiTheme.accent
-            ),
-            SearchShortcut(
-                mode: .favoriteAlbums,
-                title: "좋아요 앨범",
-                subtitle: String(localized: "보관한 앨범"),
-                systemImage: "square.stack.fill",
-                tint: Color(red: 0.45, green: 0.33, blue: 0.74)
-            ),
-            SearchShortcut(
-                mode: .algorithmPlaylists,
-                title: "맞춤 믹스",
-                subtitle: String(localized: "Daylist와 취향 추천"),
-                systemImage: "sparkles",
-                tint: Color(red: 0.20, green: 0.58, blue: 0.52)
-            ),
-            SearchShortcut(
-                mode: .mostPlayed,
-                title: "자주 듣는 곡",
-                subtitle: String(localized: "청취 기록 순위"),
-                systemImage: "chart.bar.fill",
-                tint: Color(red: 0.22, green: 0.50, blue: 0.78)
-            )
-        ]
-    }
+    private static let searchShortcuts = [
+        SearchShortcut(
+            mode: .favoriteSongs,
+            title: "좋아요 곡",
+            subtitle: String(localized: "저장한 음악"),
+            systemImage: "heart.fill",
+            tint: BuFiTheme.accent
+        ),
+        SearchShortcut(
+            mode: .favoriteAlbums,
+            title: "좋아요 앨범",
+            subtitle: String(localized: "보관한 앨범"),
+            systemImage: "square.stack.fill",
+            tint: Color(red: 0.45, green: 0.33, blue: 0.74)
+        ),
+        SearchShortcut(
+            mode: .algorithmPlaylists,
+            title: "맞춤 믹스",
+            subtitle: String(localized: "Daylist와 취향 추천"),
+            systemImage: "sparkles",
+            tint: Color(red: 0.20, green: 0.58, blue: 0.52)
+        ),
+        SearchShortcut(
+            mode: .mostPlayed,
+            title: "자주 듣는 곡",
+            subtitle: String(localized: "청취 기록 순위"),
+            systemImage: "chart.bar.fill",
+            tint: Color(red: 0.22, green: 0.50, blue: 0.78)
+        )
+    ]
 
     @ViewBuilder
     private func algorithmPlaylistGrid(_ mixes: [PersonalizedMix]) -> some View {

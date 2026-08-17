@@ -104,10 +104,12 @@ struct MiniPlayerView: View {
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(miniPlayerBackground)
+                    .animation(motionEnabled ? BuFiMotion.color : .none, value: resolvedPalette)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(miniPlayerForeground.opacity(0.16), lineWidth: 0.7)
+                    .animation(motionEnabled ? BuFiMotion.color : .none, value: resolvedPalette)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .shadow(
@@ -115,7 +117,6 @@ struct MiniPlayerView: View {
                 radius: colorScheme == .dark ? 12 : 9,
                 y: colorScheme == .dark ? 6 : 4
             )
-            .animation(motionEnabled ? BuFiMotion.color : .none, value: resolvedPalette)
         }
     }
 

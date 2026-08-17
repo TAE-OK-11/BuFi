@@ -30,7 +30,7 @@ struct LibraryView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .task(id: library.revision) {
+        .task(id: artistPresentationTaskIdentity) {
             await updateArtistPresentation()
         }
     }
@@ -356,8 +356,16 @@ struct LibraryView: View {
             .padding(.top, 70)
     }
 
+    private var artistPresentationTaskIdentity: LibraryArtistTaskIdentity {
+        LibraryArtistTaskIdentity(
+            revision: library.revision,
+            isArtistsTab: filter == .artists
+        )
+    }
+
     @MainActor
     private func updateArtistPresentation() async {
+        guard filter == .artists else { return }
         let revision = library.revision
         let snapshot = library.snapshot
         guard revision == library.revision else { return }
@@ -440,6 +448,11 @@ struct LibraryArtistPresentation: Sendable {
     private static func artistSort(_ lhs: Artist, _ rhs: Artist) -> Bool {
         lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
+}
+
+private struct LibraryArtistTaskIdentity: Hashable {
+    let revision: HomeSnapshotRevision
+    let isArtistsTab: Bool
 }
 
 private enum LibrarySurface: Hashable {
