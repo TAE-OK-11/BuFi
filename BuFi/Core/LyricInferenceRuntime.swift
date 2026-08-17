@@ -176,6 +176,10 @@ struct LyricChatTarget: Sendable {
 
     var circuitKey: String { "\(source)|\(model)" }
 
+    var usesGoogleGenerateContent: Bool {
+        source == "google-ai" && model.lowercased().hasPrefix("gemma-4-")
+    }
+
     var prefersJSONObject: Bool {
         let value = model.lowercased()
         if value.contains("gemma-3-270") || value.contains("gemma-2-2b") {
@@ -352,7 +356,7 @@ enum LyricInferenceRuntime {
         // gpt-oss spends the budget on hidden reasoning. Streaming that
         // path returns 200 with an empty content field, then the old
         // fallback hammered Qwen/Gemini and looked like a quota outage.
-        if !isReasoningRadioModel(target.model) {
+        if !isReasoningRadioModel(target.model), !target.usesGoogleGenerateContent {
             switch await streamChat(
                 prompt: prompt,
                 target: target,
@@ -399,20 +403,27 @@ enum LyricInferenceRuntime {
     ) -> LyricChatTarget? {
         let resolvedModel = canonicalCloudModel(model)
         let option = RadioModelOption(rawValue: model)
-        if option?.provider == .googleAI || resolvedModel.lowercased().contains("gemini") {
-            guard !settings.geminiKey.isEmpty,
-                  let endpoint = URL(
-                    string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-                  ) else {
+        if option?.provider == .openRouter {
+            guard !settings.openRouterKey.isEmpty,
+                  let endpoint = URL(string: "https://openrouter.ai/api/v1/chat/completions") else {
                 return nil
             }
             return LyricChatTarget(
                 endpoint: endpoint,
-                key: settings.geminiKey,
+                key: settings.openRouterKey,
                 model: resolvedModel,
-                source: "google-ai",
-                timeout: 20,
+                source: "openrouter",
+                timeout: 22,
                 allowRetries: true
+            )
+        }
+        if option?.provider == .googleAI
+            || resolvedModel.lowercased().contains("gemini")
+            || isGoogleGemmaModel(resolvedModel) {
+            return googleAITarget(
+                model: resolvedModel,
+                key: settings.geminiKey,
+                timeout: isGoogleGemmaModel(resolvedModel) ? 26 : 20
             )
         }
         guard !settings.groqKey.isEmpty,
@@ -433,6 +444,52 @@ enum LyricInferenceRuntime {
             model: resolvedModel,
             source: "groq",
             reasoningEffort: LyricIntelligenceSettings.reasoningEffort(for: resolvedModel),
+            timeout: timeout,
+            allowRetries: true
+        )
+    }
+
+    private static func isGoogleGemmaModel(_ model: String) -> Bool {
+        switch model.lowercased() {
+        case "gemma-4-31b-it", "gemma-4-26b-a4b-it":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func googleAITarget(
+        model: String,
+        key: String,
+        timeout: TimeInterval = 28
+    ) -> LyricChatTarget? {
+        let resolvedModel = canonicalCloudModel(model)
+        guard !key.isEmpty else { return nil }
+        if isGoogleGemmaModel(resolvedModel) {
+            guard let endpoint = URL(
+                string: "https://generativelanguage.googleapis.com/v1beta/models/\(resolvedModel):generateContent"
+            ) else {
+                return nil
+            }
+            return LyricChatTarget(
+                endpoint: endpoint,
+                key: key,
+                model: resolvedModel,
+                source: "google-ai",
+                timeout: timeout,
+                allowRetries: true
+            )
+        }
+        guard let endpoint = URL(
+            string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        ) else {
+            return nil
+        }
+        return LyricChatTarget(
+            endpoint: endpoint,
+            key: key,
+            model: resolvedModel,
+            source: "google-ai",
             timeout: timeout,
             allowRetries: true
         )
@@ -641,6 +698,13 @@ enum LyricInferenceRuntime {
         target: LyricChatTarget,
         maxTokens: Int
     ) async -> RadioAttempt {
+        if target.usesGoogleGenerateContent {
+            return await googleGenerateContent(
+                prompt: prompt,
+                target: target,
+                maxTokens: maxTokens
+            )
+        }
         guard !LyricProviderCircuit.isOpen(target.circuitKey),
               target.endpoint.scheme?.lowercased() == "https" else {
             return .failed
@@ -703,6 +767,89 @@ enum LyricInferenceRuntime {
         }
     }
 
+    private static func googleGenerateContent(
+        prompt: String,
+        target: LyricChatTarget,
+        maxTokens: Int
+    ) async -> RadioAttempt {
+        guard !LyricProviderCircuit.isOpen(target.circuitKey),
+              target.endpoint.scheme?.lowercased() == "https" else {
+            return .failed
+        }
+        let body: [String: Any] = [
+            "systemInstruction": [
+                "parts": [[
+                    "text": "Return one JSON object only. No markdown, no preamble."
+                ]]
+            ],
+            "contents": [[
+                "role": "user",
+                "parts": [["text": prompt]]
+            ]],
+            "generationConfig": [
+                "temperature": 0,
+                "maxOutputTokens": maxTokens,
+                "thinkingConfig": ["thinkingLevel": "minimal"]
+            ]
+        ]
+        switch await postRaw(
+            url: target.endpoint,
+            key: target.key,
+            source: target.source,
+            body: body,
+            timeout: target.timeout
+        ) {
+        case .text(let raw):
+            guard let content = googleGenerateContentText(from: raw),
+                  !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                LyricProviderCircuit.recordFailure(target.circuitKey)
+                RecommendationDiagnostics.record(
+                    kind: .llm,
+                    level: .error,
+                    title: String(localized: "LLM 응답이 비었습니다"),
+                    detail: "\(target.source) \(target.model) native-generateContent"
+                )
+                return .failed
+            }
+            LyricProviderCircuit.recordSuccess(target.circuitKey)
+            return .text(content)
+        case .http(let status, let snippet):
+            LyricProviderCircuit.recordFailure(target.circuitKey)
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .error,
+                title: String(localized: "LLM HTTP 오류"),
+                detail: "\(target.source) \(target.model) HTTP \(status) \(snippet)"
+            )
+            return status == 429 ? .rateLimited : .failed
+        case .failed(let message):
+            LyricProviderCircuit.recordFailure(target.circuitKey)
+            RecommendationDiagnostics.record(
+                kind: .llm,
+                level: .error,
+                title: String(localized: "LLM 호출 실패"),
+                detail: "\(target.source) \(target.model) \(message)"
+            )
+            return .failed
+        }
+    }
+
+    private static func googleGenerateContentText(from raw: String) -> String? {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let root = object as? [String: Any],
+              let candidates = root["candidates"] as? [[String: Any]],
+              let content = candidates.first?["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]] else {
+            return nil
+        }
+        let text = parts.compactMap { part -> String? in
+            if part["thought"] as? Bool == true { return nil }
+            return part["text"] as? String
+        }.joined()
+        return text.isEmpty ? nil : text
+    }
+
     private static func applyChatHeaders(
         _ request: inout URLRequest,
         target: LyricChatTarget
@@ -752,6 +899,18 @@ enum LyricInferenceRuntime {
         maxTokens: Int
     ) async -> String? {
         guard !LyricProviderCircuit.isOpen(target.circuitKey) else { return nil }
+        if target.usesGoogleGenerateContent {
+            switch await googleGenerateContent(
+                prompt: prompt,
+                target: target,
+                maxTokens: maxTokens
+            ) {
+            case .text(let text):
+                return text
+            case .rateLimited, .failed:
+                return nil
+            }
+        }
         if let text = await postChat(
             prompt: prompt,
             target: target,
@@ -849,17 +1008,9 @@ enum LyricInferenceRuntime {
                 )
             )
         case .googleAI:
-            guard !settings.geminiKey.isEmpty,
-                  let endpoint = URL(
-                    string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-                  ) else {
-                return nil
-            }
-            return LyricChatTarget(
-                endpoint: endpoint,
-                key: settings.geminiKey,
-                model: canonicalCloudModel(settings.geminiModel),
-                source: "google-ai"
+            return googleAITarget(
+                model: settings.geminiModel,
+                key: settings.geminiKey
             )
         case .cerebras:
             guard !settings.cerebrasKey.isEmpty,
