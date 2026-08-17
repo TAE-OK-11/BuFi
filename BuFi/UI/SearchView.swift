@@ -603,31 +603,12 @@ private enum SearchPersonalizedMixWork {
         selectedArtists: [String]
     ) async -> [PersonalizedMix] {
         guard !Task.isCancelled else { return [] }
-        async let lyricIndexTask = LyricIntelligence.shared.index()
-        async let recentTask = ListeningHistoryStore.shared.recommendationSnapshot()
-        let lyricIndex = await lyricIndexTask
-        let recent = await recentTask.recentSongs
-        guard !Task.isCancelled else { return [] }
         let value = PersonalizedMixBuilder.make(
             snapshot: snapshot,
             snapshotRevision: revision,
-            selectedArtists: selectedArtists,
-            lyricIndex: lyricIndex
+            selectedArtists: selectedArtists
         )
-        let refined: [PersonalizedMix]
-        if RecommendationLLMReview.isEnabled() {
-            refined = await AsyncDeadline.first(seconds: 2.2) {
-                await PersonalizedMixLLM.apply(
-                    to: value,
-                    snapshot: snapshot,
-                    recent: recent,
-                    lyricIndex: lyricIndex
-                )
-            } ?? value
-        } else {
-            refined = value
-        }
-        return Task.isCancelled ? [] : refined
+        return Task.isCancelled ? [] : value
     }
 }
 
