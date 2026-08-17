@@ -450,20 +450,28 @@ enum LyricModelPrompts {
     ) -> String {
         if family == .gemini {
             return """
+            RECENT PLAYBACK CONTEXT — up to 10 tracks from the active listening session. Read this first; it is the path the listener actually took, not a bag of preferences:
+            \(recent)
+
+            CURRENT SEED / NOW PLAYING:
+            \(seed)
+
+            \(session)
+
             \(RadioFeelGrammar.geminiRadioBrief)
 
-            Keep up to \(keep) listed ids. Prefer a living order over filling the quota.
+            Evidence policy:
+            - Combine ALL supplied evidence: measured numeric audio values, structured lyric numbers, moods/themes/arcs, exact lyric memory, listening history, catalog metadata, and your pretrained knowledge of the title/artist/scene.
+            - The supplied measurements describe this local recording and win when your memory disagrees. Your own knowledge is valuable for musical context, production character, era, influence, cultural adjacency, collaborations and why a bridge makes sense — but it must not overwrite measured facts.
+            - Reason across the sequence, not one candidate at a time. Use the previous 10 tracks to infer momentum and use the current seed as the immediate handoff anchor.
+
+            Keep up to \(keep) listed ids from the 50-candidate pack. Prefer a coherent living order over filling with weak tracks.
             Preferred artists are a slight lean only.
 
             Return one JSON object immediately:
             {"ids":[],"need":{"count":0}}
 
-            \(session)
-            Seed:
-            \(seed)
-            Recent:
-            \(recent)
-            Candidates:
+            CANDIDATES:
             \(candidates)
             \(extras)
             """
@@ -536,12 +544,24 @@ enum RecommendationPromptCard {
     ) -> String {
         let signature = lyricIndex.bySongID[song.id]
         let details = signature?.details
+        let recommendation = LyricRecommendationFeatures.vector(
+            song: song,
+            signature: signature
+        )
         let moods = (details?.primaryMoods.isEmpty == false
             ? details?.primaryMoods
             : signature?.moods)?.prefix(3).joined(separator: ",") ?? ""
         let themes = (signature?.themes.isEmpty == false
             ? signature?.themes
             : details?.themes)?.prefix(3).joined(separator: ",") ?? ""
+        let canonicalMoods = recommendation.moods
+            .map(\.rawValue)
+            .sorted()
+            .joined(separator: ",")
+        let canonicalThemes = recommendation.themes
+            .map(\.rawValue)
+            .sorted()
+            .joined(separator: ",")
         let sound = SoundLabelSpace.canonicalize(signature?.soundLabels ?? [])
             .prefix(3)
             .joined(separator: ",")
@@ -565,12 +585,23 @@ enum RecommendationPromptCard {
         )
         var parts = [
             "\(song.id) | \(song.title) — \(song.artist)",
-            "album:\(song.album) bpm:\(bpm) e:\(energy) v:\(valence) vox:\(vocal) g:\(genre)"
+            "album:\(song.album) bpm:\(bpm) e:\(energy) v:\(valence) vox:\(vocal) g:\(genre)",
+            String(
+                format: "lyric le:%.2f nv:%.2f int:%.2f emo:%.2f tension:%.2f warmth:%.2f",
+                recommendation.lyricEnergy,
+                recommendation.narrativeTempo,
+                recommendation.intimacy,
+                recommendation.emotionIntensity,
+                recommendation.tension,
+                recommendation.warmth
+            )
         ]
         let feel = RadioFeelGrammar.feel(song: song, signature: signature).rawValue
-        parts.append("feel:\(feel)")
+        parts.append("feel:\(feel) canonicalArc:\(recommendation.arc.rawValue)")
         if !moods.isEmpty { parts.append("moods:\(moods)") }
+        if !canonicalMoods.isEmpty { parts.append("canonicalMoods:\(canonicalMoods)") }
         if !themes.isEmpty { parts.append("themes:\(themes)") }
+        if !canonicalThemes.isEmpty { parts.append("canonicalThemes:\(canonicalThemes)") }
         if !sound.isEmpty { parts.append("sound:\(sound)") }
         if let details, details.audioMeasured {
             parts.append(
