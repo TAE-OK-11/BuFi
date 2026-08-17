@@ -149,9 +149,6 @@ enum RadioCoreMLTransition {
             _ model: MLModel,
             input: MLFeatureProvider
         ) throws -> MLFeatureProvider {
-            // Autoplay requests can overlap while an old queue is winding down.
-            // Serializing this tiny model avoids concurrent Core ML execution on
-            // one MLModel instance and costs less than another accelerator hop.
             predictionLock.lock()
             defer { predictionLock.unlock() }
             return try model.prediction(from: input)
@@ -163,9 +160,6 @@ enum RadioCoreMLTransition {
             stateLock.unlock()
         }
 
-        /// Returns true only when the model should be disabled for this process.
-        /// A single Core ML runtime hiccup falls back for one pair and the next
-        /// candidate is still allowed to use the learned ranker.
         func noteRankerFailure(permanent: Bool) -> Bool {
             stateLock.lock()
             defer { stateLock.unlock() }
@@ -338,6 +332,9 @@ enum RadioCoreMLTransition {
         }
     }
 
+    /// Item-Jaccard remembers titles that Spotify co-exposed. Repeated teacher
+    /// runs showed that exact titles rotate heavily, so this returns only an
+    /// ordered weak prior. It never short-circuits the transition ranker now.
     private static func recommend(
         seed: Song,
         session: [Song],
@@ -386,22 +383,7 @@ enum RadioCoreMLTransition {
             picked.append(song)
             if picked.count == keep { break }
         }
-        if picked.count < min(keep, 8) {
-            return nil
-        }
-        if picked.count < keep {
-            let rest = candidates.filter { !seen.contains($0.id) }
-            let extras = rest.sorted {
-                let left = score(seed: seed, candidate: $0, lyricIndex: .empty)
-                let right = score(seed: seed, candidate: $1, lyricIndex: .empty)
-                return left == right ? $0.id < $1.id : left > right
-            }
-            for song in extras where seen.insert(song.id).inserted {
-                picked.append(song)
-                if picked.count == keep { break }
-            }
-        }
-        return picked
+        return picked.isEmpty ? nil : picked
     }
 
     private static func predictRecommender(
@@ -477,14 +459,26 @@ enum RadioCoreMLTransition {
             )
         }
         let unique = TrackWorkIdentity.uniqueRecordings(candidates)
-        if let recommended = recommend(
+        guard !unique.isEmpty, keep > 0 else { return [] }
+
+#if canImport(CoreML)
+        let priorList = recommend(
             seed: seed,
             session: session,
             candidates: unique,
-            keep: keep
-        ) {
-            return recommended
+            keep: min(unique.count, max(24, keep * 2))
+        ) ?? []
+#else
+        let priorList: [Song] = []
+#endif
+        var itemPrior: [String: Double] = [:]
+        if !priorList.isEmpty {
+            let denominator = Double(max(priorList.count - 1, 1))
+            for (index, song) in priorList.enumerated() {
+                itemPrior[song.id] = 1 - Double(index) / denominator
+            }
         }
+
         let opening = session.last ?? seed
         let recent = Array(([seed] + session).prefix(4))
         var pairScoreCache: [String: Double] = [:]
@@ -502,19 +496,127 @@ enum RadioCoreMLTransition {
             return value
         }
 
-        let ranked = unique.map { song in
-            var value = cachedScore(anchor: seed, candidate: song) * 0.38
+        // Static quality is still dominated by song-level Core ML/feature fit.
+        // The co-occurrence recommender contributes only a weak prior because
+        // repeated Spotify runs rotate exact titles much more than artists.
+        var baseScore: [String: Double] = [:]
+        baseScore.reserveCapacity(unique.count)
+        for song in unique {
             let recentMean = recent.reduce(0.0) { total, anchor in
                 total + cachedScore(anchor: anchor, candidate: song)
             } / Double(max(recent.count, 1))
-            value += recentMean * 0.36
-            value += cachedScore(anchor: opening, candidate: song) * 0.26
-            return (song, value)
-        }.sorted {
-            if $0.1 == $1.1 { return $0.0.id < $1.0.id }
-            return $0.1 > $1.1
+            let semantic = LyricRecommendationFeatures.similarity(
+                seed: seed,
+                candidate: song,
+                lyricIndex: lyricIndex
+            )
+            var value = cachedScore(anchor: seed, candidate: song) * 0.38
+            value += recentMean * 0.30
+            value += cachedScore(anchor: opening, candidate: song) * 0.18
+            value += semantic * 0.08
+            value += (itemPrior[song.id] ?? 0) * 0.06
+            baseScore[song.id] = value
         }
-        return Array(ranked.prefix(max(0, keep)).map(\.0))
+
+        let seedArtist = normalize(seed.artist)
+        var remaining = unique
+        var selected: [Song] = []
+        selected.reserveCapacity(min(keep, unique.count))
+
+        func cadenceAdjustment(for candidate: Song) -> Double {
+            let artist = normalize(candidate.artist)
+            guard !artist.isEmpty else { return 0 }
+            let sequence = [seed] + selected
+            let lastArtist = sequence.last.map { normalize($0.artist) } ?? ""
+
+            // Across the captured Spotify runs, adjacent same-artist edges were
+            // ~1.7%. Keep them possible for an exceptional song-level match,
+            // but make cross-artist rotation the normal result.
+            if artist == lastArtist {
+                return artist == seedArtist ? -0.14 : -0.24
+            }
+
+            var lastIndex: Int?
+            for (index, song) in sequence.enumerated().reversed()
+                where normalize(song.artist) == artist {
+                lastIndex = index
+                break
+            }
+            guard let lastIndex else {
+                return 0.025
+            }
+            let gap = max(0, sequence.count - lastIndex - 1)
+            var adjustment: Double
+            if artist == seedArtist {
+                // Seed-artist returns clustered around 3-4 intervening tracks
+                // (mode/median near four in the full teacher capture).
+                switch gap {
+                case 0: adjustment = -0.14
+                case 1: adjustment = -0.12
+                case 2: adjustment = -0.05
+                case 3: adjustment = 0.08
+                case 4: adjustment = 0.12
+                case 5: adjustment = 0.08
+                default: adjustment = 0.04
+                }
+            } else {
+                // Other artists generally need a little more breathing room.
+                switch gap {
+                case 0...1: adjustment = -0.20
+                case 2: adjustment = -0.11
+                case 3: adjustment = -0.04
+                case 4...6: adjustment = 0.04
+                default: adjustment = 0.02
+                }
+            }
+
+            let repeats = selected.reduce(into: 0) { count, song in
+                if normalize(song.artist) == artist { count += 1 }
+            }
+            if repeats >= 2 {
+                adjustment -= min(0.14, Double(repeats - 1) * 0.05)
+            }
+            return adjustment
+        }
+
+        // Select sequentially. Core ML supplies the stable 96→30 quality base;
+        // each chosen prefix then nudges the next slot using measured Spotify
+        // artist cadence plus lightweight lyric/audio handoff features. This is
+        // how an anchor can return later without Jaccard dictating the whole 30.
+        while selected.count < keep, !remaining.isEmpty {
+            let previous = selected.last ?? opening
+            let bestIndex = remaining.indices.max { leftIndex, rightIndex in
+                func value(at index: Int) -> Double {
+                    let song = remaining[index]
+                    var value = baseScore[song.id] ?? 0
+                    if !selected.isEmpty {
+                        let localSemantic = LyricRecommendationFeatures.similarity(
+                            seed: previous,
+                            candidate: song,
+                            lyricIndex: lyricIndex
+                        )
+                        let localFeel = RadioFeelGrammar.placement(
+                            from: previous,
+                            to: song,
+                            lyricIndex: lyricIndex
+                        )
+                        value += (localSemantic - 0.5) * 0.12
+                        value += (localFeel - 0.5) * 0.14
+                    }
+                    value += cadenceAdjustment(for: song)
+                    return value
+                }
+                let left = value(at: leftIndex)
+                let right = value(at: rightIndex)
+                if left == right {
+                    return remaining[leftIndex].id > remaining[rightIndex].id
+                }
+                return left < right
+            }
+            guard let bestIndex else { break }
+            selected.append(remaining.remove(at: bestIndex))
+        }
+        return selected
     }
 
     /// Stand-in ranker using the same numeric features a Core ML model will
