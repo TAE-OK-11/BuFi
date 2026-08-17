@@ -521,11 +521,13 @@ struct LyricsDocumentCache: Sendable {
     mutating func value(
         for songID: String,
         maximumAge: TimeInterval,
+        emptyMaximumAge: TimeInterval = 30 * 60,
         now: ContinuousClock.Instant = ContinuousClock().now
     ) -> LyricsDocument? {
         guard var entry = entries[songID] else { return nil }
-        guard maximumAge > 0,
-              entry.storedAt.duration(to: now) <= .seconds(maximumAge) else {
+        let allowedAge = entry.document.lines.isEmpty ? emptyMaximumAge : maximumAge
+        guard allowedAge > 0,
+              entry.storedAt.duration(to: now) <= .seconds(allowedAge) else {
             entries.removeValue(forKey: songID)
             return nil
         }
@@ -539,7 +541,7 @@ struct LyricsDocumentCache: Sendable {
         for songID: String,
         now: ContinuousClock.Instant = ContinuousClock().now
     ) {
-        guard countLimit > 0, !document.lines.isEmpty else { return }
+        guard countLimit > 0 else { return }
         entries[songID] = Entry(
             document: document,
             storedAt: now,
@@ -758,6 +760,7 @@ actor OpenSubsonicClient {
         maximumEntryBytes: OpenSubsonicClient.maximumCachedResponseBytes
     )
     private var lyricsCache = LyricsDocumentCache(countLimit: 64)
+    private var coverURLCache: [String: URL] = [:]
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -768,7 +771,12 @@ actor OpenSubsonicClient {
         }
     }
 
-    init(credentials: ServerCredentials) throws {
+    init(
+        credentials: ServerCredentials,
+        waitsForConnectivity: Bool = true,
+        requestTimeout: TimeInterval = 18,
+        resourceTimeout: TimeInterval = 60
+    ) throws {
         let normalized = try ServerURLNormalization.resolvedURL(
             from: credentials.serverURL
         )
@@ -785,26 +793,43 @@ actor OpenSubsonicClient {
                 serverURL: normalized,
                 username: username,
                 password: credentials.password,
-                reusesSalt: false,
+                reusesSalt: true,
                 clientName: Self.clientName,
                 apiVersion: Self.apiVersion,
-                requestTimeout: 18,
-                resourceTimeout: 60
+                requestTimeout: requestTimeout,
+                resourceTimeout: resourceTimeout
             )
         )
 
         let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
-            requestTimeout: 18,
-            resourceTimeout: 60,
+            requestTimeout: requestTimeout,
+            resourceTimeout: resourceTimeout,
             maximumConnectionsPerHost: 6,
             allowsExpensiveNetworkAccess: true,
-            allowsConstrainedNetworkAccess: true
+            allowsConstrainedNetworkAccess: true,
+            waitsForConnectivity: waitsForConnectivity
         )
         self.session = URLSession(
             configuration: configuration,
             delegate: HTTPSOnlyURLSessionDelegate(),
             delegateQueue: nil
         )
+    }
+
+    func shutdown() {
+        for request in inFlightReadRequests.values {
+            request.task.cancel()
+            for waiter in request.waiters.values {
+                waiter.resume(throwing: CancellationError())
+            }
+        }
+        inFlightReadRequests.removeAll(keepingCapacity: false)
+        for waiter in mutationWaiters.values {
+            waiter.continuation.resume(throwing: CancellationError())
+        }
+        mutationWaiters.removeAll(keepingCapacity: false)
+        coverURLCache.removeAll(keepingCapacity: false)
+        session.invalidateAndCancel()
     }
 
     private func authenticationItems() -> [URLQueryItem] {
@@ -992,7 +1017,7 @@ actor OpenSubsonicClient {
                 cacheRevisionState.begin(impact)
                 response = try await responseData(
                     from: url,
-                    allowsRetry: false
+                    allowsRetry: Self.allowsIdempotentMutationRetry(endpoint)
                 )
                 responseWasCached = false
             }
@@ -1047,6 +1072,9 @@ actor OpenSubsonicClient {
             return try await readRequest(endpoint, parameters: parameters)
         } catch {
             if Task.isCancelled { throw CancellationError() }
+            if TransientServiceFailurePolicy.isAuthenticationFailure(error) {
+                throw error
+            }
             return nil
         }
     }
@@ -1340,6 +1368,9 @@ actor OpenSubsonicClient {
                     return result
                 }
 
+                if result.statusCode == 429, retryCount >= 1 {
+                    return result
+                }
                 retryCount += 1
                 guard let delay = retryPolicy.delay(
                     retryNumber: retryCount,
@@ -1570,15 +1601,19 @@ actor OpenSubsonicClient {
         var parameters: [String] = []
         parameters.reserveCapacity(queryItems.count + revision.entries.count)
         for item in queryItems {
-            parameters.append(item.name + "=" + (item.value ?? ""))
+            parameters.append("\(item.name)\u{1f}\(item.value ?? "")")
         }
         for entry in revision.entries {
             parameters.append(
-                "revision.\(entry.dependency.rawValue)=\(entry.value)"
+                "revision.\(entry.dependency.rawValue)\u{1f}\(entry.value)"
             )
         }
         parameters.sort()
-        return endpoint + "?" + parameters.joined(separator: "&")
+        return endpoint + "\u{1e}" + parameters.joined(separator: "\u{1d}")
+    }
+
+    private static func allowsIdempotentMutationRetry(_ endpoint: String) -> Bool {
+        endpoint == "star" || endpoint == "unstar"
     }
 
     func home(
@@ -2094,10 +2129,8 @@ actor OpenSubsonicClient {
             try await readRequest("getOpenSubsonicExtensions")
         }
         guard let payload = fetchedPayload else {
-            // Older Navidrome-compatible servers may implement the endpoint
-            // without advertising extensions. Keep the existing best-effort
-            // Sonic request in that compatibility case.
-            return name == "sonicSimilarity"
+            supportedExtensions = []
+            return false
         }
         let names = Set(
             (payload.openSubsonicExtensions ?? []).compactMap { value in
@@ -2585,7 +2618,8 @@ actor OpenSubsonicClient {
         if !forceRefresh,
            let cached = lyricsCache.value(
                for: songID,
-               maximumAge: 6 * 60 * 60
+               maximumAge: 6 * 60 * 60,
+               emptyMaximumAge: 30 * 60
            ) {
             return cached
         }
@@ -2616,6 +2650,7 @@ actor OpenSubsonicClient {
             in: .whitespacesAndNewlines
         ) ?? ""
         guard !normalizedArtist.isEmpty, !normalizedTitle.isEmpty else {
+            lyricsCache.insert(.empty, for: songID)
             return .empty
         }
         let legacyPayload: LegacyLyricsPayload
@@ -2632,13 +2667,18 @@ actor OpenSubsonicClient {
         } catch {
             // A successful structured response is authoritative even when the
             // optional legacy endpoint is unavailable on this server.
-            if structuredRequestSucceeded { return .empty }
+            if structuredRequestSucceeded {
+                lyricsCache.insert(.empty, for: songID)
+                return .empty
+            }
             throw error
         }
         let legacyDocument = LyricsDocumentParser.parse(legacyPayload)
         if !legacyDocument.lines.isEmpty {
             lyricsCache.insert(legacyDocument, for: songID)
+            return legacyDocument
         }
+        lyricsCache.insert(.empty, for: songID)
         return legacyDocument
     }
 
@@ -2768,10 +2808,15 @@ actor OpenSubsonicClient {
     }
 
     func coverURL(id: String, size: Int = 600) throws -> URL {
+        let cacheKey = "\(id)|\(size)"
+        if let cached = coverURLCache[cacheKey] {
+            return cached
+        }
         guard let url = swiftSonic.coverArtURL(id: id, size: size),
               url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
+        coverURLCache[cacheKey] = url
         return url
     }
 

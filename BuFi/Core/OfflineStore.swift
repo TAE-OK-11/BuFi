@@ -768,6 +768,7 @@ actor OfflineStore {
                 if (200..<300).contains(http.statusCode) {
                     return temporary
                 }
+                try? FileManager.default.removeItem(at: temporary)
                 let error = OpenSubsonicError.http(http.statusCode)
                 guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
                       retryPolicy.shouldRetry(error: error),

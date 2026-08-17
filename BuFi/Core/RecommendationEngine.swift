@@ -2787,7 +2787,7 @@ actor ExternalRecommendationClient {
             resourceTimeout: 24,
             maximumConnectionsPerHost: 2,
             memoryCapacity: 2 * 1_024 * 1_024,
-            diskCapacity: 12 * 1_024 * 1_024,
+            diskCapacity: 0,
             allowsExpensiveNetworkAccess: true,
             allowsConstrainedNetworkAccess: false
         )
@@ -2900,7 +2900,7 @@ actor ExternalRecommendationClient {
         guard let url = components.url,
               let response: LastFMArtistInfoResponse = await decode(
                 url: url,
-                allowsCaching: true
+                allowsCaching: false
               ) else {
             return
         }
@@ -3061,7 +3061,7 @@ actor ExternalRecommendationClient {
         guard data.count <= 4 * 1_024 * 1_024 else {
             throw URLError(.dataLengthExceedsMaximum)
         }
-        let decoded = try HTTPContentDecoder.decode(
+        let decoded = try await HTTPContentDecoder.decodeAsync(
             data,
             contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
         )

@@ -51,7 +51,7 @@ enum TransientServiceFailurePolicy {
             case .http(let status):
                 return CoreRequestClassifier.shouldRetry(statusCode: status)
             case .server(let code, _):
-                if let code, (40...41).contains(code) {
+                if Self.isAuthenticationFailure(code: code) {
                     return false
                 }
                 return true
@@ -64,6 +64,23 @@ enum TransientServiceFailurePolicy {
             }
         }
         return CoreRequestClassifier.shouldRetry(error: error)
+    }
+
+    static func isAuthenticationFailure(_ error: Error) -> Bool {
+        guard let openSubsonic = error as? OpenSubsonicError else { return false }
+        switch openSubsonic {
+        case .http(let status):
+            return status == 401 || status == 403
+        case .server(let code, _):
+            return isAuthenticationFailure(code: code)
+        default:
+            return false
+        }
+    }
+
+    private static func isAuthenticationFailure(code: Int?) -> Bool {
+        guard let code else { return false }
+        return (40...41).contains(code)
     }
 }
 

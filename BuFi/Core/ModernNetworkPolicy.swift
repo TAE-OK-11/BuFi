@@ -14,7 +14,8 @@ enum ModernNetworkPolicy {
         resourceTimeout: TimeInterval,
         maximumConnectionsPerHost: Int,
         allowsExpensiveNetworkAccess: Bool,
-        allowsConstrainedNetworkAccess: Bool
+        allowsConstrainedNetworkAccess: Bool,
+        waitsForConnectivity: Bool = true
     ) -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = requestTimeout
@@ -25,7 +26,7 @@ enum ModernNetworkPolicy {
         // This affects only the HTTP/1.1 fallback. HTTP/2 and HTTP/3 continue
         // to multiplex streams through CFNetwork's native transport stack.
         configuration.httpShouldUsePipelining = true
-        configuration.waitsForConnectivity = true
+        configuration.waitsForConnectivity = waitsForConnectivity
         configuration.allowsCellularAccess = true
         configuration.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
         configuration.allowsConstrainedNetworkAccess = allowsConstrainedNetworkAccess

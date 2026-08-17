@@ -125,6 +125,7 @@ struct MusicDetailView: View {
             downloadAllTask?.cancel()
             downloadAllTask = nil
             isDownloadingAll = false
+            model.cancelDetailRequest(for: route)
         }
         .sheet(item: $selectedSong) { song in
             SongActionsSheet(song: song)

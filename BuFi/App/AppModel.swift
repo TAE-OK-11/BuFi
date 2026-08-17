@@ -346,6 +346,9 @@ final class AppModel: ObservableObject {
     private var bootstrapState = BootstrapState.idle
     private var loginInFlight = false
     private var refreshInFlight = false
+    private var pendingRefresh = false
+    private var pendingRefreshForceFull = false
+    private var pendingRefreshSilent = true
     private let runtimeClock = ContinuousClock()
     private var lastFullRefresh: ContinuousClock.Instant?
     private var lastHomeSnapshotSave: ContinuousClock.Instant?
@@ -411,7 +414,6 @@ final class AppModel: ObservableObject {
 
 
     func login(serverURL: String, username: String, password: String) async {
-        guard !loginInFlight else { return }
         loginInFlight = true
         defer { loginInFlight = false }
         let normalizedURL: URL
@@ -473,6 +475,9 @@ final class AppModel: ObservableObject {
             return
         }
 
+        if let existing = client {
+            await existing.shutdown()
+        }
         client = nil
         offlineSessionToken = nil
         artworkSessionToken = nil
@@ -482,6 +487,9 @@ final class AppModel: ObservableObject {
         searchResults = .empty
         isSearching = false
         refreshInFlight = false
+        pendingRefresh = false
+        pendingRefreshForceFull = false
+        pendingRefreshSilent = true
         lastFullRefresh = nil
         lastHomeSnapshotSave = nil
         lastExternalRecommendationIdentity = nil
@@ -516,7 +524,11 @@ final class AppModel: ObservableObject {
     }
 
     func refresh(forceFull: Bool = false, silent: Bool = false) async {
-        guard let client, !refreshInFlight else { return }
+        guard let client else { return }
+        if refreshInFlight {
+            enqueuePendingRefresh(forceFull: forceFull, silent: silent)
+            return
+        }
         let generation = sessionGeneration
         let revision = homeRevision
         let previousHome = home
@@ -524,6 +536,7 @@ final class AppModel: ObservableObject {
         defer {
             if generation == sessionGeneration {
                 refreshInFlight = false
+                flushPendingRefresh()
             }
         }
 
@@ -546,7 +559,10 @@ final class AppModel: ObservableObject {
             let snapshot = await preparedHomeSnapshot(loadResult.snapshot)
             guard generation == sessionGeneration, self.client === client else { return }
             guard revision == homeRevision else { return }
-            guard starRequests.isEmpty else { return }
+            guard starRequests.isEmpty else {
+                enqueuePendingRefresh(forceFull: needsFullRefresh, silent: silent)
+                return
+            }
             if needsFullRefresh { lastFullRefresh = runtimeClock.now }
             reconcileFavoriteStates(
                 in: snapshot,
@@ -579,8 +595,29 @@ final class AppModel: ObservableObject {
             return
         } catch {
             guard generation == sessionGeneration else { return }
+            if TransientServiceFailurePolicy.isAuthenticationFailure(error) {
+                errorMessage = error.localizedDescription
+                await logout()
+                return
+            }
             if !silent { errorMessage = error.localizedDescription }
         }
+    }
+
+    private func enqueuePendingRefresh(forceFull: Bool, silent: Bool) {
+        pendingRefresh = true
+        pendingRefreshForceFull = pendingRefreshForceFull || forceFull
+        pendingRefreshSilent = pendingRefreshSilent && silent
+    }
+
+    private func flushPendingRefresh() {
+        guard pendingRefresh else { return }
+        let forceFull = pendingRefreshForceFull
+        let silent = pendingRefreshSilent
+        pendingRefresh = false
+        pendingRefreshForceFull = false
+        pendingRefreshSilent = true
+        Task { await refresh(forceFull: forceFull, silent: silent) }
     }
 
     func search(_ rawQuery: String) {
@@ -958,6 +995,17 @@ final class AppModel: ObservableObject {
         artistDetailCache.removeAll(keepingCapacity: false)
     }
 
+    func cancelDetailRequest(for route: MusicRoute) {
+        switch route {
+        case .album(let album):
+            albumDetailTasks.removeValue(forKey: album.id)?.task.cancel()
+        case .playlist(let playlist):
+            playlistDetailTasks.removeValue(forKey: playlist.id)?.task.cancel()
+        case .artist(let artist):
+            artistDetailTasks.removeValue(forKey: artist.id)?.task.cancel()
+        }
+    }
+
     func handleEnergyConstraints(
         lowPowerMode: Bool,
         thermalState: ProcessInfo.ThermalState
@@ -1088,7 +1136,7 @@ final class AppModel: ObservableObject {
             Self.storeDetail(
                 resolvedValue,
                 id: id,
-                lifetime: 5 * 60,
+                lifetime: 2 * 60,
                 limit: Self.playlistDetailCacheLimit,
                 cache: &playlistDetailCache
             )
@@ -1161,7 +1209,7 @@ final class AppModel: ObservableObject {
             Self.storeDetail(
                 resolvedValue,
                 id: id,
-                lifetime: 15 * 60,
+                lifetime: 5 * 60,
                 limit: Self.artistDetailCacheLimit,
                 cache: &artistDetailCache
             )
@@ -1231,6 +1279,9 @@ final class AppModel: ObservableObject {
         let previous = isStarred(song)
         updateStarredSong(song, enabled: enabled)
         AudioEngine.shared.updateStarred(songID: song.id, enabled: enabled)
+        if let albumID = song.albumId, !albumID.isEmpty {
+            albumDetailCache[albumID] = nil
+        }
         let outcome = await performStarMutation(
             id: song.id,
             target: .song,
@@ -2398,7 +2449,11 @@ final class AppModel: ObservableObject {
             catalog: catalogSessionToken
         )
         let isReplacingActiveSession = client != nil
+        let previousClient = client
         client = nil
+        if let previousClient {
+            await previousClient.shutdown()
+        }
         offlineSessionToken = nil
         artworkSessionToken = nil
         historySessionToken = nil
@@ -2419,6 +2474,9 @@ final class AppModel: ObservableObject {
         serverVersion = ""
         subsonicAPIVersion = ""
         refreshInFlight = false
+        pendingRefresh = false
+        pendingRefreshForceFull = false
+        pendingRefreshSilent = true
         lastHomeSnapshotSave = nil
         isSearching = false
         clearFavoriteState()
@@ -2432,7 +2490,12 @@ final class AppModel: ObservableObject {
             catalog: nil
         )
         do {
-            let client = try OpenSubsonicClient(credentials: credentials)
+            let client = try OpenSubsonicClient(
+                credentials: credentials,
+                waitsForConnectivity: !persist,
+                requestTimeout: persist ? 12 : 18,
+                resourceTimeout: persist ? 20 : 60
+            )
             let accountScope = AccountScope.identifier(for: client.credentials)
             async let statusRequest = Self.pingResult(client)
             async let cachedSnapshotRequest = HomeSnapshotStore.shared.load(
