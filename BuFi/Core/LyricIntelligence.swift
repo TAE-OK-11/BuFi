@@ -42,6 +42,9 @@ enum RadioModelOption: String, CaseIterable, Identifiable, Sendable {
     case groqOSS20 = "openai/gpt-oss-20b"
     case geminiFlash = "gemini-3.7-flash"
     case geminiFlashLite = "gemini-3.6-flash-lite"
+    case googleGemma431 = "gemma-4-31b-it"
+    case googleGemma426 = "gemma-4-26b-a4b-it"
+    case openRouterNemotron35Lightning = "nvidia/nemotron-3.5-lightning:free"
 
     var id: String { rawValue }
 
@@ -50,20 +53,36 @@ enum RadioModelOption: String, CaseIterable, Identifiable, Sendable {
         case .groqOSS120: "Groq · GPT-OSS 120B"
         case .groqQwen: "Groq · Qwen 3.6 27B"
         case .groqOSS20: "Groq · GPT-OSS 20B"
-        case .geminiFlash: "Gemini 3.7 Flash"
-        case .geminiFlashLite: "Gemini 3.6 Flash Lite"
+        case .geminiFlash: "Google AI · Gemini 3.6 Flash"
+        case .geminiFlashLite: "Google AI · Gemini 3.5 Flash Lite"
+        case .googleGemma431: "Google AI · Gemma 4 31B"
+        case .googleGemma426: "Google AI · Gemma 4 26B A4B"
+        case .openRouterNemotron35Lightning:
+            "OpenRouter · Nemotron 3.5 Lightning (Free)"
         }
     }
 
     var provider: LyricIntelligenceProviderKind {
         switch self {
-        case .groqOSS120, .groqQwen, .groqOSS20: .groq
-        case .geminiFlash, .geminiFlashLite: .googleAI
+        case .groqOSS120, .groqQwen, .groqOSS20:
+            .groq
+        case .geminiFlash, .geminiFlashLite, .googleGemma431, .googleGemma426:
+            .googleAI
+        case .openRouterNemotron35Lightning:
+            .openRouter
         }
     }
 
     static func resolved(_ raw: String) -> RadioModelOption {
-        RadioModelOption(rawValue: raw) ?? .groqOSS120
+        let model = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch model.lowercased() {
+        case "gemini-3.6-flash":
+            return .geminiFlash
+        case "gemini-3.5-flash-lite":
+            return .geminiFlashLite
+        default:
+            return RadioModelOption(rawValue: model) ?? .groqOSS120
+        }
     }
 }
 
@@ -231,9 +250,6 @@ struct LyricSignature: Codable, Equatable, Sendable {
     }
 
     var hasStoredLyricAnalysis: Bool {
-        // Lexical/heuristic output is not a completed lyric analysis. Only an
-        // actual language-model result with a usable story may satisfy the
-        // cache and coverage layer.
         !lyricsHash.isEmpty
             && !source.isEmpty
             && source != "lexical"
@@ -1164,8 +1180,6 @@ actor LyricIntelligence {
             artist: "BuFi",
             album: "Probe"
         )
-        // A probe is a real engine test, not a cache test. Remove the in-memory
-        // probe result first and force a fresh LLM request every time.
         signatures.removeValue(forKey: song.id)
         await analyze(song: song, lyrics: lyrics, hash: hash, force: true)
         let fresh = signatures[song.id]
@@ -1262,14 +1276,10 @@ actor LyricIntelligence {
         }
         guard resolvedSettings.provider != .off else { return }
         let previous = signatures[song.id]
-        // Never relabel old fields as a new result. A fresh lyric analysis starts
-        // from a clean record and is committed only after an LLM succeeds.
         guard let analyzed = await LyricIntelligenceBackend.analyze(
             lyrics: lyrics,
             settings: resolvedSettings
         ) else {
-            // Keep a previously valid LLM result intact. After a full reset there
-            // is nothing valid to keep, so coverage remains pending and retries.
             return
         }
 
@@ -1301,9 +1311,6 @@ actor LyricIntelligence {
             signature.details.lyricExcerpt = LyricTextSampler.sample(lyrics, limit: 280)
         }
 
-        // Sound analysis is independent from lyric LLM output and may safely be
-        // carried forward. Sentence embeddings can also be reused if generation
-        // was deferred by thermal/low-power policy.
         if let previous {
             signature.soundLabels = previous.soundLabels
             signature.soundEmbedding = previous.soundEmbedding
@@ -1521,8 +1528,6 @@ actor LyricIntelligence {
            LyricIntelligencePrompt.isContentSummary(summary) {
             return summary
         }
-        // Do not manufacture an apparent analysis from copied lyric lines.
-        // Missing LLM output stays missing and remains eligible for retry.
         return ""
     }
 
