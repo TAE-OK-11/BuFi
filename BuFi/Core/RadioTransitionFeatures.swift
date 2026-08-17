@@ -119,37 +119,79 @@ enum RadioCoreMLTransition {
     private final class ModelStore: @unchecked Sendable {
         let recommender: MLModel?
         let ranker: MLModel?
-        private let lock = NSLock()
+        private let stateLock = NSLock()
+        private let predictionLock = NSLock()
         private var rankerDisabled = false
+        private var consecutiveRankerFailures = 0
 
         init() {
-            recommender = Self.load(RadioCoreMLTransition.resourceName)
-            ranker = Self.load(RadioCoreMLTransition.rankerResourceName)
+            recommender = Self.load(
+                RadioCoreMLTransition.resourceName,
+                computeUnits: .all
+            )
+            // This model is only one 24-value inner product. Sending hundreds
+            // of tiny predictions through GPU/ANE adds scheduling risk without
+            // a useful speed win. CPU-only is deterministic and effectively
+            // free at this size.
+            ranker = Self.load(
+                RadioCoreMLTransition.rankerResourceName,
+                computeUnits: .cpuOnly
+            )
         }
 
         func usableRanker() -> MLModel? {
-            lock.lock()
-            defer { lock.unlock() }
+            stateLock.lock()
+            defer { stateLock.unlock() }
             return rankerDisabled ? nil : ranker
         }
 
-        /// A compiled ranker should accept every sanitized 24-value vector.
-        /// If Core ML rejects one, stop hammering the same broken runtime path
-        /// for every candidate in this process and fall back to the rule ranker.
-        func disableRanker() -> Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !rankerDisabled else { return false }
-            rankerDisabled = true
-            return true
+        func predictRanker(
+            _ model: MLModel,
+            input: MLFeatureProvider
+        ) throws -> MLFeatureProvider {
+            // Autoplay requests can overlap while an old queue is winding down.
+            // Serializing this tiny model avoids concurrent Core ML execution on
+            // one MLModel instance and costs less than another accelerator hop.
+            predictionLock.lock()
+            defer { predictionLock.unlock() }
+            return try model.prediction(from: input)
         }
 
-        private static func load(_ name: String) -> MLModel? {
+        func noteRankerSuccess() {
+            stateLock.lock()
+            consecutiveRankerFailures = 0
+            stateLock.unlock()
+        }
+
+        /// Returns true only when the model should be disabled for this process.
+        /// A single Core ML runtime hiccup falls back for one pair and the next
+        /// candidate is still allowed to use the learned ranker.
+        func noteRankerFailure(permanent: Bool) -> Bool {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            guard !rankerDisabled else { return true }
+            if permanent {
+                rankerDisabled = true
+                return true
+            }
+            consecutiveRankerFailures += 1
+            if consecutiveRankerFailures >= 3 {
+                rankerDisabled = true
+            }
+            return rankerDisabled
+        }
+
+        private static func load(
+            _ name: String,
+            computeUnits: MLComputeUnits
+        ) -> MLModel? {
             let bundle = Bundle.main
             let url = bundle.url(forResource: name, withExtension: "mlmodelc")
                 ?? bundle.url(forResource: name, withExtension: "mlmodel")
             guard let url else { return nil }
-            return try? MLModel(contentsOf: url)
+            let configuration = MLModelConfiguration()
+            configuration.computeUnits = computeUnits
+            return try? MLModel(contentsOf: url, configuration: configuration)
         }
     }
 #else
@@ -197,6 +239,7 @@ enum RadioCoreMLTransition {
             )
             switch predict(model, features: features) {
             case .value(let value):
+                store.noteRankerSuccess()
                 let elapsed = Date().timeIntervalSince(started)
                 if elapsed >= 0.08 {
                     RecommendationDiagnostics.record(
@@ -207,19 +250,22 @@ enum RadioCoreMLTransition {
                     )
                 }
                 return max(0, min(1, value))
-            case .failure(let reason):
-                if store.disableRanker() {
-                    RecommendationDiagnostics.record(
-                        kind: .coreml,
-                        level: .error,
-                        title: String(localized: "CoreML 추론 실패"),
-                        detail: "\(seed.title) → \(candidate.title) · \(reason)"
-                    )
+            case .failure(let reason, let permanent):
+                let disabled = store.noteRankerFailure(permanent: permanent)
+                RecommendationDiagnostics.record(
+                    kind: .coreml,
+                    level: .error,
+                    title: String(localized: "CoreML 단일 추론 실패 · 규칙 점수로 보완"),
+                    detail: "\(seed.title) → \(candidate.title) · \(reason)"
+                )
+                if disabled {
                     RecommendationDiagnostics.record(
                         kind: .coreml,
                         level: .info,
-                        title: String(localized: "CoreML 대신 규칙 점수를 사용합니다"),
-                        detail: rankerResourceName
+                        title: String(localized: "CoreML ranker를 세션에서 비활성화했습니다"),
+                        detail: permanent
+                            ? "model contract mismatch"
+                            : "3 consecutive runtime failures"
                     )
                 }
             }
@@ -231,28 +277,30 @@ enum RadioCoreMLTransition {
 #if canImport(CoreML)
     private enum RankerPrediction {
         case value(Double)
-        case failure(String)
+        case failure(String, permanent: Bool)
     }
 
     private static func predict(_ model: MLModel, features: [Double]) -> RankerPrediction {
         guard features.count == RadioTransitionFeatures.pairNames.count else {
             return .failure(
-                "feature-count \(features.count) != \(RadioTransitionFeatures.pairNames.count)"
+                "feature-count \(features.count) != \(RadioTransitionFeatures.pairNames.count)",
+                permanent: true
             )
         }
         guard features.allSatisfy(\.isFinite) else {
-            return .failure("non-finite feature vector")
+            return .failure("non-finite feature vector", permanent: false)
         }
         guard let inputDescription = model.modelDescription.inputDescriptionsByName["features"],
               let constraint = inputDescription.multiArrayConstraint else {
-            return .failure("missing CoreML input features")
+            return .failure("missing CoreML input features", permanent: true)
         }
         let expectedCount = constraint.shape.reduce(1) { partial, value in
             partial * value.intValue
         }
         guard expectedCount == features.count else {
             return .failure(
-                "model-shape \(constraint.shape) expects \(expectedCount), got \(features.count)"
+                "model-shape \(constraint.shape) expects \(expectedCount), got \(features.count)",
+                permanent: true
             )
         }
         do {
@@ -266,21 +314,26 @@ enum RadioCoreMLTransition {
             let input = try MLDictionaryFeatureProvider(
                 dictionary: ["features": array]
             )
-            let output = try model.prediction(from: input)
+            let output = try store.predictRanker(model, input: input)
             if let multi = output.featureValue(for: "score")?.multiArrayValue,
                multi.count > 0 {
                 let value = multi[0].doubleValue
-                return value.isFinite ? .value(value) : .failure("non-finite score output")
+                return value.isFinite
+                    ? .value(value)
+                    : .failure("non-finite score output", permanent: false)
             }
             if let feature = output.featureValue(for: "score"), feature.type == .double {
                 let value = feature.doubleValue
-                return value.isFinite ? .value(value) : .failure("non-finite score output")
+                return value.isFinite
+                    ? .value(value)
+                    : .failure("non-finite score output", permanent: false)
             }
-            return .failure("missing score output")
+            return .failure("missing score output", permanent: true)
         } catch {
             let nsError = error as NSError
             return .failure(
-                "\(nsError.domain)#\(nsError.code) \(nsError.localizedDescription)"
+                "\(nsError.domain)#\(nsError.code) \(nsError.localizedDescription)",
+                permanent: false
             )
         }
     }
@@ -434,25 +487,28 @@ enum RadioCoreMLTransition {
         }
         let opening = session.last ?? seed
         let recent = Array(([seed] + session).prefix(4))
-        let ranked = unique.map { song in
-            var value = score(
-                seed: seed,
-                candidate: song,
+        var pairScoreCache: [String: Double] = [:]
+        pairScoreCache.reserveCapacity(unique.count * max(2, recent.count))
+
+        func cachedScore(anchor: Song, candidate: Song) -> Double {
+            let key = anchor.id + "\u{1F}" + candidate.id
+            if let cached = pairScoreCache[key] { return cached }
+            let value = score(
+                seed: anchor,
+                candidate: candidate,
                 lyricIndex: lyricIndex
-            ) * 0.38
+            )
+            pairScoreCache[key] = value
+            return value
+        }
+
+        let ranked = unique.map { song in
+            var value = cachedScore(anchor: seed, candidate: song) * 0.38
             let recentMean = recent.reduce(0.0) { total, anchor in
-                total + score(
-                    seed: anchor,
-                    candidate: song,
-                    lyricIndex: lyricIndex
-                )
+                total + cachedScore(anchor: anchor, candidate: song)
             } / Double(max(recent.count, 1))
             value += recentMean * 0.36
-            value += score(
-                seed: opening,
-                candidate: song,
-                lyricIndex: lyricIndex
-            ) * 0.26
+            value += cachedScore(anchor: opening, candidate: song) * 0.26
             return (song, value)
         }.sorted {
             if $0.1 == $1.1 { return $0.0.id < $1.0.id }
@@ -462,7 +518,7 @@ enum RadioCoreMLTransition {
     }
 
     /// Stand-in ranker using the same numeric features a Core ML model will
-    /// learn. A later compiled model swaps in without changing the 50→30 cut.
+    /// learn. A later compiled model swaps in without changing the 96→30 cut.
     private static func rank(
         seed: Song,
         candidate: Song,
