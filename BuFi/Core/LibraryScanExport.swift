@@ -21,10 +21,11 @@ enum LibraryScanExport {
             return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
         }
         let payload: [String: Any] = [
-            "version": 1,
+            "version": 2,
             "purpose": "bufi-scan-export",
             "trackCount": tracks.count,
             "featureNames": RadioTransitionFeatures.names,
+            "recommendationFeatureVersion": 1,
             "tracks": tracks
         ]
         guard let data = try? JSONSerialization.data(
@@ -43,6 +44,10 @@ enum LibraryScanExport {
     ) -> [String: Any] {
         let details = signature?.details
         let feel = RadioFeelGrammar.feel(song: song, signature: signature).rawValue
+        let recommendation = LyricRecommendationFeatures.vector(
+            song: song,
+            signature: signature
+        )
         return [
             "id": song.id,
             "title": song.title,
@@ -77,6 +82,22 @@ enum LibraryScanExport {
             "soundSource": signature?.soundSource ?? "",
             "hasLyricAnalysis": signature?.hasStoredLyricAnalysis ?? false,
             "hasSoundAnalysis": signature?.hasStoredSoundAnalysis ?? false,
+            "recommendationFeatures": [
+                "lyricEnergy": recommendation.lyricEnergy,
+                "valence": recommendation.valence,
+                "narrativeTempo": recommendation.narrativeTempo,
+                "intimacy": recommendation.intimacy,
+                "emotionIntensity": recommendation.emotionIntensity,
+                "tension": recommendation.tension,
+                "warmth": recommendation.warmth,
+                "bpm": recommendation.bpm ?? 0,
+                "audioEnergy": recommendation.audioEnergy ?? 0,
+                "audioBrightness": recommendation.brightness ?? 0,
+                "audioPulse": recommendation.pulse ?? 0,
+                "moods": recommendation.moods.map(\.rawValue).sorted(),
+                "themes": recommendation.themes.map(\.rawValue).sorted(),
+                "arc": recommendation.arc.rawValue
+            ],
             "features": RadioTransitionFeatures.snapshot(
                 song: song,
                 signature: signature
