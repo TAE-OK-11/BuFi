@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit a linear Core ML ranker from feel grammar plus structured teacher radios."""
+"""Fit a linear Core ML ranker from feel grammar plus balanced teacher radios."""
 
 from __future__ import annotations
 
@@ -94,6 +94,33 @@ def next_score(a: str, b: str) -> float:
 
 def one_hot(feel: str) -> list[float]:
     return [1.0 if feel == name else 0.0 for name in FEELS]
+
+
+def spaced_indices(values: list[int], limit: int) -> list[int]:
+    if limit <= 0 or not values:
+        return []
+    if len(values) <= limit:
+        return values
+    if limit == 1:
+        return [values[0]]
+    picked: list[int] = []
+    last = len(values) - 1
+    for slot in range(limit):
+        index = round(slot * last / (limit - 1))
+        value = values[index]
+        if not picked or picked[-1] != value:
+            picked.append(value)
+    return picked
+
+
+def prioritized_indices(values: list[int], prefix: int, limit: int) -> list[int]:
+    """Keep the strongest opening plus evenly spread evidence from the tail."""
+    if len(values) <= limit:
+        return values
+    head = values[: min(prefix, limit)]
+    remaining = [value for value in values if value not in set(head)]
+    tail = spaced_indices(remaining, max(0, limit - len(head)))
+    return head + [value for value in tail if value not in set(head)]
 
 
 def row(seed: str, cand: str, rng: np.random.Generator) -> tuple[list[float], float]:
@@ -239,26 +266,43 @@ def load_notion_pairs(
         seed = block[0]
         positives = {track.get("id") for track in block[1:]}
 
-        # Seed-to-ranked-candidate teacher labels. Repeat strong observations so
-        # they can meaningfully calibrate the larger synthetic grammar corpus.
-        for rank, track in enumerate(block[1:]):
+        # Preserve the top-ranked teacher choices and sample the rest across the
+        # entire run. Each block contributes at most 24 seed→candidate pairs.
+        candidate_indices = prioritized_indices(
+            list(range(1, len(block))),
+            prefix=8,
+            limit=24,
+        )
+        for rank_index, block_index in enumerate(candidate_indices):
+            track = block[block_index]
             features, _ = pair_from_tracks(seed, track)
-            label = max(0.68, 0.99 - rank * 0.014)
-            repeats = 3 if rank < 8 else 2
+            label = max(0.68, 0.99 - rank_index * 0.014)
+            repeats = 3 if rank_index < 8 else 2
             for _ in range(repeats):
                 xs.append(features)
                 ys.append(label)
 
-        # Consecutive teacher order is stronger than simple co-membership.
-        for index_a in range(len(block) - 1):
+        # Consecutive teacher order is stronger than simple co-membership, but
+        # long runs are capped and sampled across their full span.
+        adjacent_indices = prioritized_indices(
+            list(range(len(block) - 1)),
+            prefix=4,
+            limit=16,
+        )
+        for index_a in adjacent_indices:
             features, _ = pair_from_tracks(block[index_a], block[index_a + 1])
             label = 0.96 if index_a < 3 else 0.92
             xs.extend([features, features])
             ys.extend([label, label])
 
-        # A one-track skip captures smooth local arcs without pretending every
-        # distant track in a long screenshot run is an immediate transition.
-        for index_a in range(len(block) - 2):
+        # Skip-one arcs capture controlled breathing/return moves. Sample up to
+        # 12 positions so a long screenshot does not dominate the linear fit.
+        skip_indices = prioritized_indices(
+            list(range(max(0, len(block) - 2))),
+            prefix=3,
+            limit=12,
+        )
+        for index_a in skip_indices:
             features, _ = pair_from_tracks(block[index_a], block[index_a + 2])
             xs.append(features)
             ys.append(0.84)
@@ -357,7 +401,7 @@ def main() -> None:
     spec = builder.spec
     spec.description.predictedFeatureName = "score"
     spec.description.metadata.shortDescription = (
-        "BuFi radio 50-to-30 ranker trained on feel grammar and structured teacher radios"
+        "BuFi radio 50-to-30 ranker trained on balanced feel grammar and teacher radios"
     )
     model = ct.models.MLModel(spec)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
