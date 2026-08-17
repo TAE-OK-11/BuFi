@@ -512,9 +512,8 @@ private enum ArtistSectioning {
             locale: .current
         )
         guard let first = folded.first else { return "#" }
-        let upper = String(first).uppercased()
-        if upper.range(of: "^[A-Z]$", options: .regularExpression) != nil {
-            return upper
+        if first.isASCII, first.isLetter {
+            return String(first).uppercased()
         }
         return String(first)
     }

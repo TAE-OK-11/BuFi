@@ -345,7 +345,6 @@ actor ListeningHistoryStore {
         if value.song.isStarred != song.isStarred {
             value.song.starred = song.starred
         }
-        value.playCount += 1
         value.lastPlayed = date
         if lastStartedSongID == song.id {
             value.repeatCount += 1
@@ -370,7 +369,7 @@ actor ListeningHistoryStore {
         entries[song.id] = value
         markDirty(song.id)
         lastStartedSongID = song.id
-        didMutate()
+        didMutate(invalidatesRecommendations: false)
     }
 
     /// Refreshes persisted display metadata without changing listening counts.
@@ -425,6 +424,9 @@ actor ListeningHistoryStore {
             || (reason == .replaced && completion < 0.4)
         if reason == .queueRemoved {
             value.queueRemovalCount += 1
+        }
+        if isCompleted || completion >= 0.3 || playedSeconds >= 15 {
+            value.playCount += 1
         }
         if isCompleted {
             value.completedCount += 1
@@ -544,11 +546,13 @@ actor ListeningHistoryStore {
         RecommendationMixer.invalidateCache()
     }
 
-    private func didMutate() {
+    private func didMutate(invalidatesRecommendations: Bool = true) {
         revision &+= 1
         trimEntriesIfNeeded()
         schedulePersistence()
-        RecommendationMixer.invalidateCache()
+        if invalidatesRecommendations {
+            RecommendationMixer.invalidateCache()
+        }
     }
 
     func flushPendingWrites() async {

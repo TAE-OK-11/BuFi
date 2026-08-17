@@ -257,11 +257,25 @@ actor ArtworkStore {
 
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
         guard activeScope != nil else { return }
+        var unique: [URL] = []
         var seen = Set<URL>()
         for url in urls.prefix(8) where seen.insert(url).inserted {
-            guard !Task.isCancelled else { return }
-            _ = try? await image(for: url, pixelSize: pixelSize)
-            await Task.yield()
+            unique.append(url)
+        }
+        guard !unique.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            var started = 0
+            for url in unique {
+                if started >= 4 {
+                    await group.next()
+                }
+                started += 1
+                group.addTask {
+                    guard !Task.isCancelled else { return }
+                    _ = try? await self.image(for: url, pixelSize: pixelSize)
+                }
+            }
+            await group.waitForAll()
         }
     }
 

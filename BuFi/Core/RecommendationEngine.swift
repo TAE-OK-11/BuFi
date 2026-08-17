@@ -2013,6 +2013,22 @@ struct PersonalizedMix: Identifiable, Hashable, Sendable {
     var artworkCoverArt: String? = nil
 
     var showsRanking: Bool { kind == .ranking }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id
+            && lhs.title == rhs.title
+            && lhs.subtitle == rhs.subtitle
+            && lhs.kind == rhs.kind
+            && lhs.artworkCoverArt == rhs.artworkCoverArt
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(title)
+        hasher.combine(subtitle)
+        hasher.combine(kind)
+        hasher.combine(artworkCoverArt)
+    }
 }
 
 enum ArtistMixPreferences {

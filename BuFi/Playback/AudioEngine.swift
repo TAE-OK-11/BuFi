@@ -1185,6 +1185,7 @@ final class AudioEngine: NSObject, ObservableObject {
             index: index,
             accountScope: currentAccountScope
         )
+        pruneShuffleSession()
     }
 
     private func replacePlayback(
@@ -1404,6 +1405,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var isSeekInFlight = false
     private var autoplayShouldAdvance = false
     private var recentShuffleIDs: [String] = []
+    private var shuffleSessionPlayedEntryIDs: Set<UUID> = []
     private var pendingSeekPosition: TimeInterval?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
@@ -1967,6 +1969,11 @@ final class AudioEngine: NSObject, ObservableObject {
 
         let nextIndex: Int
         if isShuffleEnabled, queue.count > 1 {
+            if repeatMode == .off,
+               !hasRemainingShuffleEntries() {
+                requestAutoplayContinuation(advanceWhenReady: true)
+                return
+            }
             nextIndex = nextShuffleIndex()
         } else if queueIndex < queue.count - 1 {
             nextIndex = queueIndex + 1
@@ -2250,11 +2257,8 @@ final class AudioEngine: NSObject, ObservableObject {
         autoplayGeneration &+= 1
         autoplayShouldAdvance = false
         var updatedEntries = playbackState.entries
-        let removedSongs = updatedEntries[(queueIndex + 1)..<updatedEntries.count]
-            .map(\.song)
         updatedEntries.removeSubrange((queueIndex + 1)..<updatedEntries.count)
         replaceQueue(updatedEntries, index: queueIndex)
-        recordQueueRemovals(removedSongs)
         queueDidChange()
     }
 
@@ -2305,6 +2309,12 @@ final class AudioEngine: NSObject, ObservableObject {
     func toggleShuffle() {
         reconcilePendingTransportTransition()
         isShuffleEnabled.toggle()
+        if isShuffleEnabled {
+            shuffleSessionPlayedEntryIDs.removeAll(keepingCapacity: true)
+            if let currentID = playbackState.currentItem?.queueEntryID {
+                shuffleSessionPlayedEntryIDs.insert(currentID)
+            }
+        }
         invalidateStagedSuccessor(removeFromPlayer: true)
         updateRemoteCommands()
         scheduleQueueSave()
@@ -2312,18 +2322,33 @@ final class AudioEngine: NSObject, ObservableObject {
         scheduleGaplessSuccessor()
     }
 
+    private func hasRemainingShuffleEntries() -> Bool {
+        playbackState.entries.contains { entry in
+            !shuffleSessionPlayedEntryIDs.contains(entry.id)
+        }
+    }
+
     private func nextShuffleIndex() -> Int {
         let songs = playbackState.songs
+        let entries = playbackState.entries
         let currentIndex = queueIndex
         guard songs.count > 1,
               songs.indices.contains(currentIndex) else {
             return currentIndex
         }
-        guard shuffleStyle == .fewerRepeats else {
+        let remaining = entries.indices.filter { index in
+            index != currentIndex
+                && (repeatMode != .off
+                    || !shuffleSessionPlayedEntryIDs.contains(entries[index].id))
+        }
+        guard !remaining.isEmpty else {
             return Self.randomNonCurrentQueueIndex(
                 queueCount: songs.count,
                 currentIndex: currentIndex
             )
+        }
+        guard shuffleStyle == .fewerRepeats else {
+            return remaining.randomElement() ?? currentIndex
         }
         let recent = Set(
             recentShuffleIDs.suffix(
@@ -2342,10 +2367,7 @@ final class AudioEngine: NSObject, ObservableObject {
             // dominate unexpectedly, the reservoir scan below is the bounded
             // correctness fallback.
             for _ in 0..<PlaybackShufflePolicy.fastCandidateAttemptLimit {
-                let candidate = Self.randomNonCurrentQueueIndex(
-                    queueCount: songs.count,
-                    currentIndex: currentIndex
-                )
+                guard let candidate = remaining.randomElement() else { break }
                 if !recent.contains(songs[candidate].id) {
                     return candidate
                 }
@@ -2354,17 +2376,14 @@ final class AudioEngine: NSObject, ObservableObject {
 
         var freshSelection: Int?
         var freshCount = 0
-        for index in songs.indices
-            where index != currentIndex && !recent.contains(songs[index].id) {
+        for index in remaining
+            where !recent.contains(songs[index].id) {
             freshCount += 1
             if Int.random(in: 0..<freshCount) == 0 {
                 freshSelection = index
             }
         }
-        return freshSelection ?? Self.randomNonCurrentQueueIndex(
-            queueCount: songs.count,
-            currentIndex: currentIndex
-        )
+        return freshSelection ?? remaining.randomElement() ?? currentIndex
     }
 
     private static func randomNonCurrentQueueIndex(
@@ -2387,6 +2406,14 @@ final class AudioEngine: NSObject, ObservableObject {
         if recentShuffleIDs.count > 12 {
             recentShuffleIDs.removeFirst(recentShuffleIDs.count - 12)
         }
+        if let entryID = playbackState.currentItem?.queueEntryID {
+            shuffleSessionPlayedEntryIDs.insert(entryID)
+        }
+    }
+
+    private func pruneShuffleSession() {
+        let liveIDs = Set(playbackState.entries.map(\.id))
+        shuffleSessionPlayedEntryIDs = shuffleSessionPlayedEntryIDs.intersection(liveIDs)
     }
 
     private func entriesRemovingUpcomingOccurrence(

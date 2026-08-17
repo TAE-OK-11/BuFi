@@ -7,6 +7,14 @@ struct PlayerArtworkPageID: Hashable, Sendable {
     let coverArtID: String?
     let artworkRevision: String
     let accountScope: String?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.queueEntryID == rhs.queueEntryID
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(queueEntryID)
+    }
 }
 
 struct PlayerPagerSelectionGate {
@@ -143,8 +151,11 @@ struct PlayerView: View {
             let next = playback.snapshot
             refreshArtworkPages(from: next, fallback: currentPlayback.item)
             pruneArtworkPalettes(using: next)
-            if let artworkPage,
-               !next.entries.contains(where: { $0.id == artworkPage.queueEntryID }) {
+            if let currentID = currentArtworkPageID(in: next),
+               artworkPage != currentID {
+                syncArtworkPage(to: next, animated: false)
+            } else if artworkPage != nil,
+                      !next.entries.contains(where: { $0.id == artworkPage?.queueEntryID }) {
                 syncArtworkPage(to: next, animated: false)
             }
         }
@@ -458,12 +469,7 @@ struct PlayerView: View {
     }
 
     private func indexForArtworkPage(_ page: PlayerArtworkPageID) -> Int? {
-        playback.entries.firstIndex { entry in
-            entry.id == page.queueEntryID
-                && entry.song.id == page.songID
-                && entry.song.artworkID == page.coverArtID
-                && entry.song.artworkRevision == page.artworkRevision
-        }
+        playback.entries.firstIndex { $0.id == page.queueEntryID }
     }
 
     private func syncArtworkPage(to snapshot: PlaybackSnapshot, animated: Bool) {
