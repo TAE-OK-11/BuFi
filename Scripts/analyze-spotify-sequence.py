@@ -1,26 +1,131 @@
 #!/usr/bin/env python3
-"""Measure sequence patterns in the captured Spotify recommendation runs.
+"""Measure sequence patterns in captured Spotify recommendation runs.
 
-This is deliberately separate from model training.  The Notion pages are
-observations of Spotify's recommender, not hand-authored playlists, so we first
-measure what Spotify repeatedly does: candidate recurrence, rank stability,
-artist-return spacing, and immediate artist repetition.  Training can then use
-those measured priors instead of inventing fixed intervals.
+The Notion pages are observations of Spotify's recommender, not hand-authored
+playlists. Measure recurring policy signals first: title recurrence, rank
+stability, artist-return spacing, immediate repetition, and the raw ordered
+runs. The third teacher page is parsed generically by recognizing a track
+heading followed by `세트 1`, so new seed headings do not need to be hard-coded.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 import json
 import os
+import urllib.request
 from statistics import mean, median
 
-from radio_teacher import fetch_lines, item_key, normalize, teacher_blocks
+from radio_teacher import (
+    PAGE_MARKER,
+    clean_line,
+    fetch_lines,
+    is_set_marker,
+    item_key,
+    normalize,
+    parse_line,
+    teacher_blocks,
+)
+
+EXTRA_PAGES = ["3bff030e-09cf-800b-a225-dbeb5db192b9"]
 
 
 def artist_key(raw: str) -> str:
     return normalize(raw)
+
+
+def _fetch_page(page: str, page_index: int) -> list[str]:
+    """Fetch one public Notion page using the endpoint used by radio_teacher."""
+    url = "https://www.notion.so/api/v3/loadPageChunk"
+    lines = [f"{PAGE_MARKER}:{page_index}"]
+
+    def post(payload: dict) -> dict:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode())
+
+    def plain(prop) -> str:
+        if not prop:
+            return ""
+        return "".join(str(run[0]) for run in prop if isinstance(run, list) and run)
+
+    blocks: dict = {}
+    cursor: list = []
+    chunk = 0
+    while True:
+        data = post(
+            {
+                "page": {"id": page},
+                "limit": 100,
+                "cursor": {"stack": cursor},
+                "chunkNumber": chunk,
+                "verticalColumns": False,
+            }
+        )
+        blocks.update(data.get("recordMap", {}).get("block", {}))
+        cursor = data.get("cursor", {}).get("stack", [])
+        chunk += 1
+        if not cursor or chunk > 60:
+            break
+
+    def walk(block_id: str) -> None:
+        record = blocks.get(block_id, {})
+        value = record.get("value", {}).get("value", record.get("value", {})) or {}
+        title = plain((value.get("properties") or {}).get("title"))
+        for piece in title.splitlines():
+            if piece.strip():
+                lines.append(piece.strip())
+        for child in value.get("content") or []:
+            walk(child)
+
+    walk(page)
+    return lines
+
+
+def _mark_generic_seeds(lines: list[str]) -> list[str]:
+    """Mark a track heading as a seed when its next set marker is `세트 1`.
+
+    Existing pages use hard-coded seed headings because seed titles can also
+    appear as recommendations. For new pages, `track heading -> 세트 1` is a
+    stronger structural signal. A recommendation before `세트 2+` is not
+    mistaken for a new seed.
+    """
+    output = list(lines)
+    for index, raw in enumerate(lines):
+        parsed = parse_line(raw)
+        if parsed is None or parsed.explicit_seed:
+            continue
+        next_set_number: int | None = None
+        for later in lines[index + 1 : index + 8]:
+            clean = clean_line(later)
+            if not clean:
+                continue
+            if clean.startswith(PAGE_MARKER):
+                break
+            if is_set_marker(clean):
+                digits = "".join(character for character in clean if character.isdigit())
+                next_set_number = int(digits) if digits else None
+                break
+            if parse_line(later) is not None:
+                break
+        if next_set_number == 1:
+            output[index] = "시드: " + clean_line(raw)
+    return output
+
+
+def all_teacher_lines() -> list[str]:
+    lines = fetch_lines()
+    start_index = 2
+    for offset, page in enumerate(EXTRA_PAGES):
+        extra = _fetch_page(page, start_index + offset)
+        lines.extend(_mark_generic_seeds(extra))
+    return lines
 
 
 @dataclass
@@ -48,11 +153,17 @@ class SeedReport:
     seed_artist_return_gap_median: float | None
     any_artist_return_gap_mean: float | None
     any_artist_return_gap_median: float | None
+    seed_artist_return_gap_histogram: dict[str, int]
+    any_artist_return_gap_histogram: dict[str, int]
     top_candidates: list[CandidateStat]
 
 
 def rounded(value: float, digits: int = 3) -> float:
     return round(float(value), digits)
+
+
+def _histogram(values: list[int]) -> dict[str, int]:
+    return {str(key): value for key, value in sorted(Counter(values).items())}
 
 
 def report_for_runs(runs: list[list]) -> SeedReport:
@@ -75,25 +186,22 @@ def report_for_runs(runs: list[list]) -> SeedReport:
         else:
             unique_artist_ratios.append(0.0)
 
-        # Candidate recurrence/rank is measured once per captured Spotify run.
         for rank, track in enumerate(recommendations, start=1):
             key = item_key(track.title, track.artist)
             candidate_positions[key].append(rank)
             candidate_meta[key] = (track.title, track.artist)
 
-        sequence = run
         seed_artist = artist_key(seed.artist)
         last_position_by_artist: dict[str, int] = {}
         returned_seed_artist = False
-        for position, track in enumerate(sequence):
+        for position, track in enumerate(run):
             current_artist = artist_key(track.artist)
             if position > 0:
-                previous_artist = artist_key(sequence[position - 1].artist)
+                previous_artist = artist_key(run[position - 1].artist)
                 total_edges += 1
                 if current_artist == previous_artist:
                     same_artist_edges += 1
             if current_artist in last_position_by_artist:
-                # Number of other records between two appearances of this artist.
                 gap = max(0, position - last_position_by_artist[current_artist] - 1)
                 all_artist_return_gaps.append(gap)
                 if current_artist == seed_artist:
@@ -119,11 +227,7 @@ def report_for_runs(runs: list[list]) -> SeedReport:
             )
         )
     candidates.sort(
-        key=lambda item: (
-            -item.appearance_rate,
-            item.mean_rank,
-            item.title.lower(),
-        )
+        key=lambda item: (-item.appearance_rate, item.mean_rank, item.title.lower())
     )
 
     return SeedReport(
@@ -143,21 +247,19 @@ def report_for_runs(runs: list[list]) -> SeedReport:
             rounded(median(seed_return_gaps), 2) if seed_return_gaps else None
         ),
         any_artist_return_gap_mean=(
-            rounded(mean(all_artist_return_gaps), 2)
-            if all_artist_return_gaps
-            else None
+            rounded(mean(all_artist_return_gaps), 2) if all_artist_return_gaps else None
         ),
         any_artist_return_gap_median=(
-            rounded(median(all_artist_return_gaps), 2)
-            if all_artist_return_gaps
-            else None
+            rounded(median(all_artist_return_gaps), 2) if all_artist_return_gaps else None
         ),
-        top_candidates=candidates[:12],
+        seed_artist_return_gap_histogram=_histogram(seed_return_gaps),
+        any_artist_return_gap_histogram=_histogram(all_artist_return_gaps),
+        top_candidates=candidates[:20],
     )
 
 
 def main() -> None:
-    blocks = teacher_blocks(fetch_lines())
+    blocks = teacher_blocks(all_teacher_lines())
     grouped: dict[str, list[list]] = defaultdict(list)
     for block in blocks:
         if len(block) < 2:
@@ -166,9 +268,20 @@ def main() -> None:
 
     reports = [report_for_runs(runs) for runs in grouped.values()]
     reports.sort(key=lambda report: (-report.runs, report.seed_title.lower()))
-
     repeated = [report for report in reports if report.runs >= 2]
     singletons = [report for report in reports if report.runs == 1]
+
+    raw_runs = [
+        {
+            "seed": {"title": block[0].title, "artist": block[0].artist},
+            "tracks": [
+                {"position": index, "title": track.title, "artist": track.artist}
+                for index, track in enumerate(block)
+            ],
+        }
+        for block in blocks
+        if block
+    ]
     payload = {
         "source": "spotify-observation-notion",
         "teacherBlocks": len(blocks),
@@ -182,6 +295,7 @@ def main() -> None:
             }
             for report in reports
         ],
+        "raw_runs": raw_runs,
     }
 
     print(
@@ -199,15 +313,6 @@ def main() -> None:
             f" seedReturnGap={report.seed_artist_return_gap_mean}"
             f" anyReturnGap={report.any_artist_return_gap_mean}"
         )
-        if report.runs >= 2:
-            for item in report.top_candidates[:8]:
-                print(
-                    "  TOP"
-                    f" rate={item.appearance_rate:.3f}"
-                    f" meanRank={item.mean_rank:.2f}"
-                    f" range={item.best_rank}-{item.worst_rank}"
-                    f" | {item.title} — {item.artist}"
-                )
 
     destination = os.environ.get(
         "BUFI_SPOTIFY_SEQUENCE_REPORT",
