@@ -2,7 +2,7 @@
 """Shared parser for the two Notion radio-teacher pages.
 
 The source pages mix explicit seeds, repeated `세트 N` groups, long ranked
-recommendation runs, and screenshot-derived `첫 번째 재생 곡` headings.  Keep
+recommendation runs, and screenshot-derived `첫 번째 재생 곡` headings. Keep
 those boundaries intact so Create ML sees independent radio sessions instead
 of one giant popularity list.
 """
@@ -20,23 +20,21 @@ PAGES = [
     "3bef030e-09cf-8004-968b-e79de61a4528",
 ]
 
-# Only titles that are explicitly seeds/headings in the teacher material.
-# Numbered recommendation rows must not accidentally start a new block.
-SEED_TITLES = {
-    "style",
-    "cruel summer",
-    "karma",
-    "so high school",
-    "anti-hero",
-    "the one that got away",
-    "dance the night away",
-    "ode to love",
-    "hey! hey!",
-    "blue valentine",
-    "lemonade",
-    "love attack",
-    "갑자기",
-}
+# These are the top-level seed headings in page order. A seed title can also
+# appear later as a recommendation (for example Style), so title membership
+# alone is not enough to start a new teacher block.
+EXPECTED_SEEDS_BY_PAGE = [
+    ["style", "cruel summer", "hey! hey!", "blue valentine"],
+    [
+        "karma",
+        "so high school",
+        "anti-hero",
+        "the one that got away",
+        "dance the night away",
+        "ode to love",
+    ],
+]
+PAGE_MARKER = "__BUFI_TEACHER_PAGE__"
 
 SET_RE = re.compile(r"^세트\s*\d+\s*$", re.IGNORECASE)
 PLAYBACK_RE = re.compile(
@@ -55,7 +53,7 @@ class TeacherTrack:
 @dataclass(frozen=True)
 class ParsedLine:
     track: TeacherTrack
-    is_seed: bool
+    explicit_seed: bool
 
 
 def normalize(text: str) -> str:
@@ -85,7 +83,7 @@ def is_set_marker(raw: str) -> bool:
 
 def parse_line(raw: str) -> ParsedLine | None:
     text = clean_line(raw)
-    if not text or is_set_marker(text):
+    if not text or is_set_marker(text) or text.startswith(PAGE_MARKER):
         return None
     if any(
         marker in text
@@ -123,16 +121,18 @@ def parse_line(raw: str) -> ParsedLine | None:
     if not title or not artist:
         return None
 
-    is_seed = explicit_seed or recommendation_heading or normalize(title) in {
-        normalize(value) for value in SEED_TITLES
-    }
-    return ParsedLine(TeacherTrack(title, artist), is_seed)
+    return ParsedLine(
+        TeacherTrack(title, artist),
+        explicit_seed or recommendation_heading,
+    )
 
 
 def teacher_blocks(lines: list[str]) -> list[list[TeacherTrack]]:
     blocks: list[list[TeacherTrack]] = []
     seed: TeacherTrack | None = None
     current: list[TeacherTrack] = []
+    page_index = -1
+    expected_index = 0
 
     def flush() -> None:
         nonlocal current
@@ -150,7 +150,44 @@ def teacher_blocks(lines: list[str]) -> list[list[TeacherTrack]]:
                 blocks.append(unique)
         current = []
 
+    def expected_seed(track: TeacherTrack) -> bool:
+        nonlocal expected_index
+        if page_index < 0 or page_index >= len(EXPECTED_SEEDS_BY_PAGE):
+            return False
+        expected = EXPECTED_SEEDS_BY_PAGE[page_index]
+        if expected_index >= len(expected):
+            return False
+        title_key = normalize(track.title)
+        wanted = normalize(expected[expected_index])
+        if title_key != wanted:
+            return False
+        expected_index += 1
+        return True
+
+    def advance_expected_for_explicit(track: TeacherTrack) -> None:
+        nonlocal expected_index
+        if page_index < 0 or page_index >= len(EXPECTED_SEEDS_BY_PAGE):
+            return
+        expected = EXPECTED_SEEDS_BY_PAGE[page_index]
+        title_key = normalize(track.title)
+        for index in range(expected_index, len(expected)):
+            if normalize(expected[index]) == title_key:
+                expected_index = index + 1
+                return
+
     for raw in lines:
+        clean = clean_line(raw)
+        if clean.startswith(PAGE_MARKER):
+            flush()
+            seed = None
+            current = []
+            try:
+                page_index = int(clean.split(":", 1)[1])
+            except (IndexError, ValueError):
+                page_index += 1
+            expected_index = 0
+            continue
+
         if is_set_marker(raw):
             flush()
             if seed is not None:
@@ -160,11 +197,16 @@ def teacher_blocks(lines: list[str]) -> list[list[TeacherTrack]]:
         parsed = parse_line(raw)
         if parsed is None:
             continue
-        if parsed.is_seed:
+
+        starts_seed = parsed.explicit_seed or expected_seed(parsed.track)
+        if starts_seed:
             flush()
             seed = parsed.track
             current = [seed]
+            if parsed.explicit_seed:
+                advance_expected_for_explicit(parsed.track)
             continue
+
         if seed is not None:
             current.append(parsed.track)
 
@@ -192,7 +234,8 @@ def fetch_lines() -> list[str]:
             return ""
         return "".join(str(run[0]) for run in prop if isinstance(run, list) and run)
 
-    for page in PAGES:
+    for page_index, page in enumerate(PAGES):
+        lines.append(f"{PAGE_MARKER}:{page_index}")
         blocks: dict = {}
         cursor: list = []
         chunk = 0
