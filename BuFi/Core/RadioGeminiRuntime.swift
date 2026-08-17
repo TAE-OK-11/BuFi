@@ -7,16 +7,21 @@ private struct RadioGeminiHistoryTurn: Sendable {
 
 /// Keeps one lightweight Gemini chat thread for the active autoplay queue.
 /// The API itself is stateless, so a "same conversation" means replaying the
-/// previous user/assistant turn as message history. A new queue naturally
-/// starts a new thread because none of the previous recommendation ids appear
-/// in the next prompt's Seed/Recent section.
+/// previous user/assistant turn as message history. Candidate ids are no longer
+/// exposed to Gemini; artist/title anchors reconnect the next playback chapter.
 private actor RadioGeminiConversationMemory {
     static let shared = RadioGeminiConversationMemory()
+
+    private struct TrackAnchor: Sendable {
+        let artist: String
+        let album: String
+        let title: String
+    }
 
     private struct Session: Sendable {
         let id: UUID
         var turns: [RadioGeminiHistoryTurn]
-        var selectedIDs: Set<String>
+        var anchors: [TrackAnchor]
         var updatedAt: Date
     }
 
@@ -28,15 +33,18 @@ private actor RadioGeminiConversationMemory {
         let now = Date()
         if let session = active,
            now.timeIntervalSince(session.updatedAt) <= lifetime,
-           !session.selectedIDs.isEmpty,
-           session.selectedIDs.contains(where: { prompt.contains($0) }) {
+           !session.anchors.isEmpty,
+           session.anchors.contains(where: { anchor in
+               prompt.localizedCaseInsensitiveContains(anchor.artist)
+                   && prompt.localizedCaseInsensitiveContains(anchor.title)
+           }) {
             return (session.id, session.turns)
         }
 
         let session = Session(
             id: UUID(),
             turns: [],
-            selectedIDs: [],
+            anchors: [],
             updatedAt: now
         )
         active = session
@@ -46,7 +54,7 @@ private actor RadioGeminiConversationMemory {
     func commit(id: UUID, prompt: String, response: String) {
         guard var session = active, session.id == id else { return }
         // One prior full turn is enough to preserve the station's decisions and
-        // rationale context without letting a long 50-card prompt grow forever.
+        // path without letting repeated candidate lists grow without bound.
         let carriedPrompt = prompt.count <= previousPromptLimit
             ? prompt
             : String(prompt.prefix(previousPromptLimit))
@@ -54,26 +62,38 @@ private actor RadioGeminiConversationMemory {
             RadioGeminiHistoryTurn(role: "user", content: carriedPrompt),
             RadioGeminiHistoryTurn(role: "assistant", content: response)
         ]
-        session.selectedIDs = Self.ids(from: response)
+        session.anchors = Self.anchors(from: response)
         session.updatedAt = Date()
         active = session
     }
 
-    private static func ids(from raw: String) -> Set<String> {
+    private static func anchors(from raw: String) -> [TrackAnchor] {
         guard let json = LyricJSONExtractor.object(from: raw),
               let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any],
-              let values = dictionary["ids"] as? [String] else {
+              let tracks = dictionary["tracks"] as? [[String: Any]] else {
             return []
         }
-        return Set(values.filter { !$0.isEmpty })
+        return tracks.prefix(20).compactMap { track in
+            guard let artist = track["artist"] as? String,
+                  let title = track["title"] as? String,
+                  !artist.isEmpty,
+                  !title.isEmpty else {
+                return nil
+            }
+            return TrackAnchor(
+                artist: artist,
+                album: track["album"] as? String ?? "",
+                title: title
+            )
+        }
     }
 }
 
 /// Recommendation-only Gemini route. Radio intentionally does not fall back to
-/// Groq, OpenRouter, or Apple Foundation Models: the local BuFi algorithm owns
-/// candidate generation and Gemini only performs the final 50-to-20 program.
+/// Groq, OpenRouter, or Apple Foundation Models. Last.fm/ListenBrainz discover
+/// records and Gemini alone chooses and sequences the final radio chapter.
 enum RadioGeminiRuntime {
     private enum Attempt {
         case text(String)
@@ -183,7 +203,7 @@ enum RadioGeminiRuntime {
     ) -> [[String: Any]] {
         var result: [[String: Any]] = [[
             "role": "system",
-            "content": "Continue the same personal-radio conversation when history is present. Return one JSON object only, start the ids array immediately, and never invent ids."
+            "content": "Continue the same personal-radio conversation when history is present. Return exactly one JSON object with a tracks array. Select only exact artist/album/title tuples from the supplied candidate list and never invent songs."
         ]]
         result.append(contentsOf: history.map {
             ["role": $0.role, "content": $0.content]
