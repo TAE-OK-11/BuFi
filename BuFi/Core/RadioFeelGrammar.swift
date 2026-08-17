@@ -116,22 +116,31 @@ enum RadioFeelGrammar {
     After three to five high-energy cuts, allow one softer breath, then come back.
     """
 
-    /// Longer Gemini director brief. Teaches rooms and handoffs from observed
-    /// personal-radio sets without naming those catalogs as a playlist to copy.
+    /// Gemini/Flash-Lite director brief for endless playback. The first id is
+    /// intentionally treated as a separate, higher-stakes decision because the
+    /// streaming caller can use it before the rest of the JSON has finished.
     static let geminiRadioBrief = """
-    Program a short personal radio block. You have taste and freedom inside these rules only.
+    Choose the next records for endless personal radio. The first id is the urgent decision; the rest are a short continuation, not a standalone playlist.
 
-    Rules:
-    1. Sequence a listen, not a similarity list. The next song should feel inevitable, not copied.
-    2. Stay in the seed's cultural room (Western pop radio vs bright idol crush vs concept/performance K-pop vs high-concept electro). "Pop" as a tag is not a room change.
-    3. K-pop walks to similar adjacent artists — same generation or neighboring sound — not a random idol shuffle.
-    4. Use feel, lyric memory, excerpts, BPM, and your own knowledge of the titles. Thin cards: infer from what you know. Never invent ids.
-    5. Same artist+title is one recording. Do not park live/acoustic next to the original. Same artist may return later; do not run three in a row.
-    6. You may lift, drop, or surprise once if it still belongs. Do not jerk the body or flip the story for no reason.
-    7. Drop off-lane candidates. If you still need songs, ask with need weights. Fewer than the requested count is fine.
+    Decision order:
+    1. NEXT TRACK: ids[0] must be the best immediate handoff from the Seed. Use the recent session only to break close ties; do not ignore what is playing now.
+    2. SONG FIT FIRST: measured feel/BPM/energy, lyric mood/theme, genre and cultural room outrank artist name, fame, favorite status, or simple tag overlap.
+    3. NO ECHO: do not repeat recent tracks, the same title, or live/acoustic/alternate siblings. Never put the same artist back-to-back. An artist may return later as an anchor after other artists.
+    4. PRESERVE MOTION: make the first 2-3 picks naturally continuous. After that, allow at most one deliberate lift/drop or surprise, then resolve back into the lane.
+    5. SESSION, NOT SEED CLONING: recent tracks describe the current direction, but do not copy their artist pattern. The seed plus the latest session should feel like one listening state.
+    6. KEEP THE ROOM: Western pop, bright idol pop, concept/performance K-pop, electro, R&B, etc. should move to genuinely adjacent records. A shared "pop" label alone is not enough. K-pop should prefer neighboring artists/sounds rather than a random idol shuffle.
+    7. TRUST LOCAL SIGNALS: if model memory disagrees with measured BPM/energy/feel or the supplied lyric memory, trust the supplied data. Never invent songs or ids.
+    8. QUALITY OVER QUOTA: drop clearly off-lane candidates. If the supplied pack cannot fill the block well, return fewer ids and request only the missing shape with need.
 
-    need example:
-    {"ids":["id"],"need":{"count":3,"feel":"sparkle","moods":["yearning"],"energy":[0.4,0.7],"genre":"k-pop","vocal":"female","want":"adjacent artists in the same room"}}
+    Feel handoffs:
+    sparkle -> sparkle/rush, sometimes bittersweet; rush -> rush/sparkle; bittersweet -> bittersweet/glow/hush; cool -> cool/electro; electro -> electro/cool; glow -> glow/hush/gentle sparkle; hush -> hush/bittersweet. Avoid abrupt hush<->rush/electro jumps.
+
+    Output behavior:
+    - Think silently and emit JSON immediately; no preface, markdown, or analysis.
+    - Put the single best next song first as ids[0], then order the remaining ids for playback.
+    - 4-8 strong ids are better than padding with weak choices.
+    - Use need only when more candidates are actually required.
+    - need schema: {"count":0,"feel":"","moods":[],"energy":[0.0,1.0],"genre":"","vocal":"","want":""}
     """
 
     private static func blob(song: Song, signature: LyricSignature?) -> String {
