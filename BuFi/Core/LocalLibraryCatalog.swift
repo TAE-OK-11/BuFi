@@ -103,6 +103,41 @@ actor LocalLibraryCatalog {
         }
     }
 
+    func persistNow() async {
+        persistTask?.cancel()
+        persistTask = nil
+        guard let scope = activeScope else { return }
+        await persist(scope: scope)
+    }
+
+    func cachedMatches(
+        source: String,
+        key: String,
+        maximumAge: TimeInterval
+    ) async -> [Song] {
+        guard let scope = activeScope, !key.isEmpty else { return [] }
+        return await AppDatabase.shared.loadExternalRecommendationCache(
+            scope: scope,
+            source: source,
+            key: key,
+            maximumAge: maximumAge
+        )
+    }
+
+    func storeCachedMatches(
+        _ songs: [Song],
+        source: String,
+        key: String
+    ) async {
+        guard let scope = activeScope, !key.isEmpty, !songs.isEmpty else { return }
+        _ = await AppDatabase.shared.saveExternalRecommendationCache(
+            songs,
+            scope: scope,
+            source: source,
+            key: key
+        )
+    }
+
     func songIDs() -> Set<String> {
         Set(entries.keys)
     }

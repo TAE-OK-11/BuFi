@@ -568,11 +568,7 @@ final class AppModel: ObservableObject {
                       self.client === client else { return }
                 lastHomeSnapshotSave = saveNow
             }
-            scheduleLibraryCatalogRefresh(
-                client: client,
-                snapshot: resolvedSnapshot,
-                generation: generation
-            )
+            scheduleLibraryCatalogRefresh(snapshot: resolvedSnapshot)
             if needsFullRefresh {
                 scheduleExternalRecommendationRefresh(
                     client: client,
@@ -2092,8 +2088,7 @@ final class AppModel: ObservableObject {
     }
 
     private func enrichingExternalRecommendations(
-        in snapshot: HomeSnapshot,
-        client: OpenSubsonicClient
+        in snapshot: HomeSnapshot
     ) async -> HomeSnapshot {
         let lastFMKey = await secureStore.loadSecret(account: Self.lastFMKeyAccount) ?? ""
         let listenBrainzToken = await secureStore.loadSecret(
@@ -2103,18 +2098,6 @@ final class AppModel: ObservableObject {
             ?? snapshot.starredSongs.first
             ?? snapshot.randomSongs.first
 
-        async let lastFMCandidates = Self.lastFMCandidates(
-            seed: seed,
-            apiKey: lastFMKey
-        )
-        async let listenBrainzCandidates =
-            ExternalRecommendationClient.shared.listenBrainz(
-                username: listenBrainzUsername,
-                token: listenBrainzToken,
-                limit: 16
-            )
-
-        let candidates = await (lastFMCandidates, listenBrainzCandidates)
         let knownSongs = Self.uniqueSongs(
             snapshot.serverRecommendedSongs +
             snapshot.recommendedSongs +
@@ -2122,15 +2105,15 @@ final class AppModel: ObservableObject {
             snapshot.starredSongs +
             snapshot.mostPlayedSongs
         )
-        async let lastFMSongs = client.matchExternalRecommendations(
-            candidates.0,
-            library: knownSongs,
-            limit: 12
+        async let lastFMSongs = Self.resolvedLastFMSongs(
+            seed: seed,
+            apiKey: lastFMKey,
+            knownSongs: knownSongs
         )
-        async let listenBrainzSongs = client.matchExternalRecommendations(
-            candidates.1,
-            library: knownSongs,
-            limit: 12
+        async let listenBrainzSongs = Self.resolvedListenBrainzSongs(
+            username: listenBrainzUsername,
+            token: listenBrainzToken,
+            knownSongs: knownSongs
         )
 
         var value = snapshot
@@ -2144,16 +2127,70 @@ final class AppModel: ObservableObject {
         return value
     }
 
-    private nonisolated static func lastFMCandidates(
+    private nonisolated static func resolvedLastFMSongs(
         seed: Song?,
-        apiKey: String
-    ) async -> [ExternalRecommendationCandidate] {
+        apiKey: String,
+        knownSongs: [Song]
+    ) async -> [Song] {
+        let cacheKey = seed?.id ?? ""
+        let cached = await LocalLibraryCatalog.shared.cachedMatches(
+            source: "lastfm",
+            key: cacheKey,
+            maximumAge: 12 * 60 * 60
+        )
+        if !cached.isEmpty { return cached }
         guard let seed, !apiKey.isEmpty else { return [] }
-        return await ExternalRecommendationClient.shared.lastFM(
+        let candidates = await ExternalRecommendationClient.shared.lastFM(
             seed: seed,
             apiKey: apiKey,
             limit: 20
         )
+        let songs = await LocalLibraryCatalog.shared.match(
+            candidates,
+            additionalSongs: knownSongs,
+            limit: 12
+        )
+        if !songs.isEmpty {
+            await LocalLibraryCatalog.shared.storeCachedMatches(
+                songs,
+                source: "lastfm",
+                key: cacheKey
+            )
+        }
+        return songs
+    }
+
+    private nonisolated static func resolvedListenBrainzSongs(
+        username: String,
+        token: String?,
+        knownSongs: [Song]
+    ) async -> [Song] {
+        let cacheKey = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cached = await LocalLibraryCatalog.shared.cachedMatches(
+            source: "listenbrainz",
+            key: cacheKey,
+            maximumAge: 24 * 60 * 60
+        )
+        if !cached.isEmpty { return cached }
+        guard !cacheKey.isEmpty else { return [] }
+        let candidates = await ExternalRecommendationClient.shared.listenBrainz(
+            username: cacheKey,
+            token: token,
+            limit: 16
+        )
+        let songs = await LocalLibraryCatalog.shared.match(
+            candidates,
+            additionalSongs: knownSongs,
+            limit: 12
+        )
+        if !songs.isEmpty {
+            await LocalLibraryCatalog.shared.storeCachedMatches(
+                songs,
+                source: "listenbrainz",
+                key: cacheKey
+            )
+        }
+        return songs
     }
 
     private func scheduleExternalRecommendationRefresh(
@@ -2190,8 +2227,7 @@ final class AppModel: ObservableObject {
         recommendationTask = Task { [weak self] in
             guard let self else { return }
             let enriched = await self.enrichingExternalRecommendations(
-                in: source,
-                client: client
+                in: source
             )
             guard !Task.isCancelled,
                   requestGeneration == self.recommendationGeneration,
@@ -2447,11 +2483,7 @@ final class AppModel: ObservableObject {
             self.historySessionToken = historySession
             self.catalogSessionToken = catalogSession
             self.publishHome(applyingFavoriteOverrides(to: snapshot))
-            self.scheduleLibraryCatalogRefresh(
-                client: client,
-                snapshot: snapshot,
-                generation: generation
-            )
+            self.scheduleLibraryCatalogRefresh(snapshot: snapshot)
             self.lastFullRefresh = nil
             self.lastHomeSnapshotSave = nil
             self.connectedServerAddress = Self.serverDisplayAddress(
@@ -2609,25 +2641,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func scheduleLibraryCatalogRefresh(
-        client: OpenSubsonicClient,
-        snapshot: HomeSnapshot,
-        generation: Int
-    ) {
+    private func scheduleLibraryCatalogRefresh(snapshot: HomeSnapshot) {
         let seedSongs = snapshot.knownSongs()
-        Task(priority: .utility) { [weak self] in
-            guard let self else { return }
+        Task(priority: .utility) {
             await LocalLibraryCatalog.shared.ingest(seedSongs)
             let historySongs = await ListeningHistoryStore.shared.catalogSongs()
             await LocalLibraryCatalog.shared.ingest(historySongs)
-            guard generation == self.sessionGeneration,
-                  self.client === client else { return }
-            let extra = await client.expandLibraryCatalog(
-                excluding: await LocalLibraryCatalog.shared.songIDs()
-            )
-            guard generation == self.sessionGeneration,
-                  self.client === client else { return }
-            await LocalLibraryCatalog.shared.ingest(extra)
+            await LocalLibraryCatalog.shared.persistNow()
         }
     }
 }

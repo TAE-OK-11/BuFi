@@ -548,6 +548,73 @@ actor AppDatabase {
         }
     }
 
+    func loadExternalRecommendationCache(
+        scope: String,
+        source: String,
+        key: String,
+        maximumAge: TimeInterval
+    ) async -> [Song] {
+        guard let pool = await databasePool(),
+              !scope.isEmpty,
+              !source.isEmpty,
+              !key.isEmpty else { return [] }
+        do {
+            return try await pool.read { db in
+                guard let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT saved_at, song_data FROM external_recommendation_cache
+                    WHERE account_scope = ? AND source = ? AND cache_key = ?
+                    """,
+                    arguments: [scope, source, key]
+                ) else { return [] }
+                let savedAt = Self.date(row["saved_at"] as Double)
+                guard Date().timeIntervalSince(savedAt) <= maximumAge else {
+                    return []
+                }
+                let data: Data = row["song_data"]
+                return (try? Self.decode([Song].self, from: data)) ?? []
+            }
+        } catch {
+            return []
+        }
+    }
+
+    @discardableResult
+    func saveExternalRecommendationCache(
+        _ songs: [Song],
+        scope: String,
+        source: String,
+        key: String
+    ) async -> Bool {
+        guard let pool = await databasePool(),
+              !scope.isEmpty,
+              !source.isEmpty,
+              !key.isEmpty,
+              !songs.isEmpty,
+              let data = try? Self.encode(songs) else { return false }
+        do {
+            try await pool.write { db in
+                try db.execute(
+                    sql: """
+                    INSERT INTO external_recommendation_cache (
+                        account_scope, source, cache_key, saved_at, song_data
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(account_scope, source, cache_key) DO UPDATE SET
+                        saved_at = excluded.saved_at,
+                        song_data = excluded.song_data
+                    """,
+                    arguments: [
+                        scope, source, key, Date().timeIntervalSince1970, data
+                    ]
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func removeHomeSnapshot(scope: String) async {
         guard let pool = await databasePool() else { return }
         try? await pool.write { db in
@@ -1389,6 +1456,18 @@ actor AppDatabase {
                     ON library_catalog(account_scope, mbid);
                 CREATE INDEX library_catalog_identity
                     ON library_catalog(account_scope, title_key, artist_key);
+                """)
+        }
+        migrator.registerMigration("external-recommendation-cache-v8") { db in
+            try db.execute(sql: """
+                CREATE TABLE external_recommendation_cache (
+                    account_scope TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    saved_at DOUBLE NOT NULL,
+                    song_data BLOB NOT NULL,
+                    PRIMARY KEY (account_scope, source, cache_key)
+                ) WITHOUT ROWID;
                 """)
         }
         return migrator
