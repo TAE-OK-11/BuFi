@@ -38,6 +38,22 @@ enum RecommendationAIRouting {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let selected = settings.radioModel
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let canonicalSelected = LyricInferenceRuntime.canonicalCloudModel(selected)
+
+        // A model picked explicitly in the recommendation-model menu owns the
+        // recommendation route. In particular, do not replace Flash-Lite with
+        // the separate lyric-analysis Gemini model just because Google AI is
+        // the configured lyric provider.
+        switch canonicalSelected.lowercased() {
+        case "gemini-3.6-flash":
+            resolved.radioModel = LyricIntelligenceSettings.geminiFlashModel
+            return resolved
+        case "gemini-3.5-flash-lite":
+            resolved.radioModel = LyricIntelligenceSettings.geminiFlashLiteModel
+            return resolved
+        default:
+            break
+        }
 
         // These are explicit recommendation-engine choices with their own
         // provider routing. Do not rewrite them just because lyric analysis is
@@ -66,13 +82,8 @@ enum RecommendationAIRouting {
             return resolved
         }
 
-        // `RadioModelOption` still carries the old Gemini aliases so that old
-        // preferences migrate cleanly, while the HTTP runtime canonicalizes
-        // them to 3.6 Flash / 3.5 Flash-Lite. If a new canonical model string
-        // is stored directly, feeding it to the old enum would incorrectly
-        // resolve to Groq. Convert the current Gemini choice back to the known
-        // alias here, then let LyricInferenceRuntime canonicalize it at the
-        // network boundary.
+        // The lyric-analysis Gemini model is only an automatic recommendation
+        // default. It must not override an explicit recommendation-model pick.
         let preferredGemini = LyricInferenceRuntime.canonicalCloudModel(
             settings.geminiModel
         )
@@ -83,14 +94,11 @@ enum RecommendationAIRouting {
             geminiRadioAlias = LyricIntelligenceSettings.geminiFlashModel
         }
 
-        // Selecting Google AI Studio is explicit intent to use Gemini. An old
-        // Groq radio preference (for example OSS 20B from earlier testing) must
-        // not silently override that provider choice after a Gemini key has
-        // been saved. This is the case that made the algorithm appear to ignore
-        // a valid Gemini key.
+        // Selecting Google AI Studio is explicit intent to use Google AI when
+        // no Google recommendation model was picked directly. An old Groq
+        // preference must not silently override a valid Gemini key.
         if settings.provider == .googleAI {
-            if LyricInferenceRuntime.canonicalCloudModel(selected)
-                != preferredGemini {
+            if canonicalSelected != preferredGemini {
                 RecommendationDiagnostics.record(
                     kind: .llm,
                     level: .info,
@@ -98,13 +106,6 @@ enum RecommendationAIRouting {
                     detail: "google-ai key loaded · \(preferredGemini)"
                 )
             }
-            resolved.radioModel = geminiRadioAlias
-            return resolved
-        }
-
-        // A radio model that is already Gemini stays Gemini even if it was
-        // saved under the current canonical ID rather than the legacy alias.
-        if selected.lowercased().contains("gemini") {
             resolved.radioModel = geminiRadioAlias
             return resolved
         }
