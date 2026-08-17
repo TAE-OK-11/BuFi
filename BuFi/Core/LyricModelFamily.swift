@@ -400,15 +400,18 @@ enum LyricModelPrompts {
             """
         case .gemini:
             return """
-            Build the mix "\(title)" from listed ids only. \(context)
-            Stay in the locked lane — do not invent a new mood:
-            mood: \(brief.mood)
-            theme: \(brief.theme)
-            audio: \(brief.audioFeel)
-            Today's listens are the weather. Sequence one room, not a shuffle.
+            Sequence "\(title)" using only the listed library ids. \(context)
+            Target lane: mood=\(brief.mood); theme=\(brief.theme); audio=\(brief.audioFeel).
 
-            One JSON object, start with {:
-            {"ids":["id"],"subtitle":"한 줄"}
+            Priority:
+            1. Continue today's listening direction for this hour/season without copying it.
+            2. Judge song-level fit first: mood/theme/feel/BPM/energy/valence > artist identity, fame, or favorite status.
+            3. Make tracks 1-3 immediately convincing. Keep neighboring transitions smooth; allow at most one deliberate energy/valence jump, then resolve it.
+            4. Never place the same artist back-to-back. Avoid near-duplicate, live, acoustic, or alternate siblings. Do not let one artist dominate.
+            5. Pick the strongest 8-12 ids when enough fit. Omit a clearly wrong candidate instead of forcing the quota. Never invent ids.
+
+            Return JSON only, immediately:
+            {"ids":["ordered id"],"subtitle":"short natural line in the user's language"}
 
             Today:
             \(today)
