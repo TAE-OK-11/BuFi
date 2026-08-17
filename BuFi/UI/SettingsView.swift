@@ -3,7 +3,6 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
-    @EnvironmentObject private var audio: AudioEngine
     @State private var offlineBytes: Int64 = 0
     @State private var confirmOfflineRemoval = false
     @State private var confirmArtworkRemoval = false
@@ -16,12 +15,6 @@ struct SettingsView: View {
     @AppStorage("player-background-appearance")
     private var playerBackgroundAppearance = PlayerBackgroundAppearance.classic.rawValue
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
-    @AppStorage("auto-open-player") private var autoOpenPlayer = false
-    @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
-    @AppStorage("restore-play-queue") private var restorePlayQueue = true
-    @AppStorage("algorithmic-autoplay-enabled")
-    private var algorithmicAutoplayEnabled = true
-    @AppStorage("keep-screen-awake") private var keepScreenAwake = false
     @AppStorage("server-sync-interval") private var syncInterval = 300.0
     @AppStorage("offline-wifi-only") private var offlineWiFiOnly = true
     @AppStorage("offline-prefetch-count") private var offlinePrefetchCount = 0
@@ -36,7 +29,7 @@ struct SettingsView: View {
                     appearanceSection
                     syncSection
                     recommendationSection
-                    playbackSection
+                    PlaybackSettingsSection()
                     offlineSection
                     appSection
                     logoutRow
@@ -49,12 +42,6 @@ struct SettingsView: View {
             .tint(BuFiTheme.accent)
             .task {
                 offlineBytes = await OfflineStore.shared.totalBytes()
-            }
-            .onChange(of: restorePlayQueue) { _, enabled in
-                audio.setQueueRestoration(enabled: enabled)
-            }
-            .onChange(of: keepScreenAwake) { _, _ in
-                audio.refreshIdleTimerPreference()
             }
             .confirmationDialog(
                 "오프라인 음악을 모두 삭제할까요?",
@@ -140,7 +127,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.segmented)
 
-                settingsDivider
+                SettingsDivider()
 
                 settingLabel("플레이어 스타일", icon: "music.note.house")
                 Picker("플레이어 스타일", selection: $playerAppearance) {
@@ -151,7 +138,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 settingsNote("Classic은 기존 디자인을 유지하고 Liquid Glass는 재생바만 Apple 스타일로 표시합니다. Dynamic은 잠금화면처럼 제어 요소를 유리 카드에 모읍니다.")
 
-                settingsDivider
+                SettingsDivider()
 
                 settingLabel("플레이어 배경", icon: "paintpalette.fill")
                 Picker("플레이어 배경", selection: $playerBackgroundAppearance) {
@@ -162,7 +149,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 settingsNote("기본은 대표색을 단색으로, 다중 컬러는 앨범 속 색의 위치를 반영합니다. 밝게는 추출색만 더 밝고 선명하게 표시합니다.")
 
-                settingsDivider
+                SettingsDivider()
 
                 Toggle(isOn: $motionEnabled) {
                     Label("애니메이션 및 모션", systemImage: "sparkles")
@@ -226,7 +213,18 @@ struct SettingsView: View {
         .padding(.horizontal, 16)
     }
 
-    private var playbackSection: some View {
+}
+
+private struct PlaybackSettingsSection: View {
+    @EnvironmentObject private var audio: AudioEngine
+    @AppStorage("auto-open-player") private var autoOpenPlayer = false
+    @AppStorage("lyrics-auto-scroll") private var lyricsAutoScroll = true
+    @AppStorage("restore-play-queue") private var restorePlayQueue = true
+    @AppStorage("algorithmic-autoplay-enabled")
+    private var algorithmicAutoplayEnabled = true
+    @AppStorage("keep-screen-awake") private var keepScreenAwake = false
+
+    var body: some View {
         SettingsGroup(title: "재생") {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 12) {
@@ -242,14 +240,14 @@ struct SettingsView: View {
                 }
                 settingsNote("자동은 iPhone이 지원하는 형식은 원본으로 재생하고, 지원하지 않는 형식은 서버에서 AAC 256kbps로 변환합니다.")
 
-                settingsDivider
+                SettingsDivider()
 
                 settingsToggle("플레이어 자동 열기", icon: "rectangle.expand.vertical", value: $autoOpenPlayer)
                 settingsToggle("재생 대기목록 기억", icon: "clock.arrow.circlepath", value: $restorePlayQueue)
                 settingsToggle("추천곡 계속 재생", icon: "infinity.circle", value: $algorithmicAutoplayEnabled)
                 settingsNote("재생목록이 끝나기 전에 서버 유사곡을 추가해 음악이 끊기지 않도록 합니다.")
 
-                settingsDivider
+                SettingsDivider()
 
                 HStack(spacing: 12) {
                     settingLabel("셔플 방식", icon: "shuffle")
@@ -264,7 +262,7 @@ struct SettingsView: View {
                 }
                 settingsNote("반복 줄이기는 최근 재생곡을 피해서 같은 곡이 짧은 간격으로 나오는 현상을 줄입니다.")
 
-                settingsDivider
+                SettingsDivider()
 
                 settingsToggle("가사 자동 스크롤", icon: "text.line.first.and.arrowtriangle.forward", value: $lyricsAutoScroll)
                 settingsToggle("재생 중 화면 켜두기", icon: "sun.max", value: $keepScreenAwake)
@@ -277,14 +275,22 @@ struct SettingsView: View {
             }
         }
         .padding(.horizontal, 16)
+        .onChange(of: restorePlayQueue) { _, enabled in
+            audio.setQueueRestoration(enabled: enabled)
+        }
+        .onChange(of: keepScreenAwake) { _, _ in
+            audio.refreshIdleTimerPreference()
+        }
     }
+}
 
+extension SettingsView {
     private var offlineSection: some View {
         SettingsGroup(title: "오프라인 및 저장 공간") {
             VStack(alignment: .leading, spacing: 14) {
                 settingsToggle("Wi-Fi에서만 저장", icon: "wifi", value: $offlineWiFiOnly)
 
-                settingsDivider
+                SettingsDivider()
 
                 HStack(spacing: 12) {
                     settingLabel("다음 곡 선캐시", icon: "arrow.down.circle")
@@ -320,7 +326,7 @@ struct SettingsView: View {
                         .monospacedDigit()
                 }
 
-                settingsDivider
+                SettingsDivider()
 
                 Button("오프라인 음악 모두 삭제", role: .destructive) {
                     confirmOfflineRemoval = true
@@ -338,12 +344,12 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 LabeledContent("최소 iOS", value: "17.0")
                 LabeledContent("버전", value: versionText)
-                settingsDivider
+                SettingsDivider()
                 Label("적응형 배터리·메모리 최적화", systemImage: "leaf.fill")
                     .foregroundStyle(.primary)
                 Label("분석·광고 SDK 없음", systemImage: "hand.raised.fill")
                     .foregroundStyle(.primary)
-                settingsDivider
+                SettingsDivider()
                 NavigationLink {
                     OpenSourceNoticesView()
                 } label: {
@@ -386,50 +392,6 @@ struct SettingsView: View {
             .disabled(isLoggingOut)
         }
         .padding(.horizontal, 16)
-    }
-
-    private func settingsToggle(
-        _ title: LocalizedStringKey,
-        icon: String,
-        value: Binding<Bool>
-    ) -> some View {
-        Toggle(isOn: value) {
-            settingLabel(title, icon: icon)
-        }
-        .font(.system(size: 16, weight: .semibold))
-    }
-
-    private func settingLabel(
-        _ title: LocalizedStringKey,
-        icon: String
-    ) -> some View {
-        Label {
-            Text(title)
-                .font(.system(size: 16, weight: .semibold))
-        } icon: {
-            settingIcon(icon)
-        }
-    }
-
-    private func settingIcon(_ name: String) -> some View {
-        Image(systemName: name)
-            .font(.system(size: 14, weight: .bold))
-            .foregroundStyle(BuFiTheme.accent)
-            .frame(width: 30, height: 30)
-            .background(BuFiTheme.accent.opacity(0.11), in: Circle())
-    }
-
-    private func settingsNote(_ text: LocalizedStringKey) -> some View {
-        Text(text)
-            .font(.system(size: 12.5))
-            .foregroundStyle(.secondary)
-            .lineSpacing(2)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var settingsDivider: some View {
-        Divider()
-            .overlay(BuFiTheme.separator.opacity(0.34))
     }
 
     private var serverTitle: String {
@@ -479,6 +441,53 @@ struct SettingsView: View {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
             ?? "1"
         return "\(version) (\(build))"
+    }
+}
+
+@ViewBuilder
+private func settingsToggle(
+    _ title: LocalizedStringKey,
+    icon: String,
+    value: Binding<Bool>
+) -> some View {
+    Toggle(isOn: value) {
+        settingLabel(title, icon: icon)
+    }
+    .font(.system(size: 16, weight: .semibold))
+}
+
+private func settingLabel(
+    _ title: LocalizedStringKey,
+    icon: String
+) -> some View {
+    Label {
+        Text(title)
+            .font(.system(size: 16, weight: .semibold))
+    } icon: {
+        settingIcon(icon)
+    }
+}
+
+private func settingIcon(_ name: String) -> some View {
+    Image(systemName: name)
+        .font(.system(size: 14, weight: .bold))
+        .foregroundStyle(BuFiTheme.accent)
+        .frame(width: 30, height: 30)
+        .background(BuFiTheme.accent.opacity(0.11), in: Circle())
+}
+
+private func settingsNote(_ text: LocalizedStringKey) -> some View {
+    Text(text)
+        .font(.system(size: 12.5))
+        .foregroundStyle(.secondary)
+        .lineSpacing(2)
+        .fixedSize(horizontal: false, vertical: true)
+}
+
+private struct SettingsDivider: View {
+    var body: some View {
+        Divider()
+            .overlay(BuFiTheme.separator.opacity(0.34))
     }
 }
 

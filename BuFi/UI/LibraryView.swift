@@ -4,7 +4,6 @@ import UIKit
 struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var library: HomeLibraryState
-    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @State private var filter = LibraryFilter.playlists
     @State private var artistPresentation = LibraryArtistPresentation.empty
 
@@ -21,7 +20,6 @@ struct LibraryView: View {
                 }
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance(idle: 56, playing: 154)
-                .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
             }
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }

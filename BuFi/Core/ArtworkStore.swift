@@ -13,6 +13,10 @@ enum ArtworkRequestSizing {
     }
 }
 
+enum UpcomingArtworkPrefetchPolicy {
+    static let upcomingCount = 3
+}
+
 struct RGBAColor: Codable, Equatable, Sendable {
     let red: Double
     let green: Double
@@ -254,7 +258,7 @@ actor ArtworkStore {
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
         guard activeScope != nil else { return }
         var seen = Set<URL>()
-        for url in urls.prefix(2) where seen.insert(url).inserted {
+        for url in urls.prefix(8) where seen.insert(url).inserted {
             guard !Task.isCancelled else { return }
             _ = try? await image(for: url, pixelSize: pixelSize)
             await Task.yield()

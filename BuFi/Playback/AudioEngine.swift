@@ -707,9 +707,10 @@ struct PlaybackPrefetchPlan: Equatable, Sendable {
         queueIndex: Int,
         quality: StreamQuality,
         maximumUpcoming: Int,
-        isActivelyPlaying: Bool
+        isActivelyPlaying: Bool,
+        requiresActivePlayback: Bool = true
     ) -> PlaybackPrefetchPlan? {
-        guard isActivelyPlaying,
+        guard (!requiresActivePlayback || isActivelyPlaying),
               maximumUpcoming > 0,
               let currentSong,
               queue.indices.contains(queueIndex),
@@ -3003,7 +3004,8 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func playbackPrefetchPlan(
-        maximumUpcoming: Int
+        maximumUpcoming: Int,
+        requiresActivePlayback: Bool = true
     ) -> PlaybackPrefetchPlan? {
         PlaybackPrefetchPlan.make(
             currentSong: currentSong,
@@ -3012,7 +3014,8 @@ final class AudioEngine: NSObject, ObservableObject {
             quality: quality,
             maximumUpcoming: maximumUpcoming,
             isActivelyPlaying:
-                wantsPlayback && player.timeControlStatus == .playing
+                wantsPlayback && player.timeControlStatus == .playing,
+            requiresActivePlayback: requiresActivePlayback
         )
     }
 
@@ -3049,7 +3052,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private func scheduleNetworkPrefetch() {
         guard allowsSpeculativeNetworkPrefetch,
               let client,
-              let plan = playbackPrefetchPlan(maximumUpcoming: 2) else {
+              let plan = playbackPrefetchPlan(
+                maximumUpcoming: UpcomingArtworkPrefetchPolicy.upcomingCount,
+                requiresActivePlayback: false
+              ) else {
             cancelNetworkPrefetch(resetKey: true)
             return
         }

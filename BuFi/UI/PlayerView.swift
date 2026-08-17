@@ -960,7 +960,7 @@ private struct PlayerProgressView: View {
     }
 }
 
-private struct PlayerElapsedLabels: View, Equatable {
+private struct PlayerElapsedLabels: View {
     let elapsed: Double
     let remaining: Double
     let hasDuration: Bool
@@ -975,13 +975,6 @@ private struct PlayerElapsedLabels: View, Equatable {
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(secondary)
         .monospacedDigit()
-    }
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        Int(lhs.elapsed) == Int(rhs.elapsed)
-            && Int(lhs.remaining) == Int(rhs.remaining)
-            && lhs.hasDuration == rhs.hasDuration
-            && lhs.secondary == rhs.secondary
     }
 }
 

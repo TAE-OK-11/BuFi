@@ -112,7 +112,6 @@ struct MusicDetailView: View {
                 }
             }
             .buFiMiniPlayerContentClearance(idle: 56, playing: 148)
-            .animation(allowsMotion ? BuFiMotion.fade : .none, value: isLoading)
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)
@@ -743,7 +742,36 @@ struct MusicDetailView: View {
             model.errorMessage = error.localizedDescription
         }
         guard !Task.isCancelled, route == loadingRoute else { return }
-        isLoading = false
+        withAnimation(allowsMotion ? BuFiMotion.fade : .none) {
+            isLoading = false
+        }
+        await prefetchDetailArtwork()
+    }
+
+    private func prefetchDetailArtwork() async {
+        var seen = Set<String>()
+        var coverIDs: [String] = []
+        func append(_ value: String?) {
+            guard let value, !value.isEmpty, seen.insert(value).inserted else { return }
+            coverIDs.append(value)
+        }
+        append(coverArt)
+        albums.prefix(8).forEach { append($0.coverArt) }
+        songs.prefix(8).forEach { append($0.artworkID) }
+        guard !coverIDs.isEmpty else { return }
+
+        let pixelSize = ArtworkRequestSizing.pixelSize(
+            pointSize: 166,
+            displayScale: 3
+        )
+        var urls: [URL] = []
+        for id in coverIDs.prefix(8) {
+            guard !Task.isCancelled else { return }
+            if let url = await model.artworkURL(id: id, size: Int(pixelSize)) {
+                urls.append(ArtworkStore.cacheURL(for: url, revision: nil))
+            }
+        }
+        await ArtworkStore.shared.prefetch(urls: urls, pixelSize: pixelSize)
     }
 
     private func receivePalette(
