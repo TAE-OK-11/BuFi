@@ -1586,84 +1586,84 @@ final class AppModel: ObservableObject {
         var ids = Set<String>()
         switch target {
         case .song:
-            let visibleSongs = [
-                home.starredSongs,
-                home.randomSongs,
-                home.recommendedSongs,
-                home.sonicRecommendedSongs,
-                home.similarArtistSongs,
-                home.genreRecommendedSongs,
-                home.topArtistSongs,
-                home.recentlyAddedSongs,
-                home.popularSongs,
-                home.playlistAffinitySongs,
-                home.serverRecommendedSongs,
-                home.lastFMRecommendedSongs,
-                home.listenBrainzRecommendedSongs,
-                home.mostPlayedSongs,
-                home.daylistSongs,
-                home.offlineBackupSongs,
-                snapshot.starredSongs,
-                snapshot.randomSongs,
-                snapshot.sonicRecommendedSongs,
-                snapshot.similarArtistSongs,
-                snapshot.genreRecommendedSongs,
-                snapshot.topArtistSongs,
-                snapshot.recentlyAddedSongs,
-                snapshot.popularSongs,
-                snapshot.playlistAffinitySongs,
-                snapshot.serverRecommendedSongs,
-                snapshot.lastFMRecommendedSongs,
-                snapshot.listenBrainzRecommendedSongs,
-                snapshot.recommendedSongs,
-                snapshot.mostPlayedSongs,
-                snapshot.daylistSongs,
-                snapshot.offlineBackupSongs,
-                searchResults.songs
-            ].flatMap { $0 }
-            ids.formUnion(visibleSongs.lazy.filter(\.isStarred).map(\.id))
-            ids.formUnion(
-                AudioEngine.shared.queue.lazy.filter(\.isStarred).map(\.id)
-            )
+            func addStarredSongs(_ songs: [Song]) {
+                ids.formUnion(songs.lazy.filter(\.isStarred).map(\.id))
+            }
+            addStarredSongs(home.starredSongs)
+            addStarredSongs(home.randomSongs)
+            addStarredSongs(home.recommendedSongs)
+            addStarredSongs(home.sonicRecommendedSongs)
+            addStarredSongs(home.similarArtistSongs)
+            addStarredSongs(home.genreRecommendedSongs)
+            addStarredSongs(home.topArtistSongs)
+            addStarredSongs(home.recentlyAddedSongs)
+            addStarredSongs(home.popularSongs)
+            addStarredSongs(home.playlistAffinitySongs)
+            addStarredSongs(home.serverRecommendedSongs)
+            addStarredSongs(home.lastFMRecommendedSongs)
+            addStarredSongs(home.listenBrainzRecommendedSongs)
+            addStarredSongs(home.mostPlayedSongs)
+            addStarredSongs(home.daylistSongs)
+            addStarredSongs(home.offlineBackupSongs)
+            addStarredSongs(snapshot.starredSongs)
+            addStarredSongs(snapshot.randomSongs)
+            addStarredSongs(snapshot.sonicRecommendedSongs)
+            addStarredSongs(snapshot.similarArtistSongs)
+            addStarredSongs(snapshot.genreRecommendedSongs)
+            addStarredSongs(snapshot.topArtistSongs)
+            addStarredSongs(snapshot.recentlyAddedSongs)
+            addStarredSongs(snapshot.popularSongs)
+            addStarredSongs(snapshot.playlistAffinitySongs)
+            addStarredSongs(snapshot.serverRecommendedSongs)
+            addStarredSongs(snapshot.lastFMRecommendedSongs)
+            addStarredSongs(snapshot.listenBrainzRecommendedSongs)
+            addStarredSongs(snapshot.recommendedSongs)
+            addStarredSongs(snapshot.mostPlayedSongs)
+            addStarredSongs(snapshot.daylistSongs)
+            addStarredSongs(snapshot.offlineBackupSongs)
+            addStarredSongs(searchResults.songs)
+            addStarredSongs(AudioEngine.shared.queue)
             if let song = AudioEngine.shared.currentSong, song.isStarred {
                 ids.insert(song.id)
             }
             for cached in albumDetailCache.values {
-                ids.formUnion(
-                    cached.value.songs.lazy.filter(\.isStarred).map(\.id)
-                )
+                addStarredSongs(cached.value.songs)
             }
             for cached in playlistDetailCache.values {
-                ids.formUnion(
-                    cached.value.songs.lazy.filter(\.isStarred).map(\.id)
-                )
+                addStarredSongs(cached.value.songs)
             }
             for cached in artistDetailCache.values {
-                ids.formUnion(
-                    cached.value.topSongs.lazy.filter(\.isStarred).map(\.id)
-                )
+                addStarredSongs(cached.value.topSongs)
             }
         case .album:
-            let visibleAlbums =
-                home.starredAlbums + home.recentAlbums + home.recentlyPlayedAlbums +
-                home.frequentAlbums + home.randomAlbums +
-                snapshot.starredAlbums + snapshot.recentAlbums +
-                snapshot.recentlyPlayedAlbums + snapshot.frequentAlbums +
-                snapshot.randomAlbums +
-                searchResults.albums
-            ids.formUnion(visibleAlbums.lazy.filter(\.isStarred).map(\.id))
+            func addStarredAlbums(_ albums: [Album]) {
+                ids.formUnion(albums.lazy.filter(\.isStarred).map(\.id))
+            }
+            addStarredAlbums(home.starredAlbums)
+            addStarredAlbums(home.recentAlbums)
+            addStarredAlbums(home.recentlyPlayedAlbums)
+            addStarredAlbums(home.frequentAlbums)
+            addStarredAlbums(home.randomAlbums)
+            addStarredAlbums(snapshot.starredAlbums)
+            addStarredAlbums(snapshot.recentAlbums)
+            addStarredAlbums(snapshot.recentlyPlayedAlbums)
+            addStarredAlbums(snapshot.frequentAlbums)
+            addStarredAlbums(snapshot.randomAlbums)
+            addStarredAlbums(searchResults.albums)
             for cached in artistDetailCache.values {
-                ids.formUnion(
-                    cached.value.albums.lazy.filter(\.isStarred).map(\.id)
-                )
+                addStarredAlbums(cached.value.albums)
             }
         case .artist:
-            let visibleArtists =
-                home.starredArtists + home.artists + home.recommendedArtists +
-                snapshot.starredArtists + snapshot.artists +
-                snapshot.recommendedArtists +
-                searchResults.artists
-            ids.formUnion(visibleArtists.lazy.filter(\.isStarred).map(\.id))
+            func addStarredArtists(_ artists: [Artist]) {
+                ids.formUnion(artists.lazy.filter(\.isStarred).map(\.id))
+            }
+            addStarredArtists(home.starredArtists)
+            addStarredArtists(home.artists)
+            addStarredArtists(home.recommendedArtists)
+            addStarredArtists(snapshot.starredArtists)
+            addStarredArtists(snapshot.artists)
+            addStarredArtists(snapshot.recommendedArtists)
+            addStarredArtists(searchResults.artists)
             for cached in artistDetailCache.values where cached.value.artist.isStarred {
                 ids.insert(cached.value.artist.id)
             }

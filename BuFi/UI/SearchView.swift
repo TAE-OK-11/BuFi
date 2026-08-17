@@ -247,9 +247,12 @@ struct SearchView: View {
             .padding(.horizontal, 16)
         case .resultSongs:
             resultSection("곡") {
-                ForEach(result.songs.indices, id: \.self) { index in
+                ForEach(
+                    Array(result.songs.enumerated()),
+                    id: \.element.id
+                ) { index, song in
                     SongRow(
-                        song: result.songs[index],
+                        song: song,
                         queue: result.songs,
                         queueIndex: index,
                         playbackOrigin: .search,
@@ -385,9 +388,9 @@ struct SearchView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(songs.indices, id: \.self) { index in
+                    ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
                         SongRow(
-                            song: songs[index],
+                            song: song,
                             queue: songs,
                             queueIndex: index
                         )
@@ -537,7 +540,7 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(songs.indices, id: \.self) { index in
+                        ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
                             HStack(spacing: 10) {
                                 Text("\(index + 1)")
                                     .font(
@@ -553,7 +556,7 @@ struct SearchView: View {
                                     .monospacedDigit()
                                     .frame(width: 24, alignment: .trailing)
                                 SongRow(
-                                    song: songs[index],
+                                    song: song,
                                     queue: songs,
                                     queueIndex: index,
                                     artworkSize: 52,

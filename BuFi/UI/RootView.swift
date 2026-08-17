@@ -23,19 +23,10 @@ private struct PlayerPresentationSession: Identifiable {
     let id: UUID
 }
 
-private struct RootSyncTaskIdentity: Hashable, Sendable {
-    let isReady: Bool
-    let isSceneActive: Bool
-    let syncInterval: TimeInterval
-    let lowPowerMode: Bool
-    let thermalKey: String
-}
-
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
-    @EnvironmentObject private var playbackActivity: PlaybackActivityState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -84,8 +75,13 @@ struct RootView: View {
         .transaction { transaction in
             if !effectiveMotion { transaction.animation = nil }
         }
-        .task(id: syncTaskID) {
-            await runAutomaticSync()
+        .background {
+            AutomaticSyncHost(
+                model: model,
+                syncInterval: syncInterval,
+                lowPowerMode: lowPowerMode,
+                thermalState: thermalState
+            )
         }
         .task(id: scenePhase == .active) {
             guard scenePhase != .active else { return }
@@ -151,17 +147,6 @@ struct RootView: View {
                 }
             }
         )
-    }
-
-    private var isThermallyConstrained: Bool {
-        switch thermalState {
-        case .serious, .critical:
-            true
-        case .nominal, .fair:
-            false
-        @unknown default:
-            true
-        }
     }
 
     private var effectiveMotion: Bool {
@@ -268,46 +253,6 @@ struct RootView: View {
             )
     }
 
-    private var syncTaskID: RootSyncTaskIdentity {
-        RootSyncTaskIdentity(
-            isReady: session.phase == .ready,
-            isSceneActive: scenePhase == .active,
-            syncInterval: syncInterval,
-            lowPowerMode: lowPowerMode,
-            thermalKey: thermalKey
-        )
-    }
-
-    private var thermalKey: String {
-        switch thermalState {
-        case .nominal: "nominal"
-        case .fair: "fair"
-        case .serious: "serious"
-        case .critical: "critical"
-        @unknown default: "unknown"
-        }
-    }
-
-    private var baseSyncInterval: TimeInterval {
-        let selected = max(syncInterval, 30)
-
-        switch thermalState {
-        case .serious, .critical:
-            return max(selected, 900)
-        case .fair:
-            return max(selected, playbackActivity.isPlaying ? 300 : 120)
-        case .nominal:
-            break
-        @unknown default:
-            return max(selected, 900)
-        }
-
-        if playbackActivity.isPlaying {
-            return max(selected, 180)
-        }
-        return selected
-    }
-
     @MainActor
     private func observePowerStateChanges() async {
         for await _ in NotificationCenter.default.notifications(
@@ -357,6 +302,75 @@ struct RootView: View {
             await ArtworkStore.shared.clearMemory()
         }
     }
+}
+
+private struct AutomaticSyncHost: View {
+    @EnvironmentObject private var session: AppSessionState
+    @EnvironmentObject private var playbackActivity: PlaybackActivityState
+    @Environment(\.scenePhase) private var scenePhase
+
+    let model: AppModel
+    let syncInterval: TimeInterval
+    let lowPowerMode: Bool
+    let thermalState: ProcessInfo.ThermalState
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .task(id: identity) {
+                await runAutomaticSync()
+            }
+    }
+
+    private var identity: AutomaticSyncIdentity {
+        AutomaticSyncIdentity(
+            isReady: session.phase == .ready,
+            isSceneActive: scenePhase == .active,
+            syncInterval: syncInterval,
+            lowPowerMode: lowPowerMode,
+            thermalKey: thermalKey
+        )
+    }
+
+    private var thermalKey: String {
+        switch thermalState {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
+    }
+
+    private var isThermallyConstrained: Bool {
+        switch thermalState {
+        case .serious, .critical:
+            true
+        case .nominal, .fair:
+            false
+        @unknown default:
+            true
+        }
+    }
+
+    private var baseSyncInterval: TimeInterval {
+        let selected = max(syncInterval, 30)
+        switch thermalState {
+        case .serious, .critical:
+            return max(selected, 900)
+        case .fair:
+            return max(selected, playbackActivity.isPlaying ? 300 : 120)
+        case .nominal:
+            break
+        @unknown default:
+            return max(selected, 900)
+        }
+        if playbackActivity.isPlaying {
+            return max(selected, 180)
+        }
+        return selected
+    }
 
     private func runAutomaticSync() async {
         guard session.phase == .ready,
@@ -382,4 +396,12 @@ struct RootView: View {
             await model.refresh(silent: true)
         }
     }
+}
+
+private struct AutomaticSyncIdentity: Hashable, Sendable {
+    let isReady: Bool
+    let isSceneActive: Bool
+    let syncInterval: TimeInterval
+    let lowPowerMode: Bool
+    let thermalKey: String
 }
