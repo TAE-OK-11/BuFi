@@ -1022,7 +1022,7 @@ private struct PlayerLyricsCard: View {
                 Button(action: onOpen) {
                     miniLyricsWindow
                         .frame(maxWidth: .infinity)
-                        .frame(height: 178, alignment: .top)
+                        .frame(height: 186, alignment: .top)
                         .clipped()
                 }
                 .buttonStyle(.plain)
@@ -1076,19 +1076,25 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        VStack(alignment: .leading, spacing: departingLineSpacing) {
+        VStack(alignment: .leading, spacing: 13) {
             ForEach(visibleMiniLyrics, id: \.line.id) { item in
                 let isActive = item.index == lyricsState.activeIndex
                 let isPast = item.index < lyricsState.activeIndex
                 Text(item.line.text)
-                    .font(.system(size: 20, weight: .bold))
-                    .tracking(-0.40)
+                    .font(
+                        .system(
+                            size: isActive ? 21 : 17,
+                            weight: isActive ? .bold : .semibold
+                        )
+                    )
+                    .tracking(-0.12)
+                    .lineSpacing(5)
                     .foregroundStyle(lyricColor(for: item.index))
                     .scaleEffect(
                         motionEnabled ? (isActive ? 1 : 0.985) : 1,
                         anchor: .topLeading
                     )
-                    .lineLimit(isPast ? 1 : nil)
+                    .lineLimit(isPast ? 1 : 3)
                     .fixedSize(horizontal: false, vertical: !isPast)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1097,7 +1103,7 @@ private struct PlayerLyricsCard: View {
                     .clipped()
             }
         }
-        .padding(.top, 6)
+        .padding(.top, 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .clipped()
@@ -1107,20 +1113,13 @@ private struct PlayerLyricsCard: View {
         )
     }
 
-    private var departingLineSpacing: CGFloat {
-        let hasDepartingLine = visibleMiniLyrics.contains {
-            $0.index < lyricsState.activeIndex
-        }
-        return hasDepartingLine ? 0 : 10
-    }
-
     private var visibleMiniLyrics: [(index: Int, line: LyricLine)] {
         let lines = lyricsState.document.lines
         guard !lines.isEmpty else { return [] }
         let active = lyricsState.activeIndex
         let start = active >= 0 ? max(lines.startIndex, active - 1) : lines.startIndex
         let focus = max(active, start)
-        let end = min(lines.endIndex, focus + 6)
+        let end = min(lines.endIndex, focus + 4)
         guard start < end else { return [] }
         return (start..<end).map { (index: $0, line: lines[$0]) }
     }
