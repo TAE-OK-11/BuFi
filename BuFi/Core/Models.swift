@@ -603,7 +603,11 @@ enum TrackWorkIdentity {
 
     private static func editionText(_ value: String) -> String {
         normalized(value)
-            .replacingOccurrences(of: "['’‘`´]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "\u{2018}", with: "")
+            .replacingOccurrences(of: "\u{2019}", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "\u{00B4}", with: "")
     }
 
     private static func containsVariantMarker(_ value: String) -> Bool {

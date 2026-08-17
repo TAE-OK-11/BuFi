@@ -1,16 +1,15 @@
 import Foundation
-import NaturalLanguage
 
 /// On-device song catalog for instant Last.fm / ListenBrainz matching.
 ///
-/// Structured keys (MBID, ISRC, normalized title+artist) handle the common
-/// case. A hashed n-gram vector plus Apple's NLContextualEmbedding (Core ML)
-/// cover fuzzy title/artist matches without calling search3 on the radio path.
+/// Structured keys (MBID, ISRC, normalized title+artist) are the only lookup
+/// used on the radio path. Neural embeddings were removed from launch because
+/// NLContextualEmbedding.load() can abort the process when language assets
+/// are missing.
 actor LocalLibraryCatalog {
     static let shared = LocalLibraryCatalog()
 
     static let maximumSongs = 2_500
-    static let hashDimensions = 64
 
     private struct Entry: Sendable {
         var song: Song
@@ -20,8 +19,6 @@ actor LocalLibraryCatalog {
         var mbid: String
         var isrc: String
         var identityKey: String
-        var hashEmbedding: [Float]
-        var neuralEmbedding: [Float]
     }
 
     private var activeScope: String?
@@ -31,10 +28,6 @@ actor LocalLibraryCatalog {
     private var songsByISRC: [String: String] = [:]
     private var songsByIdentity: [String: String] = [:]
     private var persistTask: Task<Void, Never>?
-    private var embeddingTask: Task<Void, Never>?
-    private var englishEmbedding: NLContextualEmbedding?
-    private var koreanEmbedding: NLContextualEmbedding?
-    private var didAttemptNeuralLoad = false
 
     private init() {}
 
@@ -49,8 +42,6 @@ actor LocalLibraryCatalog {
         }
         persistTask?.cancel()
         persistTask = nil
-        embeddingTask?.cancel()
-        embeddingTask = nil
         scopeGeneration &+= 1
         let generation = scopeGeneration
         if let previous = activeScope {
@@ -66,13 +57,7 @@ actor LocalLibraryCatalog {
         songsByIdentity.removeAll(keepingCapacity: true)
         for record in loaded {
             guard let song = try? Self.decodeSong(record.songData) else { continue }
-            install(
-                makeEntry(
-                    song,
-                    hashEmbedding: Self.decodeEmbedding(record.hashEmbedding),
-                    neuralEmbedding: Self.decodeEmbedding(record.neuralEmbedding)
-                )
-            )
+            install(makeEntry(song))
         }
         evictIfNeeded()
         return AccountSessionToken(
@@ -89,8 +74,6 @@ actor LocalLibraryCatalog {
         ) else { return false }
         persistTask?.cancel()
         persistTask = nil
-        embeddingTask?.cancel()
-        embeddingTask = nil
         scopeGeneration &+= 1
         if let scope = activeScope {
             await persist(scope: scope)
@@ -111,21 +94,12 @@ actor LocalLibraryCatalog {
             if let existing = entries[song.id], existing.song == song {
                 continue
             }
-            let previous = entries[song.id]
-            install(
-                makeEntry(
-                    song,
-                    hashEmbedding: previous?.hashEmbedding
-                        ?? Self.hashEmbedding(for: song),
-                    neuralEmbedding: previous?.neuralEmbedding ?? []
-                )
-            )
+            install(makeEntry(song))
             inserted = true
         }
         if inserted {
             evictIfNeeded()
             schedulePersist()
-            scheduleNeuralEmbeddings()
         }
     }
 
@@ -212,11 +186,7 @@ actor LocalLibraryCatalog {
         }
     }
 
-    private func makeEntry(
-        _ song: Song,
-        hashEmbedding: [Float],
-        neuralEmbedding: [Float]
-    ) -> Entry {
+    private func makeEntry(_ song: Song) -> Entry {
         let titleKey = Self.normalizedKey(song.title)
         let artistKey = Self.normalizedKey(song.artist)
         return Entry(
@@ -226,11 +196,7 @@ actor LocalLibraryCatalog {
             albumKey: Self.normalizedKey(song.album),
             mbid: Self.normalizedKey(song.musicBrainzId),
             isrc: Self.normalizedKey(song.isrc?.first),
-            identityKey: titleKey + "\u{1F}" + artistKey,
-            hashEmbedding: hashEmbedding.isEmpty
-                ? Self.hashEmbedding(for: song)
-                : hashEmbedding,
-            neuralEmbedding: neuralEmbedding
+            identityKey: titleKey + "\u{1F}" + artistKey
         )
     }
 
@@ -254,178 +220,14 @@ actor LocalLibraryCatalog {
                 albumKey: entry.albumKey,
                 mbid: entry.mbid,
                 isrc: entry.isrc,
-                hashEmbedding: Self.encodeEmbedding(entry.hashEmbedding),
-                neuralEmbedding: Self.encodeEmbedding(entry.neuralEmbedding)
+                hashEmbedding: Data(),
+                neuralEmbedding: Data()
             )
         }.filter { !$0.songData.isEmpty }
         _ = await AppDatabase.shared.replaceLibraryCatalog(
             records,
             scope: scope
         )
-    }
-
-    private func scheduleNeuralEmbeddings() {
-        guard embeddingTask == nil else { return }
-        embeddingTask = Task(priority: .utility) { [weak self] in
-            await self?.fillNeuralEmbeddings()
-        }
-    }
-
-    private func fillNeuralEmbeddings() async {
-        await loadNeuralModelsIfNeeded()
-        guard englishEmbedding != nil || koreanEmbedding != nil else {
-            embeddingTask = nil
-            return
-        }
-        let pending = entries.values
-            .filter { $0.neuralEmbedding.isEmpty }
-            .prefix(400)
-            .map(\.song)
-        for song in pending {
-            guard !Task.isCancelled else { break }
-            let vector = neuralVector(
-                title: song.title,
-                artist: song.artist,
-                album: song.album
-            )
-            guard !vector.isEmpty, var entry = entries[song.id] else { continue }
-            entry.neuralEmbedding = vector
-            entries[song.id] = entry
-        }
-        schedulePersist()
-        embeddingTask = nil
-    }
-
-    private func loadNeuralModelsIfNeeded() async {
-        guard !didAttemptNeuralLoad else { return }
-        didAttemptNeuralLoad = true
-        englishEmbedding = Self.loadEmbedding(for: .english)
-        koreanEmbedding = Self.loadEmbedding(for: .korean)
-    }
-
-    private func neuralVector(
-        title: String,
-        artist: String,
-        album: String
-    ) -> [Float] {
-        let text = [title, artist, album]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " • ")
-        guard !text.isEmpty else { return [] }
-        let language = Self.dominantLanguage(in: text)
-        let model = language == .korean ? koreanEmbedding : englishEmbedding
-        guard let model else { return [] }
-        return Self.sentenceVector(text, embedding: model, language: language)
-    }
-
-    private static func loadEmbedding(
-        for language: NLLanguage
-    ) -> NLContextualEmbedding? {
-        guard let embedding = optionalEmbedding(
-            NLContextualEmbedding(language: language)
-        ) else {
-            return nil
-        }
-        do {
-            try embedding.load()
-            return embedding
-        } catch {
-            return nil
-        }
-    }
-
-    private static func optionalEmbedding(
-        _ embedding: NLContextualEmbedding?
-    ) -> NLContextualEmbedding? {
-        embedding
-    }
-
-    private static func dominantLanguage(in text: String) -> NLLanguage {
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        if recognizer.dominantLanguage == .korean { return .korean }
-        return .english
-    }
-
-    private static func sentenceVector(
-        _ text: String,
-        embedding: NLContextualEmbedding,
-        language: NLLanguage
-    ) -> [Float] {
-        guard let result = try? embedding.embeddingResult(
-            for: text,
-            language: language
-        ) else { return [] }
-        var sum: [Double] = []
-        var count = 0
-        result.enumerateTokenVectors(in: text.startIndex..<text.endIndex) {
-            vector,
-            _ in
-            if sum.isEmpty {
-                sum = vector
-            } else if vector.count == sum.count {
-                for index in sum.indices {
-                    sum[index] += vector[index]
-                }
-            }
-            count += 1
-            return true
-        }
-        guard count > 0, !sum.isEmpty else { return [] }
-        let scale = 1 / Double(count)
-        var floats = sum.map { Float($0 * scale) }
-        l2Normalize(&floats)
-        return floats
-    }
-
-    private static func hashEmbedding(for song: Song) -> [Float] {
-        hashEmbedding(
-            title: song.title,
-            artist: song.artist,
-            album: song.album,
-            genre: ([song.genre].compactMap { $0 }
-                + (song.genres ?? []).map(\.name)).joined(separator: " ")
-        )
-    }
-
-    private static func hashEmbedding(
-        title: String,
-        artist: String,
-        album: String,
-        genre: String
-    ) -> [Float] {
-        var vector = [Float](repeating: 0, count: hashDimensions)
-        let text = normalizedKey(
-            [title, artist, album, genre].joined(separator: " ")
-        )
-        let scalars = Array(text.unicodeScalars)
-        guard scalars.count >= 2 else {
-            l2Normalize(&vector)
-            return vector
-        }
-        let limit = scalars.count - 2
-        for index in 0...limit {
-            var hash: UInt64 = 1_469_598_103_934_665_603
-            for offset in 0..<3 {
-                hash ^= UInt64(scalars[index + offset].value)
-                hash &*= 1_099_511_628_211
-            }
-            vector[Int(hash % UInt64(hashDimensions))] += 1
-        }
-        l2Normalize(&vector)
-        return vector
-    }
-
-    private static func l2Normalize(_ values: inout [Float]) {
-        var sum: Float = 0
-        for value in values { sum += value * value }
-        let norm = sum.squareRoot()
-        guard norm > 0 else { return }
-        let scale = 1 / norm
-        for index in values.indices {
-            values[index] *= scale
-        }
     }
 
     private static func normalizedKey(_ value: String?) -> String {
@@ -443,20 +245,5 @@ actor LocalLibraryCatalog {
 
     private static func decodeSong(_ data: Data) throws -> Song {
         try JSONDecoder().decode(Song.self, from: data)
-    }
-
-    private static func encodeEmbedding(_ values: [Float]) -> Data {
-        values.withUnsafeBufferPointer { buffer in
-            Data(buffer: buffer)
-        }
-    }
-
-    private static func decodeEmbedding(_ data: Data) -> [Float] {
-        guard !data.isEmpty, data.count.isMultiple(of: MemoryLayout<Float>.size) else {
-            return []
-        }
-        return data.withUnsafeBytes { buffer in
-            Array(buffer.bindMemory(to: Float.self))
-        }
     }
 }
