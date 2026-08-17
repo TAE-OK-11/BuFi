@@ -6,7 +6,7 @@ references; no source was copied into BuFi.
 | Project | Reviewed revision | License | Patterns applied to BuFi |
 | --- | --- | --- | --- |
 | Pocket Casts iOS | `9af186a` | MPL-2.0 | Keep queue state separate from the active player, persist progress in batches, treat interruption and route events as explicit playback state transitions, and avoid blocking the UI while audio-session work is negotiated. |
-| TIDAL iOS SDK | `41aed3a` | Apache-2.0 | Serialize player-side operations, coalesce keyed requests, keep AVPlayer observer lifetimes tied to their owner, use bounded constrained-network scheduling and jittered backoff, cancel obsolete tasks, and preserve active playback while releasing speculative resources. |
+| TIDAL iOS SDK | `41aed3a` | Apache-2.0 | Serialize player-side operations, coalesce keyed requests, keep AVPlayer observer lifetimes tied to their owner, treat AVPlayer stall-minimization waits as healthy buffering, use jittered backoff, cancel obsolete tasks, and preserve active playback while releasing speculative resources. |
 | Telegram iOS | `6ad963e` | The project README requires source publication for license compliance; bundled components carry their own licenses | Keep UI mutations on the main thread, serialize dependent transactions, bound reusable caches, and release derived data under memory pressure. |
 
 ## Resulting BuFi decisions

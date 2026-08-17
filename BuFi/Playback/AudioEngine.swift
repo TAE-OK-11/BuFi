@@ -821,12 +821,13 @@ enum PlaybackWatchdogDecision: Equatable, Sendable {
 
 enum PlaybackWatchdogPolicy {
     static let startupArmWindow: TimeInterval = 1.5
-    static let stallGrace: Duration = .milliseconds(3_500)
+    static let stallGrace: Duration = .milliseconds(5_000)
     static let maximumTransportRetries = 2
 
     static func decision(
         wantsPlayback: Bool,
         timeControlStatus: AVPlayer.TimeControlStatus,
+        waitingReason: AVPlayer.WaitingReason?,
         elapsed: TimeInterval,
         hasCurrentItem: Bool
     ) -> PlaybackWatchdogDecision {
@@ -835,19 +836,34 @@ enum PlaybackWatchdogPolicy {
         switch timeControlStatus {
         case .playing:
             return .cancelWatchdog
-        case .waitingToPlayAtSpecifiedRate, .paused:
+        case .waitingToPlayAtSpecifiedRate:
+            // TIDAL PE treats AVPlayer's own stall-minimization wait as
+            // healthy buffering, not a failed stream.
+            if PlaybackRecoveryPolicy.isManagedBufferingWait(
+                timeControlStatus: timeControlStatus,
+                waitingReason: waitingReason
+            ) {
+                return .ignore
+            }
+            return .arm(inStartupWindow ? .startup : .stall)
+        case .paused:
             return .arm(inStartupWindow ? .startup : .stall)
         @unknown default:
             return .arm(inStartupWindow ? .startup : .stall)
         }
     }
 
-    static func transportBackoff(afterFailedAttempt attempt: Int) -> Duration {
-        switch attempt {
-        case 1: .milliseconds(400)
-        case 2: .milliseconds(900)
-        default: .milliseconds(1_600)
+    static func transportBackoff(
+        afterFailedAttempt attempt: Int,
+        jitter: Double = 1
+    ) -> Duration {
+        let base: Double = switch attempt {
+        case 1: 0.45
+        case 2: 1.0
+        default: 1.8
         }
+        let boundedJitter = min(1.25, max(0.8, jitter))
+        return .milliseconds(Int((base * boundedJitter * 1_000).rounded()))
     }
 }
 
@@ -952,10 +968,10 @@ enum PlaybackBufferPolicy {
     }
 
     static let startupForwardBuffer: TimeInterval = 0
-    static let remoteForwardBuffer: TimeInterval = 12
+    static let remoteForwardBuffer: TimeInterval = 16
     static let localForwardBuffer: TimeInterval = 4
-    static let constrainedForwardBuffer: TimeInterval = 6
-    static let stallConfirmDelay: Duration = .milliseconds(1_200)
+    static let constrainedForwardBuffer: TimeInterval = 8
+    static let stallConfirmDelay: Duration = .milliseconds(2_000)
 
     static func forwardBufferDuration(
         isLocalFile: Bool,
@@ -3523,11 +3539,9 @@ final class AudioEngine: NSObject, ObservableObject {
                             return
                         }
                         Self.logger.warning(
-                            "Playback stalled; prioritizing active stream recovery"
+                            "Playback stalled; waiting for AVPlayer to refill"
                         )
-                        self.invalidateStagedSuccessor(removeFromPlayer: true)
-                        self.suspendSpeculativePrefetch()
-                        self.schedulePlaybackRecovery(mode: .stall)
+                        self.confirmPossibleStall()
                     }
                 },
                 center.addObserver(
@@ -3606,12 +3620,12 @@ final class AudioEngine: NSObject, ObservableObject {
                       self.pendingSeekPosition == nil else { return }
                 if self.wantsPlayback, self.player.timeControlStatus == .playing {
                     self.expandSettledForwardBufferIfNeeded()
+                    self.cancelStallConfirmation()
                 } else if self.wantsPlayback, self.player.timeControlStatus != .playing {
                     self.configureAudioSession()
                     self.playLatencyOptimized()
                     self.recomputeTimelineFromPlayer()
                     self.installNextLyricBoundary(after: self.elapsed)
-                    self.schedulePlaybackRecovery()
                 }
             }
         }
@@ -3702,7 +3716,8 @@ final class AudioEngine: NSObject, ObservableObject {
     ) {
         let generation = itemLoadGeneration
         let delay = PlaybackWatchdogPolicy.transportBackoff(
-            afterFailedAttempt: attempt
+            afterFailedAttempt: attempt,
+            jitter: Double.random(in: 0.8...1.2)
         )
         Task { @MainActor [weak self] in
             do {
@@ -3765,6 +3780,13 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func confirmPossibleStall() {
         guard wantsPlayback, stallConfirmTask == nil else { return }
+        if PlaybackRecoveryPolicy.isManagedBufferingWait(
+            timeControlStatus: player.timeControlStatus,
+            waitingReason: player.reasonForWaitingToPlay
+        ) {
+            isBuffering = true
+            return
+        }
         if player.timeControlStatus != .playing {
             isBuffering = true
         }
@@ -3778,6 +3800,14 @@ final class AudioEngine: NSObject, ObservableObject {
                   !Task.isCancelled,
                   self.wantsPlayback,
                   self.player.timeControlStatus != .playing else {
+                self?.stallConfirmTask = nil
+                return
+            }
+            if PlaybackRecoveryPolicy.isManagedBufferingWait(
+                timeControlStatus: self.player.timeControlStatus,
+                waitingReason: self.player.reasonForWaitingToPlay
+            ) {
+                self.stallConfirmTask = nil
                 return
             }
             self.stallConfirmTask = nil
@@ -4082,6 +4112,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     switch PlaybackWatchdogPolicy.decision(
                         wantsPlayback: self.wantsPlayback,
                         timeControlStatus: player.timeControlStatus,
+                        waitingReason: player.reasonForWaitingToPlay,
                         elapsed: self.currentPlayerPosition(),
                         hasCurrentItem: player.currentItem != nil
                     ) {
@@ -4105,10 +4136,10 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else {
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
-                    self.confirmPossibleStall()
                     switch PlaybackWatchdogPolicy.decision(
                         wantsPlayback: true,
                         timeControlStatus: player.timeControlStatus,
+                        waitingReason: player.reasonForWaitingToPlay,
                         elapsed: self.currentPlayerPosition(),
                         hasCurrentItem: player.currentItem != nil
                     ) {
@@ -4117,7 +4148,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     case .cancelWatchdog:
                         self.cancelPlaybackRecovery()
                     case .ignore:
-                        break
+                        self.confirmPossibleStall()
                     }
                 }
                 self.refreshIdleTimerPreference()
