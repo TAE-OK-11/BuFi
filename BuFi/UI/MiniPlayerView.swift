@@ -156,8 +156,8 @@ struct MiniPlayerView: View {
     private var trackTextTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 5).combined(with: .opacity),
-            removal: .offset(y: -4).combined(with: .opacity)
+            insertion: .offset(y: 6).combined(with: .opacity),
+            removal: .offset(y: -5).combined(with: .opacity)
         )
     }
 }

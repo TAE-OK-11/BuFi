@@ -28,20 +28,20 @@ enum UIRenderPolicy {
 }
 
 enum BuFiMotion {
-    // Motion is intentionally quantized in 0.05-second steps so related
-    // transitions feel consistent instead of each view inventing a spring.
-    static let micro = Animation.easeOut(duration: 0.10)
-    static let tap = Animation.spring(duration: 0.20, bounce: 0.18)
-    static let selection = Animation.smooth(duration: 0.25, extraBounce: 0)
-    static let fade = Animation.easeInOut(duration: 0.25)
-    static let content = Animation.smooth(duration: 0.28, extraBounce: 0)
-    static let trackText = Animation.smooth(duration: 0.34, extraBounce: 0)
-    static let trackPage = Animation.smooth(duration: 0.42, extraBounce: 0.02)
-    static let color = Animation.easeInOut(duration: 0.35)
-    static let page = Animation.smooth(duration: 0.32, extraBounce: 0)
-    static let miniLyrics = Animation.smooth(duration: 0.30, extraBounce: 0)
-    static let lyrics = Animation.smooth(duration: 0.30, extraBounce: 0)
-    static let lyricsPanel = Animation.easeOut(duration: 0.24)
+    // Apple-native interpolating springs. A little extra bounce makes taps and
+    // track changes feel tactile without letting the UI overshoot.
+    static let micro = Animation.snappy(duration: 0.16, extraBounce: 0.04)
+    static let tap = Animation.spring(duration: 0.26, bounce: 0.24)
+    static let selection = Animation.smooth(duration: 0.32, extraBounce: 0.07)
+    static let fade = Animation.smooth(duration: 0.30, extraBounce: 0)
+    static let content = Animation.smooth(duration: 0.36, extraBounce: 0.07)
+    static let trackText = Animation.smooth(duration: 0.40, extraBounce: 0.08)
+    static let trackPage = Animation.smooth(duration: 0.48, extraBounce: 0.08)
+    static let color = Animation.smooth(duration: 0.44, extraBounce: 0)
+    static let page = Animation.smooth(duration: 0.38, extraBounce: 0.07)
+    static let miniLyrics = Animation.smooth(duration: 0.36, extraBounce: 0.08)
+    static let lyrics = Animation.smooth(duration: 0.38, extraBounce: 0.06)
+    static let lyricsPanel = Animation.smooth(duration: 0.40, extraBounce: 0.08)
 
     static func isEnabled(
         userPreference: Bool,

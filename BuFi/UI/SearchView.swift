@@ -12,7 +12,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
     @State private var personalizedMixes: [PersonalizedMix] = []
-    @FocusState private var focused: Bool
+    @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -21,21 +21,19 @@ struct SearchView: View {
                     LazyVStack(alignment: .leading, spacing: 18) {
                         BuFiPageHeader(title: "검색")
                             .id(SearchScrollAnchor.top)
+                            .onTapGesture(perform: resignSearchField)
                         searchField
-                        ForEach(visibleSurfaces, id: \.self) { surface in
-                            searchSurface(surface)
-                                .frame(maxWidth: .infinity, alignment: .top)
-                        }
+                        content
+                            .frame(maxWidth: .infinity, alignment: .top)
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: resignSearchField)
                     }
                     .padding(.top, 18)
                     .buFiMiniPlayerContentClearance()
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(
-                        TapGesture().onEnded { focused = false }
-                    )
                 }
-                .scrollDismissesKeyboard(.interactively)
+                .scrollDismissesKeyboard(.immediately)
                 .onChange(of: browseMode) { _, _ in
+                    resignSearchField()
                     withAnimation(motionEnabled ? BuFiMotion.content : .none) {
                         scrollProxy.scrollTo(SearchScrollAnchor.top, anchor: .top)
                     }
@@ -50,10 +48,15 @@ struct SearchView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .onChange(of: query) { _, value in
-                if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !normalizedQuery(value).isEmpty {
                     browseMode = .main
                 }
                 model.search(value)
+            }
+            .onChange(of: isSearchFieldFocused) { _, focused in
+                if !focused {
+                    resignFirstResponder()
+                }
             }
             .task(id: personalizedMixTaskIdentity) {
                 await updatePersonalizedMixesIfNeeded()
@@ -62,21 +65,21 @@ struct SearchView: View {
     }
 
     private var isSearchSession: Bool {
-        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !normalizedQuery(query).isEmpty
     }
 
     private var searchField: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 21, weight: .semibold))
-                .foregroundStyle(focused ? BuFiTheme.accentSoft : .secondary)
+                .foregroundStyle(isSearchFieldFocused ? BuFiTheme.accentSoft : .secondary)
             TextField(
                 "",
                 text: $query,
                 prompt: Text("어떤 것을 듣고 싶으세요?")
                     .foregroundStyle(Color(uiColor: .secondaryLabel))
             )
-            .focused($focused)
+            .focused($isSearchFieldFocused)
             .font(.body)
             .textFieldStyle(.plain)
             .frame(maxWidth: .infinity)
@@ -89,16 +92,12 @@ struct SearchView: View {
                 Task { await model.searchImmediately(query) }
             }
             if !query.isEmpty {
-                Button {
-                    query = ""
-                    model.clearSearch()
-                    focused = true
-                } label: {
+                Button(action: exitSearchSession) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("검색어 지우기")
+                .accessibilityLabel("검색 닫기")
             }
         }
         .foregroundStyle(.primary)
@@ -108,15 +107,29 @@ struct SearchView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(
-                    focused
+                    isSearchFieldFocused
                         ? BuFiTheme.accent.opacity(0.78)
                         : BuFiTheme.separator.opacity(0.42),
-                    lineWidth: focused ? 1.4 : 0.6
+                    lineWidth: isSearchFieldFocused ? 1.4 : 0.6
                 )
         }
         .padding(.horizontal, 16)
-        .onTapGesture { focused = true }
-        .animation(motionEnabled ? BuFiMotion.fade : .none, value: focused)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isSearchFieldFocused = true
+        }
+        .animation(motionEnabled ? BuFiMotion.fade : .none, value: isSearchFieldFocused)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        ForEach(visibleSurfaces, id: \.self) { surface in
+            searchSurface(surface)
+                .frame(maxWidth: .infinity, alignment: .top)
+                .simultaneousGesture(
+                    TapGesture().onEnded(resignSearchField)
+                )
+        }
     }
 
     private var visibleSurfaces: [SearchSurface] {
@@ -208,27 +221,10 @@ struct SearchView: View {
             resultSection("아티스트") {
                 ForEach(result.artists) { artist in
                     NavigationLink(value: MusicRoute.artist(artist)) {
-                        HStack(spacing: 13) {
-                            ArtworkView(
-                                coverArt: artist.coverArt,
-                                size: 58,
-                                cornerRadius: 29
-                            )
-                            .frame(width: 58, height: 58)
-                            Text(artist.name)
-                                .font(.system(size: 17, weight: .semibold))
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .layoutPriority(1)
-                            Spacer(minLength: 8)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
+                        artistResultRow(artist)
                     }
                     .buttonStyle(.plain)
+                    .simultaneousGesture(TapGesture().onEnded(resignSearchField))
                     if artist.id != result.artists.last?.id {
                         rowSeparator
                     }
@@ -239,31 +235,10 @@ struct SearchView: View {
             resultSection("앨범") {
                 ForEach(result.albums) { album in
                     NavigationLink(value: MusicRoute.album(album)) {
-                        HStack(spacing: 13) {
-                            ArtworkView(
-                                coverArt: album.coverArt,
-                                size: 58,
-                                cornerRadius: 11
-                            )
-                            .frame(width: 58, height: 58)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(album.name)
-                                    .font(.system(size: 17, weight: .semibold))
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Text("앨범 · \(album.artist)")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .layoutPriority(1)
-                            Spacer(minLength: 8)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
+                        albumResultRow(album)
                     }
                     .buttonStyle(.plain)
+                    .simultaneousGesture(TapGesture().onEnded(resignSearchField))
                     if album.id != result.albums.last?.id {
                         rowSeparator
                     }
@@ -273,15 +248,15 @@ struct SearchView: View {
         case .resultSongs:
             resultSection("곡") {
                 ForEach(result.songs.indices, id: \.self) { index in
-                    let song = result.songs[index]
                     SongRow(
-                        song: song,
+                        song: result.songs[index],
                         queue: result.songs,
                         queueIndex: index,
                         playbackOrigin: .search,
                         textLineLimit: 2
                     )
                     .padding(.horizontal, 14)
+                    .simultaneousGesture(TapGesture().onEnded(resignSearchField))
                     if index < result.songs.count - 1 {
                         rowSeparator
                     }
@@ -289,6 +264,54 @@ struct SearchView: View {
             }
             .padding(.horizontal, 16)
         }
+    }
+
+    private func artistResultRow(_ artist: Artist) -> some View {
+        HStack(spacing: 13) {
+            ArtworkView(
+                coverArt: artist.coverArt,
+                size: 58,
+                cornerRadius: 29
+            )
+            .frame(width: 58, height: 58)
+            Text(artist.name)
+                .font(.system(size: 17, weight: .semibold))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+    }
+
+    private func albumResultRow(_ album: Album) -> some View {
+        HStack(spacing: 13) {
+            ArtworkView(
+                coverArt: album.coverArt,
+                size: 58,
+                cornerRadius: 11
+            )
+            .frame(width: 58, height: 58)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(album.name)
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("앨범 · \(album.artist)")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
     }
 
     private var browseShortcuts: some View {
@@ -301,8 +324,8 @@ struct SearchView: View {
         ) {
             ForEach(Self.searchShortcuts) { shortcut in
                 Button {
+                    resignSearchField()
                     browseMode = shortcut.mode
-                    focused = false
                 } label: {
                     BuFiShortcutCard(
                         title: LocalizedStringKey(shortcut.title),
@@ -338,14 +361,12 @@ struct SearchView: View {
                                     .foregroundStyle(.primary)
                                     .lineLimit(3)
                                     .multilineTextAlignment(.center)
-                                    .fixedSize(
-                                        horizontal: false,
-                                        vertical: true
-                                    )
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             .frame(width: 120)
                         }
                         .buttonStyle(BuFiPressStyle())
+                        .simultaneousGesture(TapGesture().onEnded(resignSearchField))
                     }
                 }
                 .padding(.horizontal, 16)
@@ -416,6 +437,7 @@ struct SearchView: View {
     private func browseCollectionHeader(_ title: String) -> some View {
         HStack(spacing: 10) {
             Button {
+                resignSearchField()
                 withAnimation(motionEnabled ? BuFiMotion.content : .none) {
                     browseMode = .main
                 }
@@ -516,7 +538,6 @@ struct SearchView: View {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
                         ForEach(songs.indices, id: \.self) { index in
-                            let song = songs[index]
                             HStack(spacing: 10) {
                                 Text("\(index + 1)")
                                     .font(
@@ -527,14 +548,12 @@ struct SearchView: View {
                                         )
                                     )
                                     .foregroundStyle(
-                                        index < 3
-                                            ? BuFiTheme.accent
-                                            : Color.secondary
+                                        index < 3 ? BuFiTheme.accent : Color.secondary
                                     )
                                     .monospacedDigit()
                                     .frame(width: 24, alignment: .trailing)
                                 SongRow(
-                                    song: song,
+                                    song: songs[index],
                                     queue: songs,
                                     queueIndex: index,
                                     artworkSize: 52,
@@ -584,11 +603,10 @@ struct SearchView: View {
         let snapshot = library.snapshot
         let selectedArtistsStorage = selectedArtistMixes
         guard revision == library.revision else { return }
-        let selectedArtists = ArtistMixPreferences.decode(selectedArtistsStorage)
         let next = await SearchPersonalizedMixWork.make(
             snapshot: snapshot,
             revision: revision,
-            selectedArtists: selectedArtists
+            selectedArtists: ArtistMixPreferences.decode(selectedArtistsStorage)
         )
         guard !Task.isCancelled,
               browseMode == .algorithmPlaylists,
@@ -603,6 +621,32 @@ struct SearchView: View {
         Divider()
             .padding(.leading, 85)
             .opacity(0.55)
+    }
+
+    private func resignSearchField() {
+        guard isSearchFieldFocused else { return }
+        isSearchFieldFocused = false
+        resignFirstResponder()
+    }
+
+    private func exitSearchSession() {
+        query = ""
+        model.clearSearch()
+        browseMode = .main
+        resignSearchField()
+    }
+
+    private func normalizedQuery(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func resignFirstResponder() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
     }
 }
 

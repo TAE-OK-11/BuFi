@@ -216,8 +216,8 @@ struct BuFiPressStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed && motionEnabled ? 0.972 : 1)
-            .brightness(configuration.isPressed ? -0.018 : 0)
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.96 : 1)
+            .brightness(configuration.isPressed ? -0.016 : 0)
             .animation(motionEnabled ? BuFiMotion.tap : .none, value: configuration.isPressed)
     }
 }
@@ -234,7 +234,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
         HStack(spacing: 4) {
             ForEach(items) { item in
                 Button {
-                    withAnimation(motionEnabled ? BuFiMotion.content : .none) {
+                    withAnimation(motionEnabled ? BuFiMotion.selection : .none) {
                         selection = item
                     }
                 } label: {
@@ -448,9 +448,7 @@ struct ArtworkView: View {
                     .resizable()
                     .scaledToFill()
                     .transition(
-                        .opacity.animation(
-                            motionEnabled ? .easeOut(duration: 0.22) : .none
-                        )
+                        .opacity.animation(motionEnabled ? BuFiMotion.fade : .none)
                     )
             }
         }
