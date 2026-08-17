@@ -187,6 +187,14 @@ struct OpenSubsonicResponseCachePolicy: Equatable, Sendable {
 
 enum OpenSubsonicRequestPolicy {
     static let homeEnrichmentConcurrencyLimit = 3
+    static let homeRecommendationSeedLimit = 2
+    static let homeGenreLimit = 2
+    static let homeTopArtistLimit = 2
+    static let homeAlbumTrackLimit = 2
+    static let homePlaylistLimit = 2
+    static let homeMostPlayedAlbumLimit = 4
+    static let homeSimilarArtistLimit = 2
+    static let homeEnrichmentResultLimit = 16
 
     private static let favoriteRepresentations: Set<OpenSubsonicCacheDependency> = [
         .favorites,
@@ -609,6 +617,86 @@ enum LyricsDocumentParser {
                 return LyricLine(id: index, start: 0, text: text)
             }
         return LyricsDocument(synced: false, lines: lines)
+    }
+}
+
+private struct HomeEnrichmentIdentity: Equatable, Sendable {
+    let seedSongIDs: [String]
+    let starredArtistIDs: [String]
+    let frequentAlbumIDs: [String]
+    let recentAlbumIDs: [String]
+    let playlistIDs: [String]
+    let genreKeys: [String]
+
+    init(
+        starredSongs: [Song],
+        randomSongs: [Song],
+        starredArtists: [Artist],
+        frequentAlbums: [Album],
+        recentAlbums: [Album],
+        playlists: [Playlist],
+        genres: [String]
+    ) {
+        seedSongIDs = Array(
+            (starredSongs + randomSongs)
+                .prefix(OpenSubsonicRequestPolicy.homeRecommendationSeedLimit)
+                .map(\.id)
+        )
+        starredArtistIDs = Array(
+            starredArtists
+                .prefix(OpenSubsonicRequestPolicy.homeSimilarArtistLimit)
+                .map(\.id)
+        )
+        frequentAlbumIDs = Array(
+            frequentAlbums
+                .prefix(OpenSubsonicRequestPolicy.homeMostPlayedAlbumLimit)
+                .map(\.id)
+        )
+        recentAlbumIDs = Array(
+            recentAlbums
+                .prefix(OpenSubsonicRequestPolicy.homeAlbumTrackLimit)
+                .map(\.id)
+        )
+        playlistIDs = Array(
+            playlists
+                .prefix(OpenSubsonicRequestPolicy.homePlaylistLimit)
+                .map(\.id)
+        )
+        var seen = Set<String>()
+        var keys: [String] = []
+        keys.reserveCapacity(OpenSubsonicRequestPolicy.homeGenreLimit)
+        for genre in genres {
+            let key = Self.normalized(genre)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
+            keys.append(key)
+            if keys.count == OpenSubsonicRequestPolicy.homeGenreLimit {
+                break
+            }
+        }
+        genreKeys = keys
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    init(snapshot: HomeSnapshot) {
+        let genres = snapshot.starredSongs.flatMap { song -> [String] in
+            ([song.genre].compactMap { $0 } + (song.genres ?? []).map(\.name))
+        } + snapshot.genreRecommendedSongs.compactMap(\.genre)
+        self.init(
+            starredSongs: snapshot.starredSongs,
+            randomSongs: snapshot.randomSongs,
+            starredArtists: snapshot.starredArtists,
+            frequentAlbums: snapshot.frequentAlbums,
+            recentAlbums: snapshot.recentAlbums,
+            playlists: snapshot.playlists,
+            genres: MediaIdentity.unique(genres, id: { $0.lowercased() })
+        )
     }
 }
 
@@ -1493,30 +1581,39 @@ actor OpenSubsonicClient {
         return endpoint + "?" + parameters.joined(separator: "&")
     }
 
-    func home(from previous: HomeSnapshot? = nil) async throws -> HomeLoadResult {
+    func home(
+        from previous: HomeSnapshot? = nil,
+        refreshStableCatalog: Bool = true
+    ) async throws -> HomeLoadResult {
+        let fallback = previous ?? .empty
+        let shouldRefreshStableCatalog = refreshStableCatalog
+            || fallback.artists.isEmpty
+
         async let recent: AlbumListPayload? = albumList("newest", size: "16")
         async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
         async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
         async let randomAlbums: AlbumListPayload? = albumList("random", size: "16")
-        async let popularAlbumsRequest: AlbumListPayload? = albumList("highest", size: "12")
         async let starred: StarredPayload? = bestEffortRequest("getStarred2")
-        async let artists: ArtistsPayload? = bestEffortRequest("getArtists")
         async let randomSongs: RandomSongsPayload? = bestEffortRequest(
             "getRandomSongs",
-            parameters: ["size": "24"]
+            parameters: ["size": "16"]
         )
         async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
-        async let radioStations: InternetRadioStationsPayload? = bestEffortRequest(
-            "getInternetRadioStations"
-        )
-        async let genres: GenresPayload? = bestEffortRequest("getGenres")
+        async let artists: ArtistsPayload? = shouldRefreshStableCatalog
+            ? bestEffortRequest("getArtists")
+            : nil
+        async let radioStations: InternetRadioStationsPayload? = shouldRefreshStableCatalog
+            ? bestEffortRequest("getInternetRadioStations")
+            : nil
+        async let genres: GenresPayload? = shouldRefreshStableCatalog
+            ? bestEffortRequest("getGenres")
+            : nil
 
         let (
             recentValue,
             recentlyPlayedValue,
             frequentValue,
             randomAlbumsValue,
-            popularAlbumsValue,
             starredValue,
             artistsValue,
             randomSongsValue,
@@ -1528,7 +1625,6 @@ actor OpenSubsonicClient {
             recentlyPlayed,
             frequent,
             randomAlbums,
-            popularAlbumsRequest,
             starred,
             artists,
             randomSongs,
@@ -1538,14 +1634,13 @@ actor OpenSubsonicClient {
         )
         guard recentValue != nil || recentlyPlayedValue != nil ||
                 frequentValue != nil || randomAlbumsValue != nil ||
-                popularAlbumsValue != nil || starredValue != nil ||
-                artistsValue != nil || randomSongsValue != nil ||
-                playlistsValue != nil || radioStationsValue != nil ||
-                genresValue != nil else {
+                starredValue != nil || artistsValue != nil ||
+                randomSongsValue != nil || playlistsValue != nil ||
+                radioStationsValue != nil || genresValue != nil ||
+                previous != nil else {
             throw OpenSubsonicError.invalidResponse
         }
 
-        let fallback = previous ?? .empty
         let starredAlbums: [Album]
         let starredSongs: [Song]
         let starredArtists: [Artist]
@@ -1567,89 +1662,33 @@ actor OpenSubsonicClient {
         } ?? fallback.artists
         let frequentAlbums = albums(from: frequentValue, fallback: fallback.frequentAlbums)
         let recentAlbums = albums(from: recentValue, fallback: fallback.recentAlbums)
-        let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
         let playlistValues = playlistsValue.map {
             $0.playlists?.playlist ?? []
         } ?? fallback.playlists
+        let serverGenreNames = (genresValue?.genres?.genre ?? [])
+            .sorted {
+                ($0.songCount ?? 0) > ($1.songCount ?? 0)
+            }
+            .map(\.value)
         let preferredGenres = Self.uniqueStrings(
             starredSongs.flatMap {
                 [$0.genre].compactMap { $0 } + ($0.genres ?? []).map(\.name)
             }
-            + (genresValue?.genres?.genre ?? [])
-                .sorted {
-                    ($0.songCount ?? 0) > ($1.songCount ?? 0)
-                }
-                .map(\.value)
+            + (serverGenreNames.isEmpty
+                ? fallback.genreRecommendedSongs.compactMap(\.genre)
+                : serverGenreNames)
         )
-        let enrichmentLimiter = HomeEnrichmentRequestLimiter(
-            limit: OpenSubsonicRequestPolicy.homeEnrichmentConcurrencyLimit
+        let enrichmentIdentity = HomeEnrichmentIdentity(
+            starredSongs: starredSongs,
+            randomSongs: randomSongValues,
+            starredArtists: starredArtists,
+            frequentAlbums: frequentAlbums,
+            recentAlbums: recentAlbums,
+            playlists: playlistValues,
+            genres: preferredGenres
         )
-
-        async let recommendationsRequest = recommendationSources(
-            seeds: starredSongs + randomSongValues,
-            limiter: enrichmentLimiter
-        )
-        async let rankedSongsRequest = mostPlayedSongs(
-            from: frequentAlbums,
-            fallback: fallback.mostPlayedSongs,
-            limiter: enrichmentLimiter
-        )
-        async let artistRecommendationsRequest = similarArtists(
-            to: starredArtists,
-            fallback: fallback.recommendedArtists,
-            limiter: enrichmentLimiter
-        )
-        async let genreSongsRequest = songsByGenres(
-            Array(preferredGenres.prefix(2)),
-            fallback: fallback.genreRecommendedSongs,
-            limiter: enrichmentLimiter
-        )
-        async let topArtistSongsRequest = topSongs(
-            for: Array(starredArtists.prefix(2)),
-            fallback: fallback.topArtistSongs,
-            limiter: enrichmentLimiter
-        )
-        async let recentlyAddedSongsRequest = songs(
-            from: Array(recentAlbums.prefix(3)),
-            fallback: fallback.recentlyAddedSongs,
-            limiter: enrichmentLimiter
-        )
-        async let popularSongsRequest = songs(
-            from: Array(popularAlbumValues.prefix(3)),
-            fallback: fallback.popularSongs,
-            limiter: enrichmentLimiter
-        )
-        async let playlistAffinityRequest = playlistAffinitySongs(
-            from: Array(playlistValues.prefix(3)),
-            fallback: fallback.playlistAffinitySongs,
-            limiter: enrichmentLimiter
-        )
-        let (
-            recommendationSources,
-            rankedServerSongs,
-            artistRecommendations,
-            genreSongs,
-            topArtistSongs,
-            recentlyAddedSongs,
-            popularSongs,
-            playlistAffinitySongs
-        ) = await (
-            recommendationsRequest,
-            rankedSongsRequest,
-            artistRecommendationsRequest,
-            genreSongsRequest,
-            topArtistSongsRequest,
-            recentlyAddedSongsRequest,
-            popularSongsRequest,
-            playlistAffinityRequest
-        )
-        var combinedRecommendations = recommendationSources.combined
-        combinedRecommendations.append(contentsOf: genreSongs)
-        combinedRecommendations.append(contentsOf: topArtistSongs)
-        combinedRecommendations.append(contentsOf: recentlyAddedSongs)
-        combinedRecommendations.append(contentsOf: popularSongs)
-        combinedRecommendations.append(contentsOf: playlistAffinitySongs)
-        let serverRecommendations = Self.uniqueSongs(combinedRecommendations)
+        let canReuseEnrichment = previous != nil
+            && enrichmentIdentity == HomeEnrichmentIdentity(snapshot: fallback)
 
         var snapshot = HomeSnapshot(
             recentAlbums: recentAlbums,
@@ -1667,24 +1706,137 @@ actor OpenSubsonicClient {
             starredArtists: starredArtists,
             artists: allArtists,
             randomSongs: randomSongValues,
-            sonicRecommendedSongs: recommendationSources.sonic,
-            similarArtistSongs: recommendationSources.similarArtists,
-            genreRecommendedSongs: genreSongs,
-            topArtistSongs: topArtistSongs,
-            recentlyAddedSongs: recentlyAddedSongs,
-            popularSongs: popularSongs,
-            playlistAffinitySongs: playlistAffinitySongs,
-            serverRecommendedSongs: serverRecommendations,
             lastFMRecommendedSongs: fallback.lastFMRecommendedSongs,
             listenBrainzRecommendedSongs: fallback.listenBrainzRecommendedSongs,
-            recommendedSongs: serverRecommendations,
-            mostPlayedSongs: rankedServerSongs,
-            recommendedArtists: artistRecommendations,
             playlists: playlistValues,
             radioStations: radioStationsValue.map {
                 $0.internetRadioStations?.internetRadioStation ?? []
             } ?? fallback.radioStations
         )
+
+        if canReuseEnrichment {
+            snapshot.adoptServerEnrichment(from: fallback)
+        } else {
+            let popularAlbumsValue: AlbumListPayload? = try await albumList(
+                "highest",
+                size: "8"
+            )
+            let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
+            let enrichmentLimiter = HomeEnrichmentRequestLimiter(
+                limit: OpenSubsonicRequestPolicy.homeEnrichmentConcurrencyLimit
+            )
+            let resultLimit = OpenSubsonicRequestPolicy.homeEnrichmentResultLimit
+
+            async let recommendationsRequest = recommendationSources(
+                seeds: Array(
+                    (starredSongs + randomSongValues).prefix(
+                        OpenSubsonicRequestPolicy.homeRecommendationSeedLimit
+                    )
+                ),
+                count: resultLimit,
+                limiter: enrichmentLimiter
+            )
+            async let rankedSongsRequest = mostPlayedSongs(
+                from: frequentAlbums,
+                fallback: fallback.mostPlayedSongs,
+                limiter: enrichmentLimiter
+            )
+            async let artistRecommendationsRequest = similarArtists(
+                to: Array(
+                    starredArtists.prefix(
+                        OpenSubsonicRequestPolicy.homeSimilarArtistLimit
+                    )
+                ),
+                fallback: fallback.recommendedArtists,
+                limiter: enrichmentLimiter
+            )
+            async let genreSongsRequest = songsByGenres(
+                Array(
+                    preferredGenres.prefix(OpenSubsonicRequestPolicy.homeGenreLimit)
+                ),
+                fallback: fallback.genreRecommendedSongs,
+                count: resultLimit,
+                limiter: enrichmentLimiter
+            )
+            async let topArtistSongsRequest = topSongs(
+                for: Array(
+                    starredArtists.prefix(
+                        OpenSubsonicRequestPolicy.homeTopArtistLimit
+                    )
+                ),
+                fallback: fallback.topArtistSongs,
+                count: resultLimit,
+                limiter: enrichmentLimiter
+            )
+            async let recentlyAddedSongsRequest = songs(
+                from: Array(
+                    recentAlbums.prefix(
+                        OpenSubsonicRequestPolicy.homeAlbumTrackLimit
+                    )
+                ),
+                fallback: fallback.recentlyAddedSongs,
+                count: resultLimit,
+                limiter: enrichmentLimiter
+            )
+            async let popularSongsRequest = songs(
+                from: Array(
+                    popularAlbumValues.prefix(
+                        OpenSubsonicRequestPolicy.homeAlbumTrackLimit
+                    )
+                ),
+                fallback: fallback.popularSongs,
+                count: resultLimit,
+                limiter: enrichmentLimiter
+            )
+            async let playlistAffinityRequest = playlistAffinitySongs(
+                from: Array(
+                    playlistValues.prefix(
+                        OpenSubsonicRequestPolicy.homePlaylistLimit
+                    )
+                ),
+                fallback: fallback.playlistAffinitySongs,
+                count: resultLimit,
+                limiter: enrichmentLimiter
+            )
+            let (
+                recommendationSources,
+                rankedServerSongs,
+                artistRecommendations,
+                genreSongs,
+                topArtistSongs,
+                recentlyAddedSongs,
+                popularSongs,
+                playlistAffinitySongs
+            ) = await (
+                recommendationsRequest,
+                rankedSongsRequest,
+                artistRecommendationsRequest,
+                genreSongsRequest,
+                topArtistSongsRequest,
+                recentlyAddedSongsRequest,
+                popularSongsRequest,
+                playlistAffinityRequest
+            )
+            let serverRecommendations = Self.uniqueSongs(
+                recommendationSources.combined
+                    + genreSongs
+                    + topArtistSongs
+                    + recentlyAddedSongs
+                    + popularSongs
+                    + playlistAffinitySongs
+            )
+            snapshot.sonicRecommendedSongs = recommendationSources.sonic
+            snapshot.similarArtistSongs = recommendationSources.similarArtists
+            snapshot.genreRecommendedSongs = genreSongs
+            snapshot.topArtistSongs = topArtistSongs
+            snapshot.recentlyAddedSongs = recentlyAddedSongs
+            snapshot.popularSongs = popularSongs
+            snapshot.playlistAffinitySongs = playlistAffinitySongs
+            snapshot.serverRecommendedSongs = serverRecommendations
+            snapshot.recommendedSongs = serverRecommendations
+            snapshot.mostPlayedSongs = rankedServerSongs
+            snapshot.recommendedArtists = artistRecommendations
+        }
         snapshot.daylistSongs = DaylistBuilder.make(snapshot: snapshot)
         return HomeLoadResult(
             snapshot: snapshot,
@@ -1715,10 +1867,18 @@ actor OpenSubsonicClient {
         if let frequent = values.2 {
             let frequentAlbums = frequent.albumList2?.album ?? []
             snapshot.frequentAlbums = frequentAlbums
-            snapshot.mostPlayedSongs = await mostPlayedSongs(
-                from: frequentAlbums,
-                fallback: previous.mostPlayedSongs
-            )
+            let previousIDs = previous.frequentAlbums
+                .prefix(OpenSubsonicRequestPolicy.homeMostPlayedAlbumLimit)
+                .map(\.id)
+            let nextIDs = frequentAlbums
+                .prefix(OpenSubsonicRequestPolicy.homeMostPlayedAlbumLimit)
+                .map(\.id)
+            if previous.mostPlayedSongs.isEmpty || previousIDs != nextIDs {
+                snapshot.mostPlayedSongs = await mostPlayedSongs(
+                    from: frequentAlbums,
+                    fallback: previous.mostPlayedSongs
+                )
+            }
         }
         if let starred = values.3?.starred2 {
             snapshot.starredAlbums = starred.album ?? []
@@ -1776,68 +1936,35 @@ actor OpenSubsonicClient {
         library: [Song] = [],
         limit: Int = 10
     ) async -> [Song] {
-        var matches: [Song] = []
-        var ids = Set<String>()
-        for candidate in candidates.prefix(limit) {
-            guard !Task.isCancelled else { break }
-            let normalizedTitle = Self.normalized(candidate.title)
-            let normalizedArtist = Self.normalized(candidate.artist)
-            let normalizedAlbum = candidate.album.map(Self.normalized)
-            guard !normalizedTitle.isEmpty else { continue }
-            let localMatch = library.first { song in
-                guard let recordingMBID = candidate.recordingMBID else {
-                    return false
-                }
-                return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
-                    == .orderedSame
-            } ?? library.first { song in
-                Self.matchesExternalMetadata(
-                    song,
-                    title: normalizedTitle,
-                    artist: normalizedArtist,
-                    album: normalizedAlbum
-                )
-            } ?? library.first { song in
-                Self.matchesExternalMetadata(
-                    song,
-                    title: normalizedTitle,
-                    artist: normalizedArtist,
-                    album: nil
-                )
-            }
-            let match: Song?
-            if let localMatch {
-                match = localMatch
-            } else {
-                let query = "\(candidate.artist) \(candidate.title)"
-                guard let results = try? await search(query) else { continue }
-                match = results.songs.first { song in
-                    guard let recordingMBID = candidate.recordingMBID else {
-                        return false
-                    }
-                    return song.musicBrainzId?.caseInsensitiveCompare(recordingMBID)
-                        == .orderedSame
-                } ?? results.songs.first { song in
-                    Self.matchesExternalMetadata(
-                        song,
-                        title: normalizedTitle,
-                        artist: normalizedArtist,
-                        album: normalizedAlbum
-                    )
-                } ?? results.songs.first { song in
-                    Self.matchesExternalMetadata(
-                        song,
-                        title: normalizedTitle,
-                        artist: normalizedArtist,
-                        album: nil
-                    )
-                }
-            }
-            if let match, ids.insert(match.id).inserted {
-                matches.append(match)
-            }
+        await LocalLibraryCatalog.shared.match(
+            candidates,
+            additionalSongs: library,
+            limit: limit
+        )
+    }
+
+    func expandLibraryCatalog(
+        excluding excludedIDs: Set<String>,
+        limit: Int = 400
+    ) async -> [Song] {
+        var collected: [Song] = []
+        collected.reserveCapacity(min(limit, 160))
+        for _ in 0..<2 {
+            guard !Task.isCancelled, collected.count < limit else { break }
+            let payload: RandomSongsPayload? = try? await readRequest(
+                "getRandomSongs",
+                parameters: ["size": "80"]
+            )
+            collected.append(contentsOf: payload?.randomSongs?.song ?? [])
         }
-        return matches
+        return Array(
+            Self.uniqueSongs(collected)
+                .filter {
+                    $0.externalStreamURL == nil
+                        && !excludedIDs.contains($0.id)
+                }
+                .prefix(limit)
+        )
     }
 
     private func recommendationQueue(
@@ -1870,7 +1997,9 @@ actor OpenSubsonicClient {
             limiter: limiter
         )
 
-        for seed in distinctSeeds.prefix(3) {
+        for seed in distinctSeeds.prefix(
+            OpenSubsonicRequestPolicy.homeRecommendationSeedLimit
+        ) {
             guard !Task.isCancelled else { break }
             async let sonicResult = sonicRecommendations(
                 for: seed,
@@ -2000,7 +2129,9 @@ actor OpenSubsonicClient {
             of: (Int, [Song]).self,
             returning: [(Int, [Song])].self
         ) { group in
-            for (index, genre) in genres.prefix(2).enumerated() {
+            for (index, genre) in genres
+                .prefix(OpenSubsonicRequestPolicy.homeGenreLimit)
+                .enumerated() {
                 group.addTask { [self] in
                     let payload: SongsByGenrePayload? = try? await
                         withEnrichmentPermit(limiter) { [self] in
@@ -2041,7 +2172,9 @@ actor OpenSubsonicClient {
             of: (Int, [Song]).self,
             returning: [(Int, [Song])].self
         ) { group in
-            for (index, artist) in artists.prefix(2).enumerated() {
+            for (index, artist) in artists
+                .prefix(OpenSubsonicRequestPolicy.homeTopArtistLimit)
+                .enumerated() {
                 group.addTask { [self] in
                     var parameters = [
                         "artist": artist.name,
@@ -2082,7 +2215,9 @@ actor OpenSubsonicClient {
             of: (Int, [Song]).self,
             returning: [(Int, [Song])].self
         ) { group in
-            for (index, album) in albums.prefix(3).enumerated() {
+            for (index, album) in albums
+                .prefix(OpenSubsonicRequestPolicy.homeAlbumTrackLimit)
+                .enumerated() {
                 group.addTask { [self] in
                     let detail = try? await withEnrichmentPermit(
                         limiter
@@ -2113,7 +2248,9 @@ actor OpenSubsonicClient {
             of: (Int, [Song]).self,
             returning: [(Int, [Song])].self
         ) { group in
-            for (index, playlist) in playlists.prefix(3).enumerated() {
+            for (index, playlist) in playlists
+                .prefix(OpenSubsonicRequestPolicy.homePlaylistLimit)
+                .enumerated() {
                 group.addTask { [self] in
                     (
                         index,
@@ -2138,7 +2275,9 @@ actor OpenSubsonicClient {
         fallback: [Song],
         limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Song] {
-        let candidates = Array(albums.prefix(8))
+        let candidates = Array(
+            albums.prefix(OpenSubsonicRequestPolicy.homeMostPlayedAlbumLimit)
+        )
         guard !candidates.isEmpty else { return fallback }
         let songs = await withTaskGroup(
             of: (Int, [Song]).self,
@@ -2180,7 +2319,9 @@ actor OpenSubsonicClient {
         fallback: [Artist],
         limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> [Artist] {
-        let candidates = Array(seeds.prefix(3))
+        let candidates = Array(
+            seeds.prefix(OpenSubsonicRequestPolicy.homeSimilarArtistLimit)
+        )
         guard !candidates.isEmpty else { return fallback }
         let values = await withTaskGroup(
             of: [Artist].self,
@@ -2268,33 +2409,16 @@ actor OpenSubsonicClient {
         }
     }
 
-    private static func matchesExternalMetadata(
-        _ song: Song,
-        title: String,
-        artist: String,
-        album: String?
-    ) -> Bool {
-        guard normalized(song.title) == title, !artist.isEmpty else {
-            return false
-        }
-        let songArtist = normalized(song.artist)
-        guard songArtist == artist ||
-                songArtist.contains(artist) ||
-                artist.contains(songArtist) else {
-            return false
-        }
-        guard let album, !album.isEmpty else { return true }
-        return normalized(song.album) == album
-    }
-
-    private static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
+    private static func uniqueArtists(_ artists: [Artist]) -> [Artist]
         MediaIdentity.uniqueArtists(artists)
     }
+
+    private static let normalizationLocale = Locale(identifier: "en_US_POSIX")
 
     private static func normalized(_ value: String) -> String {
         value.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
-            locale: .current
+            locale: normalizationLocale
         )
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }

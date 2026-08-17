@@ -557,9 +557,9 @@ private struct RecommendationSettingsView: View {
     @AppStorage("recommendation-weight-favorites") private var favoriteWeight = 0.80
     @AppStorage("recommendation-weight-server") private var serverWeight = 0.90
     @AppStorage("recommendation-weight-discovery") private var discoveryWeight = 0.35
-    @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.55
+    @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.80
     @AppStorage("recommendation-weight-listenbrainz")
-    private var listenBrainzWeight = 0.55
+    private var listenBrainzWeight = 0.80
     @AppStorage("recommendation-weight-behavior")
     private var behaviorWeight = 0.85
     @AppStorage("recommendation-weight-completion")
@@ -580,8 +580,6 @@ private struct RecommendationSettingsView: View {
     private var forgottenFavoritesWeight = 0.50
     @AppStorage("recommendation-weight-artist-rotation")
     private var artistRotationWeight = 0.45
-    @AppStorage("recommendation-weight-time-awareness")
-    private var timeAwarenessWeight = 0.30
     @AppStorage("recommendation-discovery-ratio")
     private var discoveryRatio = 0.35
 
@@ -622,7 +620,6 @@ private struct RecommendationSettingsView: View {
                         weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
                         weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
                         weightRow("아티스트 순환", value: $artistRotationWeight)
-                        weightRow("시간대 맞춤", value: $timeAwarenessWeight)
                         Button("기본값으로 복원") {
                             restoreDefaults()
                         }
@@ -753,8 +750,8 @@ private struct RecommendationSettingsView: View {
         favoriteWeight = 0.80
         serverWeight = 0.90
         discoveryWeight = 0.35
-        lastFMWeight = 0.55
-        listenBrainzWeight = 0.55
+        lastFMWeight = 0.80
+        listenBrainzWeight = 0.80
         behaviorWeight = 0.85
         completionWeight = 0.70
         repeatWeight = 0.55
@@ -765,7 +762,6 @@ private struct RecommendationSettingsView: View {
         albumCompletionWeight = 0.45
         forgottenFavoritesWeight = 0.50
         artistRotationWeight = 0.45
-        timeAwarenessWeight = 0.30
         discoveryRatio = 0.35
         model.rebuildRecommendations()
     }

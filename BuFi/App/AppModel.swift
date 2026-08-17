@@ -265,6 +265,7 @@ final class AppModel: ObservableObject {
         var offline: AccountSessionToken?
         var artwork: AccountSessionToken?
         var history: AccountSessionToken?
+        var catalog: AccountSessionToken?
     }
 
     let session = AppSessionState()
@@ -333,6 +334,7 @@ final class AppModel: ObservableObject {
     private var offlineSessionToken: AccountSessionToken?
     private var artworkSessionToken: AccountSessionToken?
     private var historySessionToken: AccountSessionToken?
+    private var catalogSessionToken: AccountSessionToken?
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
     private var recommendationTask: Task<Void, Never>?
@@ -439,7 +441,8 @@ final class AppModel: ObservableObject {
         let leases = StoreActivationLeases(
             offline: offlineSessionToken,
             artwork: artworkSessionToken,
-            history: historySessionToken
+            history: historySessionToken,
+            catalog: catalogSessionToken
         )
         searchGeneration += 1
         searchTask?.cancel()
@@ -474,6 +477,7 @@ final class AppModel: ObservableObject {
         offlineSessionToken = nil
         artworkSessionToken = nil
         historySessionToken = nil
+        catalogSessionToken = nil
         publishHome(.empty)
         searchResults = .empty
         isSearching = false
@@ -532,7 +536,10 @@ final class AppModel: ObservableObject {
                 || isHomeEmpty
             let loadResult: HomeLoadResult
             if needsFullRefresh {
-                loadResult = try await client.home(from: isHomeEmpty ? nil : previousHome)
+                loadResult = try await client.home(
+                    from: isHomeEmpty ? nil : previousHome,
+                    refreshStableCatalog: forceFull || isHomeEmpty
+                )
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
@@ -561,6 +568,11 @@ final class AppModel: ObservableObject {
                       self.client === client else { return }
                 lastHomeSnapshotSave = saveNow
             }
+            scheduleLibraryCatalogRefresh(
+                client: client,
+                snapshot: resolvedSnapshot,
+                generation: generation
+            )
             if needsFullRefresh {
                 scheduleExternalRecommendationRefresh(
                     client: client,
@@ -2098,7 +2110,8 @@ final class AppModel: ObservableObject {
         async let listenBrainzCandidates =
             ExternalRecommendationClient.shared.listenBrainz(
                 username: listenBrainzUsername,
-                token: listenBrainzToken
+                token: listenBrainzToken,
+                limit: 16
             )
 
         let candidates = await (lastFMCandidates, listenBrainzCandidates)
@@ -2112,12 +2125,12 @@ final class AppModel: ObservableObject {
         async let lastFMSongs = client.matchExternalRecommendations(
             candidates.0,
             library: knownSongs,
-            limit: 8
+            limit: 12
         )
         async let listenBrainzSongs = client.matchExternalRecommendations(
             candidates.1,
             library: knownSongs,
-            limit: 8
+            limit: 12
         )
 
         var value = snapshot
@@ -2138,7 +2151,8 @@ final class AppModel: ObservableObject {
         guard let seed, !apiKey.isEmpty else { return [] }
         return await ExternalRecommendationClient.shared.lastFM(
             seed: seed,
-            apiKey: apiKey
+            apiKey: apiKey,
+            limit: 20
         )
     }
 
@@ -2305,13 +2319,15 @@ final class AppModel: ObservableObject {
         let previousLeases = StoreActivationLeases(
             offline: offlineSessionToken,
             artwork: artworkSessionToken,
-            history: historySessionToken
+            history: historySessionToken,
+            catalog: catalogSessionToken
         )
         let isReplacingActiveSession = client != nil
         client = nil
         offlineSessionToken = nil
         artworkSessionToken = nil
         historySessionToken = nil
+        catalogSessionToken = nil
         if isReplacingActiveSession {
             await AudioEngine.shared.shutdownForSessionEnd()
             guard generation == sessionGeneration else {
@@ -2337,7 +2353,8 @@ final class AppModel: ObservableObject {
         var activatedLeases = StoreActivationLeases(
             offline: nil,
             artwork: nil,
-            history: nil
+            history: nil,
+            catalog: nil
         )
         do {
             let client = try OpenSubsonicClient(credentials: credentials)
@@ -2355,11 +2372,15 @@ final class AppModel: ObservableObject {
             async let historyRequest = ListeningHistoryStore.shared.activate(
                 accountScope: accountScope
             )
+            async let catalogRequest = LocalLibraryCatalog.shared.activate(
+                accountScope: accountScope
+            )
 
             let cachedSnapshot = await cachedSnapshotRequest
             let offlineSession = await offlineRequest
             let artworkSession = await artworkRequest
             let historySession = await historyRequest
+            let catalogSession = await catalogRequest
             let ping = await statusRequest
             try Task.checkCancellation()
             guard generation == sessionGeneration else {
@@ -2367,7 +2388,8 @@ final class AppModel: ObservableObject {
                     StoreActivationLeases(
                         offline: offlineSession,
                         artwork: artworkSession,
-                        history: historySession
+                        history: historySession,
+                        catalog: catalogSession
                     )
                 )
                 return
@@ -2379,7 +2401,8 @@ final class AppModel: ObservableObject {
             activatedLeases = StoreActivationLeases(
                 offline: offlineSession,
                 artwork: artworkSession,
-                history: historySession
+                history: historySession,
+                catalog: catalogSession
             )
 
             if ping.isCancelled {
@@ -2422,7 +2445,13 @@ final class AppModel: ObservableObject {
             self.offlineSessionToken = offlineSession
             self.artworkSessionToken = artworkSession
             self.historySessionToken = historySession
+            self.catalogSessionToken = catalogSession
             self.publishHome(applyingFavoriteOverrides(to: snapshot))
+            self.scheduleLibraryCatalogRefresh(
+                client: client,
+                snapshot: snapshot,
+                generation: generation
+            )
             self.lastFullRefresh = nil
             self.lastHomeSnapshotSave = nil
             self.connectedServerAddress = Self.serverDisplayAddress(
@@ -2434,7 +2463,8 @@ final class AppModel: ObservableObject {
             activatedLeases = StoreActivationLeases(
                 offline: nil,
                 artwork: nil,
-                history: nil
+                history: nil,
+                catalog: nil
             )
             AudioEngine.shared.configure(
                 client: client,
@@ -2573,6 +2603,31 @@ final class AppModel: ObservableObject {
         }
         if let history = leases.history {
             await ListeningHistoryStore.shared.deactivate(session: history)
+        }
+        if let catalog = leases.catalog {
+            await LocalLibraryCatalog.shared.deactivate(session: catalog)
+        }
+    }
+
+    private func scheduleLibraryCatalogRefresh(
+        client: OpenSubsonicClient,
+        snapshot: HomeSnapshot,
+        generation: Int
+    ) {
+        let seedSongs = snapshot.knownSongs()
+        Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            await LocalLibraryCatalog.shared.ingest(seedSongs)
+            let historySongs = await ListeningHistoryStore.shared.catalogSongs()
+            await LocalLibraryCatalog.shared.ingest(historySongs)
+            guard generation == self.sessionGeneration,
+                  self.client === client else { return }
+            let extra = await client.expandLibraryCatalog(
+                excluding: await LocalLibraryCatalog.shared.songIDs()
+            )
+            guard generation == self.sessionGeneration,
+                  self.client === client else { return }
+            await LocalLibraryCatalog.shared.ingest(extra)
         }
     }
 }

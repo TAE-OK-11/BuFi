@@ -451,6 +451,20 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
             self[keyPath: path] = self[keyPath: path].map(transform)
         }
     }
+
+    mutating func adoptServerEnrichment(from other: HomeSnapshot) {
+        sonicRecommendedSongs = other.sonicRecommendedSongs
+        similarArtistSongs = other.similarArtistSongs
+        genreRecommendedSongs = other.genreRecommendedSongs
+        topArtistSongs = other.topArtistSongs
+        recentlyAddedSongs = other.recentlyAddedSongs
+        popularSongs = other.popularSongs
+        playlistAffinitySongs = other.playlistAffinitySongs
+        serverRecommendedSongs = other.serverRecommendedSongs
+        recommendedSongs = other.recommendedSongs
+        mostPlayedSongs = other.mostPlayedSongs
+        recommendedArtists = other.recommendedArtists
+    }
 }
 
 enum MediaIdentity {

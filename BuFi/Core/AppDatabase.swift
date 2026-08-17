@@ -8,6 +8,18 @@ struct OfflineDatabaseEntry: Sendable, Equatable {
     var mediaRevision: String? = nil
 }
 
+struct LibraryCatalogRecord: Sendable {
+    var songID: String
+    var songData: Data
+    var titleKey: String
+    var artistKey: String
+    var albumKey: String
+    var mbid: String
+    var isrc: String
+    var hashEmbedding: Data
+    var neuralEmbedding: Data
+}
+
 actor AppDatabase {
     static let shared = AppDatabase()
 
@@ -460,6 +472,75 @@ actor AppDatabase {
                     """,
                     arguments: [scope, Date().timeIntervalSince1970, data]
                 )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func loadLibraryCatalog(scope: String) async -> [LibraryCatalogRecord] {
+        guard let pool = await databasePool() else { return [] }
+        do {
+            return try await pool.read { db in
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT song_id, song_data, title_key, artist_key, album_key,
+                           mbid, isrc, hash_embedding, neural_embedding
+                    FROM library_catalog
+                    WHERE account_scope = ?
+                    """,
+                    arguments: [scope]
+                )
+                return rows.map { row in
+                    LibraryCatalogRecord(
+                        songID: row["song_id"],
+                        songData: row["song_data"],
+                        titleKey: row["title_key"],
+                        artistKey: row["artist_key"],
+                        albumKey: row["album_key"],
+                        mbid: row["mbid"],
+                        isrc: row["isrc"],
+                        hashEmbedding: row["hash_embedding"],
+                        neuralEmbedding: row["neural_embedding"]
+                    )
+                }
+            }
+        } catch {
+            return []
+        }
+    }
+
+    @discardableResult
+    func replaceLibraryCatalog(
+        _ records: [LibraryCatalogRecord],
+        scope: String
+    ) async -> Bool {
+        guard let pool = await databasePool() else { return false }
+        do {
+            try await pool.write { db in
+                try db.execute(
+                    sql: "DELETE FROM library_catalog WHERE account_scope = ?",
+                    arguments: [scope]
+                )
+                for record in records {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO library_catalog (
+                            account_scope, song_id, song_data, title_key,
+                            artist_key, album_key, mbid, isrc,
+                            hash_embedding, neural_embedding
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        arguments: [
+                            scope, record.songID, record.songData,
+                            record.titleKey, record.artistKey, record.albumKey,
+                            record.mbid, record.isrc,
+                            record.hashEmbedding, record.neuralEmbedding
+                        ]
+                    )
+                }
             }
             return true
         } catch {
@@ -1287,6 +1368,27 @@ actor AppDatabase {
         migrator.registerMigration("offline-media-revision-v6") { db in
             try db.execute(sql: """
                 ALTER TABLE offline_entry ADD COLUMN media_revision TEXT;
+                """)
+        }
+        migrator.registerMigration("library-catalog-index-v7") { db in
+            try db.execute(sql: """
+                CREATE TABLE library_catalog (
+                    account_scope TEXT NOT NULL,
+                    song_id TEXT NOT NULL,
+                    song_data BLOB NOT NULL,
+                    title_key TEXT NOT NULL,
+                    artist_key TEXT NOT NULL,
+                    album_key TEXT NOT NULL,
+                    mbid TEXT NOT NULL,
+                    isrc TEXT NOT NULL,
+                    hash_embedding BLOB NOT NULL,
+                    neural_embedding BLOB NOT NULL,
+                    PRIMARY KEY (account_scope, song_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX library_catalog_mbid
+                    ON library_catalog(account_scope, mbid);
+                CREATE INDEX library_catalog_identity
+                    ON library_catalog(account_scope, title_key, artist_key);
                 """)
         }
         return migrator
