@@ -47,6 +47,20 @@ jobs:
           brew install xcodegen
           xcodegen --version
 
+      - name: Analyze Spotify teacher sequence
+        run: |
+          mkdir -p build
+          python3 Scripts/analyze-spotify-sequence.py
+          test -s build/spotify-sequence-report.json
+
+      - name: Upload Spotify teacher sequence report
+        uses: actions/upload-artifact@v7
+        with:
+          name: spotify-sequence-report-${{ github.run_number }}
+          path: build/spotify-sequence-report.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Train Create ML recommender
         run: |
           python3 Scripts/export-radio-recommender-data.py
