@@ -22,21 +22,17 @@ struct SearchView: View {
                         BuFiPageHeader(title: "검색")
                             .id(SearchScrollAnchor.top)
                         searchField
-                        Group {
-                            if isSearchSession {
-                                results
-                            } else {
-                                browse
-                            }
+                        ForEach(visibleSurfaces, id: \.self) { surface in
+                            searchSurface(surface)
+                                .frame(maxWidth: .infinity, alignment: .top)
                         }
-                        .frame(maxWidth: .infinity, alignment: .top)
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(
-                            TapGesture().onEnded { focused = false }
-                        )
                     }
                     .padding(.top, 18)
                     .buFiMiniPlayerContentClearance()
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        TapGesture().onEnded { focused = false }
+                    )
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: browseMode) { _, _ in
@@ -123,139 +119,297 @@ struct SearchView: View {
         .animation(motionEnabled ? BuFiMotion.fade : .none, value: focused)
     }
 
-    @ViewBuilder
-    private var browse: some View {
-        let snapshot = library.snapshot
+    private var visibleSurfaces: [SearchSurface] {
+        if isSearchSession {
+            let result = searchContent.results
+            if result.isEmpty && searchContent.isSearching {
+                return [.resultLoading]
+            }
+            if result.isEmpty {
+                return [.resultEmpty]
+            }
+            var surfaces: [SearchSurface] = []
+            if searchContent.isSearching {
+                surfaces.append(.resultProgress)
+            } else if searchContent.isLocalFallback {
+                surfaces.append(.resultLocalFallback)
+            }
+            if !result.artists.isEmpty { surfaces.append(.resultArtists) }
+            if !result.albums.isEmpty { surfaces.append(.resultAlbums) }
+            if !result.songs.isEmpty { surfaces.append(.resultSongs) }
+            return surfaces
+        }
+
         switch browseMode {
         case .main:
-            browseMain
+            return library.snapshot.recommendedArtists.isEmpty
+                ? [.browseShortcuts]
+                : [.browseShortcuts, .browseRecommendedArtists]
         case .favoriteSongs:
+            return [.browseFavoriteSongsHeader, .browseFavoriteSongs]
+        case .favoriteAlbums:
+            return [.browseFavoriteAlbumsHeader, .browseFavoriteAlbums]
+        case .algorithmPlaylists:
+            return [.browseMixesHeader, .browseMixes]
+        case .mostPlayed:
+            return [.browseMostPlayedHeader, .browseMostPlayed]
+        }
+    }
+
+    @ViewBuilder
+    private func searchSurface(_ surface: SearchSurface) -> some View {
+        let snapshot = library.snapshot
+        let result = searchContent.results
+        switch surface {
+        case .browseShortcuts:
+            browseShortcuts
+        case .browseRecommendedArtists:
+            recommendedArtistsRail(snapshot.recommendedArtists)
+        case .browseFavoriteSongsHeader:
             browseCollectionHeader("좋아요 곡")
-            if snapshot.starredSongs.isEmpty {
-                ContentUnavailableView(
-                    "좋아요 표시한 곡이 없습니다",
-                    systemImage: "heart"
-                )
-                .padding(.top, 32)
-            } else {
-                BuFiGroupedSurface {
-                    LazyVStack(spacing: 0) {
-                        ForEach(snapshot.starredSongs.indices, id: \.self) { index in
-                            let song = snapshot.starredSongs[index]
-                            SongRow(
-                                song: song,
-                                queue: snapshot.starredSongs,
-                                queueIndex: index
+        case .browseFavoriteSongs:
+            starredSongList(snapshot.starredSongs)
+        case .browseFavoriteAlbumsHeader:
+            browseCollectionHeader("좋아요 앨범")
+        case .browseFavoriteAlbums:
+            starredAlbumGrid(snapshot.starredAlbums)
+        case .browseMixesHeader:
+            browseCollectionHeader("맞춤 믹스")
+        case .browseMixes:
+            algorithmPlaylistGrid(personalizedMixes)
+        case .browseMostPlayedHeader:
+            browseCollectionHeader("자주 들은 곡")
+        case .browseMostPlayed:
+            rankedSongs
+        case .resultLoading:
+            HStack {
+                Spacer()
+                ProgressView("검색 중…")
+                Spacer()
+            }
+            .padding(.top, 48)
+        case .resultEmpty:
+            ContentUnavailableView.search(text: query)
+                .padding(.top, 42)
+        case .resultProgress:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("검색 중…")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+        case .resultLocalFallback:
+            Text("라이브러리에서 찾은 결과")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+        case .resultArtists:
+            resultSection("아티스트") {
+                ForEach(result.artists) { artist in
+                    NavigationLink(value: MusicRoute.artist(artist)) {
+                        HStack(spacing: 13) {
+                            ArtworkView(
+                                coverArt: artist.coverArt,
+                                size: 58,
+                                cornerRadius: 29
                             )
-                                .padding(.horizontal, 14)
-                            if index < snapshot.starredSongs.count - 1 {
-                                rowSeparator
-                            }
+                            .frame(width: 58, height: 58)
+                            Text(artist.name)
+                                .font(.system(size: 17, weight: .semibold))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .layoutPriority(1)
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.tertiary)
                         }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.plain)
+                    if artist.id != result.artists.last?.id {
+                        rowSeparator
                     }
                 }
-                .padding(.horizontal, 16)
             }
-        case .favoriteAlbums:
-            browseCollectionHeader("좋아요 앨범")
-            if snapshot.starredAlbums.isEmpty {
-                ContentUnavailableView(
-                    "저장한 앨범이 없습니다",
-                    systemImage: "square.stack"
-                )
-                .padding(.top, 32)
-            } else {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 14, alignment: .top),
-                        GridItem(.flexible(), spacing: 14, alignment: .top)
-                    ],
-                    alignment: .leading,
-                    spacing: 20
-                ) {
-                    ForEach(snapshot.starredAlbums) { album in
-                        NavigationLink(value: MusicRoute.album(album)) {
-                            AlbumCard(
-                                album: album,
-                                width: collectionCardWidth,
-                                usesHorizontalScrollTransition: false
+            .padding(.horizontal, 16)
+        case .resultAlbums:
+            resultSection("앨범") {
+                ForEach(result.albums) { album in
+                    NavigationLink(value: MusicRoute.album(album)) {
+                        HStack(spacing: 13) {
+                            ArtworkView(
+                                coverArt: album.coverArt,
+                                size: 58,
+                                cornerRadius: 11
                             )
+                            .frame(width: 58, height: 58)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(album.name)
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text("앨범 · \(album.artist)")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .layoutPriority(1)
+                            Spacer(minLength: 8)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                    }
+                    .buttonStyle(.plain)
+                    if album.id != result.albums.last?.id {
+                        rowSeparator
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        case .resultSongs:
+            resultSection("곡") {
+                ForEach(result.songs.indices, id: \.self) { index in
+                    let song = result.songs[index]
+                    SongRow(
+                        song: song,
+                        queue: result.songs,
+                        queueIndex: index,
+                        playbackOrigin: .search,
+                        textLineLimit: 2
+                    )
+                    .padding(.horizontal, 14)
+                    if index < result.songs.count - 1 {
+                        rowSeparator
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private var browseShortcuts: some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 10),
+                GridItem(.flexible(), spacing: 10)
+            ],
+            spacing: 10
+        ) {
+            ForEach(searchShortcuts) { shortcut in
+                Button {
+                    browseMode = shortcut.mode
+                    focused = false
+                } label: {
+                    BuFiShortcutCard(
+                        title: LocalizedStringKey(shortcut.title),
+                        subtitle: shortcut.subtitle,
+                        systemImage: shortcut.systemImage,
+                        tint: shortcut.tint
+                    )
+                }
+                .buttonStyle(BuFiPressStyle())
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func recommendedArtistsRail(_ artists: [Artist]) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionTitle(title: "추천 아티스트")
+                .padding(.horizontal, 16)
+                .padding(.top, 2)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(artists.prefix(12)) { artist in
+                        NavigationLink(value: MusicRoute.artist(artist)) {
+                            VStack(spacing: 8) {
+                                ArtworkView(
+                                    coverArt: artist.coverArt,
+                                    size: 120,
+                                    cornerRadius: 60
+                                )
+                                .frame(width: 120, height: 120)
+                                Text(artist.name)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(3)
+                                    .multilineTextAlignment(.center)
+                                    .fixedSize(
+                                        horizontal: false,
+                                        vertical: true
+                                    )
+                            }
+                            .frame(width: 120)
                         }
                         .buttonStyle(BuFiPressStyle())
                     }
                 }
                 .padding(.horizontal, 16)
             }
-        case .algorithmPlaylists:
-            algorithmPlaylists(personalizedMixes)
-        case .mostPlayed:
-            browseCollectionHeader("자주 들은 곡")
-            rankedSongs
         }
     }
 
-    private var browseMain: some View {
-        let snapshot = library.snapshot
-        return VStack(alignment: .leading, spacing: 22) {
+    @ViewBuilder
+    private func starredSongList(_ songs: [Song]) -> some View {
+        if songs.isEmpty {
+            ContentUnavailableView(
+                "좋아요 표시한 곡이 없습니다",
+                systemImage: "heart"
+            )
+            .padding(.top, 32)
+        } else {
+            BuFiGroupedSurface {
+                LazyVStack(spacing: 0) {
+                    ForEach(songs.indices, id: \.self) { index in
+                        SongRow(
+                            song: songs[index],
+                            queue: songs,
+                            queueIndex: index
+                        )
+                        .padding(.horizontal, 14)
+                        if index < songs.count - 1 {
+                            rowSeparator
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    @ViewBuilder
+    private func starredAlbumGrid(_ albums: [Album]) -> some View {
+        if albums.isEmpty {
+            ContentUnavailableView(
+                "저장한 앨범이 없습니다",
+                systemImage: "square.stack"
+            )
+            .padding(.top, 32)
+        } else {
             LazyVGrid(
                 columns: [
-                    GridItem(.flexible(), spacing: 10),
-                    GridItem(.flexible(), spacing: 10)
+                    GridItem(.flexible(), spacing: 14, alignment: .top),
+                    GridItem(.flexible(), spacing: 14, alignment: .top)
                 ],
-                spacing: 10
+                alignment: .leading,
+                spacing: 20
             ) {
-                ForEach(searchShortcuts) { shortcut in
-                    Button {
-                        browseMode = shortcut.mode
-                        focused = false
-                    } label: {
-                        BuFiShortcutCard(
-                            title: LocalizedStringKey(shortcut.title),
-                            subtitle: shortcut.subtitle,
-                            systemImage: shortcut.systemImage,
-                            tint: shortcut.tint
+                ForEach(albums) { album in
+                    NavigationLink(value: MusicRoute.album(album)) {
+                        AlbumCard(
+                            album: album,
+                            width: collectionCardWidth,
+                            usesHorizontalScrollTransition: false
                         )
                     }
                     .buttonStyle(BuFiPressStyle())
                 }
             }
             .padding(.horizontal, 16)
-
-            if !snapshot.recommendedArtists.isEmpty {
-                VStack(alignment: .leading, spacing: 14) {
-                    SectionTitle(title: "추천 아티스트")
-                        .padding(.horizontal, 16)
-                        .padding(.top, 2)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(alignment: .top, spacing: 16) {
-                            ForEach(snapshot.recommendedArtists.prefix(12)) { artist in
-                                NavigationLink(value: MusicRoute.artist(artist)) {
-                                    VStack(spacing: 8) {
-                                        ArtworkView(
-                                            coverArt: artist.coverArt,
-                                            size: 120,
-                                            cornerRadius: 60
-                                        )
-                                        .frame(width: 120, height: 120)
-                                        Text(artist.name)
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(3)
-                                            .multilineTextAlignment(.center)
-                                            .fixedSize(
-                                                horizontal: false,
-                                                vertical: true
-                                            )
-                                    }
-                                    .frame(width: 120)
-                                }
-                                .buttonStyle(BuFiPressStyle())
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-                }
-            }
         }
     }
 
@@ -285,122 +439,6 @@ struct SearchView: View {
 
     private var collectionCardWidth: CGFloat {
         max(132, (UIScreen.main.bounds.width - 52) / 2)
-    }
-
-    @ViewBuilder
-    private var results: some View {
-        let result = searchContent.results
-        if result.isEmpty && searchContent.isSearching {
-            HStack {
-                Spacer()
-                ProgressView("검색 중…")
-                Spacer()
-            }
-            .padding(.top, 48)
-        } else if result.isEmpty {
-            ContentUnavailableView.search(text: query)
-                .padding(.top, 42)
-        } else {
-            VStack(alignment: .leading, spacing: 22) {
-                if searchContent.isSearching {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text("검색 중…")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                } else if searchContent.isLocalFallback {
-                    Text("라이브러리에서 찾은 결과")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                if !result.artists.isEmpty {
-                    resultSection("아티스트") {
-                        ForEach(result.artists) { artist in
-                            NavigationLink(value: MusicRoute.artist(artist)) {
-                                HStack(spacing: 13) {
-                                    ArtworkView(
-                                        coverArt: artist.coverArt,
-                                        size: 58,
-                                        cornerRadius: 29
-                                    )
-                                    .frame(width: 58, height: 58)
-                                    Text(artist.name)
-                                        .font(.system(size: 17, weight: .semibold))
-                                        .lineLimit(2)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .layoutPriority(1)
-                                    Spacer(minLength: 8)
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                            }
-                            .buttonStyle(.plain)
-                            if artist.id != result.artists.last?.id {
-                                rowSeparator
-                            }
-                        }
-                    }
-                }
-                if !result.albums.isEmpty {
-                    resultSection("앨범") {
-                        ForEach(result.albums) { album in
-                            NavigationLink(value: MusicRoute.album(album)) {
-                                HStack(spacing: 13) {
-                                    ArtworkView(
-                                        coverArt: album.coverArt,
-                                        size: 58,
-                                        cornerRadius: 11
-                                    )
-                                    .frame(width: 58, height: 58)
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(album.name)
-                                            .font(.system(size: 17, weight: .semibold))
-                                            .lineLimit(2)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                        Text("앨범 · \(album.artist)")
-                                            .font(.system(size: 13))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(2)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    .layoutPriority(1)
-                                    Spacer(minLength: 8)
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                            }
-                            .buttonStyle(.plain)
-                            if album.id != result.albums.last?.id {
-                                rowSeparator
-                            }
-                        }
-                    }
-                }
-                if !result.songs.isEmpty {
-                    resultSection("곡") {
-                        ForEach(result.songs.indices, id: \.self) { index in
-                            let song = result.songs[index]
-                            SongRow(
-                                song: song,
-                                queue: result.songs,
-                                queueIndex: index,
-                                playbackOrigin: .search,
-                                textLineLimit: 2
-                            )
-                            .padding(.horizontal, 14)
-                            if index < result.songs.count - 1 {
-                                rowSeparator
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-        }
     }
 
     private var searchShortcuts: [SearchShortcut] {
@@ -437,10 +475,7 @@ struct SearchView: View {
     }
 
     @ViewBuilder
-    private func algorithmPlaylists(
-        _ mixes: [PersonalizedMix]
-    ) -> some View {
-        browseCollectionHeader("맞춤 믹스")
+    private func algorithmPlaylistGrid(_ mixes: [PersonalizedMix]) -> some View {
         if mixes.isEmpty {
             ContentUnavailableView(
                 "추천 플레이리스트를 만들 음악이 없습니다",
@@ -571,6 +606,26 @@ struct SearchView: View {
             .padding(.leading, 85)
             .opacity(0.55)
     }
+}
+
+private enum SearchSurface: Hashable {
+    case browseShortcuts
+    case browseRecommendedArtists
+    case browseFavoriteSongsHeader
+    case browseFavoriteSongs
+    case browseFavoriteAlbumsHeader
+    case browseFavoriteAlbums
+    case browseMixesHeader
+    case browseMixes
+    case browseMostPlayedHeader
+    case browseMostPlayed
+    case resultLoading
+    case resultEmpty
+    case resultProgress
+    case resultLocalFallback
+    case resultArtists
+    case resultAlbums
+    case resultSongs
 }
 
 private enum SearchBrowseMode {

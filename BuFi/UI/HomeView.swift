@@ -22,10 +22,15 @@ struct HomeView: View {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     BuFiPageHeader(title: "홈")
                     filterBar
-                    filteredContent
+                    ForEach(visibleSections, id: \.self) { section in
+                        homeSection(section)
+                            .padding(.top, section == visibleSections.first ? 0 : 6)
+                            .transition(.opacity)
+                    }
                 }
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance()
+                .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
             }
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
@@ -50,67 +55,94 @@ struct HomeView: View {
         )
     }
 
-    @ViewBuilder
-    private var filteredContent: some View {
-        Group {
-            switch filter {
-            case .all:
-                allContent(
-                    mixes: presentation.personalizedMixes
-                )
-            case .playlists:
-                playlistSection(showEmpty: true)
-            case .personalized:
-                personalizedContent(
-                    presentation.personalizedMixes
-                )
+    private var visibleSections: [HomeSection] {
+        let snapshot = library.snapshot
+        let mixes = presentation.personalizedMixes
+        switch filter {
+        case .all:
+            return HomeSection.allCases.filter { section in
+                switch section {
+                case .shortcuts:
+                    true
+                case .randomAlbums:
+                    !snapshot.randomAlbums.isEmpty
+                case .starredAlbums:
+                    !snapshot.starredAlbums.isEmpty
+                case .recommendedAlbums:
+                    !presentation.recommendedAlbums.isEmpty
+                case .primaryArtists:
+                    !presentation.primaryArtists.isEmpty
+                case .artistMixes:
+                    mixes.contains { $0.kind == .artist }
+                case .featuredArtists:
+                    !presentation.featuredArtists.isEmpty
+                case .recentlyPlayed:
+                    !snapshot.recentlyPlayedAlbums.isEmpty
+                case .frequentAlbums:
+                    !snapshot.frequentAlbums.isEmpty
+                case .recentAlbums:
+                    !snapshot.recentAlbums.isEmpty
+                case .playlists:
+                    !snapshot.playlists.isEmpty
+                case .radio:
+                    !snapshot.radioStations.isEmpty
+                case .daylistMixes, .moodMixes:
+                    false
+                }
             }
+        case .playlists:
+            return [.playlists]
+        case .personalized:
+            return [
+                mixes.contains {
+                    [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
+                } ? HomeSection.daylistMixes : nil,
+                mixes.contains { $0.kind == .artist } ? .artistMixes : nil,
+                mixes.contains { $0.kind == .mood } ? .moodMixes : nil
+            ].compactMap { $0 }
         }
-        .transition(.opacity)
-        .animation(motionEnabled ? BuFiMotion.content : .none, value: filter)
     }
 
-    private func allContent(mixes: [PersonalizedMix]) -> some View {
-        VStack(alignment: .leading, spacing: 28) {
+    @ViewBuilder
+    private func homeSection(_ section: HomeSection) -> some View {
+        let snapshot = library.snapshot
+        let mixes = presentation.personalizedMixes
+        switch section {
+        case .shortcuts:
             shortcuts
-            albumSection("오늘 골라본 앨범", albums: library.snapshot.randomAlbums)
-            albumSection("좋아하는 앨범", albums: library.snapshot.starredAlbums)
+        case .randomAlbums:
+            albumSection("오늘 골라본 앨범", albums: snapshot.randomAlbums)
+        case .starredAlbums:
+            albumSection("좋아하는 앨범", albums: snapshot.starredAlbums)
+        case .recommendedAlbums:
             albumSection("취향을 닮은 앨범", albums: presentation.recommendedAlbums)
+        case .primaryArtists:
             artistSection("즐겨 듣는 아티스트", artists: presentation.primaryArtists)
+        case .artistMixes:
             personalizedMixSection(
-                "아티스트에서 이어 듣기",
+                filter == .personalized ? "아티스트 믹스" : "아티스트에서 이어 듣기",
                 mixes: mixes.filter { $0.kind == .artist }
             )
-            artistSection(
-                "놓치면 아쉬운 아티스트",
-                artists: presentation.featuredArtists
-            )
-            albumSection(
-                "최근 감상",
-                albums: library.snapshot.recentlyPlayedAlbums
-            )
-            albumSection("다시 찾는 앨범", albums: library.snapshot.frequentAlbums)
-            albumSection("새로 만나는 음악", albums: library.snapshot.recentAlbums)
-            playlistSection(showEmpty: false)
+        case .featuredArtists:
+            artistSection("놓치면 아쉬운 아티스트", artists: presentation.featuredArtists)
+        case .recentlyPlayed:
+            albumSection("최근 감상", albums: snapshot.recentlyPlayedAlbums)
+        case .frequentAlbums:
+            albumSection("다시 찾는 앨범", albums: snapshot.frequentAlbums)
+        case .recentAlbums:
+            albumSection("새로 만나는 음악", albums: snapshot.recentAlbums)
+        case .playlists:
+            playlistSection(showEmpty: filter == .playlists)
+        case .radio:
             radioSection
-        }
-    }
-
-    private func personalizedContent(
-        _ mixes: [PersonalizedMix]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 28) {
+        case .daylistMixes:
             personalizedMixSection(
                 "오늘의 믹스",
                 mixes: mixes.filter {
-                    [.daylist, .repeatListening, .listenAgain, .genre]
-                        .contains($0.kind)
+                    [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
                 }
             )
-            personalizedMixSection(
-                "아티스트 믹스",
-                mixes: mixes.filter { $0.kind == .artist }
-            )
+        case .moodMixes:
             personalizedMixSection(
                 "무드별 믹스",
                 mixes: mixes.filter { $0.kind == .mood }
@@ -589,6 +621,23 @@ private struct HomeAlbumCard: View {
         .frame(width: width, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
+}
+
+private enum HomeSection: Hashable, CaseIterable {
+    case shortcuts
+    case randomAlbums
+    case starredAlbums
+    case recommendedAlbums
+    case primaryArtists
+    case artistMixes
+    case featuredArtists
+    case recentlyPlayed
+    case frequentAlbums
+    case recentAlbums
+    case playlists
+    case radio
+    case daylistMixes
+    case moodMixes
 }
 
 private enum HomeFilter: Int, CaseIterable, Identifiable {

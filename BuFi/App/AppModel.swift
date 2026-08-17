@@ -729,13 +729,25 @@ final class AppModel: ObservableObject {
     private func autoplayContinuation(
         after seed: Song,
         excluding excludedIDs: Set<String>,
-        client: OpenSubsonicClient
+        client: OpenSubsonicClient,
+        enqueue: @escaping @MainActor (Song) -> Void
     ) async -> [Song] {
         let serverValues = await client.autoplayQueue(
             seed: seed,
             excluding: excludedIDs
         )
         guard self.client === client else { return [] }
+        let early = Self.uniqueSongs(serverValues)
+            .filter {
+                !excludedIDs.contains($0.id) &&
+                    $0.id != seed.id &&
+                    $0.externalStreamURL == nil
+            }
+            .prefix(4)
+            .map(applyingFavoriteOverride)
+        for song in early {
+            enqueue(song)
+        }
         let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
         guard self.client === client else { return [] }
         var snapshot = home
@@ -2535,12 +2547,13 @@ final class AppModel: ObservableObject {
                         enabled: !self.isStarred(song)
                     )
                 },
-                autoplayContinuationProvider: { [weak self] seed, excludedIDs in
+                autoplayContinuationProvider: { [weak self] seed, excludedIDs, enqueue in
                     guard let self else { return [] }
                     return await self.autoplayContinuation(
                         after: seed,
                         excluding: excludedIDs,
-                        client: client
+                        client: client,
+                        enqueue: enqueue
                     )
                 }
             )

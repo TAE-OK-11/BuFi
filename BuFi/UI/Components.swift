@@ -370,6 +370,49 @@ struct ArtworkLoadRequestIdentity: Hashable, Sendable {
     let pixelSize: Int
 }
 
+enum ArtworkImageLoader {
+    struct Payload {
+        let image: UIImage
+        let source: ArtworkImage
+        let cacheURL: URL
+    }
+
+    @MainActor
+    static func load(
+        coverArt: String?,
+        cacheRevision: String?,
+        pixelSize: CGFloat,
+        resolveURL: @MainActor (String?, Int) async -> URL?
+    ) async -> Payload? {
+        guard let sourceURL = await resolveURL(
+            normalizedCoverArt(coverArt),
+            Int(pixelSize)
+        ), !Task.isCancelled else {
+            return nil
+        }
+        let cacheURL = ArtworkStore.cacheURL(
+            for: sourceURL,
+            revision: cacheRevision
+        )
+        guard let loaded = try? await ArtworkStore.shared.image(
+            for: cacheURL,
+            pixelSize: pixelSize
+        ), !Task.isCancelled else {
+            return nil
+        }
+        return Payload(image: loaded.value, source: loaded, cacheURL: cacheURL)
+    }
+
+    static func normalizedCoverArt(_ coverArt: String?) -> String? {
+        guard let value = coverArt?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+}
+
 struct ArtworkView: View {
     private struct LoadedArtwork {
         let requestIdentity: ArtworkLoadRequestIdentity
@@ -422,43 +465,31 @@ struct ArtworkView: View {
             ) else {
                 return
             }
-            if let sourceURL = await model.artworkURL(
-                id: normalizedCoverArt,
-                size: Int(requestedPixelSize)
-            ) {
-                guard !Task.isCancelled else { return }
-                let coverURL = ArtworkStore.cacheURL(
-                    for: sourceURL,
-                    revision: cacheRevision
-                )
-                guard let loaded = try? await ArtworkStore.shared.image(
-                    for: coverURL,
-                    pixelSize: requestedPixelSize
-                ) else {
-                    guard !Task.isCancelled,
-                          artworkRequestIdentity == requestID else { return }
-                    onPalette?(.fallback)
-                    return
+            guard let loaded = await ArtworkImageLoader.load(
+                coverArt: coverArt,
+                cacheRevision: cacheRevision,
+                pixelSize: requestedPixelSize,
+                resolveURL: { id, pixelSize in
+                    await model.artworkURL(id: id, size: pixelSize)
                 }
+            ), !Task.isCancelled, artworkRequestIdentity == requestID else {
                 guard !Task.isCancelled,
                       artworkRequestIdentity == requestID else { return }
-                loadedArtwork = LoadedArtwork(
-                    requestIdentity: requestID,
-                    image: loaded.value
-                )
-                guard let onPalette else { return }
-                let palette = await ArtworkStore.shared.palette(
-                    for: coverURL,
-                    image: loaded
-                )
-                guard !Task.isCancelled,
-                      artworkRequestIdentity == requestID else { return }
-                onPalette(palette)
+                onPalette?(.fallback)
                 return
             }
+            loadedArtwork = LoadedArtwork(
+                requestIdentity: requestID,
+                image: loaded.image
+            )
+            guard let onPalette else { return }
+            let palette = await ArtworkStore.shared.palette(
+                for: loaded.cacheURL,
+                image: loaded.source
+            )
             guard !Task.isCancelled,
                   artworkRequestIdentity == requestID else { return }
-            onPalette?(.fallback)
+            onPalette(palette)
         }
         .accessibilityHidden(true)
     }
@@ -466,7 +497,7 @@ struct ArtworkView: View {
     private var artworkRequestIdentity: ArtworkLoadRequestIdentity {
         ArtworkLoadRequestIdentity(
             context: model.artworkContextID,
-            coverArtID: normalizedCoverArt,
+            coverArtID: ArtworkImageLoader.normalizedCoverArt(coverArt),
             cacheRevision: cacheRevision,
             pixelSize: Int(requestedPixelSize)
         )
@@ -477,15 +508,6 @@ struct ArtworkView: View {
             pointSize: size,
             displayScale: displayScale
         )
-    }
-
-    private var normalizedCoverArt: String? {
-        guard let value = coverArt?.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ), !value.isEmpty else {
-            return nil
-        }
-        return value
     }
 }
 
@@ -624,7 +646,6 @@ private struct SongFavoriteMenuButtonContent: View {
 
 struct SongRow: View {
     @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
 
     private let audio = AudioEngine.shared
 
@@ -671,8 +692,7 @@ struct SongRow: View {
     }
 
     private var compactAlbumRow: some View {
-        let isCurrentSong = currentPlayback.song?.id == song.id
-        return HStack(spacing: 0) {
+        HStack(spacing: 0) {
             Button {
                 audio.play(
                     song,
@@ -682,29 +702,18 @@ struct SongRow: View {
                 )
             } label: {
                 HStack(spacing: 12) {
-                    Group {
-                        if isCurrentSong {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(BuFiTheme.accent)
-                        } else {
-                            Text(String(format: "%02d", displayedTrackNumber))
-                                .font(.system(size: 13, weight: .medium, design: .rounded))
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
-                    .frame(width: 28, alignment: .trailing)
+                    CompactTrackLeading(
+                        songID: song.id,
+                        trackNumber: displayedTrackNumber
+                    )
 
-                    Text(song.title)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(
-                            isCurrentSong
-                                ? BuFiTheme.accent
-                                : Color.primary
-                        )
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    PlayingSongTitle(
+                        songID: song.id,
+                        title: song.title,
+                        lineLimit: 1,
+                        expandsVertically: false
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text(durationText)
                         .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -738,8 +747,7 @@ struct SongRow: View {
     }
 
     private var standardRow: some View {
-        let isCurrentSong = currentPlayback.song?.id == song.id
-        return HStack(spacing: 0) {
+        HStack(spacing: 0) {
             Button {
                 audio.play(
                     song,
@@ -756,15 +764,11 @@ struct SongRow: View {
                     )
                     .frame(width: artworkSize, height: artworkSize)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(song.title)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(
-                                isCurrentSong
-                                    ? BuFiTheme.accent
-                                    : Color.primary
-                            )
-                            .lineLimit(textLineLimit)
-                            .fixedSize(horizontal: false, vertical: true)
+                        PlayingSongTitle(
+                            songID: song.id,
+                            title: song.title,
+                            lineLimit: textLineLimit
+                        )
                         Text([song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
@@ -803,6 +807,48 @@ struct SongRow: View {
 
     private var durationText: String {
         song.safeDuration > 0 ? song.safeDuration.playbackText : "—:—"
+    }
+}
+
+private struct PlayingSongTitle: View {
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
+    let songID: String
+    let title: String
+    var lineLimit = 1
+    var expandsVertically = true
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(
+                currentPlayback.song?.id == songID
+                    ? BuFiTheme.accent
+                    : Color.primary
+            )
+            .lineLimit(lineLimit)
+            .fixedSize(horizontal: false, vertical: expandsVertically)
+    }
+}
+
+private struct CompactTrackLeading: View {
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
+    let songID: String
+    let trackNumber: Int
+
+    var body: some View {
+        Group {
+            if currentPlayback.song?.id == songID {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(BuFiTheme.accent)
+            } else {
+                Text(String(format: "%02d", trackNumber))
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .frame(width: 28, alignment: .trailing)
     }
 }
 

@@ -14,8 +14,10 @@ struct LibraryView: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     BuFiPageHeader(title: "내 라이브러리")
                     filters
-                    content
-                        .transition(.opacity)
+                    ForEach(visibleSurfaces, id: \.self) { surface in
+                        librarySurface(surface)
+                            .transition(.opacity)
+                    }
                 }
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance(idle: 56, playing: 154)
@@ -41,10 +43,34 @@ struct LibraryView: View {
         )
     }
 
-    @ViewBuilder
-    private var content: some View {
-        let snapshot = library.snapshot
+    private var visibleSurfaces: [LibrarySurface] {
         switch filter {
+        case .playlists:
+            return [.playlists]
+        case .albums:
+            return [.albums]
+        case .songs:
+            return [.songs]
+        case .artists:
+            if artistPresentation.allArtists.isEmpty {
+                return [.artistsEmpty]
+            }
+            var surfaces: [LibrarySurface] = []
+            if !artistPresentation.favorites.isEmpty {
+                surfaces.append(.favoriteArtists)
+            }
+            surfaces.append(.allArtistsHeader)
+            surfaces.append(contentsOf: artistPresentation.sections.map {
+                .artistSection($0.title)
+            })
+            return surfaces
+        }
+    }
+
+    @ViewBuilder
+    private func librarySurface(_ surface: LibrarySurface) -> some View {
+        let snapshot = library.snapshot
+        switch surface {
         case .playlists:
             if snapshot.playlists.isEmpty {
                 empty("플레이리스트가 없습니다", icon: "music.note.list")
@@ -91,8 +117,6 @@ struct LibraryView: View {
                 }
                 .padding(.horizontal, 16)
             }
-        case .artists:
-            artistsContent
         case .songs:
             if snapshot.starredSongs.isEmpty {
                 empty("좋아요 표시한 곡이 없습니다", icon: "heart")
@@ -106,7 +130,7 @@ struct LibraryView: View {
                                 queue: snapshot.starredSongs,
                                 queueIndex: index
                             )
-                                .padding(.horizontal, 14)
+                            .padding(.horizontal, 14)
                             if index < snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
@@ -115,50 +139,42 @@ struct LibraryView: View {
                 }
                 .padding(.horizontal, 16)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var artistsContent: some View {
-        if artistPresentation.allArtists.isEmpty {
+        case .artistsEmpty:
             empty("아티스트가 없습니다", icon: "person.2")
-        } else {
-            if !artistPresentation.favorites.isEmpty {
-                VStack(alignment: .leading, spacing: 12) {
-                    librarySectionTitle("좋아하는 아티스트")
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(alignment: .top, spacing: 16) {
-                            ForEach(artistPresentation.favorites) { artist in
-                                favoriteArtistCard(artist)
-                            }
+        case .favoriteArtists:
+            VStack(alignment: .leading, spacing: 12) {
+                librarySectionTitle("좋아하는 아티스트")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(alignment: .top, spacing: 16) {
+                        ForEach(artistPresentation.favorites) { artist in
+                            favoriteArtistCard(artist)
                         }
-                        .padding(.horizontal, 16)
                     }
+                    .padding(.horizontal, 16)
                 }
             }
+        case .allArtistsHeader:
+            librarySectionTitle("모든 아티스트")
+        case .artistSection(let title):
+            if let section = artistPresentation.sections.first(where: { $0.title == title }) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(section.title)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(BuFiTheme.accentSoft)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
 
-            LazyVStack(alignment: .leading, spacing: 12) {
-                librarySectionTitle("모든 아티스트")
-                ForEach(artistPresentation.sections) { section in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(section.title)
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(BuFiTheme.accentSoft)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 20)
-
-                        BuFiGroupedSurface {
-                            LazyVStack(spacing: 0) {
-                                ForEach(section.artists) { artist in
-                                    artistRow(artist)
-                                    if artist.id != section.artists.last?.id {
-                                        rowSeparator
-                                    }
+                    BuFiGroupedSurface {
+                        LazyVStack(spacing: 0) {
+                            ForEach(section.artists) { artist in
+                                artistRow(artist)
+                                if artist.id != section.artists.last?.id {
+                                    rowSeparator
                                 }
                             }
                         }
-                        .padding(.horizontal, 16)
                     }
+                    .padding(.horizontal, 16)
                 }
             }
         }
@@ -424,6 +440,16 @@ struct LibraryArtistPresentation: Sendable {
     private static func artistSort(_ lhs: Artist, _ rhs: Artist) -> Bool {
         lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
     }
+}
+
+private enum LibrarySurface: Hashable {
+    case playlists
+    case albums
+    case songs
+    case artistsEmpty
+    case favoriteArtists
+    case allArtistsHeader
+    case artistSection(String)
 }
 
 private enum LibraryFilter: Int, CaseIterable, Identifiable {

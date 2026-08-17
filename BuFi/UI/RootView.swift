@@ -41,6 +41,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var tab: AppTab = .home
+    @State private var mountedTabs: Set<AppTab> = [.home]
     @State private var pageProgress = 1.0
     @State private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
     @State private var thermalState = ProcessInfo.processInfo.thermalState
@@ -176,19 +177,19 @@ struct RootView: View {
     @ViewBuilder
     private var tabs: some View {
         let tabView = TabView(selection: $tab) {
-            tabPage(HomeView(), tag: .home)
+            tabPage(mounted(.home) { HomeView() }, tag: .home)
                 .tabItem { Label("홈", systemImage: "house.fill") }
                 .tag(AppTab.home)
 
-            tabPage(SearchView(), tag: .search)
+            tabPage(mounted(.search) { SearchView() }, tag: .search)
                 .tabItem { Label("검색하기", systemImage: "magnifyingglass") }
                 .tag(AppTab.search)
 
-            tabPage(LibraryView(), tag: .library)
+            tabPage(mounted(.library) { LibraryView() }, tag: .library)
                 .tabItem { Label("내 라이브러리", systemImage: "music.note.list") }
                 .tag(AppTab.library)
 
-            tabPage(SettingsView(), tag: .settings)
+            tabPage(mounted(.settings) { SettingsView() }, tag: .settings)
                 .tabItem { Label("설정", systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
         }
@@ -196,7 +197,8 @@ struct RootView: View {
         .sensoryFeedback(.selection, trigger: tab) { _, _ in
             hapticsEnabled && !lowPowerMode
         }
-        .onChange(of: tab) { _, _ in
+        .onChange(of: tab) { _, newTab in
+            mountedTabs.insert(newTab)
             guard effectiveMotion else {
                 pageProgress = 1
                 return
@@ -225,6 +227,18 @@ struct RootView: View {
             )
     }
 
+    @ViewBuilder
+    private func mounted<Content: View>(
+        _ tag: AppTab,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if mountedTabs.contains(tag) || tab == tag {
+            content()
+        } else {
+            Color.clear.accessibilityHidden(true)
+        }
+    }
+
     private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
         let activeProgress = tab == tag && effectiveMotion ? pageProgress : 1
         return content
@@ -238,7 +252,7 @@ struct RootView: View {
                         .anchorPreference(
                             key: MiniPlayerPlacementPreferenceKey.self,
                             value: .bounds
-                        ) { $0 }
+                        ) { tab == tag ? $0 : nil }
                         .padding(.bottom, 6)
                 }
             }

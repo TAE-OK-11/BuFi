@@ -1,35 +1,6 @@
 import SwiftUI
 import UIKit
 
-struct PlayerArtworkSwipeNavigation {
-    static func destinationIndex(
-        translation: CGSize,
-        predictedEndTranslation: CGSize,
-        currentIndex: Int,
-        queueCount: Int,
-        threshold: CGFloat = 52
-    ) -> Int? {
-        guard queueCount > 1,
-              (0..<queueCount).contains(currentIndex) else {
-            return nil
-        }
-
-        let horizontal = abs(predictedEndTranslation.width) > abs(translation.width)
-            ? predictedEndTranslation.width
-            : translation.width
-        let vertical = abs(predictedEndTranslation.height) > abs(translation.height)
-            ? predictedEndTranslation.height
-            : translation.height
-        guard abs(horizontal) >= threshold,
-              abs(horizontal) > abs(vertical) * 1.15 else {
-            return nil
-        }
-
-        let destination = currentIndex + (horizontal < 0 ? 1 : -1)
-        return (0..<queueCount).contains(destination) ? destination : nil
-    }
-}
-
 struct PlayerArtworkPageID: Hashable, Sendable {
     let queueEntryID: UUID
     let songID: String

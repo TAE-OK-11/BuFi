@@ -83,27 +83,14 @@ struct ArtistHeroArtwork: View {
         // directly would disclose the user's IP address and viewing time to an
         // unrelated image host, so artist art is loaded only through the user's
         // authenticated OpenSubsonic server.
-        guard let sourceURL = await model.artworkURL(
-                  id: normalizedCoverArt,
-                  size: Int(requestedPixelSize)
-              ),
-              !Task.isCancelled,
-              artworkRequestIdentity == requestID else {
-            guard !Task.isCancelled,
-                  artworkRequestIdentity == requestID else { return }
-            onPalette?(.fallback)
-            return
-        }
-        let coverURL = ArtworkStore.cacheURL(
-            for: sourceURL,
-            revision: cacheRevision
-        )
-        guard let loaded = try? await ArtworkStore.shared.image(
-                  for: coverURL,
-                  pixelSize: requestedPixelSize
-              ),
-              !Task.isCancelled,
-              artworkRequestIdentity == requestID else {
+        guard let loaded = await ArtworkImageLoader.load(
+            coverArt: coverArt,
+            cacheRevision: cacheRevision,
+            pixelSize: requestedPixelSize,
+            resolveURL: { id, pixelSize in
+                await model.artworkURL(id: id, size: pixelSize)
+            }
+        ), !Task.isCancelled, artworkRequestIdentity == requestID else {
             guard !Task.isCancelled,
                   artworkRequestIdentity == requestID else { return }
             onPalette?(.fallback)
@@ -112,12 +99,12 @@ struct ArtistHeroArtwork: View {
 
         loadedArtwork = LoadedArtwork(
             requestIdentity: requestID,
-            image: loaded.value
+            image: loaded.image
         )
         guard let onPalette else { return }
         let palette = await ArtworkStore.shared.palette(
-            for: coverURL,
-            image: loaded
+            for: loaded.cacheURL,
+            image: loaded.source
         )
         guard !Task.isCancelled,
               artworkRequestIdentity == requestID else { return }
@@ -127,7 +114,7 @@ struct ArtistHeroArtwork: View {
     private var artworkRequestIdentity: ArtworkLoadRequestIdentity {
         ArtworkLoadRequestIdentity(
             context: model.artworkContextID,
-            coverArtID: normalizedCoverArt,
+            coverArtID: ArtworkImageLoader.normalizedCoverArt(coverArt),
             cacheRevision: cacheRevision,
             pixelSize: Int(requestedPixelSize)
         )
@@ -138,14 +125,5 @@ struct ArtistHeroArtwork: View {
             pointSize: height,
             displayScale: displayScale
         )
-    }
-
-    private var normalizedCoverArt: String? {
-        guard let value = coverArt?.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ), !value.isEmpty else {
-            return nil
-        }
-        return value
     }
 }
