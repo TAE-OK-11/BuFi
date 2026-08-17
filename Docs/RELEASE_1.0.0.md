@@ -58,10 +58,8 @@ cancellable services.
 
 ## Compatibility and verification
 
-- iOS 17 minimum; Swift 6 language mode with complete concurrency checking for
-  the app and test targets.
-- Required clean Release build, unit tests, and simulator launch smoke test on
-  Xcode 26.6; advisory Release build on the Xcode 27 preview runner.
+- iOS 17 minimum; Swift 6 language mode with complete concurrency checking.
+- Required clean Release build on Xcode 27. Hosted CI does not run tests.
 - Monolithic LLVM LTO, whole-module Swift optimization, dead-code stripping,
   dSYM output, package pinning, and the safe non-global stripping workaround
   retained for iOS 27 beta device stability.

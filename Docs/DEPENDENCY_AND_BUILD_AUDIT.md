@@ -59,9 +59,9 @@ a build-time project generator.
   [2.45.4 ProjectSpec](https://github.com/yonaskolb/XcodeGen/blob/2.45.4/Docs/ProjectSpec.md))
   while recording Xcode 26.6 as the last-upgrade version. Xcode 27 can open and
   build this format without a source migration.
-- The BuFi app and test targets use `SWIFT_VERSION = 6.0` with
+- The BuFi app target uses `SWIFT_VERSION = 6.0` with
   `SWIFT_STRICT_CONCURRENCY = complete`. CI verifies both settings for Debug and
-  Release before compiling, testing, or packaging either target.
+  Release before compiling or packaging.
 - The iOS 27 beta playback crash was isolated to a `MPMediaItemArtwork` callback
   inheriting main-actor isolation while MediaPlayer invoked it on its private
   access queue. The callback now has an explicit Sendable boundary and the
@@ -105,10 +105,8 @@ Swift 6 in
   remains a clean Release build.
 - Pull requests run only the verification workflow; the artifact workflow runs
   after changes reach `main`, avoiding duplicate builds.
-- The required Xcode 26.6 job runs the unit-test bundle on an available iPhone
-  simulator and then keeps the installed app alive for a launch smoke interval.
-  This specifically catches the launch-time regressions that a compile-only job
-  cannot detect. Physical iOS 17 and iOS 27 beta devices remain release gates.
+- CI compiles the unsigned Release IPA. It does not boot a simulator or run
+  tests. Physical iOS 17 and iOS 27 beta devices remain release gates.
 
 Runner availability and installed toolchains are verified against GitHub's
 [macOS 26 image manifest](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md),

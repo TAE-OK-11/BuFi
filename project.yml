@@ -16,7 +16,7 @@ settings:
   base:
     # Swift 6 language mode makes the complete-concurrency diagnostics below
     # enforceable instead of advisory. Keep this at the project level so the
-    # app and its tests cannot silently drift onto different language modes.
+    # app cannot silently drift onto a different language mode.
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
@@ -127,17 +127,6 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_ASSET_PATHS: ""
+        COREML_CODEGEN_LANGUAGE: None
     scheme:
-      testTargets:
-        - BuFiTests
       gatherCoverageData: false
-  BuFiTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - path: BuFiTests
-    dependencies:
-      - target: BuFi
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: true

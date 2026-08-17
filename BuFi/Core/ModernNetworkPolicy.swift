@@ -73,18 +73,24 @@ enum ModernNetworkPolicy {
         )
     }
 
-    /// Applies the same HTTP/3-first policy to public JSON services. Callers
-    /// that pass the response through `HTTPContentDecoder` can advertise zstd;
-    /// callers relying only on CFNetwork decoding can disable it and retain
-    /// Brotli/gzip compatibility.
+    /// Third-party JSON APIs are not BuFi-controlled endpoints. Do not claim
+    /// HTTP/3 support before CFNetwork has learned it from DNS/Alt-Svc. Forcing
+    /// QUIC here can turn an otherwise healthy Groq/Gemini/OpenAI request into
+    /// a transport failure on networks or providers where H3 is unavailable.
+    /// Let URLSession negotiate the best supported protocol normally.
     static func prepareExternalAPIRequest(
         _ request: inout URLRequest,
         acceptsZstandard: Bool
     ) {
-        prepareJSONRequest(
-            &request,
-            acceptsZstandard: acceptsZstandard,
-            cachePolicy: .useProtocolCachePolicy
+        request.assumesHTTP3Capable = false
+        request.httpShouldHandleCookies = false
+        request.allowsCellularAccess = true
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.networkServiceType = .responsiveData
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            acceptsZstandard ? modernContentEncodings : compatibilityContentEncodings,
+            forHTTPHeaderField: "Accept-Encoding"
         )
     }
 
@@ -108,6 +114,18 @@ enum ModernNetworkPolicy {
         // CFNetwork natively expands Brotli and gzip. zstd is intentionally not
         // advertised here because Nuke receives bytes outside BuFi's zstd decoder.
         request.setValue(compatibilityContentEncodings, forHTTPHeaderField: "Accept-Encoding")
+    }
+
+    /// Analysis samples must not race the player for the AV streaming class.
+    /// Keep identity encoding so the range maps to raw audio bytes.
+    static func prepareAnalysisMediaRequest(_ request: inout URLRequest) {
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.networkServiceType = .background
+        request.setValue(
+            "audio/*, application/octet-stream;q=0.9, */*;q=0.1",
+            forHTTPHeaderField: "Accept"
+        )
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
     }
 
     static func prepareMediaRequest(_ request: inout URLRequest) {
