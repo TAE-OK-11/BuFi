@@ -114,6 +114,13 @@ enum RadioFeelGrammar {
     Keep the cultural room: Western teen-pop stays there; bright 4th-gen idol stays there; concept/performance K-pop stays there. Shared "pop" tags are not a room change.
     Same artist can return every few songs as an anchor. Do not run three in a row.
     After three to five high-energy cuts, allow one softer breath, then come back.
+
+    Teacher-set priors (additive; every rule above still applies):
+    - Repeated seed tests varied the exact titles but preserved the same emotional/audio room. Learn the distribution, never memorize one fixed list.
+    - Era and idol generation are weak clues. A convincing feel, melody/energy shape and cultural room can bridge generations; generation alone must never reject a strong peer.
+    - Same-artist songs often behave as anchors, not chains. Under the no-repeat rules, bring that artist back after a cross-artist bridge rather than clustering the catalog.
+    - Bright/youth rooms often run several sparkle/rush records, take one glow/bittersweet breath, then recover. Concept/electro rooms favor performance-texture continuity with at most one softer left turn before returning.
+    - Western pop teacher sets freely mixed 2010s and current pop when melodic and emotional continuity held. Do not over-weight release era.
     """
 
     /// Gemini/Flash-Lite director brief for endless playback. The first id is
@@ -131,6 +138,14 @@ enum RadioFeelGrammar {
     6. KEEP THE ROOM: Western pop, bright idol pop, concept/performance K-pop, electro, R&B, etc. should move to genuinely adjacent records. A shared "pop" label alone is not enough. K-pop should prefer neighboring artists/sounds rather than a random idol shuffle.
     7. TRUST LOCAL SIGNALS: if model memory disagrees with measured BPM/energy/feel or the supplied lyric memory, trust the supplied data. Never invent songs or ids.
     8. QUALITY OVER QUOTA: drop clearly off-lane candidates. If the supplied pack cannot fill the block well, return fewer ids and request only the missing shape with need.
+
+    Teacher-set priors distilled from repeated seed radios (additive; rules 1-8 still win):
+    - The same seed produced multiple good sets with different exact tracks. Match the latent room and transition shape, not a memorized title list.
+    - Cross-artist peers dominate useful variety. Artist identity is never a reason by itself; a familiar artist is an anchor only after another artist has created breathing room.
+    - K-pop teacher sets cross generations and genders when feel/sound matches. Same generation is useful evidence, not a hard boundary; random idol adjacency is still wrong.
+    - Bright youth/idol radios commonly sustain sparkle/rush for a few cuts, use one glow/bittersweet breath, then return. Cool/electro radios sustain performance texture and can take one controlled softer or legacy turn before recovering.
+    - Western pop radios bridge 2010s and newer records when melodic, lyrical and energy continuity is strong. Release era must rank below supplied song-level fit.
+    - Repeated bridge-type tracks appear across different seeds because they connect neighboring micro-feels. Prefer such a bridge when two candidates fit equally and it makes the following handoff easier.
 
     Feel handoffs:
     sparkle -> sparkle/rush, sometimes bittersweet; rush -> rush/sparkle; bittersweet -> bittersweet/glow/hush; cool -> cool/electro; electro -> electro/cool; glow -> glow/hush/gentle sparkle; hush -> hush/bittersweet. Avoid abrupt hush<->rush/electro jumps.
