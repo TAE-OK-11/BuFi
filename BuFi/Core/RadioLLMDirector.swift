@@ -210,12 +210,12 @@ struct RadioCandidatePack: Sendable {
 }
 
 enum RadioLLMDirector {
-    static let requestedCount = 30
-    static let enginePool = 30
-    static let reviewKeep = 15
-    static let packSize = 30
+    static let requestedCount = 50
+    static let enginePool = 50
+    static let reviewKeep = 20
+    static let packSize = 50
     // Score broadly first so exclusions never starve autoplay, then the normal
-    // BuFi algorithm condenses that pool to exactly the 30 tracks Gemini sees.
+    // BuFi algorithm condenses that pool to exactly the 50 tracks Gemini sees.
     static let mixerLimit = 360
     static let streamWaitDeadline: TimeInterval = 1.5
     static let firstPickDeadline: TimeInterval = 12.0
@@ -385,9 +385,9 @@ enum RadioLLMDirector {
         var turns: [Song] = []
         var seen = Set<String>()
         var roomArtists: [String] = []
-        let roomTarget = 14
-        let nearbyTarget = 10
-        let turnTarget = 6
+        let roomTarget = 24
+        let nearbyTarget = 17
+        let turnTarget = 9
 
         func take(_ song: Song, into bucket: inout [Song], artists: inout [String]) -> Bool {
             guard seen.insert(song.id).inserted else { return false }
@@ -567,7 +567,7 @@ enum RadioLLMDirector {
         async let streamed: String? = RadioGeminiRuntime.stream(
             prompt: prompt,
             settings: settings,
-            maxTokens: 1_400
+            maxTokens: 2_000
         ) { partial in
             let ids = RadioIDStream.newIDs(
                 in: partial,
@@ -672,7 +672,7 @@ enum RadioLLMDirector {
         seed: Song,
         lyricIndex: LyricSignatureIndex
     ) -> String {
-        let lines = pack.all.prefix(30).map { song in
+        let lines = pack.all.prefix(50).map { song in
             let feel = RadioFeelGrammar.feel(
                 song: song,
                 signature: lyricIndex.bySongID[song.id]
@@ -733,7 +733,7 @@ enum RadioLLMDirector {
                 lyricIndex: lyricIndex,
                 excerptLimit: 240
             ),
-            recent: recent.prefix(4).map {
+            recent: recent.prefix(10).map {
                 RecommendationPromptCard.make($0, lyricIndex: lyricIndex, excerptLimit: 140)
             }
                 .joined(separator: "\n"),
