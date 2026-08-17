@@ -287,10 +287,6 @@ enum RadioLLMDirector {
                 title: String(localized: "라디오 후보가 적어 로컬 순서로 이어갑니다"),
                 detail: "catalog=\(catalog.count) algorithm=\(algorithmCandidates.count)"
             )
-            // At an end-of-queue request, one streamed fallback is enough to
-            // release the player's buffering wait immediately. Returning the
-            // full block still lets a background prefetch request append the
-            // rest without hammering MainActor with several synchronous picks.
             if let first = fallback.first, let onPick {
                 await onPick(first)
             }
@@ -568,15 +564,10 @@ enum RadioLLMDirector {
             settings: settings,
             profile: profile
         )
-        async let streamed: String? = LyricInferenceRuntime.streamRadio(
+        async let streamed: String? = RadioGeminiRuntime.stream(
             prompt: prompt,
             settings: settings,
-            maxTokens: 900,
-            applePrompt: compactReviewPrompt(
-                pack: pack,
-                seed: seed,
-                lyricIndex: lyricIndex
-            )
+            maxTokens: 900
         ) { partial in
             let ids = RadioIDStream.newIDs(
                 in: partial,
