@@ -39,7 +39,7 @@ enum BuFiMotion {
     static let trackPage = Animation.smooth(duration: 0.48, extraBounce: 0.08)
     static let color = Animation.smooth(duration: 0.44, extraBounce: 0)
     static let page = Animation.smooth(duration: 0.38, extraBounce: 0.07)
-    static let miniLyrics = Animation.smooth(duration: 0.36, extraBounce: 0.08)
+    static let miniLyrics = Animation.smooth(duration: 0.48, extraBounce: 0)
     static let lyrics = Animation.smooth(duration: 0.38, extraBounce: 0.06)
     static let lyricsPanel = Animation.smooth(duration: 0.40, extraBounce: 0.08)
 

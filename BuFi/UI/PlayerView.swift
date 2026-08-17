@@ -1077,39 +1077,25 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let activeLyric {
-                ZStack(alignment: .topLeading) {
-                    Text(activeLyric.line.text)
-                        .font(.system(size: 20, weight: .bold))
-                        .tracking(-0.40)
-                        .foregroundStyle(primary)
-                        .lineLimit(nil)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .layoutPriority(1)
-                        .id("\(song.id)-\(activeLyric.line.id)")
-                        .transition(miniLyricsTransition)
-                        .zIndex(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-
-            ForEach(upcomingLyrics, id: \.line.id) { item in
+        VStack(alignment: .leading, spacing: departingLineSpacing) {
+            ForEach(visibleMiniLyrics, id: \.line.id) { item in
+                let isActive = item.index == lyricsState.activeIndex
+                let isPast = item.index < lyricsState.activeIndex
                 Text(item.line.text)
                     .font(.system(size: 20, weight: .bold))
                     .tracking(-0.40)
                     .foregroundStyle(lyricColor(for: item.index))
                     .scaleEffect(
-                        motionEnabled ? 0.99 : 1,
-                        anchor: .leading
+                        motionEnabled ? (isActive ? 1 : 0.985) : 1,
+                        anchor: .topLeading
                     )
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(isPast ? 1 : nil)
+                    .fixedSize(horizontal: false, vertical: !isPast)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .transition(.opacity)
+                    .opacity(isPast ? 0 : 1)
+                    .frame(maxHeight: isPast ? 0 : nil, alignment: .top)
+                    .clipped()
             }
         }
         .padding(.top, 6)
@@ -1122,34 +1108,29 @@ private struct PlayerLyricsCard: View {
         )
     }
 
-    private var activeLyric: (index: Int, line: LyricLine)? {
-        let lines = lyricsState.document.lines
-        guard lines.indices.contains(lyricsState.activeIndex) else { return nil }
-        let index = lyricsState.activeIndex
-        return (index: index, line: lines[index])
+    private var departingLineSpacing: CGFloat {
+        let hasDepartingLine = visibleMiniLyrics.contains {
+            $0.index < lyricsState.activeIndex
+        }
+        return hasDepartingLine ? 0 : 10
     }
 
-    private var upcomingLyrics: [(index: Int, line: LyricLine)] {
+    private var visibleMiniLyrics: [(index: Int, line: LyricLine)] {
         let lines = lyricsState.document.lines
-        let start = activeLyric.map { $0.index + 1 } ?? lines.startIndex
-        let end = min(lines.endIndex, start + 6)
+        guard !lines.isEmpty else { return [] }
+        let active = lyricsState.activeIndex
+        let start = active >= 0 ? max(lines.startIndex, active - 1) : lines.startIndex
+        let focus = max(active, start)
+        let end = min(lines.endIndex, focus + 6)
         guard start < end else { return [] }
         return (start..<end).map { (index: $0, line: lines[$0]) }
     }
 
     private func lyricColor(for index: Int) -> Color {
         if index == lyricsState.activeIndex { return primary }
-        if index < lyricsState.activeIndex { return primary.opacity(0.28) }
+        if index < lyricsState.activeIndex { return primary.opacity(0.18) }
         let distance = max(1, index - lyricsState.activeIndex)
-        return primary.opacity(max(0.26, 0.62 - (Double(distance - 1) * 0.12)))
-    }
-
-    private var miniLyricsTransition: AnyTransition {
-        guard motionEnabled else { return .opacity }
-        return .asymmetric(
-            insertion: .offset(y: 3).combined(with: .opacity),
-            removal: .offset(y: -2).combined(with: .opacity)
-        )
+        return primary.opacity(max(0.28, 0.64 - (Double(distance - 1) * 0.10)))
     }
 }
 
