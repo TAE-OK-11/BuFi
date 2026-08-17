@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Export the two Notion recommendation pages as Create ML session data.
+"""Export the two Notion recommendation pages as balanced Create ML sessions.
 
 The teacher pages are not simple playlists: one seed may have several
-independent recommendation sets and long screenshot-derived radio runs.  We
-preserve those boundaries, then create multiple small pseudo-sessions so the
-Jaccard item recommender learns local handoffs instead of raw popularity.
+independent recommendation sets and long screenshot-derived radio runs. We
+preserve those boundaries, then create small pseudo-sessions so the Jaccard
+item recommender learns local handoffs instead of raw popularity. Long blocks
+are sampled across their full span with a per-block cap so page length does not
+turn into an accidental preference weight.
 """
 
 from __future__ import annotations
@@ -25,6 +27,24 @@ def unique_tracks(block: list[TeacherTrack]) -> list[TeacherTrack]:
         seen.add(key)
         result.append(track)
     return result
+
+
+def spaced_starts(starts: list[int], limit: int) -> list[int]:
+    """Keep deterministic positions spread over the whole teacher run."""
+    if limit <= 0 or not starts:
+        return []
+    if len(starts) <= limit:
+        return starts
+    if limit == 1:
+        return [starts[0]]
+    picked: list[int] = []
+    last_index = len(starts) - 1
+    for slot in range(limit):
+        index = round(slot * last_index / (limit - 1))
+        value = starts[index]
+        if not picked or picked[-1] != value:
+            picked.append(value)
+    return picked
 
 
 def add_session(
@@ -60,9 +80,13 @@ def rows_from_blocks(blocks: list[list[TeacherTrack]]) -> list[tuple[str, str, f
         seed_key = item_key(seed.title, seed.artist)
         recommendations = block[1:]
 
-        # 1) Seed-centred rooms. Long screenshot runs are chunked so distant
-        # tracks do not all become equally co-occurring with each other.
-        for chunk_index, start in enumerate(range(0, len(recommendations), 10)):
+        # 1) Seed-centred rooms. Sample at most five chunks across the entire
+        # run so a 100-track screenshot does not outweigh a concise 8-track set.
+        room_starts = spaced_starts(
+            list(range(0, len(recommendations), 10)),
+            limit=5,
+        )
+        for chunk_index, start in enumerate(room_starts):
             chunk = recommendations[start : start + 12]
             if len(chunk) < 2:
                 continue
@@ -74,7 +98,7 @@ def rows_from_blocks(blocks: list[list[TeacherTrack]]) -> list[tuple[str, str, f
             )
 
         # 2) Strong opening: the first recommendations receive their own small
-        # context instead of being diluted by a 30-song block.
+        # context instead of being diluted by a long radio run.
         opening = [seed] + recommendations[:8]
         if len(opening) >= 3:
             add_session(
@@ -84,10 +108,15 @@ def rows_from_blocks(blocks: list[list[TeacherTrack]]) -> list[tuple[str, str, f
                 seed_key=seed_key,
             )
 
-        # 3) Sliding local windows teach actual handoffs within a ranked radio
-        # run.  Stride 2 gives overlap without exploding the dataset.
+        # 3) Sliding local windows teach actual handoffs. Long runs get at most
+        # twelve windows chosen across the full sequence, retaining late-run
+        # evidence without giving them 5x the statistical weight.
         sequence = [seed] + recommendations
-        for window_index, start in enumerate(range(0, max(1, len(sequence) - 2), 2)):
+        flow_starts = spaced_starts(
+            list(range(0, max(1, len(sequence) - 2), 2)),
+            limit=12,
+        )
+        for window_index, start in enumerate(flow_starts):
             window = sequence[start : start + 6]
             if len(window) < 3:
                 continue
@@ -136,7 +165,7 @@ def main() -> None:
 
     if not blocks:
         # Do not destroy the committed teacher snapshot when Notion is
-        # temporarily unavailable.  CI can still train from the last export.
+        # temporarily unavailable. CI can still train from the last export.
         if os.path.isfile(dest) and os.path.getsize(dest) > 32:
             print("no live teacher blocks; keeping", dest)
             return
