@@ -67,7 +67,7 @@ packages:
     exactVersion: 0.9.0
   Nuke:
     url: https://github.com/kean/Nuke.git
-    exactVersion: 13.2.0
+    exactVersion: 13.1.0
   Zstandard:
     url: https://github.com/facebook/zstd.git
     exactVersion: 1.5.7

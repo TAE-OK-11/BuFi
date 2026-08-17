@@ -3157,12 +3157,9 @@ final class AudioEngine: NSObject, ObservableObject {
                     max(264, screenSize.height * 0.47)
                 )
             )
-            let artworkPixelSize = min(
-                384,
-                ArtworkRequestSizing.pixelSize(
-                    pointSize: artworkEdge,
-                    displayScale: UIScreen.main.scale
-                )
+            let artworkPixelSize = ArtworkRequestSizing.pixelSize(
+                pointSize: artworkEdge,
+                displayScale: UIScreen.main.scale
             )
             var coverURLs: [URL] = []
             var seenArtworkRevisions = Set<String>()

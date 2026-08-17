@@ -370,49 +370,6 @@ struct ArtworkLoadRequestIdentity: Hashable, Sendable {
     let pixelSize: Int
 }
 
-enum ArtworkImageLoader {
-    struct Payload {
-        let image: UIImage
-        let source: ArtworkImage
-        let cacheURL: URL
-    }
-
-    @MainActor
-    static func load(
-        coverArt: String?,
-        cacheRevision: String?,
-        pixelSize: CGFloat,
-        resolveURL: @MainActor (String?, Int) async -> URL?
-    ) async -> Payload? {
-        guard let sourceURL = await resolveURL(
-            normalizedCoverArt(coverArt),
-            Int(pixelSize)
-        ), !Task.isCancelled else {
-            return nil
-        }
-        let cacheURL = ArtworkStore.cacheURL(
-            for: sourceURL,
-            revision: cacheRevision
-        )
-        guard let loaded = try? await ArtworkStore.shared.image(
-            for: cacheURL,
-            pixelSize: pixelSize
-        ), !Task.isCancelled else {
-            return nil
-        }
-        return Payload(image: loaded.value, source: loaded, cacheURL: cacheURL)
-    }
-
-    static func normalizedCoverArt(_ coverArt: String?) -> String? {
-        guard let value = coverArt?.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ), !value.isEmpty else {
-            return nil
-        }
-        return value
-    }
-}
-
 struct ArtworkView: View {
     private struct LoadedArtwork {
         let requestIdentity: ArtworkLoadRequestIdentity
@@ -463,31 +420,43 @@ struct ArtworkView: View {
             ) else {
                 return
             }
-            guard let loaded = await ArtworkImageLoader.load(
-                coverArt: coverArt,
-                cacheRevision: cacheRevision,
-                pixelSize: requestedPixelSize,
-                resolveURL: { id, pixelSize in
-                    await model.artworkURL(id: id, size: pixelSize)
+            if let sourceURL = await model.artworkURL(
+                id: normalizedCoverArt,
+                size: Int(requestedPixelSize)
+            ) {
+                guard !Task.isCancelled else { return }
+                let coverURL = ArtworkStore.cacheURL(
+                    for: sourceURL,
+                    revision: cacheRevision
+                )
+                guard let loaded = try? await ArtworkStore.shared.image(
+                    for: coverURL,
+                    pixelSize: requestedPixelSize
+                ) else {
+                    guard !Task.isCancelled,
+                          artworkRequestIdentity == requestID else { return }
+                    onPalette?(.fallback)
+                    return
                 }
-            ), !Task.isCancelled, artworkRequestIdentity == requestID else {
                 guard !Task.isCancelled,
                       artworkRequestIdentity == requestID else { return }
-                onPalette?(.fallback)
+                loadedArtwork = LoadedArtwork(
+                    requestIdentity: requestID,
+                    image: loaded.value
+                )
+                guard let onPalette else { return }
+                let palette = await ArtworkStore.shared.palette(
+                    for: coverURL,
+                    image: loaded
+                )
+                guard !Task.isCancelled,
+                      artworkRequestIdentity == requestID else { return }
+                onPalette(palette)
                 return
             }
-            loadedArtwork = LoadedArtwork(
-                requestIdentity: requestID,
-                image: loaded.image
-            )
-            guard let onPalette else { return }
-            let palette = await ArtworkStore.shared.palette(
-                for: loaded.cacheURL,
-                image: loaded.source
-            )
             guard !Task.isCancelled,
                   artworkRequestIdentity == requestID else { return }
-            onPalette(palette)
+            onPalette?(.fallback)
         }
         .accessibilityHidden(true)
     }
@@ -495,7 +464,7 @@ struct ArtworkView: View {
     private var artworkRequestIdentity: ArtworkLoadRequestIdentity {
         ArtworkLoadRequestIdentity(
             context: model.artworkContextID,
-            coverArtID: ArtworkImageLoader.normalizedCoverArt(coverArt),
+            coverArtID: normalizedCoverArt,
             cacheRevision: cacheRevision,
             pixelSize: Int(requestedPixelSize)
         )
@@ -506,6 +475,15 @@ struct ArtworkView: View {
             pointSize: size,
             displayScale: displayScale
         )
+    }
+
+    private var normalizedCoverArt: String? {
+        guard let value = coverArt?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 
