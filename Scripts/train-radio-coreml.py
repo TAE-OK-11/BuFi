@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit a linear Core ML ranker from the feel-placement grammar."""
+"""Fit a linear Core ML ranker from feel grammar plus structured teacher radios."""
 
 from __future__ import annotations
 
@@ -7,6 +7,10 @@ import os
 
 import coremltools as ct
 import numpy as np
+
+from radio_teacher import fetch_lines as fetch_teacher_lines
+from radio_teacher import normalize as _norm
+from radio_teacher import teacher_blocks
 
 FEELS = [
     "sparkle",
@@ -168,9 +172,9 @@ def pair_from_tracks(seed: dict, cand: dict) -> tuple[list[float], float]:
     label = next_score(seed_feel, cand_feel)
     label += (1.0 - abs(se - ce)) * 0.10
     label += max(0.0, 0.08 - abs(sb - cb) * 0.2)
-    same_artist = str(seed.get("artist") or "") == str(cand.get("artist") or "")
-    if same_artist and seed.get("id") != cand.get("id"):
-        label += 0.06
+    # Artist identity is deliberately not a numeric shortcut. Teacher radios
+    # contain useful same-artist anchors, but the model should learn their
+    # audio/feel shape rather than a generic same-artist bonus.
     if kpop_same:
         label += 0.12
         if seed_feel in {"sparkle", "rush"} and cand_feel in {"cool", "electro"}:
@@ -180,35 +184,10 @@ def pair_from_tracks(seed: dict, cand: dict) -> tuple[list[float], float]:
     return features, float(np.clip(label, 0, 1))
 
 
-def _norm(text: str) -> str:
-    import re
-    import unicodedata
-
-    value = unicodedata.normalize("NFKC", text or "").lower()
-    value = re.sub(r"\(.*?\)", "", value)
-    return re.sub(r"[^0-9a-z가-힣]+", "", value)
-
-
-def _parse_line(line: str) -> tuple[str, str] | None:
-    import re
-
-    text = re.sub(r"^\d+\.\s*", "", line.replace("\u2060", "").strip())
-    text = re.sub(r"^시드:\s*", "", text)
-    if not text or text.startswith("세트") or "스크린샷" in text or text.startswith("Bufi"):
-        return None
-    if " - " not in text:
-        return None
-    title, artist = text.rsplit(" - ", 1)
-    title, artist = title.strip(), artist.strip()
-    if not title or not artist:
-        return None
-    return title, artist
-
-
 def _resolve(title: str, artist: str, index: dict) -> dict | None:
-    key = _norm(title) + _norm(artist.split("(")[0])
-    if key in index:
-        return index[key][0]
+    exact = _norm(title) + _norm(artist)
+    if exact in index:
+        return index[exact][0]
     title_key = _norm(title)
     if title_key in index:
         return index[title_key][0]
@@ -217,66 +196,6 @@ def _resolve(title: str, artist: str, index: dict) -> dict | None:
             if title_key in stored or stored in title_key:
                 return tracks[0]
     return None
-
-
-def load_notion_lines() -> list[str]:
-    import json
-    import urllib.request
-
-    pages = [
-        "3bef030e-09cf-8010-a650-f4b906e8e91f",
-        "3bef030e-09cf-8004-968b-e79de61a4528",
-    ]
-    url = "https://www.notion.so/api/v3/loadPageChunk"
-    lines: list[str] = []
-
-    def post(payload):
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-
-    def plain(prop):
-        if not prop:
-            return ""
-        return "".join(str(run[0]) for run in prop if isinstance(run, list) and run)
-
-    for page in pages:
-        blocks = {}
-        cursor = []
-        chunk = 0
-        while True:
-            data = post(
-                {
-                    "page": {"id": page},
-                    "limit": 100,
-                    "cursor": {"stack": cursor},
-                    "chunkNumber": chunk,
-                    "verticalColumns": False,
-                }
-            )
-            blocks.update(data.get("recordMap", {}).get("block", {}))
-            cursor = data.get("cursor", {}).get("stack", [])
-            chunk += 1
-            if not cursor or chunk > 60:
-                break
-
-        def walk(block_id: str) -> None:
-            rec = blocks.get(block_id, {})
-            value = rec.get("value", {}).get("value", rec.get("value", {})) or {}
-            title = plain((value.get("properties") or {}).get("title"))
-            for piece in title.splitlines():
-                if piece.strip():
-                    lines.append(piece.strip())
-            for child in value.get("content") or []:
-                walk(child)
-
-        walk(page)
-    return lines
 
 
 def load_notion_pairs(
@@ -288,74 +207,75 @@ def load_notion_pairs(
     tracks = json.loads(open(scan_path, encoding="utf-8").read()).get("tracks", [])
     index: dict[str, list[dict]] = defaultdict(list)
     for track in tracks:
-        index[_norm(track.get("title", ""))].append(track)
-        index[_norm(track.get("title", "")) + _norm(track.get("artist", ""))].append(track)
+        title_key = _norm(track.get("title", ""))
+        index[title_key].append(track)
+        index[title_key + _norm(track.get("artist", ""))].append(track)
+
     try:
-        lines = load_notion_lines()
+        teacher = teacher_blocks(fetch_teacher_lines())
     except Exception as error:
         print("notion fetch failed", error)
         return [], []
 
-    parsed = [item for item in (_parse_line(line) for line in lines) if item]
     xs: list[list[float]] = []
     ys: list[float] = []
-    blocks: list[list[dict]] = []
-    current: list[dict] = []
-    for title, artist in parsed:
-        resolved = _resolve(title, artist, index)
-        # A numbered-looking isolated seed starts a block when the previous
-        # block is already long enough.
-        if resolved is None:
-            continue
-        current.append(resolved)
-        if len(current) >= 8 and title.lower() in {
-            "karma",
-            "style",
-            "anti-hero",
-            "so high school",
-        }:
-            if len(current) > 1:
-                blocks.append(current[:-1])
-            current = [resolved]
-    if len(current) >= 3:
-        blocks.append(current)
-
-    # Also treat consecutive parsed matches as one sliding radio.
-    matched = [_resolve(title, artist, index) for title, artist in parsed]
-    matched = [track for track in matched if track]
-    if len(matched) >= 4:
-        blocks.append(matched)
-
-    for block in blocks:
-        unique = []
-        seen = set()
-        for track in block:
-            if track.get("id") in seen:
+    resolved_blocks: list[list[dict]] = []
+    for block in teacher:
+        resolved: list[dict] = []
+        seen: set[str] = set()
+        for item in block:
+            track = _resolve(item.title, item.artist, index)
+            if track is None:
                 continue
-            seen.add(track.get("id"))
-            unique.append(track)
-        if len(unique) < 3:
-            continue
-        seed = unique[0]
-        positives = {track.get("id") for track in unique[1:]}
-        for rank, track in enumerate(unique[1:]):
+            track_id = str(track.get("id") or "")
+            if not track_id or track_id in seen:
+                continue
+            seen.add(track_id)
+            resolved.append(track)
+        if len(resolved) >= 3:
+            resolved_blocks.append(resolved)
+
+    for block in resolved_blocks:
+        seed = block[0]
+        positives = {track.get("id") for track in block[1:]}
+
+        # Seed-to-ranked-candidate teacher labels. Repeat strong observations so
+        # they can meaningfully calibrate the larger synthetic grammar corpus.
+        for rank, track in enumerate(block[1:]):
             features, _ = pair_from_tracks(seed, track)
-            label = max(0.62, 0.97 - rank * 0.012)
+            label = max(0.68, 0.99 - rank * 0.014)
+            repeats = 3 if rank < 8 else 2
+            for _ in range(repeats):
+                xs.append(features)
+                ys.append(label)
+
+        # Consecutive teacher order is stronger than simple co-membership.
+        for index_a in range(len(block) - 1):
+            features, _ = pair_from_tracks(block[index_a], block[index_a + 1])
+            label = 0.96 if index_a < 3 else 0.92
+            xs.extend([features, features])
+            ys.extend([label, label])
+
+        # A one-track skip captures smooth local arcs without pretending every
+        # distant track in a long screenshot run is an immediate transition.
+        for index_a in range(len(block) - 2):
+            features, _ = pair_from_tracks(block[index_a], block[index_a + 2])
             xs.append(features)
-            ys.append(label)
-        for index_a in range(len(unique) - 1):
-            features, _ = pair_from_tracks(unique[index_a], unique[index_a + 1])
-            xs.append(features)
-            ys.append(0.93)
-        others = [track for track in tracks if track.get("id") not in positives | {seed.get("id")}]
-        if not others:
-            continue
-        picks = rng.choice(len(others), size=min(6, len(others)), replace=False)
-        for pick in picks:
-            features, grammar = pair_from_tracks(seed, others[int(pick)])
-            xs.append(features)
-            ys.append(min(grammar, 0.34))
-    print("notion matched pairs", len(xs), "blocks", len(blocks))
+            ys.append(0.84)
+
+        others = [
+            track
+            for track in tracks
+            if track.get("id") not in positives | {seed.get("id")}
+        ]
+        if others:
+            picks = rng.choice(len(others), size=min(8, len(others)), replace=False)
+            for pick in picks:
+                features, grammar = pair_from_tracks(seed, others[int(pick)])
+                xs.append(features)
+                ys.append(min(grammar, 0.28))
+
+    print("notion matched pairs", len(xs), "blocks", len(resolved_blocks))
     return xs, ys
 
 
@@ -400,6 +320,7 @@ def main() -> None:
                 features, label = row(seed, cand, rng)
                 xs.append(features)
                 ys.append(label)
+
     scan = os.environ.get("BUFI_SCAN_EXPORT", "/root/텍스트.txt")
     if os.path.isfile(scan):
         extra_x, extra_y = load_scan_pairs(scan, rng)
@@ -410,6 +331,7 @@ def main() -> None:
         xs.extend(notion_x)
         ys.extend(notion_y)
         print("loaded notion pairs", len(notion_x))
+
     x = np.asarray(xs, dtype=np.float32)
     y = np.asarray(ys, dtype=np.float32)
     ones = np.ones((x.shape[0], 1), dtype=np.float32)
@@ -435,7 +357,7 @@ def main() -> None:
     spec = builder.spec
     spec.description.predictedFeatureName = "score"
     spec.description.metadata.shortDescription = (
-        "BuFi radio 50-to-30 ranker trained on feel-placement data"
+        "BuFi radio 50-to-30 ranker trained on feel grammar and structured teacher radios"
     )
     model = ct.models.MLModel(spec)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
