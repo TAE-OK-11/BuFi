@@ -39,6 +39,18 @@ enum RecommendationAIRouting {
         let selected = settings.radioModel
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // These are explicit recommendation-engine choices with their own
+        // provider routing. Do not rewrite them just because lyric analysis is
+        // currently configured for Google AI Studio.
+        if let explicit = RadioModelOption(rawValue: selected) {
+            switch explicit {
+            case .googleGemma431, .googleGemma426, .openRouterNemotron35Lightning:
+                return resolved
+            default:
+                break
+            }
+        }
+
         guard !geminiKey.isEmpty else {
             // If Google AI is selected but the runtime did not receive a key,
             // make that distinction visible. Never print the secret itself.
