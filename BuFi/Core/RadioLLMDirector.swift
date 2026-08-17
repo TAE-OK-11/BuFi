@@ -106,7 +106,7 @@ struct RadioLaneBrief: Equatable, Sendable {
     }
 }
 
-/// Local lane first, then one Groq pass that only reorders a small pack.
+/// Local algorithm first, then one LLM pass that only reorders a small pack.
 enum RadioIDStream {
     static func newIDs(
         in text: String,
@@ -210,14 +210,12 @@ struct RadioCandidatePack: Sendable {
 }
 
 enum RadioLLMDirector {
-    static let requestedCount = 96
-    static let enginePool = 96
-    static let coreMLKeep = 30
+    static let requestedCount = 30
+    static let enginePool = 30
     static let reviewKeep = 8
     static let packSize = 30
-    // Pull a broad raw pool first. Queue exclusions happen after this cut; using
-    // only 96 here could leave zero candidates even with hundreds of library
-    // songs still available once the autoplay queue had accumulated history.
+    // Score broadly first so exclusions never starve autoplay, then the normal
+    // BuFi algorithm condenses that pool to exactly the 30 tracks Gemini sees.
     static let mixerLimit = 360
     static let streamWaitDeadline: TimeInterval = 1.5
     static let firstPickDeadline: TimeInterval = 12.0
@@ -253,27 +251,16 @@ enum RadioLLMDirector {
                 && !excludedIDs.contains($0.id)
                 && $0.externalStreamURL == nil
         }
-        let engineCandidates = RadioContinuity.diversifiedEnginePool(
+        let algorithmCandidates = RadioContinuity.diversifiedEnginePool(
             filtered,
             seed: seed,
             behavior: behavior,
             lyricIndex: lyricIndex,
             limit: enginePool
         )
-        let session = Array(behavior.recentSongs.prefix(5))
-        let ranked = RadioCoreMLTransition.shortlist(
-            seed: seed,
-            candidates: engineCandidates,
-            lyricIndex: lyricIndex,
-            keep: coreMLKeep,
-            session: session
-        )
-        let leftover = engineCandidates.filter { song in
-            !ranked.contains(where: { $0.id == song.id })
-        }
         let pack = fillPack(
             brief: brief,
-            algorithm: ranked,
+            algorithm: algorithmCandidates,
             lyricIndex: lyricIndex,
             profile: profile,
             seed: seed
@@ -292,13 +279,13 @@ enum RadioLLMDirector {
         )
         guard catalog.count >= 6 else {
             let fallback = local.isEmpty
-                ? Array(engineCandidates.prefix(reviewKeep))
+                ? Array(algorithmCandidates.prefix(reviewKeep))
                 : local
             RecommendationDiagnostics.record(
                 kind: .radio,
                 level: .info,
                 title: String(localized: "라디오 후보가 적어 로컬 순서로 이어갑니다"),
-                detail: "catalog=\(catalog.count) engine=\(engineCandidates.count)"
+                detail: "catalog=\(catalog.count) algorithm=\(algorithmCandidates.count)"
             )
             // At an end-of-queue request, one streamed fallback is enough to
             // release the player's buffering wait immediately. Returning the
@@ -312,7 +299,7 @@ enum RadioLLMDirector {
         let picked = await reviewStreaming(
             pack: pack,
             local: local,
-            leftover: leftover,
+            leftover: [],
             brief: brief,
             seed: seed,
             recent: behavior.recentSongs,
@@ -492,13 +479,7 @@ enum RadioLLMDirector {
                     from: last,
                     to: song,
                     lyricIndex: lyricIndex
-                ) * 0.35
-                let learned = RadioCoreMLTransition.score(
-                    seed: last,
-                    candidate: song,
-                    lyricIndex: lyricIndex
-                )
-                score = learned * 0.45 + score * 0.55
+                ) * 0.45
                 if TrackWorkIdentity.isNearVariant(song, of: neighbors) {
                     score -= 0.55
                 }
