@@ -212,7 +212,7 @@ struct RadioCandidatePack: Sendable {
 enum RadioLLMDirector {
     static let requestedCount = 30
     static let enginePool = 30
-    static let reviewKeep = 8
+    static let reviewKeep = 15
     static let packSize = 30
     // Score broadly first so exclusions never starve autoplay, then the normal
     // BuFi algorithm condenses that pool to exactly the 30 tracks Gemini sees.
@@ -277,7 +277,7 @@ enum RadioLLMDirector {
             lyricIndex: lyricIndex,
             limit: reviewKeep
         )
-        guard catalog.count >= 6 else {
+        guard catalog.count >= reviewKeep else {
             let fallback = local.isEmpty
                 ? Array(algorithmCandidates.prefix(reviewKeep))
                 : local
@@ -443,7 +443,7 @@ enum RadioLLMDirector {
                 _ = take(song, into: &turns, artists: &turnArtists)
             }
         }
-        if room.count + nearby.count + turns.count < 8 {
+        if room.count + nearby.count + turns.count < reviewKeep {
             for (song, _) in scored where room.count < packSize {
                 _ = take(song, into: &room, artists: &roomArtists)
             }
@@ -567,7 +567,7 @@ enum RadioLLMDirector {
         async let streamed: String? = RadioGeminiRuntime.stream(
             prompt: prompt,
             settings: settings,
-            maxTokens: 900
+            maxTokens: 1_400
         ) { partial in
             let ids = RadioIDStream.newIDs(
                 in: partial,
@@ -672,7 +672,7 @@ enum RadioLLMDirector {
         seed: Song,
         lyricIndex: LyricSignatureIndex
     ) -> String {
-        let lines = pack.all.prefix(20).map { song in
+        let lines = pack.all.prefix(30).map { song in
             let feel = RadioFeelGrammar.feel(
                 song: song,
                 signature: lyricIndex.bySongID[song.id]
@@ -758,7 +758,7 @@ enum RadioLLMDirector {
         let themes = brief.themes.joined(separator: ", ")
         return """
         Local time: \(day) \(daypart) (\(hour):00).
-        They just chose "\(seed.title)" by \(seed.artist). Program the next \(reviewKeep) as one short radio block for the whole recent session, not a 15-song station from this single title.
+        They just chose "\(seed.title)" by \(seed.artist). Program the next \(reviewKeep) as one continuous radio chapter for the whole recent session, not \(reviewKeep) independent clones of this single title.
         Seed lane: moods [\(moods)] themes [\(themes)] genre \(brief.genre) vocal \(brief.vocal).
         """
     }
