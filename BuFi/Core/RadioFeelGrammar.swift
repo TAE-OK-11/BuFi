@@ -23,35 +23,63 @@ enum RadioFeelGrammar {
         let intimacy = signature?.details.intimacy ?? 0.5
         let blob = blob(song: song, signature: signature)
         let kpop = RadioContinuity.isKPop(song: song, signature: signature)
-        if matches(blob, ["electro", "hyperpop", "synth", "whiplash", "cyber", "edm"]) {
+
+        // The scan corpus showed that a raw `synth` label is far too common to
+        // mean "electro" by itself. Require explicit electronic language, or a
+        // genuinely high-energy synth + performance texture. This keeps normal
+        // synth-pop from collapsing into one giant electro bucket.
+        let explicitElectro = matches(
+            blob,
+            ["electro", "hyperpop", "cyber", "edm", "techno", "industrial"]
+        )
+        let synthTexture = matches(blob, ["synth", "synthesizer"])
+        let performanceTexture = matches(
+            blob,
+            ["concept", "attitude", "swagger", "performance", "rapping", "dancefloor"]
+        )
+        if explicitElectro
+            || (synthTexture && performanceTexture && energy >= 0.86 && intimacy < 0.62) {
             return .electro
         }
-        if matches(blob, ["girlcrush", "girl crush", "concept", "attitude", "swagger", "y2k"])
-            || (kpop && energy >= 0.55 && valence <= 0.55 && intimacy < 0.55) {
+
+        if matches(
+            blob,
+            ["girlcrush", "girl crush", "concept", "attitude", "swagger", "y2k", "defiant", "rebell"]
+        ) || (kpop && energy >= 0.64 && valence <= 0.48 && intimacy < 0.65) {
             return .cool
         }
-        if energy <= 0.32 || intimacy >= 0.78 || matches(blob, ["ballad", "letter", "whisper"]) {
+
+        // Intimate lyrics are not automatically quiet music. Only let intimacy
+        // force hush when the measured energy is actually soft.
+        if energy <= 0.32
+            || (intimacy >= 0.86 && energy < 0.50)
+            || matches(blob, ["ballad", "whisper"]) {
             return .hush
         }
-        if valence <= 0.38 || matches(
+
+        let wounded = matches(
             blob,
-            ["yearning", "breakup", "그리움", "이별", "nostalg", "lonely", "bittersweet"]
-        ) {
-            return energy >= 0.42 ? .bittersweet : .hush
+            ["yearning", "breakup", "그리움", "이별", "lonely", "bittersweet", "melanch", "heartbreak", "sorrow"]
+        )
+        if valence <= 0.34 || (wounded && valence <= 0.52 && energy < 0.82) {
+            return energy >= 0.44 ? .bittersweet : .hush
         }
-        if energy >= 0.72 || matches(blob, ["hype", "anthem", "festival", "workout"]) {
+
+        if energy >= 0.80
+            || matches(blob, ["hype", "anthem", "festival", "workout", "euphoric"]) {
             return .rush
         }
-        if matches(blob, ["vocal", "r&b", "rnb", "soul"]) && energy <= 0.55 {
+        if matches(blob, ["vocal", "r&b", "rnb", "soul", "warm", "tender"])
+            && energy <= 0.64 {
             return .glow
         }
-        if kpop && energy >= 0.48 {
+        if kpop && energy >= 0.50 {
             return valence >= 0.55 ? .sparkle : .cool
         }
-        if energy >= 0.48 && valence >= 0.48 {
+        if energy >= 0.50 && valence >= 0.50 {
             return .sparkle
         }
-        return energy >= 0.58 ? .rush : .glow
+        return energy >= 0.66 ? .rush : .glow
     }
 
     /// After `from`, how right `to` feels as the next record.
@@ -106,17 +134,18 @@ enum RadioFeelGrammar {
     - rush (anthem/festival): stay rush or sparkle. Cool/electro only if the seed already lives there.
     - bittersweet (almost-love, night pop): another bittersweet or back to sparkle/glow. Not a club drop.
     - cool (stylish concept / girl-crush / performance): next cool or electro. Same cultural lineage (idol generations that share that room). One glow-vocal breather is fine.
-    - electro (high-concept dance): stay electro/cool. Same-artist sisters are welcome. Dance-heavy peers only — not cute sparkle.
+    - electro (high-concept dance): stay electro/cool. Same-artist sisters are welcome after breathing room. Dance-heavy peers only — not cute sparkle.
     - glow (soft vocal / R&B): glow, hush, or a gentle sparkle lift.
     - hush (quiet letter): hush or bittersweet. Never rush/electro next.
 
     After the seed, the first pick is usually a sister-feel peer or a same-artist different recording, not a clone.
     Keep the cultural room: Western teen-pop stays there; bright 4th-gen idol stays there; concept/performance K-pop stays there. Shared "pop" tags are not a room change.
-    Same artist can return every few songs as an anchor. Do not run three in a row.
+    Same artist is an anchor, not a chain. Observed Spotify runs almost never put the same artist back-to-back; the seed artist commonly returns after roughly 3-4 intervening records.
     After three to five high-energy cuts, allow one softer breath, then come back.
 
     Teacher-set priors (additive; every rule above still applies):
-    - Repeated seed tests varied the exact titles but preserved the same emotional/audio room. Learn the distribution, never memorize one fixed list.
+    - Repeated seed tests varied the exact titles heavily but preserved the same emotional/audio room. Exact-title co-occurrence is weak evidence; learn the distribution, never memorize one fixed list.
+    - Artist cadence was much more stable than title identity. Rotate artists aggressively, avoid adjacent repeats, and let the seed artist return as an anchor after about 3-4 other records when the song-level fit supports it.
     - Era and idol generation are weak clues. A convincing feel, melody/energy shape and cultural room can bridge generations; generation alone must never reject a strong peer.
     - Same-artist songs often behave as anchors, not chains. Under the no-repeat rules, bring that artist back after a cross-artist bridge rather than clustering the catalog.
     - Bright/youth rooms often run several sparkle/rush records, take one glow/bittersweet breath, then recover. Concept/electro rooms favor performance-texture continuity with at most one softer left turn before returning.
@@ -140,8 +169,8 @@ enum RadioFeelGrammar {
     8. QUALITY OVER QUOTA: drop clearly off-lane candidates. If the supplied pack cannot fill the block well, return fewer ids and request only the missing shape with need.
 
     Teacher-set priors distilled from repeated seed radios (additive; rules 1-8 still win):
-    - The same seed produced multiple good sets with different exact tracks. Match the latent room and transition shape, not a memorized title list.
-    - Cross-artist peers dominate useful variety. Artist identity is never a reason by itself; a familiar artist is an anchor only after another artist has created breathing room.
+    - The same seed produced multiple good sets with different exact tracks. Match the latent room and transition shape, not a memorized title list; exact co-occurrence is only a weak prior.
+    - Cross-artist peers dominate useful variety. Adjacent same-artist placement was rare in the observations. The seed artist is an anchor that usually breathes for roughly 3-4 other records before returning.
     - K-pop teacher sets cross generations and genders when feel/sound matches. Same generation is useful evidence, not a hard boundary; random idol adjacency is still wrong.
     - Bright youth/idol radios commonly sustain sparkle/rush for a few cuts, use one glow/bittersweet breath, then return. Cool/electro radios sustain performance texture and can take one controlled softer or legacy turn before recovering.
     - Western pop radios bridge 2010s and newer records when melodic, lyrical and energy continuity is strong. Release era must rank below supplied song-level fit.
