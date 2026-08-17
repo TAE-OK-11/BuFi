@@ -25,7 +25,12 @@ enum RecommendationLLMReview {
         let loadedSettings = await currentSettings()
         let settings = RecommendationAIRouting.resolve(loadedSettings)
         let family = LyricModelFamily.resolve(model: settings.radioModel)
-        let pool = Array(songs.prefix(family.reviewPoolLimit))
+        // The local recommender already ranked this list. The LLM only needs a
+        // compact top slice to improve order, not every feature-rich candidate.
+        let reviewLimit = family == .appleFoundation
+            ? 8
+            : min(12, max(8, family.reviewPoolLimit))
+        let pool = Array(songs.prefix(reviewLimit))
         guard pool.count >= 3 else { return songs }
         var laneScores: [String: Double] = [:]
         laneScores.reserveCapacity(pool.count)
@@ -173,10 +178,10 @@ enum RecommendationLLMReview {
         purpose: RecommendationPurpose,
         family: LyricModelFamily
     ) -> String {
-        let taste = (recent.prefix(4) + favorites.prefix(4) + [seed].compactMap { $0 })
+        let taste = (recent.prefix(3) + favorites.prefix(3) + [seed].compactMap { $0 })
             .reduce(into: [String: Song]()) { $0[$1.id] = $1 }
             .values
-            .prefix(6)
+            .prefix(4)
             .map { card(for: $0, lyricIndex: lyricIndex) }
             .joined(separator: "\n")
         let candidates = pool.enumerated().map { index, song in
@@ -198,10 +203,10 @@ enum RecommendationLLMReview {
         lyricIndex: LyricSignatureIndex,
         limit: Int
     ) -> String {
-        let recentLine = recent.prefix(4)
+        let recentLine = recent.prefix(3)
             .map { "\($0.title) — \($0.artist)" }
             .joined(separator: " | ")
-        let candidates = pool.prefix(20).map { song in
+        let candidates = pool.prefix(12).map { song in
             let signature = lyricIndex.bySongID[song.id]
             let moods = (signature?.details.primaryMoods.isEmpty == false
                 ? signature?.details.primaryMoods
@@ -221,7 +226,11 @@ enum RecommendationLLMReview {
     }
 
     private static func card(for song: Song, lyricIndex: LyricSignatureIndex) -> String {
-        RecommendationPromptCard.make(song, lyricIndex: lyricIndex, excerptLimit: 160)
+        RecommendationCompactCard.make(
+            song,
+            lyricIndex: lyricIndex,
+            memoryLimit: 56
+        )
     }
 
     private static func currentSettings() async -> LyricIntelligenceSettings {
