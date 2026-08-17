@@ -1,154 +1,168 @@
 #!/usr/bin/env python3
-"""Export Notion radio lists as Create ML MLRecommender CSV."""
+"""Export the two Notion recommendation pages as Create ML session data.
+
+The teacher pages are not simple playlists: one seed may have several
+independent recommendation sets and long screenshot-derived radio runs.  We
+preserve those boundaries, then create multiple small pseudo-sessions so the
+Jaccard item recommender learns local handoffs instead of raw popularity.
+"""
 
 from __future__ import annotations
 
 import csv
-import json
 import os
-import re
-import unicodedata
-import urllib.request
 
-PAGES = [
-    "3bef030e-09cf-8010-a650-f4b906e8e91f",
-    "3bef030e-09cf-8004-968b-e79de61a4528",
-]
+from radio_teacher import TeacherTrack, fetch_lines, item_key, teacher_blocks
 
 
-def normalize(text: str) -> str:
-    value = unicodedata.normalize("NFKC", text or "").lower()
-    value = re.sub(r"\(.*?\)", "", value)
-    return re.sub(r"[^0-9a-z가-힣]+", "", value)
+def unique_tracks(block: list[TeacherTrack]) -> list[TeacherTrack]:
+    result: list[TeacherTrack] = []
+    seen: set[str] = set()
+    for track in block:
+        key = item_key(track.title, track.artist)
+        if not key or key == "|" or key in seen:
+            continue
+        seen.add(key)
+        result.append(track)
+    return result
 
 
-def item_key(title: str, artist: str) -> str:
-    return f"{normalize(title)}|{normalize(artist.split('(')[0])}"
-
-
-def parse_line(line: str) -> tuple[str, str] | None:
-    text = re.sub(r"^\d+\.\s*", "", line.replace("\u2060", "").strip())
-    text = re.sub(r"^시드:\s*", "", text)
-    if not text or text.startswith("세트") or "스크린샷" in text:
-        return None
-    if " - " not in text:
-        return None
-    title, artist = text.rsplit(" - ", 1)
-    title, artist = title.strip(), artist.strip()
-    if not title or not artist:
-        return None
-    return title, artist
-
-
-def fetch_lines() -> list[str]:
-    url = "https://www.notion.so/api/v3/loadPageChunk"
-    lines: list[str] = []
-
-    def post(payload):
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-
-    def plain(prop):
-        if not prop:
-            return ""
-        return "".join(str(run[0]) for run in prop if isinstance(run, list) and run)
-
-    for page in PAGES:
-        blocks = {}
-        cursor = []
-        chunk = 0
-        while True:
-            data = post(
-                {
-                    "page": {"id": page},
-                    "limit": 100,
-                    "cursor": {"stack": cursor},
-                    "chunkNumber": chunk,
-                    "verticalColumns": False,
-                }
-            )
-            blocks.update(data.get("recordMap", {}).get("block", {}))
-            cursor = data.get("cursor", {}).get("stack", [])
-            chunk += 1
-            if not cursor or chunk > 60:
-                break
-
-        def walk(block_id: str) -> None:
-            rec = blocks.get(block_id, {})
-            value = rec.get("value", {}).get("value", rec.get("value", {})) or {}
-            title = plain((value.get("properties") or {}).get("title"))
-            for piece in title.splitlines():
-                if piece.strip():
-                    lines.append(piece.strip())
-            for child in value.get("content") or []:
-                walk(child)
-
-        walk(page)
-    return lines
-
-
-def blocks_from_lines(lines: list[str]) -> list[list[tuple[str, str]]]:
-    parsed = [item for item in (parse_line(line) for line in lines) if item]
-    blocks: list[list[tuple[str, str]]] = []
-    current: list[tuple[str, str]] = []
-    seed_titles = {
-        "style",
-        "karma",
-        "cruel summer",
-        "so high school",
-        "anti-hero",
-        "the one that got away",
-        "dance the night away",
-        "ode to love",
-        "hey! hey!",
-        "blue valentine",
-        "lemonade",
-        "love attack",
-        "갑자기",
-    }
-    for title, artist in parsed:
-        if current and title.lower().strip() in seed_titles and len(current) >= 6:
-            blocks.append(current)
-            current = [(title, artist)]
+def add_session(
+    rows: list[tuple[str, str, float]],
+    user: str,
+    tracks: list[TeacherTrack],
+    seed_key: str | None = None,
+) -> None:
+    seen: set[str] = set()
+    for rank, track in enumerate(tracks):
+        key = item_key(track.title, track.artist)
+        if key in seen:
+            continue
+        seen.add(key)
+        if seed_key is not None and key == seed_key:
+            rating = 6.0
         else:
-            current.append((title, artist))
-    if len(current) >= 3:
-        blocks.append(current)
-    return blocks
+            # Jaccard mostly learns co-occurrence, but keep rank information for
+            # fallback/default MLRecommender implementations.
+            rating = max(3.4, 5.7 - rank * 0.16)
+        rows.append((user, key, rating))
+
+
+def rows_from_blocks(blocks: list[list[TeacherTrack]]) -> list[tuple[str, str, float]]:
+    rows: list[tuple[str, str, float]] = []
+    direct_seen: set[tuple[str, str]] = set()
+
+    for block_index, raw_block in enumerate(blocks):
+        block = unique_tracks(raw_block)
+        if len(block) < 3:
+            continue
+        seed = block[0]
+        seed_key = item_key(seed.title, seed.artist)
+        recommendations = block[1:]
+
+        # 1) Seed-centred rooms. Long screenshot runs are chunked so distant
+        # tracks do not all become equally co-occurring with each other.
+        for chunk_index, start in enumerate(range(0, len(recommendations), 10)):
+            chunk = recommendations[start : start + 12]
+            if len(chunk) < 2:
+                continue
+            add_session(
+                rows,
+                f"teacher-{block_index}-room-{chunk_index}",
+                [seed] + chunk,
+                seed_key=seed_key,
+            )
+
+        # 2) Strong opening: the first recommendations receive their own small
+        # context instead of being diluted by a 30-song block.
+        opening = [seed] + recommendations[:8]
+        if len(opening) >= 3:
+            add_session(
+                rows,
+                f"teacher-{block_index}-opening",
+                opening,
+                seed_key=seed_key,
+            )
+
+        # 3) Sliding local windows teach actual handoffs within a ranked radio
+        # run.  Stride 2 gives overlap without exploding the dataset.
+        sequence = [seed] + recommendations
+        for window_index, start in enumerate(range(0, max(1, len(sequence) - 2), 2)):
+            window = sequence[start : start + 6]
+            if len(window) < 3:
+                continue
+            add_session(
+                rows,
+                f"teacher-{block_index}-flow-{window_index}",
+                window,
+                seed_key=seed_key if start == 0 else None,
+            )
+
+        # 4) Direct seed↔candidate evidence for the top cross-artist choices.
+        # Same-artist pairs are intentionally not amplified: the teacher data
+        # may contain them, but identity must not become a shortcut.
+        seed_artist = seed.artist.casefold()
+        for rank, candidate in enumerate(recommendations[:8]):
+            if candidate.artist.casefold() == seed_artist:
+                continue
+            candidate_key = item_key(candidate.title, candidate.artist)
+            pair = (seed_key, candidate_key)
+            if pair in direct_seen:
+                continue
+            direct_seen.add(pair)
+            context = [seed, candidate]
+            if rank + 1 < len(recommendations):
+                context.append(recommendations[rank + 1])
+            add_session(
+                rows,
+                f"teacher-{block_index}-pair-{rank}",
+                context,
+                seed_key=seed_key,
+            )
+
+    return rows
 
 
 def main() -> None:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     dest = os.path.join(root, "Scripts", "radio-recommender.csv")
+
     try:
         lines = fetch_lines()
+        blocks = teacher_blocks(lines)
     except Exception as error:
         print("notion fetch failed", error)
-        lines = []
-    blocks = blocks_from_lines(lines)
-    rows: list[tuple[str, str, float]] = []
-    for index, block in enumerate(blocks):
-        user = f"radio-{index}"
-        seen = set()
-        for rank, (title, artist) in enumerate(block):
-            key = item_key(title, artist)
-            if not key or key == "|" or key in seen:
-                continue
-            seen.add(key)
-            rating = max(1.0, 6.0 - rank * 0.08)
-            rows.append((user, key, rating))
+        blocks = []
+
+    if not blocks:
+        # Do not destroy the committed teacher snapshot when Notion is
+        # temporarily unavailable.  CI can still train from the last export.
+        if os.path.isfile(dest) and os.path.getsize(dest) > 32:
+            print("no live teacher blocks; keeping", dest)
+            return
+        raise SystemExit("no Notion teacher data and no fallback CSV")
+
+    rows = rows_from_blocks(blocks)
+    if len(rows) < 40:
+        raise SystemExit(f"teacher export unexpectedly small: {len(rows)} rows")
+
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["user", "item", "rating"])
         writer.writerows(rows)
-    print("wrote", dest, "rows", len(rows), "blocks", len(blocks))
+
+    seeds = len({item_key(block[0].title, block[0].artist) for block in blocks if block})
+    print(
+        "wrote",
+        dest,
+        "rows",
+        len(rows),
+        "teacher blocks",
+        len(blocks),
+        "seeds",
+        seeds,
+    )
 
 
 if __name__ == "__main__":
