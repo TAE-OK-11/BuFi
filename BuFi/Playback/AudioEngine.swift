@@ -942,12 +942,10 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
     static func make(
         queueCount: Int,
         currentIndex: Int,
-        shuffleEnabled: Bool,
         repeatMode: RepeatMode
     ) -> GaplessSuccessorPlan? {
         guard queueCount > 0,
               (0..<queueCount).contains(currentIndex),
-              !shuffleEnabled,
               repeatMode != .one else { return nil }
         if currentIndex + 1 < queueCount {
             return GaplessSuccessorPlan(queueIndex: currentIndex + 1)
@@ -965,12 +963,14 @@ enum PlaybackBufferPolicy {
         case startup
         case settled
         case constrained
+        case successor
     }
 
     static let startupForwardBuffer: TimeInterval = 0
     static let remoteForwardBuffer: TimeInterval = 16
     static let localForwardBuffer: TimeInterval = 4
     static let constrainedForwardBuffer: TimeInterval = 8
+    static let successorLeadIn: TimeInterval = 30
     static let stallConfirmDelay: Duration = .milliseconds(2_000)
 
     static func forwardBufferDuration(
@@ -982,6 +982,8 @@ enum PlaybackBufferPolicy {
             return startupForwardBuffer
         case .constrained:
             return constrainedForwardBuffer
+        case .successor:
+            return isLocalFile ? localForwardBuffer : successorLeadIn
         case .settled:
             return isLocalFile ? localForwardBuffer : remoteForwardBuffer
         }
@@ -1034,6 +1036,8 @@ enum PlaybackSkipPlan {
 }
 
 enum PlaybackGaplessPreparationPolicy {
+    static let stablePlaybackWindow: TimeInterval = 2
+
     static func shouldPrepare(
         elapsed: TimeInterval,
         duration: TimeInterval,
@@ -1042,11 +1046,13 @@ enum PlaybackGaplessPreparationPolicy {
     ) -> Bool {
         guard isActivelyPlaying,
               !isBuffering,
-              elapsed.isFinite,
-              duration.isFinite,
-              duration > 0 else {
+              elapsed.isFinite else {
             return false
         }
+        if elapsed >= stablePlaybackWindow {
+            return true
+        }
+        guard duration.isFinite, duration > 0 else { return false }
         let position = min(max(0, elapsed), duration)
         let remaining = max(0, duration - position)
         let leadTime = min(20, max(6, duration * 0.12))
@@ -1061,11 +1067,13 @@ enum PlaybackGaplessPreparationPolicy {
     ) -> Bool {
         guard isActivelyPlaying,
               !isBuffering,
-              elapsed.isFinite,
-              duration.isFinite,
-              duration > 0 else {
+              elapsed.isFinite else {
             return false
         }
+        if elapsed >= stablePlaybackWindow {
+            return true
+        }
+        guard duration.isFinite, duration > 0 else { return false }
         let position = min(max(0, elapsed), duration)
         let remaining = max(0, duration - position)
         let leadTime = min(8, max(3, duration * 0.04))
@@ -2821,7 +2829,6 @@ final class AudioEngine: NSObject, ObservableObject {
               let plan = GaplessSuccessorPlan.make(
                 queueCount: queue.count,
                 currentIndex: queueIndex,
-                shuffleEnabled: isShuffleEnabled,
                 repeatMode: repeatMode
               ) else {
             return
@@ -2850,7 +2857,6 @@ final class AudioEngine: NSObject, ObservableObject {
         guard let plan = GaplessSuccessorPlan.make(
             queueCount: queue.count,
             currentIndex: queueIndex,
-            shuffleEnabled: isShuffleEnabled,
             repeatMode: repeatMode
         ) else { return }
         let successorIndex = plan.queueIndex
@@ -2866,7 +2872,7 @@ final class AudioEngine: NSObject, ObservableObject {
         PlaybackBufferPolicy.configure(
             item,
             isLocalFile: prepared.asset.url.isFileURL,
-            phase: .settled
+            phase: .successor
         )
         guard player.canInsert(item, after: currentItem) else { return }
         player.insert(item, after: currentItem)
@@ -3123,7 +3129,6 @@ final class AudioEngine: NSObject, ObservableObject {
         let successorEntry: PlaybackQueueEntry? = GaplessSuccessorPlan.make(
             queueCount: queue.count,
             currentIndex: queueIndex,
-            shuffleEnabled: isShuffleEnabled,
             repeatMode: repeatMode
         ).flatMap { plan in
             playbackState.entries.indices.contains(plan.queueIndex)
