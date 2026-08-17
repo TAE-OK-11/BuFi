@@ -728,8 +728,36 @@ struct StatusEnvelope: Decodable, Sendable {
 struct StatusBody: Decodable, Sendable {
     let status: String
     let version: String?
+    let type: String?
     let serverVersion: String?
+    let advertisesOpenSubsonic: Bool
     let error: APIErrorBody?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case version
+        case type
+        case serverVersion
+        case openSubsonic
+        case error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(String.self, forKey: .status)
+        version = try container.decodeIfPresent(String.self, forKey: .version)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        serverVersion = try container.decodeIfPresent(
+            String.self,
+            forKey: .serverVersion
+        )
+        error = try container.decodeIfPresent(APIErrorBody.self, forKey: .error)
+        if let flag = try container.decodeIfPresent(Bool.self, forKey: .openSubsonic) {
+            advertisesOpenSubsonic = flag
+        } else {
+            advertisesOpenSubsonic = false
+        }
+    }
 }
 
 struct APIEnvelope<Payload: Decodable & Sendable>: Decodable, Sendable {
@@ -744,6 +772,11 @@ struct EmptyPayload: Decodable, Sendable {}
 
 struct AlbumListPayload: Decodable, Sendable {
     let albumList2: AlbumListContainer?
+    let albumList: AlbumListContainer?
+
+    var albums: [Album] {
+        albumList2?.album ?? albumList?.album ?? []
+    }
 }
 
 struct AlbumListContainer: Decodable, Sendable {
@@ -813,6 +846,11 @@ struct SongContainer: Decodable, Sendable {
 
 struct StarredPayload: Decodable, Sendable {
     let starred2: StarredContainer?
+    let starred: StarredContainer?
+
+    var container: StarredContainer? {
+        starred2 ?? starred
+    }
 }
 
 struct StarredContainer: Decodable, Sendable {

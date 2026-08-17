@@ -2580,6 +2580,9 @@ final class AppModel: ObservableObject {
                 authoritative: false
             )
             self.client = client
+            if let status {
+                await client.applyPingStatus(status)
+            }
             self.offlineSessionToken = offlineSession
             self.artworkSessionToken = artworkSession
             self.historySessionToken = historySession

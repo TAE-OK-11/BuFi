@@ -227,7 +227,7 @@ enum OpenSubsonicRequestPolicy {
                 lifetime: 5 * 60,
                 staleGrace: 20 * 60
             )
-        case "getStarred2":
+        case "getStarred2", "getStarred":
             // Star/unstar already invalidates `.favorites`. The longer TTL
             // avoids refetching a potentially huge starred catalog on every
             // incremental home refresh.
@@ -277,7 +277,7 @@ enum OpenSubsonicRequestPolicy {
                 staleGrace: 20 * 60,
                 dependencies: [.libraryLists]
             )
-        case "getAlbumList2":
+        case "getAlbumList2", "getAlbumList":
             let listType = queryItems.first { $0.name == "type" }?.value
             let lifetime: TimeInterval = switch listType {
             case "random", "recent", "frequent": 30
@@ -301,7 +301,7 @@ enum OpenSubsonicRequestPolicy {
                 staleGrace: 15 * 60,
                 dependencies: [.libraryLists, .recommendations]
             )
-        case "getSonicSimilarTracks", "getSimilarSongs2":
+        case "getSonicSimilarTracks", "getSimilarSongs2", "getSimilarSongs":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 2 * 60,
                 staleGrace: 15 * 60,
@@ -717,6 +717,7 @@ actor OpenSubsonicClient {
     private let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
     private var supportedExtensions: Set<String>?
+    private var apiFamily: SubsonicAPIFamily = .openSubsonic
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
     private var cacheRevisionState = OpenSubsonicCacheRevisionState()
 
@@ -1152,6 +1153,49 @@ actor OpenSubsonicClient {
         } catch {
             logFailure(error, endpoint: endpoint)
             throw error
+        }
+    }
+
+    func applyPingStatus(_ status: StatusBody) {
+        apiFamily = SubsonicCompatibilityPolicy.family(from: status)
+        if status.advertisesOpenSubsonic {
+            apiFamily = .openSubsonic
+        }
+    }
+
+    private func readWithFallback<Payload: Decodable & Sendable>(
+        _ endpoints: [String],
+        parameters: [String: String] = [:],
+        allowsCachedResponse: Bool = true
+    ) async throws -> Payload {
+        var lastError: Error = OpenSubsonicError.invalidResponse
+        for endpoint in endpoints {
+            do {
+                return try await readRequest(
+                    endpoint,
+                    parameters: parameters,
+                    allowsCachedResponse: allowsCachedResponse
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                guard SubsonicCompatibilityPolicy.shouldContinueFallback(error) else {
+                    throw error
+                }
+            }
+        }
+        throw lastError
+    }
+
+    private func bestEffortWithFallback<Payload: Decodable & Sendable>(
+        _ endpoints: [String],
+        parameters: [String: String] = [:]
+    ) async -> Payload? {
+        do {
+            return try await readWithFallback(endpoints, parameters: parameters)
+        } catch {
+            return nil
         }
     }
 
@@ -1628,7 +1672,9 @@ actor OpenSubsonicClient {
         async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
         async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
         async let randomAlbums: AlbumListPayload? = albumList("random", size: "16")
-        async let starred: StarredPayload? = bestEffortRequest("getStarred2")
+        async let starred: StarredPayload? = bestEffortWithFallback(
+            SubsonicCompatibilityPolicy.starredEndpoints(for: apiFamily)
+        )
         async let randomSongs: RandomSongsPayload? = bestEffortRequest(
             "getRandomSongs",
             parameters: ["size": "16"]
@@ -1679,7 +1725,7 @@ actor OpenSubsonicClient {
         let starredAlbums: [Album]
         let starredSongs: [Song]
         let starredArtists: [Artist]
-        if let value = starredValue?.starred2 {
+        if let value = starredValue?.container {
             starredAlbums = value.album ?? []
             starredSongs = value.song ?? []
             starredArtists = value.artist ?? []
@@ -1875,7 +1921,7 @@ actor OpenSubsonicClient {
         snapshot.daylistSongs = DaylistBuilder.make(snapshot: snapshot)
         return HomeLoadResult(
             snapshot: snapshot,
-            hasAuthoritativeStarredState: starredValue?.starred2 != nil
+            hasAuthoritativeStarredState: starredValue?.container != nil
         )
     }
 
@@ -1883,7 +1929,9 @@ actor OpenSubsonicClient {
         async let recent: AlbumListPayload? = albumList("newest", size: "16")
         async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
         async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
-        async let starred: StarredPayload? = bestEffortRequest("getStarred2")
+        async let starred: StarredPayload? = bestEffortWithFallback(
+            SubsonicCompatibilityPolicy.starredEndpoints(for: apiFamily)
+        )
         async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
 
         let values = try await (recent, recentlyPlayed, frequent, starred, playlists)
@@ -1894,13 +1942,13 @@ actor OpenSubsonicClient {
 
         var snapshot = previous
         if let recent = values.0 {
-            snapshot.recentAlbums = recent.albumList2?.album ?? []
+            snapshot.recentAlbums = recent.albums
         }
         if let recent = values.1 {
-            snapshot.recentlyPlayedAlbums = recent.albumList2?.album ?? []
+            snapshot.recentlyPlayedAlbums = recent.albums
         }
         if let frequent = values.2 {
-            let frequentAlbums = frequent.albumList2?.album ?? []
+            let frequentAlbums = frequent.albums
             snapshot.frequentAlbums = frequentAlbums
             let previousIDs = previous.frequentAlbums
                 .prefix(OpenSubsonicRequestPolicy.homeMostPlayedAlbumLimit)
@@ -1915,7 +1963,7 @@ actor OpenSubsonicClient {
                 )
             }
         }
-        if let starred = values.3?.starred2 {
+        if let starred = values.3?.container {
             snapshot.starredAlbums = starred.album ?? []
             snapshot.starredSongs = starred.song ?? []
             snapshot.starredArtists = starred.artist ?? []
@@ -1925,7 +1973,7 @@ actor OpenSubsonicClient {
         }
         return HomeLoadResult(
             snapshot: snapshot,
-            hasAuthoritativeStarredState: values.3?.starred2 != nil
+            hasAuthoritativeStarredState: values.3?.container != nil
         )
     }
 
@@ -2027,10 +2075,11 @@ actor OpenSubsonicClient {
         }
         var sonicSongs: [Song] = []
         var similarArtistSongs: [Song] = []
-        let supportsSonic = await supportsExtension(
-            "sonicSimilarity",
-            limiter: limiter
+        let similarEndpoints = SubsonicCompatibilityPolicy.similarSongEndpoints(
+            for: apiFamily
         )
+        let supportsSonic = similarEndpoints.contains("getSonicSimilarTracks")
+            && await supportsExtension("sonicSimilarity", limiter: limiter)
 
         for seed in distinctSeeds.prefix(
             OpenSubsonicRequestPolicy.homeRecommendationSeedLimit
@@ -2106,8 +2155,9 @@ actor OpenSubsonicClient {
         let payload: SimilarSongsPayload? = try? await withEnrichmentPermit(
             limiter
         ) { [self] in
-            try await readRequest(
-                "getSimilarSongs2",
+            try await readWithFallback(
+                SubsonicCompatibilityPolicy.similarSongEndpoints(for: apiFamily)
+                    .filter { $0 != "getSonicSimilarTracks" },
                 parameters: ["id": artistID, "count": "\(max(8, count))"]
             )
         }
@@ -2392,8 +2442,8 @@ actor OpenSubsonicClient {
         _ type: String,
         size: String
     ) async throws -> AlbumListPayload? {
-        try await bestEffortRequest(
-            "getAlbumList2",
+        await bestEffortWithFallback(
+            SubsonicCompatibilityPolicy.albumListEndpoints(for: apiFamily),
             parameters: ["type": type, "size": size]
         )
     }
@@ -2402,7 +2452,7 @@ actor OpenSubsonicClient {
         from payload: AlbumListPayload?,
         fallback: [Album]
     ) -> [Album] {
-        payload.map { $0.albumList2?.album ?? [] } ?? fallback
+        payload.map(\.albums) ?? fallback
     }
 
     private static func uniqueSongs(_ songs: [Song]) -> [Song] {
@@ -2463,31 +2513,13 @@ actor OpenSubsonicClient {
             "albumCount": "14",
             "songCount": "30"
         ]
-        do {
-            let payload: SearchPayload = try await readRequest("search3", parameters: parameters)
-            let result = payload.searchResult3 ?? payload.searchResult2
-            return Self.deduplicatedSearch(result)
-        } catch {
-            guard !Task.isCancelled else { throw CancellationError() }
-            guard Self.shouldFallbackToSearch2(error) else { throw error }
-            let payload: SearchPayload = try await readRequest("search2", parameters: parameters)
-            return Self.deduplicatedSearch(payload.searchResult2 ?? payload.searchResult3)
-        }
-    }
-
-    private static func shouldFallbackToSearch2(_ error: Error) -> Bool {
-        guard let error = error as? OpenSubsonicError else { return false }
-        switch error {
-        case .http(let status):
-            return status == 404 || status == 405
-        case .server(let code, let message):
-            return code == 70 ||
-                message.localizedCaseInsensitiveContains("search3") ||
-                message.localizedCaseInsensitiveContains("not found") ||
-                message.localizedCaseInsensitiveContains("unknown endpoint")
-        default:
-            return false
-        }
+        let payload: SearchPayload = try await readWithFallback(
+            SubsonicCompatibilityPolicy.searchEndpoints(for: apiFamily),
+            parameters: parameters
+        )
+        return Self.deduplicatedSearch(
+            payload.searchResult3 ?? payload.searchResult2
+        )
     }
 
     private static func deduplicatedSearch(_ result: SearchContainer?) -> SearchResults {
@@ -2625,16 +2657,24 @@ actor OpenSubsonicClient {
         }
         let document: LyricsDocument
         let structuredRequestSucceeded: Bool
-        do {
-            let payload: LyricsPayload = try await readRequest(
-                "getLyricsBySongId",
-                parameters: ["id": songID]
-            )
-            document = LyricsDocumentParser.parse(payload)
-            structuredRequestSucceeded = true
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
+        let lyricsEndpoints = SubsonicCompatibilityPolicy.lyricsEndpoints(
+            for: apiFamily
+        )
+        if lyricsEndpoints.contains("getLyricsBySongId") {
+            do {
+                let payload: LyricsPayload = try await readRequest(
+                    "getLyricsBySongId",
+                    parameters: ["id": songID]
+                )
+                document = LyricsDocumentParser.parse(payload)
+                structuredRequestSucceeded = true
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                document = .empty
+                structuredRequestSucceeded = false
+            }
+        } else {
             document = .empty
             structuredRequestSucceeded = false
         }
