@@ -14,7 +14,15 @@ extension RadioLLMDirector {
         loadedSettings: LyricIntelligenceSettings,
         onPick: (@Sendable (Song) async -> Void)? = nil
     ) async -> [Song] {
-        let settings = RecommendationAIRouting.resolve(loadedSettings)
+        var settings = RecommendationAIRouting.resolve(loadedSettings)
+        let selected = LyricInferenceRuntime.canonicalCloudModel(settings.radioModel)
+        // Radio runtime is Gemini-only now. Keep an explicitly selected Gemini
+        // Flash/Flash-Lite model, but normalize stale Groq/Gemma/OpenRouter
+        // preferences to Flash-Lite so prompt-family selection and execution
+        // cannot disagree about which model is actually programming the set.
+        if !selected.lowercased().contains("gemini") {
+            settings.radioModel = LyricIntelligenceSettings.geminiFlashLiteModel
+        }
         return await continueRadio(
             seed: seed,
             excludedIDs: excludedIDs,
