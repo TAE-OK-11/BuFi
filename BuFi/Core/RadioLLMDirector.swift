@@ -210,12 +210,12 @@ struct RadioCandidatePack: Sendable {
 }
 
 enum RadioLLMDirector {
-    static let requestedCount = 50
-    static let enginePool = 50
+    static let requestedCount = 96
+    static let enginePool = 96
     static let coreMLKeep = 30
     static let reviewKeep = 8
     static let packSize = 30
-    static let mixerLimit = 50
+    static let mixerLimit = 96
     static let streamWaitDeadline: TimeInterval = 1.5
     static let firstPickDeadline: TimeInterval = 12.0
 
@@ -250,15 +250,22 @@ enum RadioLLMDirector {
                 && !excludedIDs.contains($0.id)
                 && $0.externalStreamURL == nil
         }
+        let engineCandidates = RadioContinuity.diversifiedEnginePool(
+            filtered,
+            seed: seed,
+            behavior: behavior,
+            lyricIndex: lyricIndex,
+            limit: enginePool
+        )
         let session = Array(behavior.recentSongs.prefix(5))
         let ranked = RadioCoreMLTransition.shortlist(
             seed: seed,
-            candidates: filtered,
+            candidates: engineCandidates,
             lyricIndex: lyricIndex,
             keep: coreMLKeep,
             session: session
         )
-        let leftover = filtered.filter { song in
+        let leftover = engineCandidates.filter { song in
             !ranked.contains(where: { $0.id == song.id })
         }
         let pack = fillPack(
@@ -287,8 +294,8 @@ enum RadioLLMDirector {
                 title: String(localized: "라디오 후보가 부족합니다"),
                 detail: "\(catalog.count)"
             )
-            await emit(Array(filtered.prefix(reviewKeep)), using: onPick)
-            return Array(filtered.prefix(reviewKeep))
+            await emit(Array(engineCandidates.prefix(reviewKeep)), using: onPick)
+            return Array(engineCandidates.prefix(reviewKeep))
         }
         let picked = await reviewStreaming(
             pack: pack,
