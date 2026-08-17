@@ -21,11 +21,16 @@ enum LibraryScanExport {
             return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
         }
         let payload: [String: Any] = [
-            "version": 2,
+            "version": 3,
             "purpose": "bufi-scan-export",
             "trackCount": tracks.count,
-            "featureNames": RadioTransitionFeatures.names,
             "recommendationFeatureVersion": 1,
+            "recommendationFeatureNames": [
+                "lyricEnergy", "valence", "narrativeTempo", "intimacy",
+                "emotionIntensity", "tension", "warmth", "bpm",
+                "audioEnergy", "audioBrightness", "audioPulse",
+                "moods", "themes", "arc"
+            ],
             "tracks": tracks
         ]
         guard let data = try? JSONSerialization.data(
@@ -97,11 +102,7 @@ enum LibraryScanExport {
                 "moods": recommendation.moods.map(\.rawValue).sorted(),
                 "themes": recommendation.themes.map(\.rawValue).sorted(),
                 "arc": recommendation.arc.rawValue
-            ],
-            "features": RadioTransitionFeatures.snapshot(
-                song: song,
-                signature: signature
-            )
+            ]
         ]
     }
 }
