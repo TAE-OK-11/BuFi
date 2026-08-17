@@ -198,23 +198,6 @@ struct PersonalizedMixDetailView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
-                if !mix.mood.isEmpty {
-                    VStack(spacing: 4) {
-                        Text(mix.mood)
-                            .font(.system(size: 13, weight: .semibold))
-                        if !mix.theme.isEmpty {
-                            Text(mix.theme)
-                                .font(.system(size: 12))
-                        }
-                        if !mix.audioFeel.isEmpty {
-                            Text(mix.audioFeel)
-                                .font(.system(size: 12))
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 4)
-                }
             }
         }
         .frame(maxWidth: .infinity)

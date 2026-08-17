@@ -202,17 +202,15 @@ struct SettingsView: View {
     private var recommendationSection: some View {
         SettingsGroup(title: "추천") {
             NavigationLink {
-                AlgorithmHubView()
+                RecommendationSettingsView()
                     .environmentObject(model)
-                    .environmentObject(session)
-                    .environmentObject(audio)
             } label: {
                 HStack(spacing: 12) {
-                    settingIcon("slider.horizontal.3")
+                    settingIcon("wand.and.stars")
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("추천")
+                        Text("추천 알고리즘")
                             .font(.system(size: 16, weight: .semibold))
-                        Text("기본 추천과 AI 추천을 따로 맞춰요")
+                        Text("취향 가중치와 외부 추천 서비스")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
@@ -484,7 +482,7 @@ struct SettingsView: View {
     }
 }
 
-struct SettingsGroup<Content: View>: View {
+private struct SettingsGroup<Content: View>: View {
     let title: LocalizedStringKey
     let content: Content
 
@@ -510,7 +508,7 @@ struct SettingsGroup<Content: View>: View {
     }
 }
 
-struct SettingsActionButtonStyle: ButtonStyle {
+private struct SettingsActionButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
@@ -532,7 +530,7 @@ struct SettingsActionButtonStyle: ButtonStyle {
     }
 }
 
-extension View {
+private extension View {
     func settingsTextField() -> some View {
         textInputAutocapitalization(.never)
             .autocorrectionDisabled()
@@ -549,268 +547,158 @@ extension View {
     }
 }
 
-struct RecommendationSettingsView: View {
+private struct RecommendationSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
-    @EnvironmentObject private var audio: AudioEngine
-    @EnvironmentObject private var playbackState: PlaybackState
-    @State private var currentSignature: LyricSignature?
-    @State private var showCurrentAnalysisEditor = false
-    @State private var probe: LyricIntelligenceProbe?
-    @State private var isProbing = false
-    @State private var coverage = LyricAnalysisCoverage.empty
-    @State private var batchProgress = LyricBatchProgress.idle
-    @State private var batchTask: Task<Void, Never>?
-    @State private var confirmFullLyricReanalysis = false
-    @State private var scanExportText = ""
-    @State private var isExportingScan = false
-    @State private var diagEvents: [RecommendationDiagEvent] = []
-    @State private var profile = AIRecommendationProfile.load()
-    @State private var preferredDraft = ""
-    @State private var avoidedDraft = ""
-    @AppStorage("lyric-intelligence-provider")
-    private var lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
-    @AppStorage("lyric-intelligence-openrouter-model")
-    private var openRouterModel = LyricIntelligenceSettings.defaultOpenRouterModel
-    @AppStorage("lyric-intelligence-groq-model")
-    private var groqModel = LyricIntelligenceSettings.defaultGroqModel
-    @AppStorage("lyric-intelligence-cerebras-model")
-    private var cerebrasModel = LyricIntelligenceSettings.defaultCerebrasModel
-    @AppStorage("lyric-intelligence-gemini-model")
-    private var geminiModel = LyricIntelligenceSettings.defaultGeminiModel
-    @AppStorage("lyric-intelligence-radio-model")
-    private var radioModel = LyricIntelligenceSettings.defaultRadioModel
-    @AppStorage("recommendation-llm-review-enabled")
-    private var llmReviewEnabled = false
-    @AppStorage("lyric-intelligence-user-prompt")
-    private var lyricUserPrompt = ""
-    @State private var openAIKey = ""
-    @State private var openRouterKey = ""
-    @State private var groqKey = ""
-    @State private var geminiKey = ""
-    @State private var cerebrasKey = ""
+    @State private var lastFMAPIKey = ""
+    @State private var listenBrainzUsername = ""
+    @State private var listenBrainzToken = ""
+    @AppStorage("recommendation-weight-history") private var historyWeight = 0.70
+    @AppStorage("recommendation-weight-favorites") private var favoriteWeight = 0.80
+    @AppStorage("recommendation-weight-server") private var serverWeight = 0.90
+    @AppStorage("recommendation-weight-discovery") private var discoveryWeight = 0.35
+    @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.55
+    @AppStorage("recommendation-weight-listenbrainz")
+    private var listenBrainzWeight = 0.55
+    @AppStorage("recommendation-weight-behavior")
+    private var behaviorWeight = 0.85
+    @AppStorage("recommendation-weight-completion")
+    private var completionWeight = 0.70
+    @AppStorage("recommendation-weight-repeat")
+    private var repeatWeight = 0.55
+    @AppStorage("recommendation-weight-recency")
+    private var recencyWeight = 0.65
+    @AppStorage("recommendation-weight-context")
+    private var contextWeight = 0.60
+    @AppStorage("recommendation-weight-metadata")
+    private var metadataWeight = 0.60
+    @AppStorage("recommendation-weight-playlist-affinity")
+    private var playlistAffinityWeight = 0.55
+    @AppStorage("recommendation-weight-album-completion")
+    private var albumCompletionWeight = 0.45
+    @AppStorage("recommendation-weight-forgotten-favorites")
+    private var forgottenFavoritesWeight = 0.50
+    @AppStorage("recommendation-weight-artist-rotation")
+    private var artistRotationWeight = 0.45
+    @AppStorage("recommendation-weight-time-awareness")
+    private var timeAwarenessWeight = 0.30
+    @AppStorage("recommendation-discovery-ratio")
+    private var discoveryRatio = 0.35
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
-                BuFiPageHeader(title: "AI 추천")
-                settingsDescription("아무것도 고르지 않아도 괜찮아요. 지금 듣는 곡 느낌으로 이어서 틀어 줘요.")
-                    .padding(.horizontal, 18)
+                BuFiPageHeader(title: "추천 알고리즘")
 
-                aiInUseSection
-                recommendationDiagSection
-                aiTasteSection
-                aiArtistSection
-                aiSignalSection
-
-                SettingsGroup(title: "가사를 어떻게 읽을지") {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Picker("누가 가사를 읽을지", selection: $lyricProviderRaw) {
-                            ForEach(LyricIntelligenceProviderKind.visibleCases) { kind in
-                                Text(kind.title).tag(kind.rawValue)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        Toggle("다음 곡을 더 꼼꼼히 고르기", isOn: $llmReviewEnabled)
-                            .font(.system(size: 15, weight: .semibold))
-                            .onChange(of: llmReviewEnabled) { _, _ in
-                                RecommendationMixer.invalidateCache()
-                                model.rebuildRecommendations()
-                            }
-                        settingsDescription("켜 두면 남은 곡이 얼마 없을 때, 지금 분위기와 가사를 보고 다음 플레이리스트를 이어서 만들어 줘요.")
-                        Picker("라디오 모델", selection: $radioModel) {
-                            ForEach(RadioModelOption.allCases) { option in
-                                Text(option.title).tag(option.rawValue)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        settingsDescription("다음 곡을 고를 때 쓰는 모델입니다. 가사 분석 제공사와 따로 고를 수 있어요. 키가 있는 쪽만 실제로 호출됩니다.")
-                        settingsDescription(lyricEngineDescription)
-                        if usesOnDeviceFallback {
-                            SecureField(
-                                session.hasOpenRouterKey
-                                    ? "Gemma 3 대체용 OpenRouter 키 유지/교체"
-                                    : "Gemma 3용 OpenRouter 키 (선택)",
-                                text: $openRouterKey
-                            )
-                            .settingsTextField()
-                            Button(session.hasOpenRouterKey ? "키 갱신" : "키 저장") {
-                                Task {
-                                    await model.saveLyricAPIKey(
-                                        openRouterKey,
-                                        provider: .openRouter
-                                    )
-                                    openRouterKey = ""
-                                }
-                            }
-                            .buttonStyle(SettingsActionButtonStyle())
-                            .disabled(
-                                openRouterKey
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .isEmpty
-                            )
-                        }
-                        if lyricProviderRaw == LyricIntelligenceProviderKind.openAI.rawValue {
-                            SecureField(
-                                session.hasOpenAIKey ? "저장된 OpenAI 키 교체" : "OpenAI API 키",
-                                text: $openAIKey
-                            )
-                            .settingsTextField()
-                            Button(session.hasOpenAIKey ? "OpenAI 키 갱신" : "OpenAI 키 저장") {
-                                Task {
-                                    await model.saveLyricAPIKey(openAIKey, provider: .openAI)
-                                    openAIKey = ""
-                                }
-                            }
-                            .buttonStyle(SettingsActionButtonStyle())
-                            .disabled(openAIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                        if lyricProviderRaw == LyricIntelligenceProviderKind.openRouter.rawValue {
-                            TextField("OpenRouter 모델", text: $openRouterModel)
-                                .settingsTextField()
-                            SecureField(
-                                session.hasOpenRouterKey
-                                    ? "저장된 OpenRouter 키 교체"
-                                    : "OpenRouter API 키",
-                                text: $openRouterKey
-                            )
-                            .settingsTextField()
-                            Button(session.hasOpenRouterKey ? "OpenRouter 키 갱신" : "OpenRouter 키 저장") {
-                                Task {
-                                    await model.saveLyricAPIKey(
-                                        openRouterKey,
-                                        provider: .openRouter
-                                    )
-                                    openRouterKey = ""
-                                }
-                            }
-                            .buttonStyle(SettingsActionButtonStyle())
-                            .disabled(
-                                openRouterKey
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .isEmpty
-                            )
-                        }
-                        if lyricProviderRaw == LyricIntelligenceProviderKind.groq.rawValue {
-                            Picker("Groq 모델", selection: $groqModel) {
-                                Text("GPT-OSS 120B (기본)").tag("openai/gpt-oss-120b")
-                                Text("Qwen 3.6 27B").tag("qwen/qwen3.6-27b")
-                                Text("GPT-OSS 20B").tag("openai/gpt-oss-20b")
-                                Text("Llama 3.1 8B Instant").tag("llama-3.1-8b-instant")
-                            }
-                            .pickerStyle(.menu)
-                            TextField("Groq 모델 ID", text: $groqModel)
-                                .settingsTextField()
-                            SecureField(
-                                session.hasGroqKey
-                                    ? "저장된 Groq 키 교체"
-                                    : "Groq API 키",
-                                text: $groqKey
-                            )
-                            .settingsTextField()
-                            Button(session.hasGroqKey ? "Groq 키 갱신" : "Groq 키 저장") {
-                                Task {
-                                    await model.saveLyricAPIKey(groqKey, provider: .groq)
-                                    groqKey = ""
-                                }
-                            }
-                            .buttonStyle(SettingsActionButtonStyle())
-                            .disabled(
-                                groqKey
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .isEmpty
-                            )
-                        }
-                        if lyricProviderRaw == LyricIntelligenceProviderKind.googleAI.rawValue {
-                            Picker("Gemini 모델", selection: $geminiModel) {
-                                Text("Gemini 3.7 Flash (기본)").tag(
-                                    LyricIntelligenceSettings.geminiFlashModel
-                                )
-                                Text("Gemini 3.6 Flash Lite").tag(
-                                    LyricIntelligenceSettings.geminiFlashLiteModel
-                                )
-                            }
-                            .pickerStyle(.menu)
-                            TextField("Gemini 모델 ID", text: $geminiModel)
-                                .settingsTextField()
-                            SecureField(
-                                session.hasGeminiKey
-                                    ? "저장된 Google AI Studio 키 교체"
-                                    : "Google AI Studio API 키",
-                                text: $geminiKey
-                            )
-                            .settingsTextField()
-                            Button(
-                                session.hasGeminiKey
-                                    ? "Google AI Studio 키 갱신"
-                                    : "Google AI Studio 키 저장"
-                            ) {
-                                Task {
-                                    await model.saveLyricAPIKey(
-                                        geminiKey,
-                                        provider: .googleAI
-                                    )
-                                    geminiKey = ""
-                                }
-                            }
-                            .buttonStyle(SettingsActionButtonStyle())
-                            .disabled(
-                                geminiKey
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .isEmpty
-                            )
-                        }
-                        if lyricProviderRaw == LyricIntelligenceProviderKind.cerebras.rawValue {
-                            Picker("Cerebras 모델", selection: $cerebrasModel) {
-                                Text("Llama 3.3 70B").tag("llama-3.3-70b")
-                                Text("GPT-OSS 120B").tag("gpt-oss-120b")
-                            }
-                            .pickerStyle(.menu)
-                            TextField("Cerebras 모델 ID", text: $cerebrasModel)
-                                .settingsTextField()
-                            SecureField(
-                                session.hasCerebrasKey
-                                    ? "저장된 Cerebras 키 교체"
-                                    : "Cerebras API 키",
-                                text: $cerebrasKey
-                            )
-                            .settingsTextField()
-                            Button(session.hasCerebrasKey ? "Cerebras 키 갱신" : "Cerebras 키 저장") {
-                                Task {
-                                    await model.saveLyricAPIKey(
-                                        cerebrasKey,
-                                        provider: .cerebras
-                                    )
-                                    cerebrasKey = ""
-                                }
-                            }
-                            .buttonStyle(SettingsActionButtonStyle())
-                            .disabled(
-                                cerebrasKey
-                                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                                    .isEmpty
-                            )
-                        }
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("하고 싶은 말")
-                                .font(.system(size: 15, weight: .semibold))
-                            TextEditor(text: $lyricUserPrompt)
-                                .frame(minHeight: 92)
-                                .padding(8)
-                                .scrollContentBackground(.hidden)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.primary.opacity(0.05))
-                                )
-                            settingsDescription("예: 밤에 듣기 좋은 곡만, 너무 시끄럽지 않게. 비워 두면 지금 곡 느낌만 봐요.")
-                        }
-                        lyricIntelligenceTestSection
+                SettingsGroup(title: "핵심 추천 가중치") {
+                    VStack(spacing: 18) {
+                        weightRow("청취 기록 취향", value: $historyWeight)
+                        weightRow("좋아요 취향", value: $favoriteWeight)
+                        weightRow("서버 유사곡·Sonic", value: $serverWeight)
+                        weightRow("새로운 음악 발견", value: $discoveryWeight)
+                        weightRow("Last.fm 유사곡", value: $lastFMWeight)
+                        weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
+                        weightRow("재생 행동", value: $behaviorWeight)
+                        weightRow("완주율", value: $completionWeight)
+                        weightRow("반복 재생", value: $repeatWeight)
+                        weightRow("최근 취향", value: $recencyWeight)
+                        weightRow("현재 세션 흐름", value: $contextWeight)
                     }
                 }
                 .padding(.horizontal, 16)
 
-                SettingsGroup(title: "가사 분석 진행") {
-                    lyricAnalysisProgressSection
+                SettingsGroup(title: "발견 비율") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        weightRow("새로운 곡·아티스트 비율", value: $discoveryRatio)
+                        settingsDescription("점수에 곱하지 않고 최종 목록에서 익숙한 음악과 새로운 음악의 구성 비율을 조절합니다.")
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "고급 추천 신호") {
+                    VStack(alignment: .leading, spacing: 18) {
+                        weightRow("장르·BPM·분위기 메타데이터", value: $metadataWeight)
+                        weightRow("플레이리스트 연관성", value: $playlistAffinityWeight)
+                        weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
+                        weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
+                        weightRow("아티스트 순환", value: $artistRotationWeight)
+                        weightRow("시간대 맞춤", value: $timeAwarenessWeight)
+                        Button("기본값으로 복원") {
+                            restoreDefaults()
+                        }
+                        .font(.system(size: 15, weight: .semibold))
+                        settingsDescription("모든 입력은 0~1로 정규화되며, 낮은 메타데이터 매칭 신뢰도와 반복 조기 스킵은 별도로 감점합니다.")
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "Last.fm") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        SecureField(
+                            session.hasLastFMAPIKey
+                                ? "저장된 API 키 교체"
+                                : "Last.fm API 키",
+                            text: $lastFMAPIKey
+                        )
+                        .settingsTextField()
+                        Button(session.hasLastFMAPIKey ? "API 키 갱신" : "API 키 저장") {
+                            Task { @MainActor in
+                                await model.saveLastFMAPIKey(lastFMAPIKey)
+                                lastFMAPIKey = ""
+                            }
+                        }
+                        .buttonStyle(SettingsActionButtonStyle())
+                        .disabled(lastFMAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if session.hasLastFMAPIKey {
+                            Button("Last.fm 연동 해제", role: .destructive) {
+                                Task { await model.saveLastFMAPIKey("") }
+                            }
+                        }
+                        settingsDescription("track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "ListenBrainz") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        TextField("사용자 이름", text: $listenBrainzUsername)
+                            .settingsTextField()
+                        SecureField(
+                            session.hasListenBrainzToken
+                                ? "저장된 토큰 유지 또는 교체"
+                                : "사용자 토큰",
+                            text: $listenBrainzToken
+                        )
+                        .settingsTextField()
+                        Button("ListenBrainz 설정 저장") {
+                            let username = listenBrainzUsername
+                            let token = listenBrainzToken
+                            Task { @MainActor in
+                                let saved = await model.saveListenBrainz(
+                                    username: username,
+                                    token: token
+                                )
+                                if saved { listenBrainzToken = "" }
+                            }
+                        }
+                        .buttonStyle(SettingsActionButtonStyle())
+                        .disabled(
+                            listenBrainzUsername
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                                .isEmpty
+                        )
+                        if session.hasListenBrainzToken || !session.listenBrainzUsername.isEmpty {
+                            Button("ListenBrainz 연동 해제", role: .destructive) {
+                                Task { @MainActor in
+                                    if await model.removeListenBrainz() {
+                                        listenBrainzUsername = ""
+                                        listenBrainzToken = ""
+                                    }
+                                }
+                            }
+                        }
+                        settingsDescription("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 있는 곡만 매칭합니다.")
+                    }
                 }
                 .padding(.horizontal, 16)
             }
@@ -822,958 +710,34 @@ struct RecommendationSettingsView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .tint(BuFiTheme.accent)
-        .confirmationDialog(
-            "기존 분석을 모두 지우고 새로 분석할까요?",
-            isPresented: $confirmFullLyricReanalysis,
-            titleVisibility: .visible
-        ) {
-            Button("모두 지우고 새로 분석", role: .destructive) {
-                startFullLyricReanalysis()
-            }
-            Button("취소", role: .cancel) {}
-        } message: {
-            Text("저장된 가사 요약·분위기·임베딩·음향 분석을 초기화하고 현재 라이브러리를 선택한 엔진으로 처음부터 다시 분석합니다. 원격 엔진은 API 사용량이 발생할 수 있습니다.")
-        }
-        .sheet(isPresented: $showCurrentAnalysisEditor) {
-            if let song = playbackState.currentSong {
-                CurrentLyricAnalysisEditor(
-                    song: song,
-                    signature: currentSignature,
-                    onSave: { draft in
-                        await saveCurrentAnalysisEdit(draft)
-                    },
-                    onReanalyze: {
-                        await reanalyzeCurrentSong()
-                    }
-                )
-            } else {
-                ContentUnavailableView(
-                    "재생 중인 곡 없음",
-                    systemImage: "music.note",
-                    description: Text("곡을 재생한 뒤 다시 열어주세요.")
-                )
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(
-            for: RecommendationDiagnostics.didChange
-        )) { _ in
-            diagEvents = RecommendationDiagnostics.events()
-        }
         .onAppear {
-            diagEvents = RecommendationDiagnostics.events()
-            profile = AIRecommendationProfile.load()
-            if lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue,
-               !LyricIntelligenceProviderKind.applePrivateCloud.isVisibleInSettings {
-                lyricProviderRaw = LyricIntelligenceProviderKind.onDevice.rawValue
-            }
-        }
-        .task(id: playbackState.currentSong?.id) {
-            currentSignature = await currentSongSignature()
-        }
-        .task {
-            await refreshCoverage()
-            let latest = await LyricIntelligence.shared.currentBatchProgress()
-            batchProgress = latest
-            if latest.isRunning {
-                watchBatchProgress()
-            }
+            listenBrainzUsername = session.listenBrainzUsername
         }
     }
 
-    @ViewBuilder
-    private var lyricAnalysisProgressSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            settingsDescription(
-                String(
-                    localized: "알고 있는 곡 \(coverage.known) · 분석됨 \(coverage.lyricDone) · 남음 \(coverage.pending.count) · 음향 \(coverage.soundDone) · 음향 대기 \(coverage.needsSound.count) · 요약 대기 \(coverage.needsResummary.count)"
-                )
-            )
-            if batchProgress.isRunning || batchProgress.processed > 0 {
-                ProgressView(value: batchProgress.fraction)
-                    .tint(BuFiTheme.accent)
-                settingsDescription(
-                    String(
-                        localized: "분석 성공 \(batchProgress.succeeded)/\(batchProgress.total)"
-                    )
-                )
-                settingsDescription(batchStatusText)
-            }
-            if !coverage.done.isEmpty {
-                DisclosureGroup("분석된 곡 \(coverage.done.count)") {
-                    songStatusList(coverage.done, pending: false)
-                }
-            }
-            if !coverage.pending.isEmpty {
-                DisclosureGroup("아직 안 된 곡 \(coverage.pending.count)") {
-                    songStatusList(coverage.pending, pending: true)
-                }
-            }
-            if !coverage.needsSound.isEmpty {
-                DisclosureGroup("음향 없는 곡 \(coverage.needsSound.count)") {
-                    songStatusList(coverage.needsSound, pending: false)
-                }
-            }
-            if !coverage.needsResummary.isEmpty {
-                DisclosureGroup("요약 다시 할 곡 \(coverage.needsResummary.count)") {
-                    songStatusList(coverage.needsResummary, pending: false)
-                }
-            }
-            if coverage.known == 0 {
-                settingsDescription("홈·청취 기록에 곡이 생기면 여기에 집계됩니다.")
-            }
-            if batchProgress.isRunning {
-                Button("분석 중단") {
-                    batchTask?.cancel()
-                    Task { await LyricIntelligence.shared.cancelBatch() }
-                }
-                .buttonStyle(SettingsActionButtonStyle())
-            } else {
-                Button("지금 곡 다시 분석") {
-                    startCurrentSongReanalysis()
-                }
-                .buttonStyle(SettingsActionButtonStyle())
-                .disabled(
-                    playbackState.currentSong == nil
-                        || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
-                )
-                Button("안 된 곡 전부 분석") {
-                    startPendingAnalysis()
-                }
-                .buttonStyle(SettingsActionButtonStyle())
-                .disabled(
-                    coverage.workQueue.isEmpty
-                        || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
-                )
-                Button("안 된 곡 Groq로 분석") {
-                    startPendingAnalysis(usingGroq: true)
-                }
-                .buttonStyle(SettingsActionButtonStyle())
-                .disabled(
-                    coverage.workQueue.isEmpty
-                        || !session.hasGroqKey
-                )
-                Button("기존 분석 지우고 전체 새로 분석", role: .destructive) {
-                    confirmFullLyricReanalysis = true
-                }
-                .disabled(
-                    coverage.known == 0
-                        || lyricProviderRaw == LyricIntelligenceProviderKind.off.rawValue
-                )
-            }
-            Button(isExportingScan ? "스캔 결과 모으는 중…" : "스캔한 가사·BPM 한꺼번에 보내기") {
-                Task { await prepareScanExport() }
-            }
-            .buttonStyle(SettingsActionButtonStyle())
-            .disabled(isExportingScan || coverage.known == 0)
-            if !scanExportText.isEmpty {
-                ShareLink("스캔 결과 공유하기", item: scanExportText)
-                    .font(.system(size: 15, weight: .semibold))
-                settingsDescription("가사 발췌, BPM, 분위기, 음향, 숫자 가중치가 한 파일로 들어 있습니다. 이걸 보내 주시면 노션 리스트와 맞춰 학습할 수 있습니다.")
-            }
-            settingsDescription("지금 곡은 저장된 결과를 지우고 다시 돌립니다. 안 된 곡·요약이 비거나 이상한 곡·음향 없는 곡은 이어서 분석합니다. ‘전체 새로 분석’은 저장된 가사·요약·임베딩·음향 결과를 비운 뒤 현재 엔진으로 모든 곡을 처음부터 다시 돌립니다.")
-        }
-    }
-
-    @ViewBuilder
-    private func songStatusList(
-        _ entries: [LyricAnalysisEntry],
-        pending: Bool
+    private func weightRow(
+        _ title: LocalizedStringKey,
+        value: Binding<Double>
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(entries.prefix(30))) { entry in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.song.title)
-                        .font(.system(size: 14, weight: .semibold))
-                    Text(songStatusDetail(entry, pending: pending))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if entries.count > 30 {
-                Text("외 \(entries.count - 30)곡")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.top, 6)
-    }
-
-    @ViewBuilder
-    private var lyricIntelligenceTestSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("실기기 시험")
-                .font(.system(size: 15, weight: .semibold))
-            settingsDescription(AppleFoundationLyricClient.onDeviceStatus().title)
-            settingsDescription(AppleFoundationLyricClient.privateCloudStatus().title)
-            if let song = playbackState.currentSong {
-                if let currentSignature {
-                    settingsDescription(nowPlayingAnalysisText(song: song, signature: currentSignature))
-                } else {
-                    settingsDescription(
-                        String(
-                            localized: "지금 재생 중: \(song.title). 가사가 뜨면 분석이 시작되고, 같은 가사는 다시 돌리지 않습니다."
-                        )
-                    )
-                }
-            } else {
-                settingsDescription("가사가 있는 곡을 재생하면 저장된 분석이 여기에 나타납니다. 다운로드가 없으면 스트림으로 음향을 분석합니다.")
-            }
-            if let probe {
-                settingsDescription(probeResultText(probe))
-            }
-            Button("현재 재생곡 분석 데이터") {
-                showCurrentAnalysisEditor = true
-            }
-            .buttonStyle(SettingsActionButtonStyle())
-            .disabled(playbackState.currentSong == nil)
-            Button(isProbing ? "분석 중…" : "샘플 가사로 시험") {
-                Task { await runLyricProbe() }
-            }
-            .buttonStyle(SettingsActionButtonStyle())
-            .disabled(isProbing)
-            settingsDescription("누를 때마다 지금 고른 엔진으로 새 LLM 세션을 만들어 샘플 가사를 실제 분석합니다. LLM이 모두 실패하면 분석 완료로 저장하지 않습니다.")
-        }
-    }
-
-    private var batchStatusText: String {
-        let counts = String(
-            localized: "성공 \(batchProgress.succeeded) · 새로 \(batchProgress.analyzed) · 캐시 \(batchProgress.cached) · 실패 \(batchProgress.failed) · 가사 없음 \(batchProgress.noLyrics) · 음향 \(batchProgress.soundAnalyzed)"
-        )
-        if batchProgress.isCancelled {
-            return String(
-                localized: "중단됨 · 확인 \(batchProgress.processed)/\(batchProgress.total) · \(counts)"
-            )
-        }
-        if batchProgress.isRunning {
-            let current = batchProgress.currentTitle.isEmpty
-                ? String(localized: "준비 중")
-                : batchProgress.currentTitle
-            return String(
-                localized: "확인 \(batchProgress.processed)/\(batchProgress.total) · \(current)"
-            )
-        }
-        if batchProgress.isComplete {
-            return String(localized: "분석 완료 · \(counts)")
-        }
-        return String(
-            localized: "스캔 종료 · 확인 \(batchProgress.processed)/\(batchProgress.total) · \(counts)"
-        )
-    }
-
-    private func songStatusDetail(
-        _ entry: LyricAnalysisEntry,
-        pending: Bool
-    ) -> String {
-        if pending {
-            return entry.song.artist
-        }
-        let sound = entry.hasSound
-            ? String(localized: "음향 있음")
-            : String(localized: "음향 없음")
-        return "\(entry.sourceTitle) · \(entry.song.artist) · \(sound)"
-    }
-
-    private func prepareScanExport() async {
-        isExportingScan = true
-        defer { isExportingScan = false }
-        let catalog = await model.intelligenceCatalog()
-        if let scope = model.client?.accountScope {
-            await LyricIntelligence.shared.activate(accountScope: scope)
-        }
-        let index = await LyricIntelligence.shared.index()
-        scanExportText = LibraryScanExport.make(catalog: catalog, index: index)
-    }
-
-    private func refreshCoverage() async {
-        let catalog = await model.intelligenceCatalog()
-        if let scope = model.client?.accountScope {
-            await LyricIntelligence.shared.activate(accountScope: scope)
-        }
-        coverage = await LyricIntelligence.shared.coverage(catalog: catalog)
-    }
-
-    private func startPendingAnalysis(usingGroq: Bool = false) {
-        batchTask?.cancel()
-        batchProgress = LyricBatchProgress.idle
-        batchProgress.isRunning = true
-        batchTask = Task {
-            let catalog = await model.intelligenceCatalog()
-            guard let client = model.client else {
-                batchProgress.isRunning = false
-                return
-            }
-            let scope = client.accountScope
-            var settings = await LyricIntelligenceSettings.load()
-            if usingGroq {
-                settings.provider = .groq
-            }
-            let paced = audio.wantsPlayback
-            let progress = await LyricIntelligence.shared.analyzePending(
-                catalog: catalog,
-                accountScope: scope,
-                lyricsProvider: { song in
-                    await Self.lyricsText(for: song, client: client)
-                },
-                fileProvider: { song in
-                    await SoundAnalysisSample.resolve(
-                        for: song,
-                        client: client,
-                        paced: paced
-                    )
-                },
-                settings: settings,
-                paced: paced
-            )
-            guard !Task.isCancelled else { return }
-            batchProgress = progress
-            await refreshCoverage()
-            currentSignature = await currentSongSignature()
-            model.rebuildRecommendations()
-        }
-        watchBatchProgress()
-    }
-
-    private func startFullLyricReanalysis() {
-        batchTask?.cancel()
-        batchProgress = LyricBatchProgress.idle
-        batchProgress.total = coverage.known
-        batchProgress.isRunning = true
-        batchProgress.currentTitle = String(localized: "기존 분석 초기화 중")
-        batchTask = Task {
-            let catalog = await model.intelligenceCatalog()
-            guard let client = model.client else {
-                batchProgress.isRunning = false
-                batchProgress.currentTitle = ""
-                return
-            }
-            let scope = client.accountScope
-
-            await LyricIntelligence.shared.activate(accountScope: scope)
-            let previousIndex = await LyricIntelligence.shared.index()
-            await LyricIntelligence.shared.cancelBatch()
-            await LyricIntelligence.shared.deactivate()
-
-            let songIDs = Set(previousIndex.bySongID.keys)
-                .union(catalog.map(\.id))
-            for songID in songIDs {
-                guard !Task.isCancelled else { return }
-                let cleared = LyricSignature(
-                    songID: songID,
-                    lyricsHash: "",
-                    moods: [],
-                    themes: [],
-                    energy: 0.5,
-                    valence: 0.5,
-                    embedding: [],
-                    source: ""
-                )
-                _ = await AppDatabase.shared.saveTrackIntelligence(
-                    cleared,
-                    scope: scope
-                )
-            }
-
-            guard !Task.isCancelled else { return }
-            await LyricIntelligence.shared.activate(accountScope: scope)
-            let settings = await LyricIntelligenceSettings.load()
-            let paced = audio.wantsPlayback
-            let progress = await LyricIntelligence.shared.analyzePending(
-                catalog: catalog,
-                accountScope: scope,
-                lyricsProvider: { song in
-                    await Self.lyricsText(for: song, client: client)
-                },
-                fileProvider: { song in
-                    await SoundAnalysisSample.resolve(
-                        for: song,
-                        client: client,
-                        paced: paced
-                    )
-                },
-                force: true,
-                settings: settings,
-                paced: paced
-            )
-            guard !Task.isCancelled else { return }
-            batchProgress = progress
-            await refreshCoverage()
-            currentSignature = await currentSongSignature()
-            model.rebuildRecommendations()
-        }
-        watchBatchProgress()
-    }
-
-    private func startCurrentSongReanalysis() {
-        batchTask?.cancel()
-        batchTask = Task {
-            _ = await reanalyzeCurrentSong()
-        }
-    }
-
-    private func reanalyzeCurrentSong() async -> LyricSignature? {
-        guard let song = playbackState.currentSong,
-              let client = model.client else {
-            return nil
-        }
-        let lyrics = await Self.lyricsText(for: song, client: client)
-        guard lyrics.count >= 24 else { return nil }
-        await LyricIntelligence.shared.reanalyze(
-            song: song,
-            lyrics: lyrics,
-            accountScope: client.accountScope
-        )
-        if let fileURL = await SoundAnalysisSample.resolve(
-            for: song,
-            client: client,
-            paced: audio.wantsPlayback
-        ) {
-            await LyricIntelligence.shared.scheduleSoundAnalysis(
-                song: song,
-                fileURL: fileURL,
-                audioRevision: song.audioResourceRevision.isEmpty
-                    ? song.id
-                    : song.audioResourceRevision,
-                accountScope: client.accountScope,
-                paced: audio.wantsPlayback
-            )
-        }
-        await refreshCoverage()
-        currentSignature = await currentSongSignature()
-        model.rebuildRecommendations()
-        return currentSignature
-    }
-
-    private func saveCurrentAnalysisEdit(
-        _ draft: LyricAnalysisEditDraft
-    ) async -> LyricSignature? {
-        guard let song = playbackState.currentSong,
-              let client = model.client,
-              let currentSignature else {
-            return nil
-        }
-        let lyrics = await Self.lyricsText(for: song, client: client)
-        guard lyrics.count >= 24 else { return nil }
-        let updated = await LyricIntelligence.shared.saveManualEdit(
-            song: song,
-            lyrics: lyrics,
-            accountScope: client.accountScope,
-            moods: draft.combinedMoods,
-            themes: draft.themeTags,
-            energy: draft.energy,
-            valence: draft.valence,
-            summary: draft.summary,
-            details: draft.makeDetails(base: currentSignature.details)
-        )
-        if let updated {
-            self.currentSignature = updated
-            await refreshCoverage()
-            model.rebuildRecommendations()
-        }
-        return updated
-    }
-
-    private static func lyricsText(
-        for song: Song,
-        client: OpenSubsonicClient
-    ) async -> String {
-        let document = try? await client.lyrics(
-            songID: song.id,
-            artist: song.artist,
-            title: song.title
-        )
-        return document?.lines
-            .map(\.text)
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
-    private func watchBatchProgress() {
-        Task {
-            while !Task.isCancelled {
-                let latest = await LyricIntelligence.shared.currentBatchProgress()
-                let waitingForBatchStart = await MainActor.run {
-                    if latest.isRunning || latest.processed > 0 || latest.isCancelled {
-                        batchProgress = latest
-                    }
-                    return batchProgress.isRunning
-                        && !latest.isRunning
-                        && latest.processed == 0
-                        && !latest.isCancelled
-                }
-                if !latest.isRunning && !waitingForBatchStart {
-                    await refreshCoverage()
-                    break
-                }
-                try? await Task.sleep(for: .milliseconds(350))
-            }
-        }
-    }
-
-    private func currentSongSignature() async -> LyricSignature? {
-        guard let songID = playbackState.currentSong?.id else { return nil }
-        if let scope = model.client?.accountScope {
-            await LyricIntelligence.shared.activate(accountScope: scope)
-        }
-        return await LyricIntelligence.shared.signature(for: songID)
-    }
-
-    private func runLyricProbe() async {
-        isProbing = true
-        defer { isProbing = false }
-        let scope = model.client?.accountScope
-        probe = await LyricIntelligence.shared.probeSample(accountScope: scope)
-        currentSignature = await currentSongSignature()
-    }
-
-    private func nowPlayingAnalysisText(song: Song, signature: LyricSignature) -> String {
-        var parts = [
-            String(localized: "지금 재생 중: \(song.title)"),
-            String(localized: "가사 엔진: \(signature.sourceTitle)")
-        ]
-        if !signature.details.primaryMoods.isEmpty {
-            parts.append(
-                String(localized: "핵심 분위기: \(signature.details.primaryMoods.joined(separator: ", "))")
-            )
-        } else if !signature.moods.isEmpty {
-            parts.append(String(localized: "분위기: \(signature.moods.joined(separator: ", "))"))
-        }
-        if !signature.details.secondaryMoods.isEmpty {
-            parts.append(
-                String(localized: "보조 분위기: \(signature.details.secondaryMoods.joined(separator: ", "))")
-            )
-        }
-        if !signature.themes.isEmpty {
-            parts.append(String(localized: "테마: \(signature.themes.joined(separator: ", "))"))
-        }
-        if !signature.details.emotionalArc.isEmpty {
-            parts.append(String(localized: "감정 흐름: \(signature.details.emotionalArc)"))
-        }
-        if signature.hasStoredSummary {
-            parts.append(String(localized: "요약: \(signature.summary.replacingOccurrences(of: "\n", with: " / "))"))
-        }
-        if signature.hasSentenceEmbedding {
-            parts.append(
-                String(
-                    localized: "문장 임베딩: \(signature.sentenceEmbedding.count)차원 저장됨"
-                )
-            )
-        }
-        if signature.hasStoredSoundAnalysis {
-            let labels = SoundLabelSpace.displayNames(signature.soundLabels)
-                .joined(separator: ", ")
-            parts.append(String(localized: "음향: \(labels)"))
-        } else {
-            parts.append(String(localized: "음향: 아직 없음 (다운로드된 곡을 재생하면 채워집니다)"))
-        }
-        return parts.joined(separator: "\n")
-    }
-
-    private func probeResultText(_ probe: LyricIntelligenceProbe) -> String {
-        let cache = probe.reusedCache
-            ? String(localized: "캐시에서 읽음")
-            : String(localized: "새 LLM 호출")
-        guard let signature = probe.signature else {
-            return String(localized: "시험 결과: 분석을 저장하지 못했습니다. 가사 지능이 꺼져 있는지 확인하세요.")
-        }
-        let moods = signature.moods.isEmpty
-            ? String(localized: "없음")
-            : signature.moods.joined(separator: ", ")
-        return [
-            String(localized: "시험 결과: \(cache)"),
-            String(localized: "엔진: \(signature.sourceTitle)"),
-            String(localized: "분위기: \(moods)"),
-            String(
-                localized: "에너지 \(Int((signature.energy * 100).rounded()))% · 감정 \(Int((signature.valence * 100).rounded()))%"
-            ),
-            signature.hasStoredSummary
-                ? String(localized: "요약: \(signature.summary.replacingOccurrences(of: "\n", with: " / "))")
-                : String(localized: "요약: 없음"),
-            signature.hasSentenceEmbedding
-                ? String(localized: "문장 임베딩: \(signature.sentenceEmbedding.count)차원")
-                : String(localized: "문장 임베딩: 없음")
-        ].joined(separator: "\n")
-    }
-
-    private var usesOnDeviceFallback: Bool {
-        lyricProviderRaw == LyricIntelligenceProviderKind.onDevice.rawValue
-            || lyricProviderRaw == LyricIntelligenceProviderKind.applePrivateCloud.rawValue
-    }
-
-    private var lyricEngineDescription: String {
-        switch LyricIntelligenceProviderKind(rawValue: lyricProviderRaw) ?? .onDevice {
-        case .off:
-            String(localized: "가사 분석을 하지 않습니다. 이미 저장한 결과는 로컬 DB에 남습니다.")
-        case .onDevice, .applePrivateCloud:
-            String(localized: "자동은 Apple Intelligence 3B를 곡마다 새 세션으로 호출합니다. 실패하면 저장된 Groq·Cerebras·OpenRouter·OpenAI 키의 LLM으로 순차 대체하며, 모든 LLM이 실패하면 완료 처리하지 않고 재시도 대상으로 남깁니다.")
-        case .openAI:
-            String(localized: "OpenAI로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
-        case .openRouter:
-            String(localized: "OpenRouter 모델로 가사 분위기를 분석합니다. 결과는 로컬 DB에 저장되어 같은 가사는 다시 보내지 않습니다.")
-        case .groq:
-            String(localized: "라디오 기본은 Groq GPT-OSS 120B이고, 실패하면 Qwen 3.6 27B와 GPT-OSS 20B로 넘어갑니다. 가사 분석은 아래에서 고른 모델을 씁니다.")
-        case .googleAI:
-            String(localized: "Google AI Studio의 Gemini로 가사를 읽습니다. 기본은 3.7 Flash이고, 더 빠르게 쓰려면 3.6 Flash Lite를 고르면 됩니다.")
-        case .cerebras:
-            String(localized: "Cerebras도 Llama 3.3 70B와 GPT-OSS 120B에 각각 다른 프롬프트를 씁니다. 결과는 로컬에 남습니다.")
-        }
-    }
-
-    private var recommendationAIStatus: RecommendationAIStatus {
-        RecommendationAIStatus.resolve(
-            radioModel: radioModel,
-            hasGroqKey: session.hasGroqKey,
-            hasGeminiKey: session.hasGeminiKey,
-            lyricProvider: LyricIntelligenceProviderKind(rawValue: lyricProviderRaw)
-                ?? .onDevice,
-            lyricAnalysisName: lyricAnalysisDisplayName
-        )
-    }
-
-    private var lyricAnalysisDisplayName: String {
-        switch LyricIntelligenceProviderKind(rawValue: lyricProviderRaw) ?? .onDevice {
-        case .off:
-            String(localized: "가사 분석 끔")
-        case .onDevice, .applePrivateCloud:
-            String(localized: "Apple 3B (가사)")
-        case .openAI:
-            "OpenAI"
-        case .openRouter:
-            openRouterModel
-        case .groq:
-            groqAnalysisTitle
-        case .googleAI:
-            geminiAnalysisTitle
-        case .cerebras:
-            cerebrasModel
-        }
-    }
-
-    private var groqAnalysisTitle: String {
-        switch groqModel {
-        case "openai/gpt-oss-120b": "Groq · GPT-OSS 120B"
-        case "qwen/qwen3.6-27b": "Groq · Qwen 3.6 27B"
-        case "openai/gpt-oss-20b": "Groq · GPT-OSS 20B"
-        case "llama-3.1-8b-instant": "Groq · Llama 3.1 8B"
-        default: groqModel
-        }
-    }
-
-    private var geminiAnalysisTitle: String {
-        switch geminiModel {
-        case LyricIntelligenceSettings.geminiFlashModel: "Gemini 3.7 Flash"
-        case LyricIntelligenceSettings.geminiFlashLiteModel: "Gemini 3.6 Flash Lite"
-        default: geminiModel
-        }
-    }
-
-    private var recommendationDiagSection: some View {
-        SettingsGroup(title: "추천 오류 기록") {
-            VStack(alignment: .leading, spacing: 10) {
-                if diagEvents.isEmpty {
-                    settingsDescription("아직 오류가 없어요. LLM 호출이 실패하거나 CoreML이 늦으면 여기에 남습니다.")
-                } else {
-                    ForEach(diagEvents.prefix(20)) { event in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(diagTime(event.at)) · \(event.kindTitle) \(event.levelTitle)")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(event.level == .error ? Color.red : .secondary)
-                            Text(event.title)
-                                .font(.system(size: 14, weight: .semibold))
-                            if !event.detail.isEmpty {
-                                Text(event.detail)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-                    if diagEvents.count > 20 {
-                        settingsDescription("외 \(diagEvents.count - 20)건")
-                    }
-                    ShareLink("기록 보내기", item: RecommendationDiagnostics.exportText())
-                        .font(.system(size: 15, weight: .semibold))
-                    Button("기록 지우기", role: .destructive) {
-                        RecommendationDiagnostics.clear()
-                        diagEvents = []
-                    }
-                    .font(.system(size: 15, weight: .semibold))
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private func diagTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ko_KR")
-        formatter.dateFormat = "M/d HH:mm:ss"
-        return formatter.string(from: date)
-    }
-
-    private var aiInUseSection: some View {
-        SettingsGroup(title: "지금 곡 추천에 쓰는 AI") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(recommendationAIStatus.radioName)
-                    .font(.system(size: 20, weight: .bold))
-                Text(recommendationAIStatus.radioNote)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(
-                    String(
-                        localized: "가사 분석: \(recommendationAIStatus.analysisName)"
-                    )
-                )
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                settingsDescription("라디오 모델이나 키를 바꾸면 여기 표시도 바로 바뀝니다. 실제로 호출되는 쪽을 보여 줍니다.")
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private var aiTasteSection: some View {
-        SettingsGroup(title: "이런 느낌으로") {
-            VStack(alignment: .leading, spacing: 12) {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 88), spacing: 8)],
-                    spacing: 8
-                ) {
-                    ForEach(AILyricMood.allCases) { mood in
-                        chip(
-                            mood.title,
-                            selected: profile.moods.contains(mood.rawValue)
-                        ) {
-                            toggleMood(mood)
-                        }
-                    }
-                }
-                settingsDescription("최대 3개까지 고를 수 있어요. 안 고르면 지금 듣는 곡 감정을 따라가요.")
-
-                Text("이런 분위기로 이어 듣기")
-                    .font(.system(size: 15, weight: .semibold))
-                ForEach(TaylorPenStyle.allCases) { pen in
-                    Button {
-                        togglePen(pen)
-                    } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: profile.pens.contains(pen.rawValue)
-                                  ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(BuFiTheme.accent)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(pen.title)
-                                    .font(.system(size: 15, weight: .semibold))
-                                Text(pen.subtitle)
-                                    .font(.system(size: 12.5))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Picker("신나는 정도", selection: energyBinding) {
-                    ForEach(AIEnergyLane.allCases) { lane in
-                        Text(lane.title).tag(lane.rawValue)
-                    }
-                }
-                Picker("가사 언어", selection: languageBinding) {
-                    ForEach(AILyricLanguage.allCases) { language in
-                        Text(language.title).tag(language.rawValue)
-                    }
-                }
-                Picker("목소리", selection: vocalBinding) {
-                    Text("상관없음").tag("")
-                    Text("여성 보컬").tag("female")
-                    Text("남성 보컬").tag("male")
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private var aiArtistSection: some View {
-        SettingsGroup(title: "가수") {
-            VStack(alignment: .leading, spacing: 12) {
-                artistEditor(
-                    title: "더 듣고 싶은 가수",
-                    draft: $preferredDraft,
-                    names: profile.preferredArtists,
-                    limit: 3
-                ) { name in
-                    addArtist(name, preferred: true)
-                } remove: { name in
-                    profile.preferredArtists.removeAll { $0 == name }
-                    persistProfile()
-                }
-                artistEditor(
-                    title: "덜 듣고 싶은 가수",
-                    draft: $avoidedDraft,
-                    names: profile.avoidedArtists,
-                    limit: 5
-                ) { name in
-                    addArtist(name, preferred: false)
-                } remove: { name in
-                    profile.avoidedArtists.removeAll { $0 == name }
-                    persistProfile()
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private var aiSignalSection: some View {
-        SettingsGroup(title: "내 기록 활용하기") {
-            VStack(alignment: .leading, spacing: 12) {
-                Toggle("많이 들은 곡 챙기기", isOn: listenCountBinding)
-                Toggle("좋아요 한 곡 챙기기", isOn: favoritesBinding)
-                Toggle("자주 반복한 곡 챙기기", isOn: frequentBinding)
-                Toggle("같은 앨범 이어서 듣기", isOn: stayOnAlbumBinding)
-                settingsDescription("기본은 모두 켜져 있어요. 끄면 그 기록은 거의 보지 않아요.")
-            }
-            .font(.system(size: 15, weight: .semibold))
-        }
-        .padding(.horizontal, 16)
-    }
-
-    private func artistEditor(
-        title: LocalizedStringKey,
-        draft: Binding<String>,
-        names: [String],
-        limit: Int,
-        add: @escaping (String) -> Void,
-        remove: @escaping (String) -> Void
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 15, weight: .semibold))
-            if !names.isEmpty {
-                FlexibleArtistChips(names: names, onRemove: remove)
-            }
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
-                TextField("가수 이름", text: draft)
-                    .settingsTextField()
-                Button("추가") {
-                    add(draft.wrappedValue)
-                    draft.wrappedValue = ""
-                }
-                .disabled(
-                    names.count >= limit
-                        || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
+                Text(title)
+                Spacer()
+                Text(value.wrappedValue, format: .percent.precision(.fractionLength(0)))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
-            Text("최대 \(limit)명까지 넣을 수 있어요")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+            Slider(
+                value: value,
+                in: 0...1,
+                step: 0.05,
+                onEditingChanged: { isEditing in
+                    guard !isEditing else { return }
+                    model.rebuildRecommendations()
+                }
+            )
+                .tint(BuFiTheme.accent)
         }
-    }
-
-    private func chip(
-        _ title: String,
-        selected: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(
-                    selected ? BuFiTheme.accent.opacity(0.16) : Color.primary.opacity(0.05),
-                    in: Capsule()
-                )
-                .foregroundStyle(selected ? BuFiTheme.accent : .primary)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func toggleMood(_ mood: AILyricMood) {
-        if let index = profile.moods.firstIndex(of: mood.rawValue) {
-            profile.moods.remove(at: index)
-        } else if profile.moods.count < 3 {
-            profile.moods.append(mood.rawValue)
-        }
-        persistProfile()
-    }
-
-    private func togglePen(_ pen: TaylorPenStyle) {
-        if let index = profile.pens.firstIndex(of: pen.rawValue) {
-            profile.pens.remove(at: index)
-        } else {
-            profile.pens.append(pen.rawValue)
-        }
-        persistProfile()
-    }
-
-    private func addArtist(_ raw: String, preferred: Bool) {
-        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        if preferred {
-            guard profile.preferredArtists.count < 3 else { return }
-            profile.preferredArtists.append(name)
-        } else {
-            guard profile.avoidedArtists.count < 5 else { return }
-            profile.avoidedArtists.append(name)
-        }
-        persistProfile()
-    }
-
-    private func persistProfile() {
-        profile.sanitize()
-        profile.save()
-        RecommendationMixer.invalidateCache()
-        model.rebuildRecommendations()
-    }
-
-    private var energyBinding: Binding<String> {
-        Binding(
-            get: { profile.energyLane },
-            set: { profile.energyLane = $0; persistProfile() }
-        )
-    }
-
-    private var languageBinding: Binding<String> {
-        Binding(
-            get: { profile.language },
-            set: { profile.language = $0; persistProfile() }
-        )
-    }
-
-    private var vocalBinding: Binding<String> {
-        Binding(
-            get: { profile.vocal },
-            set: { profile.vocal = $0; persistProfile() }
-        )
-    }
-
-    private var listenCountBinding: Binding<Bool> {
-        Binding(
-            get: { profile.useListenCount },
-            set: { profile.useListenCount = $0; persistProfile() }
-        )
-    }
-
-    private var favoritesBinding: Binding<Bool> {
-        Binding(
-            get: { profile.useFavorites },
-            set: { profile.useFavorites = $0; persistProfile() }
-        )
-    }
-
-    private var frequentBinding: Binding<Bool> {
-        Binding(
-            get: { profile.useFrequent },
-            set: { profile.useFrequent = $0; persistProfile() }
-        )
-    }
-
-    private var stayOnAlbumBinding: Binding<Bool> {
-        Binding(
-            get: { profile.stayOnAlbum },
-            set: { profile.stayOnAlbum = $0; persistProfile() }
-        )
     }
 
     private func settingsDescription(_ text: LocalizedStringKey) -> some View {
@@ -1784,321 +748,26 @@ struct RecommendationSettingsView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func settingsDescription(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 12.5))
-            .foregroundStyle(.secondary)
-            .lineSpacing(2)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-}
-
-private struct FlexibleArtistChips: View {
-    let names: [String]
-    let onRemove: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(names, id: \.self) { name in
-                HStack {
-                    Text(name)
-                        .font(.system(size: 14, weight: .semibold))
-                    Spacer()
-                    Button("삭제", role: .destructive) {
-                        onRemove(name)
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                }
-            }
-        }
-    }
-}
-
-
-private struct LyricAnalysisEditDraft {
-    var primaryMoods: String
-    var secondaryMoods: String
-    var themes: String
-    var energy: Double
-    var valence: Double
-    var emotionIntensity: Double
-    var summary: String
-    var explicitContent: String
-    var interpretation: String
-    var emotionalArc: String
-    var relationship: String
-    var content: String
-    var narrative: String
-    var setting: String
-    var social: String
-    var season: String
-    var dayparts: String
-    var listenContext: String
-
-    init(signature: LyricSignature?) {
-        let details = signature?.details ?? .empty
-        let allMoods = signature?.moods ?? []
-        let primary = details.primaryMoods.isEmpty
-  ? Array(allMoods.prefix(3))
-  : details.primaryMoods
-        let secondary = details.secondaryMoods.isEmpty
-  ? Array(allMoods.dropFirst(primary.count).prefix(2))
-  : details.secondaryMoods
-        primaryMoods = primary.joined(separator: ", ")
-        secondaryMoods = secondary.joined(separator: ", ")
-        themes = (signature?.themes ?? details.themes).joined(separator: ", ")
-        energy = signature?.energy ?? details.energy
-        valence = signature?.valence ?? details.valence
-        emotionIntensity = details.emotionIntensity
-        summary = signature?.summary ?? details.summary
-        explicitContent = details.explicitContent
-        interpretation = details.interpretation
-        emotionalArc = details.emotionalArc
-        relationship = details.relationship
-        content = details.content
-        narrative = details.narrative
-        setting = details.setting
-        social = details.social
-        season = details.season
-        dayparts = details.dayparts.joined(separator: ", ")
-        listenContext = details.listenContext
-    }
-
-    var combinedMoods: [String] {
-        Self.tags(primaryMoods, limit: 3) + Self.tags(secondaryMoods, limit: 2)
-    }
-
-    var themeTags: [String] {
-        Self.tags(themes, limit: 5)
-    }
-
-    func makeDetails(base: LyricDetailProfile) -> LyricDetailProfile {
-        var details = base
-        details.primaryMoods = Self.tags(primaryMoods, limit: 3)
-        details.secondaryMoods = Self.tags(secondaryMoods, limit: 2)
-        details.moods = combinedMoods
-        details.themes = themeTags
-        details.energy = energy
-        details.valence = valence
-        details.emotionIntensity = emotionIntensity
-        details.summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.explicitContent = explicitContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.interpretation = interpretation.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.emotionalArc = emotionalArc.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.relationship = relationship.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.content = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.narrative = narrative.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.setting = setting.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.social = social.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.season = season.trimmingCharacters(in: .whitespacesAndNewlines)
-        details.dayparts = Self.tags(dayparts, limit: 4)
-        details.listenContext = listenContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        return details
-    }
-
-    private static func tags(_ raw: String, limit: Int) -> [String] {
-        var seen = Set<String>()
-        var result: [String] = []
-        for piece in raw.split(separator: ",") {
-  let value = piece.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard !value.isEmpty else { continue }
-  let key = LyricLexicalEmbedding.normalized(value)
-  guard seen.insert(key).inserted else { continue }
-  result.append(value)
-  if result.count >= limit { break }
-        }
-        return result
-    }
-}
-
-private struct CurrentLyricAnalysisEditor: View {
-    @Environment(\.dismiss) private var dismiss
-    let song: Song
-    let signature: LyricSignature?
-    let onSave: (LyricAnalysisEditDraft) async -> LyricSignature?
-    let onReanalyze: () async -> LyricSignature?
-
-    @State private var draft: LyricAnalysisEditDraft
-    @State private var isSaving = false
-    @State private var isReanalyzing = false
-    @State private var statusMessage = ""
-
-    init(
-        song: Song,
-        signature: LyricSignature?,
-        onSave: @escaping (LyricAnalysisEditDraft) async -> LyricSignature?,
-        onReanalyze: @escaping () async -> LyricSignature?
-    ) {
-        self.song = song
-        self.signature = signature
-        self.onSave = onSave
-        self.onReanalyze = onReanalyze
-        _draft = State(initialValue: LyricAnalysisEditDraft(signature: signature))
-    }
-
-    var body: some View {
-        NavigationStack {
-  ScrollView {
-      VStack(alignment: .leading, spacing: 18) {
-          VStack(alignment: .leading, spacing: 5) {
-              Text(song.title)
-                  .font(.system(size: 24, weight: .bold))
-              Text(song.artist)
-                  .foregroundStyle(.secondary)
-              Text("엔진: \(signature?.sourceTitle ?? String(localized: "분석 없음"))")
-                  .font(.system(size: 13, weight: .semibold))
-                  .foregroundStyle(.secondary)
-          }
-
-          if signature == nil {
-              Text("저장된 LLM 분석이 없습니다. 아래 ‘현재 엔진으로 다시 분석’을 눌러 새 분석을 만들 수 있습니다.")
-                  .font(.system(size: 13))
-                  .foregroundStyle(.secondary)
-          } else {
-              editorField("핵심 분위기", text: $draft.primaryMoods, prompt: "yearning, obsessive, melancholic")
-              editorField("보조 분위기", text: $draft.secondaryMoods, prompt: "resentful, anxious")
-              editorField("테마", text: $draft.themes, prompt: "lost relationship, memory")
-
-              metricSlider("가사 에너지", value: $draft.energy)
-              metricSlider("감정 긍정도", value: $draft.valence)
-              metricSlider("감정 강도", value: $draft.emotionIntensity)
-
-              editorTextArea("요약", text: $draft.summary, minHeight: 120)
-              editorTextArea("가사에 직접 드러난 내용", text: $draft.explicitContent)
-              editorTextArea("AI 해석", text: $draft.interpretation)
-              editorTextArea("감정 흐름", text: $draft.emotionalArc)
-              editorField("관계", text: $draft.relationship, prompt: "former lovers")
-
-              DisclosureGroup("세부 데이터") {
-                  VStack(alignment: .leading, spacing: 12) {
-                      editorField("내용 태그", text: $draft.content, prompt: "longing")
-                      editorField("서사", text: $draft.narrative, prompt: "first-person recollection")
-                      editorField("장소", text: $draft.setting, prompt: "city")
-                      editorField("사회적 상태", text: $draft.social, prompt: "alone")
-                      editorField("계절", text: $draft.season, prompt: "winter")
-                      editorField("시간대", text: $draft.dayparts, prompt: "night, evening")
-                      editorField("추천 상황", text: $draft.listenContext, prompt: "late night")
-                  }
-                  .padding(.top, 10)
-              }
-
-              if let signature, signature.hasStoredSoundAnalysis {
-                  VStack(alignment: .leading, spacing: 4) {
-                      Text("음향 분석 · 읽기 전용")
-                          .font(.system(size: 14, weight: .semibold))
-                      Text(
-                          SoundLabelSpace.displayNames(signature.soundLabels)
-                              .joined(separator: ", ")
-                      )
-                          .font(.system(size: 12.5))
-                          .foregroundStyle(.secondary)
-                  }
-              }
-
-              Button(isSaving ? "저장 중…" : "수정 내용 저장") {
-                  Task { @MainActor in
-                      isSaving = true
-                      defer { isSaving = false }
-                      if let updated = await onSave(draft) {
-                          draft = LyricAnalysisEditDraft(signature: updated)
-                          statusMessage = String(localized: "수정한 분석을 저장하고 추천에 반영했습니다.")
-                      } else {
-                          statusMessage = String(localized: "수정 내용을 저장하지 못했습니다.")
-                      }
-                  }
-              }
-              .buttonStyle(SettingsActionButtonStyle())
-              .disabled(isSaving || isReanalyzing)
-          }
-
-          Button(isReanalyzing ? "다시 분석 중…" : "현재 엔진으로 다시 분석") {
-              Task { @MainActor in
-                  isReanalyzing = true
-                  defer { isReanalyzing = false }
-                  if let updated = await onReanalyze() {
-                      draft = LyricAnalysisEditDraft(signature: updated)
-                      statusMessage = String(localized: "새 LLM 분석으로 교체했습니다.")
-                  } else {
-                      statusMessage = String(localized: "LLM 분석에 실패했습니다. 기존 데이터는 유지됩니다.")
-                  }
-              }
-          }
-          .buttonStyle(SettingsActionButtonStyle())
-          .disabled(isSaving || isReanalyzing)
-
-          if !statusMessage.isEmpty {
-              Text(statusMessage)
-                  .font(.system(size: 12.5))
-                  .foregroundStyle(.secondary)
-          }
-      }
-      .padding(18)
-  }
-  .background(BuFiScreenBackground())
-  .navigationTitle("현재 곡 분석 데이터")
-  .navigationBarTitleDisplayMode(.inline)
-  .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-          Button("완료") { dismiss() }
-      }
-  }
-        }
-        .presentationDetents([.large])
-    }
-
-    private func editorField(
-        _ title: LocalizedStringKey,
-        text: Binding<String>,
-        prompt: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-  Text(title)
-      .font(.system(size: 14, weight: .semibold))
-  TextField(prompt, text: text)
-      .settingsTextField()
-        }
-    }
-
-    private func editorTextArea(
-        _ title: LocalizedStringKey,
-        text: Binding<String>,
-        minHeight: CGFloat = 86
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-  Text(title)
-      .font(.system(size: 14, weight: .semibold))
-  TextEditor(text: text)
-      .font(.system(size: 14))
-      .frame(minHeight: minHeight)
-      .padding(10)
-      .background(
-          Color.primary.opacity(0.055),
-          in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-      )
-      .overlay {
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-              .stroke(BuFiTheme.separator.opacity(0.30), lineWidth: 0.7)
-      }
-        }
-    }
-
-    private func metricSlider(
-        _ title: LocalizedStringKey,
-        value: Binding<Double>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-  HStack {
-      Text(title)
-          .font(.system(size: 14, weight: .semibold))
-      Spacer()
-      Text(value.wrappedValue, format: .percent.precision(.fractionLength(0)))
-          .foregroundStyle(.secondary)
-          .monospacedDigit()
-  }
-  Slider(value: value, in: 0...1, step: 0.05)
-      .tint(BuFiTheme.accent)
-        }
+    private func restoreDefaults() {
+        historyWeight = 0.70
+        favoriteWeight = 0.80
+        serverWeight = 0.90
+        discoveryWeight = 0.35
+        lastFMWeight = 0.55
+        listenBrainzWeight = 0.55
+        behaviorWeight = 0.85
+        completionWeight = 0.70
+        repeatWeight = 0.55
+        recencyWeight = 0.65
+        contextWeight = 0.60
+        metadataWeight = 0.60
+        playlistAffinityWeight = 0.55
+        albumCompletionWeight = 0.45
+        forgottenFavoritesWeight = 0.50
+        artistRotationWeight = 0.45
+        timeAwarenessWeight = 0.30
+        discoveryRatio = 0.35
+        model.rebuildRecommendations()
     }
 }
 

@@ -40,15 +40,6 @@ jobs:
           brew install xcodegen
           xcodegen --version
 
-      - name: Train Create ML recommender
-        run: |
-          python3 Scripts/export-radio-recommender-data.py
-          test -s Scripts/radio-recommender.csv
-          swift Scripts/TrainRadioRecommender.swift \
-            Scripts/radio-recommender.csv \
-            BuFi/Resources/BuFiRadioRecommender.mlmodel
-          test -s BuFi/Resources/BuFiRadioRecommender.mlmodel
-
       - name: Prepare generated assets
         run: sh Scripts/prepare-assets.sh
 
@@ -122,4 +113,3 @@ jobs:
             build/BuFi-1.0.0-build${{ github.run_number }}-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 30
-

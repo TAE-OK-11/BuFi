@@ -15,8 +15,6 @@ struct HomeView: View {
     @State private var filter = HomeFilter.all
     @State private var presentation = HomePresentation.empty
     @State private var hasLoadedPresentation = false
-    @State private var refinementTask: Task<Void, Never>?
-    @State private var pendingRefinement = false
 
     var body: some View {
         NavigationStack {
@@ -364,71 +362,12 @@ struct HomeView: View {
                   selectedArtistsStorage == selectedArtistMixes else { return }
         }
 
-        // Render deterministic local results inside the revision-bound SwiftUI
-        // task. LLM refinement is scheduled independently below so publishing a
-        // new local recommendation revision cannot cancel its own Gemini request.
-        let local = await HomePresentation.makeConcurrently(
-            input: input,
-            refineWithLLM: false
-        )
+        let next = await HomePresentation.makeConcurrently(input: input)
         guard !Task.isCancelled,
               revision == library.revision,
               selectedArtistsStorage == selectedArtistMixes else { return }
-        presentation = local
+        presentation = next
         hasLoadedPresentation = true
-
-        guard RecommendationLLMReview.isEnabled() else { return }
-        scheduleLLMRefinement(
-            input: input,
-            selectedArtistsStorage: selectedArtistsStorage
-        )
-    }
-
-    @MainActor
-    private func scheduleLLMRefinement(
-        input: HomePresentationInput,
-        selectedArtistsStorage: String
-    ) {
-        guard RecommendationLLMReview.isEnabled() else { return }
-        if refinementTask != nil {
-            // Do not cancel an in-flight cloud request just because the local
-            // recommendation snapshot advanced. Finish it, then refine the
-            // newest snapshot once.
-            pendingRefinement = true
-            return
-        }
-        pendingRefinement = false
-        refinementTask = Task { @MainActor in
-            let refined = await HomePresentation.makeConcurrently(
-                input: input,
-                refineWithLLM: true
-            )
-            if !Task.isCancelled,
-               RecommendationLLMReview.isEnabled(),
-               input.revision == library.revision,
-               selectedArtistsStorage == selectedArtistMixes {
-                presentation = refined
-            }
-
-            refinementTask = nil
-            guard pendingRefinement,
-                  RecommendationLLMReview.isEnabled() else {
-                pendingRefinement = false
-                return
-            }
-            pendingRefinement = false
-            let latestRevision = library.revision
-            let latestArtists = selectedArtistMixes
-            let latestInput = HomePresentationInput(
-                snapshot: library.snapshot,
-                revision: latestRevision,
-                selectedArtists: ArtistMixPreferences.decode(latestArtists)
-            )
-            scheduleLLMRefinement(
-                input: latestInput,
-                selectedArtistsStorage: latestArtists
-            )
-        }
     }
 
     private func countText(_ count: Int) -> String {
@@ -481,53 +420,20 @@ struct HomePresentation: Sendable {
 
     @concurrent
     static func makeConcurrently(
-        input: HomePresentationInput,
-        refineWithLLM: Bool = true
+        input: HomePresentationInput
     ) async -> HomePresentation {
         guard !Task.isCancelled else { return .empty }
-        async let lyricIndexTask = LyricIntelligence.shared.index()
-        async let recentTask = ListeningHistoryStore.shared.recommendationSnapshot()
-        let lyricIndex = await lyricIndexTask
-        let recent = await recentTask.recentSongs
-        guard !Task.isCancelled else { return .empty }
-        let value = make(input: input, lyricIndex: lyricIndex)
-        let mixes: [PersonalizedMix]
-        if refineWithLLM, RecommendationLLMReview.isEnabled() {
-            // Local Home is already visible, so give the cloud chain enough
-            // room to finish instead of killing a healthy ~7 s Gemini response.
-            mixes = await AsyncDeadline.first(seconds: 60) {
-                await PersonalizedMixLLM.apply(
-                    to: value.personalizedMixes,
-                    snapshot: input.snapshot,
-                    recent: recent,
-                    lyricIndex: lyricIndex
-                )
-            } ?? value.personalizedMixes
-        } else {
-            mixes = value.personalizedMixes
-        }
-        guard !Task.isCancelled else { return .empty }
-        return HomePresentation(
-            personalizedMixes: mixes,
-            favoriteSongsMix: value.favoriteSongsMix,
-            mostPlayedSongsMix: value.mostPlayedSongsMix,
-            recommendedAlbums: value.recommendedAlbums,
-            primaryArtists: value.primaryArtists,
-            featuredArtists: value.featuredArtists
-        )
+        let value = make(input: input)
+        return Task.isCancelled ? .empty : value
     }
 
-    static func make(
-        input: HomePresentationInput,
-        lyricIndex: LyricSignatureIndex = .empty
-    ) -> HomePresentation {
+    static func make(input: HomePresentationInput) -> HomePresentation {
         let snapshot = input.snapshot
         return HomePresentation(
             personalizedMixes: PersonalizedMixBuilder.make(
                 snapshot: snapshot,
                 snapshotRevision: input.revision,
-                selectedArtists: input.selectedArtists,
-                lyricIndex: lyricIndex
+                selectedArtists: input.selectedArtists
             ),
             favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),
             mostPlayedSongsMix: PersonalizedMixBuilder.mostPlayedSongs(snapshot.mostPlayedSongs),
