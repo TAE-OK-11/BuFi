@@ -30,7 +30,7 @@ enum RecommendationTasteControls {
     static let tasteKey = "recommendation-feel-taste"
     static let freshKey = "recommendation-feel-fresh"
 
-    static let defaultNow = 0.75
+    static let defaultNow = 0.82
     static let defaultTaste = 0.70
     static let defaultFresh = 0.28
 
@@ -163,17 +163,17 @@ private struct RecommendationPreset {
             RecommendationPreset(
                 shortTermRatio: purpose == .daylist ? 0.76 : 0.68,
                 featureWeights: [
-                    .history: 0.24,
-                    .favorites: 0.16,
-                    .recency: 0.16,
-                    .lastFM: 0.16,
-                    .listenBrainz: 0.16,
+                    .history: 0.20,
+                    .favorites: 0.14,
+                    .recency: 0.14,
+                    .lastFM: 0.22,
+                    .listenBrainz: 0.08,
                     .discovery: 0.06,
-                    .server: 0.18,
-                    .behavior: 0.20,
-                    .completion: 0.18,
+                    .server: 0.22,
+                    .behavior: 0.16,
+                    .completion: 0.16,
                     .repeatListening: 0.08,
-                    .context: 0.24,
+                    .context: 0.30,
                     .localMetadata: 0.08,
                     .playlistAffinity: 0.07,
                     .albumCompletion: 0.08,
@@ -196,9 +196,9 @@ private struct RecommendationPreset {
             RecommendationPreset(
                 shortTermRatio: 0.45,
                 featureWeights: [
-                    .favorites: 0.22, .server: 0.28, .history: 0.18,
-                    .discovery: 0.10, .lastFM: 0.20,
-                    .listenBrainz: 0.20, .behavior: 0.12,
+                    .favorites: 0.20, .server: 0.30, .history: 0.16,
+                    .discovery: 0.10, .lastFM: 0.24,
+                    .listenBrainz: 0.08, .behavior: 0.12,
                     .localMetadata: 0.18, .artistRotation: 0.05
                 ]
             )
@@ -206,8 +206,8 @@ private struct RecommendationPreset {
             RecommendationPreset(
                 shortTermRatio: 0.55,
                 featureWeights: [
-                    .discovery: 0.30, .lastFM: 0.28,
-                    .listenBrainz: 0.28, .history: 0.12,
+                    .discovery: 0.28, .lastFM: 0.30,
+                    .listenBrainz: 0.12, .history: 0.12,
                     .server: 0.22, .context: 0.12,
                     .localMetadata: 0.10, .artistRotation: 0.12
                 ]
@@ -225,9 +225,9 @@ private struct RecommendationPreset {
             RecommendationPreset(
                 shortTermRatio: 0.78,
                 featureWeights: [
-                    .context: 0.34, .server: 0.24, .history: 0.14,
-                    .favorites: 0.10, .lastFM: 0.14,
-                    .listenBrainz: 0.14, .behavior: 0.16,
+                    .context: 0.40, .server: 0.26, .history: 0.10,
+                    .favorites: 0.08, .lastFM: 0.20,
+                    .listenBrainz: 0.06, .behavior: 0.14,
                     .completion: 0.14, .discovery: 0.06,
                     .localMetadata: 0.12, .artistRotation: 0.06
                 ]
@@ -607,6 +607,11 @@ enum RecommendationSeedAffinity {
             }
         }
         let seedGenres = Set(RecommendationCandidateMetadata.genreKeys(for: seed))
+        let seedWork = TrackWorkIdentity.coreTitle(seed.title)
+        let candidateWork = TrackWorkIdentity.coreTitle(candidate.title)
+        if !seedWork.isEmpty, seedWork == candidateWork {
+            score = max(score, 0.70)
+        }
         if !seedGenres.isEmpty,
            RecommendationCandidateMetadata.genreKeys(for: candidate)
             .contains(where: seedGenres.contains) {
@@ -695,11 +700,13 @@ enum RecommendationMixer {
         date: Date = Date()
     ) async -> (recommended: [Song], daylist: [Song]) {
         guard !Task.isCancelled else { return ([], []) }
+        let seed = behavior.recentSongs.first
         let recommended = mix(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
             behavior: behavior,
+            seed: seed,
             limit: 40,
             date: date
         )
@@ -710,6 +717,7 @@ enum RecommendationMixer {
             weights: weights,
             purpose: .daylist,
             behavior: behavior,
+            seed: seed,
             limit: 32,
             date: date
         )
@@ -978,9 +986,9 @@ enum RecommendationMixer {
             } ?? 0
             let contextScore = min(
                 1,
-                contextProfile.affinity(for: metadata) * 0.40
-                    + sessionScore * 0.48
-                    + seedScore * 0.82
+                contextProfile.affinity(for: metadata) * 0.22
+                    + sessionScore * 0.38
+                    + seedScore * 1.05
             )
             weightedTotal += scoringPlan.contribution(
                 .context,

@@ -2094,8 +2094,10 @@ final class AppModel: ObservableObject {
         let listenBrainzToken = await secureStore.loadSecret(
             account: Self.listenBrainzTokenAccount
         )
-        let seed = snapshot.mostPlayedSongs.first
+        let recent = await ListeningHistoryStore.shared.recommendationSnapshot()
+        let seed = recent.recentSongs.first
             ?? snapshot.starredSongs.first
+            ?? snapshot.mostPlayedSongs.first
             ?? snapshot.randomSongs.first
 
         let knownSongs = Self.uniqueSongs(
@@ -2122,9 +2124,33 @@ final class AppModel: ObservableObject {
             value.lastFMRecommendedSongs = matches.0
         }
         if !matches.1.isEmpty {
-            value.listenBrainzRecommendedSongs = matches.1
+            value.listenBrainzRecommendedSongs = Self.songsRankedNearSeed(
+                matches.1,
+                seed: seed
+            )
         }
         return value
+    }
+
+    private nonisolated static func songsRankedNearSeed(
+        _ songs: [Song],
+        seed: Song?
+    ) -> [Song] {
+        guard let seed else { return songs }
+        return songs.sorted { lhs, rhs in
+            let left = RecommendationSeedAffinity.score(
+                candidate: lhs,
+                seed: seed,
+                seedCompleted: true
+            )
+            let right = RecommendationSeedAffinity.score(
+                candidate: rhs,
+                seed: seed,
+                seedCompleted: true
+            )
+            if left == right { return lhs.id < rhs.id }
+            return left > right
+        }
     }
 
     private nonisolated static func resolvedLastFMSongs(
@@ -2136,7 +2162,7 @@ final class AppModel: ObservableObject {
         let cached = await LocalLibraryCatalog.shared.cachedMatches(
             source: "lastfm",
             key: cacheKey,
-            maximumAge: 12 * 60 * 60
+            maximumAge: 3 * 60 * 60
         )
         if !cached.isEmpty { return cached }
         guard let seed, !apiKey.isEmpty else { return [] }
@@ -2207,8 +2233,9 @@ final class AppModel: ObservableObject {
         let nextIdentity = ExternalRecommendationRefreshIdentity(
             sessionGeneration: generation,
             snapshotRevision: library.revision,
-            seedSongID: home.mostPlayedSongs.first?.id
+            seedSongID: AudioEngine.shared.currentSong?.id
                 ?? home.starredSongs.first?.id
+                ?? home.mostPlayedSongs.first?.id
                 ?? home.randomSongs.first?.id,
             includesLastFM: hasLastFMAPIKey,
             includesListenBrainz: !listenBrainzUsername.isEmpty
