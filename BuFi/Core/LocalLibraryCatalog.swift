@@ -327,8 +327,12 @@ actor LocalLibraryCatalog {
         ) else {
             return nil
         }
-        embedding.load()
-        return embedding
+        do {
+            try embedding.load()
+            return embedding
+        } catch {
+            return nil
+        }
     }
 
     private static func optionalEmbedding(
