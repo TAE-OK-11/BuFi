@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared parser for the two Notion radio-teacher pages.
+"""Shared parser for the Spotify radio-teacher captures.
 
 The source pages mix explicit seeds, repeated `세트 N` groups, long ranked
 recommendation runs, and screenshot-derived `첫 번째 재생 곡` headings. Keep
@@ -175,6 +175,142 @@ STATIC_PLAYBACK_BLOCKS: list[list[TeacherTrack]] = [
     ],
 ]
 
+# Manually captured Spotify runs supplied after the public third Notion page
+# failed to expose its blocks through loadPageChunk. The first four headings are
+# new seeds. Ode to Love is an additional run for the already-known seed, so it
+# intentionally remains a separate sequence instead of being merged by title.
+MANUAL_SEQUENCE_BLOCKS: list[list[TeacherTrack]] = [
+    [
+        TeacherTrack("Vitamin ME", "프로미스나인"),
+        TeacherTrack("잔혹한 천사의 테제", "HANRORO"),
+        TeacherTrack("Ever2Late!", "KiiiKiii"),
+        TeacherTrack("Lemon Tang", "Hearts2Hearts"),
+        TeacherTrack("4 Flowers", "마마무"),
+        TeacherTrack("LOVE BOMB", "프로미스나인"),
+        TeacherTrack("만찬가", "태연"),
+        TeacherTrack("상상더하기", "라붐"),
+        TeacherTrack("Hey Hi", "KiiiKiii"),
+        TeacherTrack("갑자기", "아이오아이"),
+        TeacherTrack("LIKE YOU BETTER", "프로미스나인"),
+        TeacherTrack("SMILEY (Feat. BIBI)", "YENA, 비비"),
+        TeacherTrack("Pretty Girl", "카라"),
+        TeacherTrack("FOCUS", "Hearts2Hearts"),
+        TeacherTrack("Candy Pink Magic Hole Flip Phone", "KiiiKiii"),
+        TeacherTrack("WE GO", "프로미스나인"),
+        TeacherTrack("Say It", "AtHeart"),
+        TeacherTrack("캐치 캐치", "YENA"),
+        TeacherTrack("Deja Vu", "RESCENE"),
+        TeacherTrack("Underwater", "KWON EUNBI"),
+        TeacherTrack("유리구두", "프로미스나인"),
+        TeacherTrack("MUSEUM", "OWIS"),
+        TeacherTrack("내 마음 한 조각", "AtHeart"),
+        TeacherTrack("SWEET SOUR", "KiiiKiii"),
+        TeacherTrack("101 (Where My Girls At)", "AtHeart"),
+        TeacherTrack("You, You", "투어스"),
+        TeacherTrack("SIGN", "izna"),
+        TeacherTrack("Bittersweet", "Baby DONT Cry"),
+        TeacherTrack("Talk & Talk", "프로미스나인"),
+        TeacherTrack("LOVE ATTACK", "RESCENE"),
+        TeacherTrack("No Tears On The Dancefloor", "이채연"),
+        TeacherTrack("Surfin' Boy", "Red Velvet"),
+        TeacherTrack("SODA SODA", "투어스"),
+    ],
+    [
+        TeacherTrack("MANIAC", "VIVIZ"),
+        TeacherTrack("After School", "Weeekly"),
+        TeacherTrack("HOT", "LE SSERAFIM"),
+        TeacherTrack("Cosmic", "Red Velvet"),
+        TeacherTrack("다시 만난 세계 (Into The New World)", "소녀시대"),
+        TeacherTrack("Cheshire", "ITZY"),
+        TeacherTrack("Underwater", "KWON EUNBI"),
+        TeacherTrack("BOP BOP!", "VIVIZ"),
+        TeacherTrack("EASY", "LE SSERAFIM"),
+        TeacherTrack("Bubble", "STAYC"),
+        TeacherTrack("마지막처럼", "BLACKPINK"),
+        TeacherTrack("DUMB DUMB", "전소미"),
+        TeacherTrack("Dun Dun Dance", "오마이걸"),
+        TeacherTrack("Imaginary Friend", "ITZY"),
+        TeacherTrack("UNFORGIVEN (feat. Nile Rodgers)", "LE SSERAFIM, Nile Rodgers"),
+        TeacherTrack("Don't", "이채연"),
+    ],
+    [
+        TeacherTrack("Feel My Rhythm", "Red Velvet"),
+        TeacherTrack("러시안 룰렛 (Russian Roulette)", "Red Velvet"),
+        TeacherTrack("SUN", "TeenageGirls"),
+        TeacherTrack("HOT", "LE SSERAFIM"),
+        TeacherTrack("NEKKOYA (PICK ME)", "PRODUCE 48"),
+        TeacherTrack("After School", "Weeekly"),
+        TeacherTrack("Cosmic", "Red Velvet"),
+        TeacherTrack("상상더하기", "라붐"),
+        TeacherTrack("Cheshire", "ITZY"),
+        TeacherTrack("LOVE BOMB", "프로미스나인"),
+        TeacherTrack("Close To Me - Red Velvet Remix", "Ellie Goulding, Diplo, Red Velvet"),
+        TeacherTrack("빨간 맛 (Red Flavor)", "Red Velvet"),
+        TeacherTrack("If I'm S, Can You Be My N?", "투어스"),
+        TeacherTrack("No Celestial", "LE SSERAFIM"),
+        TeacherTrack("마지막처럼", "BLACKPINK"),
+        TeacherTrack("왜요 왜요", "샤넌"),
+        TeacherTrack("Psycho", "Red Velvet"),
+        TeacherTrack("Bubble", "STAYC"),
+        TeacherTrack("Underwater", "KWON EUNBI"),
+        TeacherTrack("ANTIFRAGILE", "LE SSERAFIM"),
+        TeacherTrack("Lion Heart", "소녀시대"),
+        TeacherTrack("Bad Boy", "Red Velvet"),
+        TeacherTrack("Hype Boy", "NewJeans"),
+    ],
+    [
+        TeacherTrack("Feel Special", "TWICE"),
+        TeacherTrack("FANCY", "TWICE"),
+        TeacherTrack("HOT", "LE SSERAFIM"),
+        TeacherTrack("Cosmic", "Red Velvet"),
+        TeacherTrack("Whiplash", "aespa"),
+        TeacherTrack("NEKKOYA (PICK ME)", "PRODUCE 48"),
+        TeacherTrack("YES or YES", "TWICE"),
+        TeacherTrack("After School", "Weeekly"),
+        TeacherTrack("If I'm S, Can You Be My N?", "투어스"),
+        TeacherTrack("Deja Vu", "RESCENE"),
+        TeacherTrack("마지막처럼", "BLACKPINK"),
+        TeacherTrack("TT", "TWICE"),
+        TeacherTrack("Cheshire", "ITZY"),
+        TeacherTrack("UNFORGIVEN (feat. Nile Rodgers)", "LE SSERAFIM, Nile Rodgers"),
+        TeacherTrack("캐치 캐치", "YENA"),
+        TeacherTrack("LOVE BOMB", "프로미스나인"),
+    ],
+    [
+        TeacherTrack("Ode to Love", "NCT WISH"),
+        TeacherTrack("Lucky to be loved", "투어스"),
+        TeacherTrack("YOUNGCREATORCREW", "CORTIS"),
+        TeacherTrack("Ever2Late!", "KiiiKiii"),
+        TeacherTrack("Lemon Tang", "Hearts2Hearts"),
+        TeacherTrack("ddok ddok ddok", "BOYNEXTDOOR"),
+        TeacherTrack("BOY MEETS GIRL", "NCT WISH"),
+        TeacherTrack("If I'm S, Can You Be My N?", "투어스"),
+        TeacherTrack("TNT", "CORTIS"),
+        TeacherTrack("LOUD", "NMIXX"),
+        TeacherTrack("Hype Boy", "NewJeans"),
+        TeacherTrack("Surf", "NCT WISH"),
+        TeacherTrack("FOCUS", "Hearts2Hearts"),
+        TeacherTrack("You, You", "투어스"),
+        TeacherTrack("SWEET SOUR", "KiiiKiii"),
+        TeacherTrack("JoyRide", "CORTIS"),
+        TeacherTrack("poppop", "NCT WISH"),
+        TeacherTrack("101 (Where My Girls At)", "아이오아이"),
+        TeacherTrack("Deja Vu", "RESCENE"),
+        TeacherTrack("Here For You", "투어스"),
+        TeacherTrack("iffy iffy", "LE SSERAFIM"),
+        TeacherTrack("프린스핑송", "NCT WISH"),
+        TeacherTrack("Surfin' Boy", "Red Velvet"),
+        TeacherTrack("MUSEUM", "OWIS"),
+        TeacherTrack("body", "DAYOUNG"),
+        TeacherTrack("hey! hey!", "투어스"),
+        TeacherTrack("COLOR", "NCT WISH"),
+        TeacherTrack("갑자기", "아이오아이"),
+        TeacherTrack("Heavy Serenade", "NMIXX"),
+        TeacherTrack("Shut The Door", "Young K"),
+        TeacherTrack("그곳에서 다시 만나기로 해 (Rendezvous)", "AHOF"),
+    ],
+]
+
 
 def normalize(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "").lower()
@@ -338,11 +474,24 @@ def teacher_blocks(lines: list[str]) -> list[list[TeacherTrack]]:
         if static_seed not in live_seed_keys:
             blocks.append(static_block)
             live_seed_keys.add(static_seed)
+
+    # Manual runs are observations, not fallback seeds. Keep multiple runs for
+    # the same seed (notably Ode to Love), while preventing an exact duplicate
+    # if the public third page starts exposing the same capture later.
+    block_signatures = {
+        tuple(item_key(track.title, track.artist) for track in block)
+        for block in blocks
+    }
+    for manual_block in MANUAL_SEQUENCE_BLOCKS:
+        signature = tuple(item_key(track.title, track.artist) for track in manual_block)
+        if signature not in block_signatures:
+            blocks.append(manual_block)
+            block_signatures.add(signature)
     return blocks
 
 
 def fetch_lines() -> list[str]:
-    """Read both public Notion pages using the same endpoint as the old exporter."""
+    """Read the public Notion pages using the same endpoint as the old exporter."""
     url = "https://www.notion.so/api/v3/loadPageChunk"
     lines: list[str] = []
 
