@@ -208,9 +208,9 @@ struct SettingsView: View {
                 HStack(spacing: 12) {
                     settingIcon("wand.and.stars")
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("추천 알고리즘")
+                        Text("추천")
                             .font(.system(size: 16, weight: .semibold))
-                        Text("취향 가중치와 외부 추천 서비스")
+                        Text("지금 듣는 흐름, 취향, 새로운 음악")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
@@ -553,78 +553,72 @@ private struct RecommendationSettingsView: View {
     @State private var lastFMAPIKey = ""
     @State private var listenBrainzUsername = ""
     @State private var listenBrainzToken = ""
-    @AppStorage("recommendation-weight-history") private var historyWeight = 0.70
-    @AppStorage("recommendation-weight-favorites") private var favoriteWeight = 0.80
-    @AppStorage("recommendation-weight-server") private var serverWeight = 0.90
-    @AppStorage("recommendation-weight-discovery") private var discoveryWeight = 0.35
-    @AppStorage("recommendation-weight-lastfm") private var lastFMWeight = 0.80
-    @AppStorage("recommendation-weight-listenbrainz")
-    private var listenBrainzWeight = 0.80
-    @AppStorage("recommendation-weight-behavior")
-    private var behaviorWeight = 0.85
-    @AppStorage("recommendation-weight-completion")
-    private var completionWeight = 0.70
-    @AppStorage("recommendation-weight-repeat")
-    private var repeatWeight = 0.55
-    @AppStorage("recommendation-weight-recency")
-    private var recencyWeight = 0.65
-    @AppStorage("recommendation-weight-context")
-    private var contextWeight = 0.60
-    @AppStorage("recommendation-weight-metadata")
-    private var metadataWeight = 0.60
-    @AppStorage("recommendation-weight-playlist-affinity")
-    private var playlistAffinityWeight = 0.55
-    @AppStorage("recommendation-weight-album-completion")
-    private var albumCompletionWeight = 0.45
-    @AppStorage("recommendation-weight-forgotten-favorites")
-    private var forgottenFavoritesWeight = 0.50
-    @AppStorage("recommendation-weight-artist-rotation")
-    private var artistRotationWeight = 0.45
-    @AppStorage("recommendation-discovery-ratio")
-    private var discoveryRatio = 0.35
+    @AppStorage(RecommendationTasteControls.nowKey)
+    private var nowPlayingFeel = RecommendationTasteControls.defaultNow
+    @AppStorage(RecommendationTasteControls.tasteKey)
+    private var myTasteFeel = RecommendationTasteControls.defaultTaste
+    @AppStorage(RecommendationTasteControls.freshKey)
+    private var freshFeel = RecommendationTasteControls.defaultFresh
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
-                BuFiPageHeader(title: "추천 알고리즘")
+                BuFiPageHeader(title: "추천")
 
-                SettingsGroup(title: "핵심 추천 가중치") {
+                SettingsGroup(title: "추천에 쓰는 서비스") {
+                    VStack(alignment: .leading, spacing: 16) {
+                        serviceStatusRow(
+                            name: "Last.fm",
+                            linked: session.hasLastFMAPIKey,
+                            usable: session.hasLastFMAPIKey,
+                            activeCount: model.home.lastFMRecommendedSongs.count,
+                            offDetail: "키가 없어 비슷한 곡 추천에는 쓰이지 않습니다.",
+                            waitingDetail: "키는 저장됐고, 홈을 새로고침하면 추천에 들어갑니다."
+                        )
+                        Divider()
+                        serviceStatusRow(
+                            name: "ListenBrainz",
+                            linked: !session.listenBrainzUsername.isEmpty,
+                            usable: !session.listenBrainzUsername.isEmpty,
+                            activeCount: model.home.listenBrainzRecommendedSongs.count,
+                            offDetail: "아이디가 없어 비슷한 취향 추천에는 쓰이지 않습니다.",
+                            waitingDetail: session.hasListenBrainzToken
+                                ? "아이디와 토큰이 저장됐고, 홈을 새로고침하면 추천에 들어갑니다."
+                                : "아이디가 저장됐고, 홈을 새로고침하면 추천에 들어갑니다."
+                        )
+                        Divider()
+                        Text(algorithmSourceSummary)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                SettingsGroup(title: "이런 음악을 더") {
                     VStack(spacing: 18) {
-                        weightRow("청취 기록 취향", value: $historyWeight)
-                        weightRow("좋아요 취향", value: $favoriteWeight)
-                        weightRow("서버 유사곡·Sonic", value: $serverWeight)
-                        weightRow("새로운 음악 발견", value: $discoveryWeight)
-                        weightRow("Last.fm 유사곡", value: $lastFMWeight)
-                        weightRow("ListenBrainz 추천", value: $listenBrainzWeight)
-                        weightRow("재생 행동", value: $behaviorWeight)
-                        weightRow("완주율", value: $completionWeight)
-                        weightRow("반복 재생", value: $repeatWeight)
-                        weightRow("최근 취향", value: $recencyWeight)
-                        weightRow("현재 세션 흐름", value: $contextWeight)
-                    }
-                }
-                .padding(.horizontal, 16)
-
-                SettingsGroup(title: "발견 비율") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        weightRow("새로운 곡·아티스트 비율", value: $discoveryRatio)
-                        settingsDescription("점수에 곱하지 않고 최종 목록에서 익숙한 음악과 새로운 음악의 구성 비율을 조절합니다.")
-                    }
-                }
-                .padding(.horizontal, 16)
-
-                SettingsGroup(title: "고급 추천 신호") {
-                    VStack(alignment: .leading, spacing: 18) {
-                        weightRow("장르·BPM·분위기 메타데이터", value: $metadataWeight)
-                        weightRow("플레이리스트 연관성", value: $playlistAffinityWeight)
-                        weightRow("듣던 앨범 이어 듣기", value: $albumCompletionWeight)
-                        weightRow("잊고 있던 좋아요", value: $forgottenFavoritesWeight)
-                        weightRow("아티스트 순환", value: $artistRotationWeight)
-                        Button("기본값으로 복원") {
-                            restoreDefaults()
+                        feelRow(
+                            "지금 듣는 흐름",
+                            caption: "방금 나온 노래와 비슷한 분위기를 이어갑니다.",
+                            value: $nowPlayingFeel
+                        )
+                        feelRow(
+                            "내가 좋아하는 음악",
+                            caption: "좋아요와 자주 들은 곡을 더 자주 꺼냅니다.",
+                            value: $myTasteFeel
+                        )
+                        feelRow(
+                            "새로운 음악",
+                            caption: "처음 듣는 곡을 살짝 섞습니다.",
+                            value: $freshFeel
+                        )
+                        Button("기본으로 되돌리기") {
+                            nowPlayingFeel = RecommendationTasteControls.defaultNow
+                            myTasteFeel = RecommendationTasteControls.defaultTaste
+                            freshFeel = RecommendationTasteControls.defaultFresh
+                            model.rebuildRecommendations()
                         }
                         .font(.system(size: 15, weight: .semibold))
-                        settingsDescription("모든 입력은 0~1로 정규화되며, 낮은 메타데이터 매칭 신뢰도와 반복 조기 스킵은 별도로 감점합니다.")
                     }
                 }
                 .padding(.horizontal, 16)
@@ -651,7 +645,7 @@ private struct RecommendationSettingsView: View {
                                 Task { await model.saveLastFMAPIKey("") }
                             }
                         }
-                        settingsDescription("track.getSimilar은 API 키가 필요하지만 별도 사용자 로그인은 필요하지 않습니다.")
+                        settingsDescription("비슷한 곡을 더 찾아옵니다. 키는 last.fm/api에서 무료로 만들 수 있고, 로그인까지는 필요 없습니다.")
                     }
                 }
                 .padding(.horizontal, 16)
@@ -694,7 +688,7 @@ private struct RecommendationSettingsView: View {
                                 }
                             }
                         }
-                        settingsDescription("협업 필터 추천 MBID를 받아 서버 라이브러리에 실제로 있는 곡만 매칭합니다.")
+                        settingsDescription("비슷한 취향의 사람들이 듣는 곡을 참고합니다. 아이디만 있어도 되고, 토큰은 없어도 됩니다.")
                     }
                 }
                 .padding(.horizontal, 16)
@@ -712,8 +706,62 @@ private struct RecommendationSettingsView: View {
         }
     }
 
-    private func weightRow(
+    private var algorithmSourceSummary: LocalizedStringKey {
+        let lastFM = session.hasLastFMAPIKey
+        let listenBrainz = !session.listenBrainzUsername.isEmpty
+        switch (lastFM, listenBrainz) {
+        case (true, true):
+            "Last.fm과 ListenBrainz를 서버 음악·내 취향과 함께 씁니다."
+        case (true, false):
+            "Last.fm을 서버 음악·내 취향과 함께 씁니다."
+        case (false, true):
+            "ListenBrainz를 서버 음악·내 취향과 함께 씁니다."
+        case (false, false):
+            "외부 서비스 없이 서버 음악과 내 취향만으로 추천합니다."
+        }
+    }
+
+    private func serviceStatusRow(
+        name: String,
+        linked: Bool,
+        usable: Bool,
+        activeCount: Int,
+        offDetail: LocalizedStringKey,
+        waitingDetail: LocalizedStringKey
+    ) -> some View {
+        let inAlgorithm = usable && activeCount > 0
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(inAlgorithm
+                        ? BuFiTheme.accent
+                        : (linked ? Color.orange : Color.secondary.opacity(0.45)))
+                    .frame(width: 8, height: 8)
+                Text(name)
+                    .font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Text(linked ? "연동됨" : "안 함")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(linked ? BuFiTheme.accent : Color.secondary)
+            }
+            Group {
+                if inAlgorithm {
+                    Text("추천에 사용 중") + Text(verbatim: " · \(activeCount)곡")
+                } else if linked {
+                    Text(waitingDetail)
+                } else {
+                    Text(offDetail)
+                }
+            }
+            .font(.system(size: 12.5))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func feelRow(
         _ title: LocalizedStringKey,
+        caption: LocalizedStringKey,
         value: Binding<Double>
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -724,6 +772,10 @@ private struct RecommendationSettingsView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
+            Text(caption)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Slider(
                 value: value,
                 in: 0...1,
@@ -733,7 +785,7 @@ private struct RecommendationSettingsView: View {
                     model.rebuildRecommendations()
                 }
             )
-                .tint(BuFiTheme.accent)
+            .tint(BuFiTheme.accent)
         }
     }
 
@@ -745,26 +797,6 @@ private struct RecommendationSettingsView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private func restoreDefaults() {
-        historyWeight = 0.70
-        favoriteWeight = 0.80
-        serverWeight = 0.90
-        discoveryWeight = 0.35
-        lastFMWeight = 0.80
-        listenBrainzWeight = 0.80
-        behaviorWeight = 0.85
-        completionWeight = 0.70
-        repeatWeight = 0.55
-        recencyWeight = 0.65
-        contextWeight = 0.60
-        metadataWeight = 0.60
-        playlistAffinityWeight = 0.55
-        albumCompletionWeight = 0.45
-        forgottenFavoritesWeight = 0.50
-        artistRotationWeight = 0.45
-        discoveryRatio = 0.35
-        model.rebuildRecommendations()
-    }
 }
 
 private struct OpenSourceNoticesView: View {

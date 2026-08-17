@@ -2409,7 +2409,7 @@ actor OpenSubsonicClient {
         }
     }
 
-    private static func uniqueArtists(_ artists: [Artist]) -> [Artist]
+    private static func uniqueArtists(_ artists: [Artist]) -> [Artist] {
         MediaIdentity.uniqueArtists(artists)
     }
 

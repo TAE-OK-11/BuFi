@@ -21,47 +21,47 @@ struct RecommendationWeights: Sendable {
     var discoveryRatio: Double
 
     static func current(_ defaults: UserDefaults = .standard) -> RecommendationWeights {
-        func value(_ key: String, fallback: Double) -> Double {
-            guard defaults.object(forKey: key) != nil else { return fallback }
-            return min(max(defaults.double(forKey: key), 0), 1)
-        }
+        RecommendationTasteControls.weights(in: defaults)
+    }
+}
+
+enum RecommendationTasteControls {
+    static let nowKey = "recommendation-feel-now"
+    static let tasteKey = "recommendation-feel-taste"
+    static let freshKey = "recommendation-feel-fresh"
+
+    static let defaultNow = 0.75
+    static let defaultTaste = 0.70
+    static let defaultFresh = 0.28
+
+    static func clamped(_ defaults: UserDefaults, _ key: String, _ fallback: Double) -> Double {
+        guard defaults.object(forKey: key) != nil else { return fallback }
+        return min(max(defaults.double(forKey: key), 0), 1)
+    }
+
+    static func weights(in defaults: UserDefaults = .standard) -> RecommendationWeights {
+        let now = clamped(defaults, nowKey, defaultNow)
+        let taste = clamped(defaults, tasteKey, defaultTaste)
+        let fresh = clamped(defaults, freshKey, defaultFresh)
         return RecommendationWeights(
-            history: value("recommendation-weight-history", fallback: 0.70),
-            favorites: value("recommendation-weight-favorites", fallback: 0.80),
-            serverSimilarity: value("recommendation-weight-server", fallback: 0.90),
-            discovery: value("recommendation-weight-discovery", fallback: 0.35),
-            lastFM: value("recommendation-weight-lastfm", fallback: 0.80),
-            listenBrainz: value("recommendation-weight-listenbrainz", fallback: 0.80),
-            behavior: value("recommendation-weight-behavior", fallback: 0.85),
-            completion: value("recommendation-weight-completion", fallback: 0.70),
-            repeatListening: value("recommendation-weight-repeat", fallback: 0.55),
-            recency: value("recommendation-weight-recency", fallback: 0.65),
-            context: value("recommendation-weight-context", fallback: 0.60),
-            localMetadata: value("recommendation-weight-metadata", fallback: 0.60),
-            playlistAffinity: value(
-                "recommendation-weight-playlist-affinity",
-                fallback: 0.55
-            ),
-            albumCompletion: value(
-                "recommendation-weight-album-completion",
-                fallback: 0.45
-            ),
-            forgottenFavorites: value(
-                "recommendation-weight-forgotten-favorites",
-                fallback: 0.50
-            ),
-            artistRotation: value(
-                "recommendation-weight-artist-rotation",
-                fallback: 0.45
-            ),
-            timeAwareness: value(
-                "recommendation-weight-time-awareness",
-                fallback: 0.30
-            ),
-            discoveryRatio: value(
-                "recommendation-discovery-ratio",
-                fallback: 0.35
-            )
+            history: 0.42 + taste * 0.40,
+            favorites: 0.48 + taste * 0.42,
+            serverSimilarity: 0.78 + (1 - fresh) * 0.16,
+            discovery: 0.12 + fresh * 0.70,
+            lastFM: 0.70 + fresh * 0.22,
+            listenBrainz: 0.70 + fresh * 0.22,
+            behavior: 0.52 + taste * 0.36,
+            completion: 0.48 + taste * 0.38,
+            repeatListening: 0.38 + taste * 0.28,
+            recency: 0.42 + now * 0.48,
+            context: 0.40 + now * 0.55,
+            localMetadata: 0.46 + now * 0.22,
+            playlistAffinity: 0.38 + taste * 0.22,
+            albumCompletion: 0.32 + now * 0.28,
+            forgottenFavorites: 0.22 + taste * 0.28,
+            artistRotation: 0.22 + (1 - now) * 0.28,
+            timeAwareness: 0.22,
+            discoveryRatio: fresh
         )
     }
 }
@@ -161,24 +161,24 @@ private struct RecommendationPreset {
         switch purpose {
         case .home, .daylist:
             RecommendationPreset(
-                shortTermRatio: purpose == .daylist ? 0.70 : 0.58,
+                shortTermRatio: purpose == .daylist ? 0.76 : 0.68,
                 featureWeights: [
-                    .history: 0.30,
-                    .favorites: 0.18,
-                    .recency: 0.18,
-                    .lastFM: 0.18,
-                    .listenBrainz: 0.18,
-                    .discovery: 0.05,
-                    .server: 0.16,
-                    .behavior: 0.22,
-                    .completion: 0.16,
-                    .repeatListening: 0.10,
-                    .context: 0.15,
-                    .localMetadata: 0.10,
-                    .playlistAffinity: 0.08,
-                    .albumCompletion: 0.07,
-                    .forgottenFavorites: 0.06,
-                    .artistRotation: 0.08
+                    .history: 0.24,
+                    .favorites: 0.16,
+                    .recency: 0.16,
+                    .lastFM: 0.16,
+                    .listenBrainz: 0.16,
+                    .discovery: 0.06,
+                    .server: 0.18,
+                    .behavior: 0.20,
+                    .completion: 0.18,
+                    .repeatListening: 0.08,
+                    .context: 0.24,
+                    .localMetadata: 0.08,
+                    .playlistAffinity: 0.07,
+                    .albumCompletion: 0.08,
+                    .forgottenFavorites: 0.04,
+                    .artistRotation: 0.05
                 ]
             )
         case .taste:
@@ -223,13 +223,13 @@ private struct RecommendationPreset {
             )
         case .autoplay:
             RecommendationPreset(
-                shortTermRatio: 0.72,
+                shortTermRatio: 0.78,
                 featureWeights: [
-                    .context: 0.28, .server: 0.26, .history: 0.18,
-                    .favorites: 0.10, .lastFM: 0.16,
-                    .listenBrainz: 0.16, .behavior: 0.16,
-                    .completion: 0.12, .discovery: 0.08,
-                    .localMetadata: 0.14, .artistRotation: 0.10
+                    .context: 0.34, .server: 0.24, .history: 0.14,
+                    .favorites: 0.10, .lastFM: 0.14,
+                    .listenBrainz: 0.14, .behavior: 0.16,
+                    .completion: 0.14, .discovery: 0.06,
+                    .localMetadata: 0.12, .artistRotation: 0.06
                 ]
             )
         }
