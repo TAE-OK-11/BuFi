@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
+      - Scripts/radio_teacher.py
       - Scripts/export-radio-recommender-data.py
       - Scripts/TrainRadioRecommender.swift
       - Scripts/radio-recommender.csv
