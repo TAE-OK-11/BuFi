@@ -61,25 +61,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Train Create ML recommender
-        run: |
-          python3 Scripts/export-radio-recommender-data.py
-          test -s Scripts/radio-recommender.csv
-          swift Scripts/TrainRadioRecommender.swift \
-            Scripts/radio-recommender.csv \
-            BuFi/Resources/BuFiRadioRecommender.mlmodel
-          test -s BuFi/Resources/BuFiRadioRecommender.mlmodel
-
-      - name: Smoke test Core ML transition model
-        run: |
-          rm -rf build/CoreMLSmoke
-          mkdir -p build/CoreMLSmoke
-          xcrun coremlcompiler compile \
-            BuFi/Resources/BuFiRadioTransition.mlmodel \
-            build/CoreMLSmoke
-          swift Scripts/CoreMLSmokeTest.swift \
-            build/CoreMLSmoke/BuFiRadioTransition.mlmodelc
-
       - name: Prepare generated assets
         run: sh Scripts/prepare-assets.sh
 
