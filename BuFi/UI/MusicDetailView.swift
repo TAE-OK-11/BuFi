@@ -468,8 +468,10 @@ struct MusicDetailView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(songs.indices, id: \.self) { index in
-                        let song = songs[index]
+                    ForEach(
+                        Array(songs.enumerated()),
+                        id: \.offset
+                    ) { index, song in
                         SongRow(
                             song: song,
                             queue: songs,
