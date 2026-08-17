@@ -56,6 +56,126 @@ class ParsedLine:
     explicit_seed: bool
 
 
+# These three sequences are present in the first Notion page as screenshot-
+# derived "재생 곡" sections. Notion's public loadPageChunk endpoint currently
+# omits those blocks even though the connected Notion API exposes them. Keep a
+# reviewed snapshot so CI and local training do not silently lose this teacher
+# evidence when the public endpoint is incomplete. If the live parser starts
+# returning a seed later, de-duplication below prevents a second copy.
+STATIC_PLAYBACK_BLOCKS: list[list[TeacherTrack]] = [
+    [
+        TeacherTrack("갑자기", "아이오아이"),
+        TeacherTrack("Crow", "i-dle"),
+        TeacherTrack("Runaway", "RESCENE"),
+        TeacherTrack("Ever2Late!", "KiiiKiii"),
+        TeacherTrack("Roller Coaster", "청하"),
+        TeacherTrack("ICONIC HEART", "Hearts2Hearts"),
+        TeacherTrack("4 Flowers", "마마무"),
+        TeacherTrack("IOI (Where My Girls At)", "아이오아이"),
+        TeacherTrack("Pretty Girl", "RESCENE"),
+        TeacherTrack("Drowning", "WOODZ"),
+        TeacherTrack("number one rockstar", "DAYOUNG"),
+        TeacherTrack("Lemon Tang", "Hearts2Hearts"),
+        TeacherTrack("만찬가", "태연"),
+        TeacherTrack("Less than a Lover", "제니"),
+        TeacherTrack("사랑해 기억해", "아이오아이"),
+        TeacherTrack("I Don't Care", "2NE1"),
+        TeacherTrack("상상더하기", "라붐"),
+        TeacherTrack("숲의 아이 (Bon voyage)", "유아"),
+        TeacherTrack("MUSEUM", "OWIS"),
+        TeacherTrack("METRONOME", "izna"),
+        TeacherTrack("다섯 번째 계절 (SSFWL)", "오마이걸"),
+        TeacherTrack("같은 곳에서", "소녀온탑"),
+        TeacherTrack("Candy Pink Magic Hole Flip Phone", "KiiiKiii"),
+        TeacherTrack("No.1", "보아"),
+        TeacherTrack("LOVING U (러빙유)", "씨스타"),
+        TeacherTrack("Cosmic", "Red Velvet"),
+        TeacherTrack("After School", "Weeekly"),
+        TeacherTrack("사랑의 배터리", "홍진영"),
+        TeacherTrack("비밀정원", "오마이걸"),
+        TeacherTrack("LOUD", "NMIXX"),
+        TeacherTrack("사랑해", "Trisha Paytas"),
+        TeacherTrack("Motto", "ITZY"),
+        TeacherTrack("LEMONADE", "aespa"),
+        TeacherTrack("Pop Off Pop Off", "KiiiKiii"),
+        TeacherTrack("CELEBRATION", "LE SSERAFIM"),
+        TeacherTrack("SWEAT", "KISS OF LIFE"),
+        TeacherTrack("Do your dance", "RIIZE"),
+    ],
+    [
+        TeacherTrack("LOVE ATTACK", "RESCENE"),
+        TeacherTrack("Runaway", "RESCENE"),
+        TeacherTrack("Pop Off Pop Off", "KiiiKiii"),
+        TeacherTrack("상상더하기", "라붐"),
+        TeacherTrack("Roller Coaster", "청하"),
+        TeacherTrack("Lemon Tang", "Hearts2Hearts"),
+        TeacherTrack("Pretty Girl", "RESCENE"),
+        TeacherTrack("4 Flowers", "마마무"),
+        TeacherTrack("Ever2Late!", "KiiiKiii"),
+        TeacherTrack("사건의 지평선", "윤하"),
+        TeacherTrack("IOI (Where My Girls At)", "아이오아이"),
+        TeacherTrack("Deja Vu", "RESCENE"),
+        TeacherTrack("ICONIC HEART", "Hearts2Hearts"),
+        TeacherTrack("만찬가", "태연"),
+        TeacherTrack("Hype Boy", "NewJeans"),
+        TeacherTrack("LOUD", "NMIXX"),
+        TeacherTrack("LUV", "Apink"),
+        TeacherTrack("MUSEUM", "OWIS"),
+        TeacherTrack("Glow Up", "RESCENE"),
+        TeacherTrack("캐치 캐치", "YENA"),
+        TeacherTrack("내 마음 한 조각", "AtHeart"),
+        TeacherTrack("Underwater", "KWON EUNBI"),
+        TeacherTrack("Bubble", "STAYC"),
+        TeacherTrack("FOCUS", "Hearts2Hearts"),
+        TeacherTrack("Candy Pink Magic Hole Flip Phone", "KiiiKiii"),
+        TeacherTrack("SMILEY (Feat. BIBI)", "YENA, 비비"),
+        TeacherTrack("Ah-Choo", "러블리즈"),
+        TeacherTrack("나랑 사귈래", "DIA"),
+        TeacherTrack("No Tears On The Dancefloor", "이채연"),
+        TeacherTrack("STYLE", "Hearts2Hearts"),
+    ],
+    [
+        TeacherTrack("LEMONADE", "aespa"),
+        TeacherTrack("CELEBRATION", "LE SSERAFIM"),
+        TeacherTrack("KISS N TELL", "aespa"),
+        TeacherTrack("Motto", "ITZY"),
+        TeacherTrack("SWEAT", "KISS OF LIFE"),
+        TeacherTrack("Pop Off Pop Off", "KiiiKiii"),
+        TeacherTrack("MOTION (feat. Juicy J)", "CORTIS, Juicy J"),
+        TeacherTrack("WDA (Whole Different Animal)", "aespa, G-DRAGON"),
+        TeacherTrack("Do your dance", "RIIZE"),
+        TeacherTrack("Lemon Tang", "Hearts2Hearts"),
+        TeacherTrack("ddok ddok ddok", "BOYNEXTDOOR"),
+        TeacherTrack("Ever2Late!", "KiiiKiii"),
+        TeacherTrack("Serenade (KARINA & WINTER)", "aespa"),
+        TeacherTrack("Crow", "i-dle"),
+        TeacherTrack("Runaway", "RESCENE"),
+        TeacherTrack("ICONIC HEART", "Hearts2Hearts"),
+        TeacherTrack("SWIM", "방탄소년단"),
+        TeacherTrack("Whiplash", "aespa"),
+        TeacherTrack("4 Flowers", "마마무"),
+        TeacherTrack("Good Thing", "i-dle"),
+        TeacherTrack("XOXZ", "IVE"),
+        TeacherTrack("HYPNOTIZE", "XG"),
+        TeacherTrack("GO!", "CORTIS"),
+        TeacherTrack("Hey Hi", "KiiiKiii"),
+        TeacherTrack("Cosmic", "Red Velvet"),
+        TeacherTrack("LOUD", "NMIXX"),
+        TeacherTrack("Hold On Tight", "aespa"),
+        TeacherTrack("SOMETHING AIN'T RIGHT", "XG"),
+        TeacherTrack("IOI (Where My Girls At)", "아이오아이"),
+        TeacherTrack("Candy Pink Magic Hole Flip Phone", "KiiiKiii"),
+        TeacherTrack("만찬가", "태연"),
+        TeacherTrack("Switchblade (feat. Ty Dolla $ign)", "aespa, Ty Dolla $ign"),
+        TeacherTrack("YOUNGCREATORCREW", "CORTIS"),
+        TeacherTrack("Less than a Lover", "제니"),
+        TeacherTrack("MAGO", "여자친구"),
+        TeacherTrack("SWEET SOUR", "KiiiKiii"),
+        TeacherTrack("Armageddon", "aespa"),
+    ],
+]
+
+
 def normalize(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "").lower()
     value = re.sub(r"\(.*?\)", "", value)
@@ -211,6 +331,13 @@ def teacher_blocks(lines: list[str]) -> list[list[TeacherTrack]]:
             current.append(parsed.track)
 
     flush()
+
+    live_seed_keys = {item_key(block[0].title, block[0].artist) for block in blocks if block}
+    for static_block in STATIC_PLAYBACK_BLOCKS:
+        static_seed = item_key(static_block[0].title, static_block[0].artist)
+        if static_seed not in live_seed_keys:
+            blocks.append(static_block)
+            live_seed_keys.add(static_seed)
     return blocks
 
 
