@@ -31,23 +31,55 @@ enum HTTPContentDecoder {
         guard let value else { return nil }
         return value
             .split(separator: ",", omittingEmptySubsequences: true)
-            .map {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            .contains {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .localizedCaseInsensitiveCompare("zstd") == .orderedSame
             }
-            .contains("zstd")
     }
 
     private static func isZstandardFrame(_ data: Data) -> Bool {
         guard data.count >= 4 else { return false }
-        if data.starts(with: zstandardMagic) { return true }
+        return data.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            guard bytes.count >= 4 else { return false }
 
-        // RFC 8878 permits skippable frames before a normal Zstandard frame.
-        // Their little-endian magic range is 0x184D2A50...0x184D2A5F.
-        let prefix = Array(data.prefix(4))
-        return (0x50...0x5F).contains(prefix[0])
-            && prefix[1] == 0x2A
-            && prefix[2] == 0x4D
-            && prefix[3] == 0x18
+            if bytes[0] == zstandardMagic[0],
+               bytes[1] == zstandardMagic[1],
+               bytes[2] == zstandardMagic[2],
+               bytes[3] == zstandardMagic[3] {
+                return true
+            }
+
+            // RFC 8878 permits skippable frames before a normal Zstandard
+            // frame. Their little-endian magic range is
+            // 0x184D2A50...0x184D2A5F.
+            return (0x50...0x5F).contains(bytes[0])
+                && bytes[1] == 0x2A
+                && bytes[2] == 0x4D
+                && bytes[3] == 0x18
+        }
+    }
+
+    private static func standardFrameContentSizeHint(
+        _ data: Data
+    ) throws -> Int? {
+        guard data.count >= 4, data.starts(with: zstandardMagic) else {
+            return nil
+        }
+        let value = data.withUnsafeBytes { source -> UInt64 in
+            guard let baseAddress = source.baseAddress else { return 0 }
+            return ZSTD_getFrameContentSize(baseAddress, source.count)
+        }
+
+        // zstd reserves the two largest UInt64 values for UNKNOWN and ERROR.
+        // Unknown-size frames continue through the streaming decoder; a known
+        // oversized frame can be rejected before allocating decompression RAM.
+        guard value < UInt64.max - 1 else { return nil }
+        guard value <= UInt64(maximumDecodedBytes),
+              value <= UInt64(Int.max) else {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        return Int(value)
     }
 
     private static func decompressZstandard(_ data: Data) throws -> Data {
@@ -63,10 +95,14 @@ enum HTTPContentDecoder {
 
         let outputCapacity = max(16_384, Int(ZSTD_DStreamOutSize()))
         var output = Data()
-        let estimatedCapacity = data.count > maximumDecodedBytes / 3
-            ? maximumDecodedBytes
-            : data.count * 3
-        output.reserveCapacity(max(outputCapacity, estimatedCapacity))
+        if let contentSize = try standardFrameContentSizeHint(data) {
+            output.reserveCapacity(max(outputCapacity, contentSize))
+        } else {
+            let estimatedCapacity = data.count > maximumDecodedBytes / 3
+                ? maximumDecodedBytes
+                : data.count * 3
+            output.reserveCapacity(max(outputCapacity, estimatedCapacity))
+        }
         var chunk = [UInt8](repeating: 0, count: outputCapacity)
 
         try data.withUnsafeBytes { source in
@@ -104,9 +140,9 @@ enum HTTPContentDecoder {
                             count: produced
                         )
                     }
-                }
-                guard output.count <= maximumDecodedBytes else {
-                    throw URLError(.dataLengthExceedsMaximum)
+                    guard output.count <= maximumDecodedBytes else {
+                        throw URLError(.dataLengthExceedsMaximum)
+                    }
                 }
                 remaining = result
                 if result == 0, input.pos == input.size { break }
