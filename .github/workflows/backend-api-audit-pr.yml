@@ -15,85 +15,92 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_once(path: Path, old: str, new: str, label: str) -> None:
-              text = path.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
-              path.write_text(text.replace(old, new, 1))
-
           subsonic = Path('BuFi/Core/OpenSubsonicClient.swift')
-          replace_once(
-              subsonic,
-              '''    private static let responseCacheLimit = 128
-              private static let responseCacheByteLimit = 16 * 1_024 * 1_024
-              private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
-''',
-              '''    private static let responseCacheLimit = 128
-              private static let responseCacheByteLimit = 16 * 1_024 * 1_024
-              private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
-              private static let coverURLCacheLimit = 512
-''',
-              'cover URL cache limit'
+          lines = subsonic.read_text().splitlines()
+
+          cache_marker = 'private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024'
+          cache_indexes = [i for i, line in enumerate(lines) if line.strip() == cache_marker]
+          if len(cache_indexes) != 1:
+              raise SystemExit(f'cover cache marker count={len(cache_indexes)}')
+          cache_index = cache_indexes[0]
+          if not any('coverURLCacheLimit' in line for line in lines):
+              lines.insert(cache_index + 1, '    private static let coverURLCacheLimit = 512')
+
+          start_indexes = [
+              i for i, line in enumerate(lines)
+              if 'let fetchedPayload: OpenSubsonicExtensionsPayload?' in line
+          ]
+          if len(start_indexes) != 1:
+              raise SystemExit(f'extension start count={len(start_indexes)}')
+          start = start_indexes[0]
+          end = next(
+              (i for i in range(start + 1, len(lines)) if lines[i].strip() == 'let names = Set('),
+              None
           )
-          replace_once(
-              subsonic,
-              '''        let fetchedPayload: OpenSubsonicExtensionsPayload? = try? await withEnrichmentPermit(
-                  limiter
-              ) { [self] in
-                  try await readRequest("getOpenSubsonicExtensions")
-              }
-              guard let payload = fetchedPayload else {
-                  supportedExtensions = []
-                  return false
-              }
-''',
-              '''        let payload: OpenSubsonicExtensionsPayload
-              do {
-                  payload = try await withEnrichmentPermit(limiter) { [self] in
-                      try await readRequest("getOpenSubsonicExtensions")
-                  }
-              } catch {
-                  // A transient/auth/cancellation failure is not an authoritative
-                  // statement that the server supports no extensions. Leave the
-                  // cache unresolved so a later healthy request can recover.
-                  return false
-              }
-''',
-              'extension capability cache poisoning'
-          )
-          replace_once(
-              subsonic,
-              '''        coverURLCache[cacheKey] = url
-              return url
-''',
-              '''        if coverURLCache.count >= Self.coverURLCacheLimit {
-                  coverURLCache.removeAll(keepingCapacity: true)
-              }
-              coverURLCache[cacheKey] = url
-              return url
-''',
-              'bounded cover URL cache'
-          )
+          if end is None:
+              raise SystemExit('extension end marker missing')
+          replacement = [
+              '        let payload: OpenSubsonicExtensionsPayload',
+              '        do {',
+              '            payload = try await withEnrichmentPermit(limiter) { [self] in',
+              '                try await readRequest("getOpenSubsonicExtensions")',
+              '            }',
+              '        } catch {',
+              '            // A transient/auth/cancellation failure is not an authoritative',
+              '            // statement that the server supports no extensions. Leave the',
+              '            // cache unresolved so a later healthy request can recover.',
+              '            return false',
+              '        }'
+          ]
+          lines[start:end] = replacement
+
+          cover_indexes = [
+              i for i, line in enumerate(lines)
+              if line.strip() == 'coverURLCache[cacheKey] = url'
+          ]
+          if len(cover_indexes) != 1:
+              raise SystemExit(f'cover insert count={len(cover_indexes)}')
+          cover_index = cover_indexes[0]
+          if cover_index == 0 or 'coverURLCache.count >= Self.coverURLCacheLimit' not in lines[cover_index - 1]:
+              lines[cover_index:cover_index] = [
+                  '        if coverURLCache.count >= Self.coverURLCacheLimit {',
+                  '            coverURLCache.removeAll(keepingCapacity: true)',
+                  '        }'
+              ]
+          subsonic.write_text('\n'.join(lines) + '\n')
 
           offline = Path('BuFi/Core/OfflineStore.swift')
-          replace_once(
-              offline,
-              '''            } catch is CancellationError {
-                      throw CancellationError()
-                  } catch {
-                      guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
-''',
-              '''            } catch is CancellationError {
-                      throw CancellationError()
-                  } catch let error as OpenSubsonicError {
-                      // HTTP status handling above already consumed the bounded
-                      // retry decision, including Retry-After. Do not catch the
-                      // terminal status again as a headerless transport retry.
-                      throw error
-                  } catch {
-                      guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
-''',
-              'offline Retry-After double retry'
+          lines = offline.read_text().splitlines()
+          function_index = next(
+              (i for i, line in enumerate(lines) if 'private static func downloadFileWithRetry' in line),
+              None
           )
+          if function_index is None:
+              raise SystemExit('downloadFileWithRetry missing')
+          cancellation_index = next(
+              (
+                  i for i in range(function_index, min(len(lines), function_index + 120))
+                  if lines[i].strip() == '} catch is CancellationError {'
+              ),
+              None
+          )
+          if cancellation_index is None:
+              raise SystemExit('download cancellation catch missing')
+          generic_index = next(
+              (
+                  i for i in range(cancellation_index + 1, min(len(lines), cancellation_index + 8))
+                  if lines[i].strip() == '} catch {'
+              ),
+              None
+          )
+          if generic_index is None:
+              raise SystemExit('download generic catch missing')
+          lines[generic_index:generic_index] = [
+              '            } catch let error as OpenSubsonicError {',
+              '                // HTTP status handling above already consumed the bounded',
+              '                // retry decision, including Retry-After. Do not catch the',
+              '                // terminal status again as a headerless transport retry.',
+              '                throw error'
+          ]
+          offline.write_text('\n'.join(lines) + '\n')
           PY
