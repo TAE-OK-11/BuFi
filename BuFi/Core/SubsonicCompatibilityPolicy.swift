@@ -78,31 +78,38 @@ enum SubsonicCompatibilityPolicy {
         }
     }
 
+    /// Endpoint fallback is for protocol compatibility, not transport recovery.
+    ///
+    /// A transient 5xx/network failure is already handled by the bounded read
+    /// retry policy. Falling through to two older endpoints after that retry
+    /// multiplies traffic exactly when the server or network is unhealthy and
+    /// can turn one user action into a request storm. Only an explicit
+    /// unsupported/missing endpoint (or an incompatible response shape) should
+    /// advance to the next API generation.
     static func shouldContinueFallback(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         if TransientServiceFailurePolicy.isAuthenticationFailure(error) {
             return false
         }
-        if let openSubsonic = error as? OpenSubsonicError {
-            switch openSubsonic {
-            case .http(let status):
-                return status == 404 || status == 405 || status == 501
-                    || (500...599).contains(status)
-            case .server(let code, let message):
-                if code == 70 { return true }
-                let lowercased = message.lowercased()
-                return lowercased.contains("not found")
-                    || lowercased.contains("unknown")
-                    || lowercased.contains("not implemented")
-                    || lowercased.contains("not supported")
-            case .invalidResponse:
-                return true
-            case .invalidServerURL,
-                    .insecureServerURL,
-                    .credentialsEmbeddedInServerURL:
-                return false
-            }
+        guard let openSubsonic = error as? OpenSubsonicError else {
+            return false
         }
-        return true
+        switch openSubsonic {
+        case .http(let status):
+            return status == 404 || status == 405 || status == 501
+        case .server(let code, let message):
+            if code == 70 { return true }
+            let normalized = message.lowercased()
+            return normalized.contains("not found")
+                || normalized.contains("unknown endpoint")
+                || normalized.contains("not implemented")
+                || normalized.contains("not supported")
+        case .invalidResponse:
+            return true
+        case .invalidServerURL,
+                .insecureServerURL,
+                .credentialsEmbeddedInServerURL:
+            return false
+        }
     }
 }
