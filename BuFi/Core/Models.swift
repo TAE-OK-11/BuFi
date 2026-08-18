@@ -65,6 +65,10 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
     var track: Int?
     var suffix: String?
     var contentType: String?
+    var bitRate: Int? = nil
+    var samplingRate: Int? = nil
+    var bitDepth: Int? = nil
+    var channelCount: Int? = nil
     var starred: String?
     var playCount: Int? = nil
     var played: String? = nil
@@ -109,6 +113,10 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
             track.map { String($0) } ?? "",
             suffix ?? "",
             contentType ?? "",
+            bitRate.map(String.init) ?? "",
+            samplingRate.map(String.init) ?? "",
+            bitDepth.map(String.init) ?? "",
+            channelCount.map(String.init) ?? "",
             created ?? "",
             externalStreamURL ?? ""
         ])
@@ -122,6 +130,10 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
             duration.map { String($0) } ?? "",
             suffix ?? "",
             contentType ?? "",
+            bitRate.map(String.init) ?? "",
+            samplingRate.map(String.init) ?? "",
+            bitDepth.map(String.init) ?? "",
+            channelCount.map(String.init) ?? "",
             created ?? ""
         ])
     }
@@ -256,7 +268,8 @@ struct PlaybackMediaItem: Identifiable, Equatable, Sendable {
 extension Song {
     private enum CodingKeys: String, CodingKey {
         case id, title, artist, album, artistId, albumId, coverArt, duration
-        case track, suffix, contentType, starred, playCount, played, genre
+        case track, suffix, contentType, bitRate, samplingRate, bitDepth
+        case channelCount, starred, playCount, played, genre
         case genres, musicBrainzId, isrc, bpm, moods, created
         case externalStreamURL
     }
@@ -277,6 +290,10 @@ extension Song {
         track = try values.decodeIfPresent(Int.self, forKey: .track)
         suffix = try values.decodeIfPresent(String.self, forKey: .suffix)
         contentType = try values.decodeIfPresent(String.self, forKey: .contentType)
+        bitRate = try values.decodeIfPresent(Int.self, forKey: .bitRate)
+        samplingRate = try values.decodeIfPresent(Int.self, forKey: .samplingRate)
+        bitDepth = try values.decodeIfPresent(Int.self, forKey: .bitDepth)
+        channelCount = try values.decodeIfPresent(Int.self, forKey: .channelCount)
         starred = try values.decodeIfPresent(String.self, forKey: .starred)
         playCount = try values.decodeIfPresent(Int.self, forKey: .playCount)
         played = try values.decodeIfPresent(String.self, forKey: .played)

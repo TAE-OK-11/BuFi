@@ -35,9 +35,11 @@ radio scheduling, and background behavior integrated with iOS.
   same-format transport recovery is bounded, and only then may a compatible
   transcoded format be tried.
 - High-bitrate lossless playback no longer opens the next track after only a few
-  seconds of current playback. Successor preparation is restricted to the final
-  playback window, and its lead-in buffer is bounded so ALAC/M4A playback does
-  not spend most of the track sharing bandwidth with a speculative next stream.
+  seconds of current playback. Audio successor preparation now exists only in the
+  final gapless window; artwork/lyrics prefetch never opens the next media stream.
+  Buffer windows are codec/bitrate aware, so ALAC/high-bitrate M4A uses a smaller
+  bounded steady-state/successor window while AAC (whether encoded by Apple or
+  FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's scoped caches
   remain in control. Generated cover-art URLs are also bounded in memory rather
