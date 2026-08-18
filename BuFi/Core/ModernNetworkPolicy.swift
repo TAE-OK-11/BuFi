@@ -19,11 +19,8 @@ enum ModernNetworkPolicy {
         waitsForConnectivity: Bool = true
     ) -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = max(1, requestTimeout)
-        configuration.timeoutIntervalForResource = max(
-            configuration.timeoutIntervalForRequest,
-            resourceTimeout
-        )
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpMaximumConnectionsPerHost = max(
@@ -107,7 +104,7 @@ enum ModernNetworkPolicy {
             acceptsZstandard: acceptsZstandard,
             cachePolicy: .reloadIgnoringLocalCacheData
         )
-        request.timeoutInterval = min(request.timeoutInterval, 8)
+        request.timeoutInterval = 8
     }
 
     static func prepareImageRequest(_ request: inout URLRequest) {
