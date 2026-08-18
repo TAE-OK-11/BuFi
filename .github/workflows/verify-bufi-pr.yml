@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
@@ -29,6 +29,142 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: backend-core-lightweight
+          fetch-depth: 2
+
+      - name: Apply codec-aware playback audit
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              path.write_text(text.replace(old, new, 1))
+
+          models = Path('BuFi/Core/Models.swift')
+          replace_once(
+              models,
+              '''    var suffix: String?\n    var contentType: String?\n    var starred: String?\n''',
+              '''    var suffix: String?\n    var contentType: String?\n    var bitRate: Int? = nil\n    var samplingRate: Int? = nil\n    var bitDepth: Int? = nil\n    var channelCount: Int? = nil\n    var starred: String?\n''',
+              'audio metadata fields'
+          )
+          replace_once(
+              models,
+              '''            suffix ?? "",\n            contentType ?? "",\n            created ?? "",\n''',
+              '''            suffix ?? "",\n            contentType ?? "",\n            bitRate.map(String.init) ?? "",\n            samplingRate.map(String.init) ?? "",\n            bitDepth.map(String.init) ?? "",\n            channelCount.map(String.init) ?? "",\n            created ?? "",\n''',
+              'playback metadata audio hints'
+          )
+          replace_once(
+              models,
+              '''            suffix ?? "",\n            contentType ?? "",\n            created ?? ""\n        ])\n    }\n\n    /// Server creation metadata''',
+              '''            suffix ?? "",\n            contentType ?? "",\n            bitRate.map(String.init) ?? "",\n            samplingRate.map(String.init) ?? "",\n            bitDepth.map(String.init) ?? "",\n            channelCount.map(String.init) ?? "",\n            created ?? ""\n        ])\n    }\n\n    /// Server creation metadata''',
+              'audio resource audio hints'
+          )
+          replace_once(
+              models,
+              '''        case track, suffix, contentType, starred, playCount, played, genre\n        case genres, musicBrainzId, isrc, bpm, moods, created\n''',
+              '''        case track, suffix, contentType, bitRate, samplingRate, bitDepth\n        case channelCount, starred, playCount, played, genre\n        case genres, musicBrainzId, isrc, bpm, moods, created\n''',
+              'audio metadata coding keys'
+          )
+          replace_once(
+              models,
+              '''        suffix = try values.decodeIfPresent(String.self, forKey: .suffix)\n        contentType = try values.decodeIfPresent(String.self, forKey: .contentType)\n        starred = try values.decodeIfPresent(String.self, forKey: .starred)\n''',
+              '''        suffix = try values.decodeIfPresent(String.self, forKey: .suffix)\n        contentType = try values.decodeIfPresent(String.self, forKey: .contentType)\n        bitRate = try values.decodeIfPresent(Int.self, forKey: .bitRate)\n        samplingRate = try values.decodeIfPresent(Int.self, forKey: .samplingRate)\n        bitDepth = try values.decodeIfPresent(Int.self, forKey: .bitDepth)\n        channelCount = try values.decodeIfPresent(Int.self, forKey: .channelCount)\n        starred = try values.decodeIfPresent(String.self, forKey: .starred)\n''',
+              'audio metadata decoding'
+          )
+
+          audio = Path('BuFi/Playback/AudioEngine.swift')
+          old_buffer = '''/// TIDAL-style AVPlayer buffering: keep a short music-sized lookahead so a\n/// brief radio dip does not underrun, without hoarding minutes of audio.\nenum PlaybackBufferPolicy {\n    enum Phase: Equatable, Sendable {\n        case startup\n        case settled\n        case constrained\n        case successor\n    }\n\n    // Apple documents 0 as "let AVPlayer choose", not "buffer nothing".\n    // Use an explicit small startup window so high-bitrate ALAC/M4A does not\n    // inherit an unexpectedly large automatic startup buffer.\n    static let startupForwardBuffer: TimeInterval = 1.5\n    static let remoteForwardBuffer: TimeInterval = 16\n    static let localForwardBuffer: TimeInterval = 4\n    static let constrainedForwardBuffer: TimeInterval = 8\n    static let successorLeadIn: TimeInterval = 8\n    static let stallConfirmDelay: Duration = .milliseconds(2_000)\n\n    static func forwardBufferDuration(\n        isLocalFile: Bool,\n        phase: Phase = .settled\n    ) -> TimeInterval {\n        switch phase {\n        case .startup:\n            return startupForwardBuffer\n        case .constrained:\n            return constrainedForwardBuffer\n        case .successor:\n            return isLocalFile ? localForwardBuffer : successorLeadIn\n        case .settled:\n            return isLocalFile ? localForwardBuffer : remoteForwardBuffer\n        }\n    }\n\n    static func configure(\n        _ item: AVPlayerItem,\n        isLocalFile: Bool,\n        phase: Phase = .startup\n    ) {\n        item.preferredForwardBufferDuration = forwardBufferDuration(\n            isLocalFile: isLocalFile,\n            phase: phase\n        )\n        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false\n    }\n}\n\nenum PlaybackSuccessorWarmupPolicy {\n    static let readinessCheckDelay: Duration = .milliseconds(280)\n    static let maximumReadinessChecks = 3\n\n    static func shouldWarm(\n        isBuffering: Bool,\n        isActivelyPlaying: Bool,\n        isLikelyToKeepUp: Bool\n    ) -> Bool {\n        isActivelyPlaying && !isBuffering && isLikelyToKeepUp\n    }\n}\n'''
+          new_buffer = '''/// Playback policy is based on the bytes AVPlayer receives, not the encoder\n/// brand that produced them. Apple AAC and FDK-AAC are both AAC at decode time;\n/// container/bitrate metadata is the useful signal for buffering decisions.\nenum PlaybackAudioProfile: Equatable, Sendable {\n    case aac\n    case compressed\n    case lossless\n    case unknown\n\n    static func resolve(\n        song: Song,\n        compatibilityFormat: String?\n    ) -> PlaybackAudioProfile {\n        let requested = compatibilityFormat?\n            .trimmingCharacters(in: .whitespacesAndNewlines)\n            .lowercased()\n        switch requested {\n        case "aac": return .aac\n        case "mp3", "opus": return .compressed\n        default: break\n        }\n\n        let suffix = song.suffix?\n            .trimmingCharacters(in: .whitespacesAndNewlines)\n            .lowercased() ?? ""\n        let contentType = song.contentType?\n            .split(separator: ";", maxSplits: 1)\n            .first?\n            .trimmingCharacters(in: .whitespacesAndNewlines)\n            .lowercased() ?? ""\n\n        if suffix == "aac"\n            || contentType.contains("aac")\n            || contentType.contains("mp4a") {\n            return .aac\n        }\n        let losslessSuffixes: Set<String> = [\n            "flac", "alac", "wav", "wave", "aif", "aiff"\n        ]\n        if losslessSuffixes.contains(suffix)\n            || contentType.contains("alac")\n            || contentType.contains("flac")\n            || contentType.contains("lossless") {\n            return .lossless\n        }\n        let compressedSuffixes: Set<String> = [\n            "mp3", "opus", "ogg", "oga", "vorbis", "webm"\n        ]\n        if compressedSuffixes.contains(suffix)\n            || contentType.contains("mpeg")\n            || contentType.contains("opus")\n            || contentType.contains("vorbis") {\n            return .compressed\n        }\n\n        if ["m4a", "m4b", "mp4"].contains(suffix) {\n            // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive\n            // with audio/mp4. Use OpenSubsonic media hints when the codec name\n            // itself is absent instead of treating every M4A as lossless.\n            if let bitRate = song.bitRate, bitRate > 0 {\n                if bitRate <= 384 { return .aac }\n                if bitRate >= 512 { return .lossless }\n            }\n            if (song.bitDepth ?? 0) > 16\n                || (song.samplingRate ?? 0) > 48_000 {\n                return .lossless\n            }\n        }\n        return .unknown\n    }\n}\n\n/// Keep startup latency small while bounding steady-state memory and bandwidth.\n/// Lossless streams get enough runway for jitter without buffering the same\n/// number of seconds as a much cheaper AAC/Opus stream.\nenum PlaybackBufferPolicy {\n    enum Phase: Equatable, Sendable {\n        case startup\n        case settled\n        case constrained\n        case successor\n    }\n\n    static let stallConfirmDelay: Duration = .milliseconds(2_000)\n\n    static func forwardBufferDuration(\n        isLocalFile: Bool,\n        profile: PlaybackAudioProfile,\n        phase: Phase = .settled\n    ) -> TimeInterval {\n        if isLocalFile {\n            return phase == .startup ? 0.25 : 2\n        }\n        switch phase {\n        case .startup:\n            return switch profile {\n            case .aac: 0.75\n            case .compressed: 0.9\n            case .unknown: 1.0\n            case .lossless: 1.25\n            }\n        case .settled:\n            return switch profile {\n            case .aac: 20\n            case .compressed: 18\n            case .unknown: 14\n            case .lossless: 12\n            }\n        case .constrained:\n            return switch profile {\n            case .aac: 10\n            case .compressed: 9\n            case .unknown, .lossless: 8\n            }\n        case .successor:\n            return switch profile {\n            case .aac: 6\n            case .compressed: 5\n            case .unknown: 4.5\n            case .lossless: 4\n            }\n        }\n    }\n\n    static func configure(\n        _ item: AVPlayerItem,\n        isLocalFile: Bool,\n        profile: PlaybackAudioProfile,\n        phase: Phase = .startup\n    ) {\n        item.preferredForwardBufferDuration = forwardBufferDuration(\n            isLocalFile: isLocalFile,\n            profile: profile,\n            phase: phase\n        )\n        item.canUseNetworkResourcesForLiveStreamingWhilePaused = false\n    }\n}\n'''
+          replace_once(audio, old_buffer, new_buffer, 'codec-aware playback buffer policy')
+
+          old_gapless = '''enum PlaybackGaplessPreparationPolicy {\n    static let stablePlaybackWindow: TimeInterval = 2\n\n    static func shouldPrepare(\n        elapsed: TimeInterval,\n        duration: TimeInterval,\n        isBuffering: Bool,\n        isActivelyPlaying: Bool\n    ) -> Bool {\n        guard isActivelyPlaying,\n              !isBuffering,\n              elapsed.isFinite,\n              elapsed >= stablePlaybackWindow,\n              duration.isFinite,\n              duration > 0 else {\n            return false\n        }\n        let position = min(max(0, elapsed), duration)\n        let remaining = max(0, duration - position)\n        let leadTime = min(20, max(6, duration * 0.12))\n        return remaining <= leadTime\n    }\n\n    static func shouldStage(\n        elapsed: TimeInterval,\n        duration: TimeInterval,\n        isBuffering: Bool,\n        isActivelyPlaying: Bool\n    ) -> Bool {\n        guard isActivelyPlaying,\n              !isBuffering,\n              elapsed.isFinite,\n              elapsed >= stablePlaybackWindow,\n              duration.isFinite,\n              duration > 0 else {\n            return false\n        }\n        let position = min(max(0, elapsed), duration)\n        let remaining = max(0, duration - position)\n        let leadTime = min(8, max(3, duration * 0.04))\n        return remaining <= leadTime\n    }\n}\n'''
+          new_gapless = '''enum PlaybackGaplessPreparationPolicy {\n    static let stablePlaybackWindow: TimeInterval = 2\n\n    static func shouldPrepare(\n        elapsed: TimeInterval,\n        duration: TimeInterval,\n        isBuffering: Bool,\n        isActivelyPlaying: Bool,\n        profile: PlaybackAudioProfile\n    ) -> Bool {\n        guard isActivelyPlaying,\n              !isBuffering,\n              elapsed.isFinite,\n              elapsed >= stablePlaybackWindow,\n              duration.isFinite,\n              duration > 0 else {\n            return false\n        }\n        let position = min(max(0, elapsed), duration)\n        let remaining = max(0, duration - position)\n        let leadTime: TimeInterval = switch profile {\n        case .lossless: min(10, max(5, duration * 0.04))\n        case .aac: min(16, max(7, duration * 0.06))\n        case .compressed: min(14, max(6, duration * 0.05))\n        case .unknown: min(12, max(6, duration * 0.05))\n        }\n        return remaining <= leadTime\n    }\n\n    static func shouldStage(\n        elapsed: TimeInterval,\n        duration: TimeInterval,\n        isBuffering: Bool,\n        isActivelyPlaying: Bool,\n        profile: PlaybackAudioProfile\n    ) -> Bool {\n        guard isActivelyPlaying,\n              !isBuffering,\n              elapsed.isFinite,\n              elapsed >= stablePlaybackWindow,\n              duration.isFinite,\n              duration > 0 else {\n            return false\n        }\n        let position = min(max(0, elapsed), duration)\n        let remaining = max(0, duration - position)\n        let leadTime: TimeInterval = switch profile {\n        case .lossless: min(5, max(2.5, duration * 0.02))\n        case .aac: min(7, max(3, duration * 0.025))\n        case .compressed, .unknown: min(6, max(3, duration * 0.025))\n        }\n        return remaining <= leadTime\n    }\n}\n'''
+          replace_once(audio, old_gapless, new_gapless, 'codec-aware gapless windows')
+
+          old_warm = '''    private func warmImmediateSuccessorAfterStablePlayback(\n        currentPlaybackID: UUID?,\n        entry: PlaybackQueueEntry?\n    ) async {\n        guard let currentPlaybackID, let entry else { return }\n        for _ in 0..<PlaybackSuccessorWarmupPolicy.maximumReadinessChecks {\n            do {\n                try await Task.sleep(\n                    for: PlaybackSuccessorWarmupPolicy.readinessCheckDelay\n                )\n            } catch {\n                return\n            }\n            guard !Task.isCancelled,\n                  allowsSpeculativeNetworkPrefetch,\n                  currentPlaybackItem?.id == currentPlaybackID,\n                  wantsPlayback else {\n                return\n            }\n            if PlaybackSuccessorWarmupPolicy.shouldWarm(\n                isBuffering: isBuffering,\n                isActivelyPlaying: player.timeControlStatus == .playing,\n                isLikelyToKeepUp: player.currentItem?.isPlaybackLikelyToKeepUp == true\n            ) {\n                preparePlaybackAsset(for: entry)\n                return\n            }\n        }\n    }\n\n'''
+          replace_once(audio, old_warm, '', 'remove early successor media warmup')
+
+          old_network_prefetch = '''        // Warm only the deterministic immediate successor, and only after the\n        // active item has demonstrated stable playback. The warmup is a\n        // structured child of this prefetch task, so queue/account cancellation\n        // tears it down with the rest of the speculative work.\n        let currentPlaybackID = currentPlaybackItem?.id\n        let successorEntry: PlaybackQueueEntry? = GaplessSuccessorPlan.make(\n            queueCount: queue.count,\n            currentIndex: queueIndex,\n            repeatMode: repeatMode\n        ).flatMap { plan in\n            playbackState.entries.indices.contains(plan.queueIndex)\n                ? playbackState.entries[plan.queueIndex]\n                : nil\n        }\n\n        let token = UUID()\n'''
+          replace_once(audio, old_network_prefetch, '        let token = UUID()\n', 'remove early successor prefetch setup')
+          replace_once(
+              audio,
+              '''            async let successorWarmup: Void = self.warmImmediateSuccessorAfterStablePlayback(\n                currentPlaybackID: currentPlaybackID,\n                entry: successorEntry\n            )\n            async let lyricsPrefetch: Void = client.prefetchLyrics(\n''',
+              '''            async let lyricsPrefetch: Void = client.prefetchLyrics(\n''',
+              'remove early successor async warmup'
+          )
+          replace_once(
+              audio,
+              '''            await ArtworkStore.shared.prefetch(\n                urls: coverURLs,\n                pixelSize: artworkPixelSize\n            )\n            await lyricsPrefetch\n            await successorWarmup\n            guard !Task.isCancelled else { return }\n''',
+              '''            await ArtworkStore.shared.prefetch(\n                urls: coverURLs,\n                pixelSize: artworkPixelSize\n            )\n            await lyricsPrefetch\n            guard !Task.isCancelled else { return }\n''',
+              'remove successor warmup join'
+          )
+
+          replace_once(
+              audio,
+              '''        PlaybackBufferPolicy.configure(\n            item,\n            isLocalFile: prepared.asset.url.isFileURL,\n            phase: .successor\n        )\n''',
+              '''        PlaybackBufferPolicy.configure(\n            item,\n            isLocalFile: prepared.asset.url.isFileURL,\n            profile: PlaybackAudioProfile.resolve(\n                song: successor,\n                compatibilityFormat: prepared.compatibilityFormat\n            ),\n            phase: .successor\n        )\n''',
+              'successor codec-aware buffer'
+          )
+          replace_once(
+              audio,
+              '''              PlaybackGaplessPreparationPolicy.shouldPrepare(\n                elapsed: currentPlayerPosition(),\n                duration: duration,\n                isBuffering: isBuffering,\n                isActivelyPlaying: activelyPlaying\n              ),\n''',
+              '''              PlaybackGaplessPreparationPolicy.shouldPrepare(\n                elapsed: currentPlayerPosition(),\n                duration: duration,\n                isBuffering: isBuffering,\n                isActivelyPlaying: activelyPlaying,\n                profile: currentPlaybackAudioProfile()\n              ),\n''',
+              'gapless prepare profile'
+          )
+          replace_once(
+              audio,
+              '''              PlaybackGaplessPreparationPolicy.shouldStage(\n                elapsed: currentPlayerPosition(),\n                duration: duration,\n                isBuffering: isBuffering,\n                isActivelyPlaying: player.timeControlStatus == .playing\n              ),\n''',
+              '''              PlaybackGaplessPreparationPolicy.shouldStage(\n                elapsed: currentPlayerPosition(),\n                duration: duration,\n                isBuffering: isBuffering,\n                isActivelyPlaying: player.timeControlStatus == .playing,\n                profile: currentPlaybackAudioProfile()\n              ),\n''',
+              'gapless stage profile'
+          )
+
+          helper_anchor = '''    private static func initialCompatibilityFormat(\n        for quality: StreamQuality,\n        song: Song\n    ) -> String {\n'''
+          helper = '''    private func currentPlaybackAudioProfile() -> PlaybackAudioProfile {\n        guard let song = currentSong else { return .unknown }\n        return PlaybackAudioProfile.resolve(\n            song: song,\n            compatibilityFormat: activeCompatibilityFormat\n        )\n    }\n\n'''
+          text = audio.read_text()
+          if text.count(helper_anchor) != 1:
+              raise SystemExit('audio profile helper anchor mismatch')
+          audio.write_text(text.replace(helper_anchor, helper + helper_anchor, 1))
+
+          replace_once(
+              audio,
+              '''            PlaybackBufferPolicy.configure(\n                item,\n                isLocalFile: isLocal,\n                phase: .constrained\n            )\n''',
+              '''            PlaybackBufferPolicy.configure(\n                item,\n                isLocalFile: isLocal,\n                profile: currentPlaybackAudioProfile(),\n                phase: .constrained\n            )\n''',
+              'memory pressure codec-aware buffer'
+          )
+          replace_once(
+              audio,
+              '''        PlaybackBufferPolicy.configure(\n            item,\n            isLocalFile: asset.url.isFileURL,\n            phase: .startup\n        )\n''',
+              '''        PlaybackBufferPolicy.configure(\n            item,\n            isLocalFile: asset.url.isFileURL,\n            profile: currentPlaybackAudioProfile(),\n            phase: .startup\n        )\n''',
+              'active startup codec-aware buffer'
+          )
+          replace_once(
+              audio,
+              '''        let settled = PlaybackBufferPolicy.forwardBufferDuration(\n            isLocalFile: isLocal,\n            phase: .settled\n        )\n        guard item.preferredForwardBufferDuration + 0.01 < settled else { return }\n        PlaybackBufferPolicy.configure(item, isLocalFile: isLocal, phase: .settled)\n''',
+              '''        let profile = currentPlaybackAudioProfile()\n        let settled = PlaybackBufferPolicy.forwardBufferDuration(\n            isLocalFile: isLocal,\n            profile: profile,\n            phase: .settled\n        )\n        guard item.preferredForwardBufferDuration + 0.01 < settled else { return }\n        PlaybackBufferPolicy.configure(\n            item,\n            isLocalFile: isLocal,\n            profile: profile,\n            phase: .settled\n        )\n''',
+              'settled codec-aware buffer'
+          )
+
+          docs = Path('Docs/NETWORKING.md')
+          replace_once(
+              docs,
+              '''- High-bitrate lossless playback no longer opens the next track after only a few\n  seconds of current playback. Successor preparation is restricted to the final\n  playback window, and its lead-in buffer is bounded so ALAC/M4A playback does\n  not spend most of the track sharing bandwidth with a speculative next stream.\n''',
+              '''- High-bitrate lossless playback no longer opens the next track after only a few\n  seconds of current playback. Audio successor preparation now exists only in the\n  final gapless window; artwork/lyrics prefetch never opens the next media stream.\n  Buffer windows are codec/bitrate aware, so ALAC/high-bitrate M4A uses a smaller\n  bounded steady-state/successor window while AAC (whether encoded by Apple or\n  FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.\n''',
+              'networking codec policy documentation'
+          )
+          PY
+          git diff --check
+          git checkout HEAD^ -- .github/workflows/verify-bufi-pr.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add BuFi/Core/Models.swift BuFi/Playback/AudioEngine.swift Docs/NETWORKING.md .github/workflows/verify-bufi-pr.yml
+          git diff --cached --check
+          git commit -m 'Optimize ALAC and AAC playback buffering'
+          git push origin HEAD:backend-core-lightweight
 
       - name: Show build toolchain
         run: |
