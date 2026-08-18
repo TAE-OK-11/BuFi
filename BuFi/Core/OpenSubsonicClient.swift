@@ -755,6 +755,7 @@ actor OpenSubsonicClient {
     private static let responseCacheLimit = 128
     private static let responseCacheByteLimit = 16 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
+    private static let coverURLCacheLimit = 512
     private var responseCache = ResponseBodyCache(
         countLimit: OpenSubsonicClient.responseCacheLimit,
         byteLimit: OpenSubsonicClient.responseCacheByteLimit,
@@ -2182,13 +2183,15 @@ actor OpenSubsonicClient {
         if let supportedExtensions {
             return supportedExtensions.contains(name)
         }
-        let fetchedPayload: OpenSubsonicExtensionsPayload? = try? await withEnrichmentPermit(
-            limiter
-        ) { [self] in
-            try await readRequest("getOpenSubsonicExtensions")
-        }
-        guard let payload = fetchedPayload else {
-            supportedExtensions = []
+        let payload: OpenSubsonicExtensionsPayload
+        do {
+            payload = try await withEnrichmentPermit(limiter) { [self] in
+                try await readRequest("getOpenSubsonicExtensions")
+            }
+        } catch {
+            // A transient/auth/cancellation failure is not an authoritative
+            // statement that the server supports no extensions. Leave the
+            // cache unresolved so a later healthy request can recover.
             return false
         }
         let names = Set(
@@ -2864,6 +2867,9 @@ actor OpenSubsonicClient {
         guard let url = swiftSonic.coverArtURL(id: id, size: size),
               url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
+        }
+        if coverURLCache.count >= Self.coverURLCacheLimit {
+            coverURLCache.removeAll(keepingCapacity: true)
         }
         coverURLCache[cacheKey] = url
         return url
