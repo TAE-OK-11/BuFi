@@ -3050,25 +3050,68 @@ actor ExternalRecommendationClient {
         if let token, !token.isEmpty {
             request.setValue("Token \(token)", forHTTPHeaderField: "Authorization")
         }
-        try Task.checkCancellation()
+
         let session = allowsCaching ? publicSession : privateSession
-        let (data, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+        let retryPolicy = ReadRequestRetryPolicy()
+        var retryCount = 0
+        while true {
+            try Task.checkCancellation()
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: request)
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+                      retryPolicy.shouldRetry(error: error),
+                      let delay = retryPolicy.delay(
+                        retryNumber: retryCount + 1,
+                        retryAfterHeader: nil,
+                        jitter: Double.random(in: 0.75...1.25)
+                      ) else {
+                    throw error
+                }
+                retryCount += 1
+                try await Task.sleep(
+                    nanoseconds: UInt64(delay * 1_000_000_000)
+                )
+                continue
+            }
+
+            try Task.checkCancellation()
+            guard let http = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+                      retryPolicy.shouldRetry(statusCode: http.statusCode),
+                      let delay = retryPolicy.delay(
+                        retryNumber: retryCount + 1,
+                        retryAfterHeader: http.value(
+                            forHTTPHeaderField: "Retry-After"
+                        ),
+                        jitter: Double.random(in: 0.75...1.25)
+                      ) else {
+                    throw URLError(.badServerResponse)
+                }
+                retryCount += 1
+                try await Task.sleep(
+                    nanoseconds: UInt64(delay * 1_000_000_000)
+                )
+                continue
+            }
+            guard data.count <= 4 * 1_024 * 1_024 else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+            let decoded = try await HTTPContentDecoder.decodeAsync(
+                data,
+                contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+            )
+            guard decoded.count <= 4 * 1_024 * 1_024 else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+            return decoded
         }
-        guard data.count <= 4 * 1_024 * 1_024 else {
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        let decoded = try await HTTPContentDecoder.decodeAsync(
-            data,
-            contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
-        )
-        guard decoded.count <= 4 * 1_024 * 1_024 else {
-            throw URLError(.dataLengthExceedsMaximum)
-        }
-        return decoded
     }
 }
 

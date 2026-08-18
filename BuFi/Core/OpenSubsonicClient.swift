@@ -1191,10 +1191,15 @@ actor OpenSubsonicClient {
     private func bestEffortWithFallback<Payload: Decodable & Sendable>(
         _ endpoints: [String],
         parameters: [String: String] = [:]
-    ) async -> Payload? {
+    ) async throws -> Payload? {
         do {
             return try await readWithFallback(endpoints, parameters: parameters)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            if TransientServiceFailurePolicy.isAuthenticationFailure(error) {
+                throw error
+            }
             return nil
         }
     }
@@ -2446,7 +2451,7 @@ actor OpenSubsonicClient {
         _ type: String,
         size: String
     ) async throws -> AlbumListPayload? {
-        await bestEffortWithFallback(
+        try await bestEffortWithFallback(
             SubsonicCompatibilityPolicy.albumListEndpoints(for: apiFamily),
             parameters: ["type": type, "size": size]
         )

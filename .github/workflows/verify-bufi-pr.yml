@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
@@ -29,30 +29,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: backend-core-lightweight
-          fetch-depth: 2
-
-      - name: Apply pending API audit patch
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          source = Path('.github/workflows/backend-api-audit-pr.yml').read_text().splitlines()
-          start = source.index("          python3 - <<'PY'") + 1
-          end = source.index("          PY", start)
-          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in source[start:end]) + '\n'
-          Path('/tmp/bufi_api_patch.py').write_text(script)
-          PY
-          python3 /tmp/bufi_api_patch.py
-          git diff --check
-          git rm .github/workflows/backend-api-audit-pr.yml
-          git checkout HEAD^ -- .github/workflows/verify-bufi-pr.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add BuFi/Core/OpenSubsonicClient.swift BuFi/Core/RecommendationEngine.swift .github/workflows/verify-bufi-pr.yml
-          git diff --cached --check
-          git commit -m 'Harden API cancellation and external recommendation retries'
-          git push origin HEAD:backend-core-lightweight
 
       - name: Show build toolchain
         run: |
