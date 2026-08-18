@@ -2002,8 +2002,12 @@ final class AppModel: ObservableObject {
     private func mergingListeningHistory(
         into snapshot: HomeSnapshot
     ) async -> HomeSnapshot {
-        let history = await ListeningHistoryStore.shared.snapshot()
-        let offlineSongIDs = await OfflineStore.shared.availableSongIDs()
+        async let historyRequest = ListeningHistoryStore.shared.snapshot()
+        async let offlineSongIDsRequest = OfflineStore.shared.availableSongIDs()
+        let (history, offlineSongIDs) = await (
+            historyRequest,
+            offlineSongIDsRequest
+        )
         var value = snapshot
         if value.mostPlayedSongs.isEmpty {
             value.mostPlayedSongs = history.mostPlayedSongs

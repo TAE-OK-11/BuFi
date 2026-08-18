@@ -225,7 +225,8 @@ enum OpenSubsonicRequestPolicy {
         case "getPlaylists":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 5 * 60,
-                staleGrace: 20 * 60
+                staleGrace: 20 * 60,
+                dependencies: [.libraryLists]
             )
         case "getStarred2", "getStarred":
             // Star/unstar already invalidates `.favorites`. The longer TTL
@@ -716,6 +717,7 @@ actor OpenSubsonicClient {
     private let session: URLSession
     private let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
+    private let authenticationQueryItems: [URLQueryItem]
     private var supportedExtensions: Set<String>?
     private var apiFamily: SubsonicAPIFamily = .openSubsonic
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
@@ -752,14 +754,30 @@ actor OpenSubsonicClient {
 
     private var mutationWaiters: [UUID: MutationWaiter] = [:]
 
+    private enum ReadResponseSource {
+        case network
+        case freshCache
+        case staleFallback
+    }
+
+    private struct DecodedResponseCacheEntry {
+        let payload: any Sendable
+        let storedAt: ContinuousClock.Instant
+        var accessOrdinal: UInt64
+    }
+
     private static let responseCacheLimit = 128
     private static let responseCacheByteLimit = 16 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
+    private static let decodedResponseCacheLimit = 32
+    private static let coverURLCacheLimit = 512
     private var responseCache = ResponseBodyCache(
         countLimit: OpenSubsonicClient.responseCacheLimit,
         byteLimit: OpenSubsonicClient.responseCacheByteLimit,
         maximumEntryBytes: OpenSubsonicClient.maximumCachedResponseBytes
     )
+    private var decodedResponseCache: [String: DecodedResponseCacheEntry] = [:]
+    private var decodedResponseAccessClock: UInt64 = 0
     private var lyricsCache = LyricsDocumentCache(countLimit: 64)
     private var coverURLCache: [String: URL] = [:]
 
@@ -789,6 +807,9 @@ actor OpenSubsonicClient {
         )
         self.credentials = normalizedCredentials
         self.accountScope = AccountScope.identifier(for: normalizedCredentials)
+        self.authenticationQueryItems = Self.makeAuthenticationItems(
+            for: normalizedCredentials
+        )
         self.swiftSonic = SwiftSonicClient(
             configuration: ServerConfiguration(
                 serverURL: normalized,
@@ -829,14 +850,25 @@ actor OpenSubsonicClient {
             waiter.continuation.resume(throwing: CancellationError())
         }
         mutationWaiters.removeAll(keepingCapacity: false)
+        decodedResponseCache.removeAll(keepingCapacity: false)
+        decodedResponseAccessClock = 0
         coverURLCache.removeAll(keepingCapacity: false)
         session.invalidateAndCancel()
     }
 
-    private func authenticationItems() -> [URLQueryItem] {
-        let salt = (0..<12).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+    private static func makeAuthenticationItems(
+        for credentials: ServerCredentials
+    ) -> [URLQueryItem] {
+        // Subsonic token authentication does not require a new salt for every
+        // request. Keep one random pair for this client session, matching the
+        // SwiftSonic `reusesSalt` configuration used by the same account.
+        let salt = (0..<12)
+            .map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }
+            .joined()
         let tokenData = Data((credentials.password + salt).utf8)
-        let token = Insecure.MD5.hash(data: tokenData).map { String(format: "%02hhx", $0) }.joined()
+        let token = Insecure.MD5.hash(data: tokenData)
+            .map { String(format: "%02hhx", $0) }
+            .joined()
         return [
             URLQueryItem(name: "u", value: credentials.username),
             URLQueryItem(name: "s", value: salt),
@@ -844,6 +876,10 @@ actor OpenSubsonicClient {
             URLQueryItem(name: "v", value: Self.apiVersion),
             URLQueryItem(name: "c", value: Self.clientName)
         ]
+    }
+
+    private func authenticationItems() -> [URLQueryItem] {
+        authenticationQueryItems
     }
 
     func endpointURL(
@@ -987,7 +1023,6 @@ actor OpenSubsonicClient {
         allowsCachedResponse: Bool = true,
         staleReadRetryCount: Int = 0
     ) async throws -> Payload {
-        let url = try endpointURL(endpoint, queryItems: queryItems)
         let cachePolicy = OpenSubsonicRequestPolicy.responseCachePolicy(
             for: endpoint,
             queryItems: queryItems
@@ -1000,13 +1035,26 @@ actor OpenSubsonicClient {
             queryItems: queryItems,
             revision: requestRevision
         )
+
+        if case .readOnly = semantics,
+           allowsCachedResponse,
+           cachePolicy.lifetime > 0,
+           !cacheRevisionState.hasMutation(
+               affecting: cachePolicy.dependencies
+           ),
+           let cached: Payload = cachedDecodedPayload(
+               for: cacheKey,
+               maximumAge: cachePolicy.lifetime
+           ) {
+            return cached
+        }
+
         do {
             let response: HTTPResponseData
-            let responseWasCached: Bool
+            let responseSource: ReadResponseSource
             switch semantics {
             case .readOnly:
-                (response, responseWasCached) = try await readResponse(
-                    from: url,
+                (response, responseSource) = try await readResponse(
                     endpoint: endpoint,
                     queryItems: queryItems,
                     cacheKey: cacheKey,
@@ -1016,11 +1064,12 @@ actor OpenSubsonicClient {
                 )
             case .mutation(let impact):
                 cacheRevisionState.begin(impact)
+                let url = try endpointURL(endpoint, queryItems: queryItems)
                 response = try await responseData(
                     from: url,
                     allowsRetry: Self.allowsIdempotentMutationRetry(endpoint)
                 )
-                responseWasCached = false
+                responseSource = .network
             }
             let payload: Payload = try await decodeResponse(response)
             switch semantics {
@@ -1030,15 +1079,28 @@ actor OpenSubsonicClient {
                     && cacheRevisionState.revision(
                         for: cachePolicy.dependencies
                     ) == requestRevision:
-                if cachePolicy.lifetime > 0, !responseWasCached {
-                    // Store only a body that decoded into the endpoint's
-                    // expected payload, never an HTTP or schema error body.
-                    storeResponse(response.data, for: cacheKey)
+                if cachePolicy.lifetime > 0 {
+                    switch responseSource {
+                    case .network:
+                        // Store only a body that decoded into the endpoint's
+                        // expected payload, never an HTTP/schema error body.
+                        storeResponse(response.data, for: cacheKey)
+                        if response.data.count <= Self.maximumCachedResponseBytes {
+                            storeDecodedPayload(payload, for: cacheKey)
+                        }
+                    case .freshCache:
+                        if response.data.count <= Self.maximumCachedResponseBytes {
+                            storeDecodedPayload(payload, for: cacheKey)
+                        }
+                    case .staleFallback:
+                        // stale-if-error data must not become fresh merely
+                        // because decoding the fallback succeeded.
+                        break
+                    }
                 }
             case .readOnly:
                 // Never hand a caller a representation that completed across
-                // a relevant mutation boundary. Unrelated telemetry and queue
-                // writes do not delay metadata reads.
+                // a relevant mutation boundary.
                 guard staleReadRetryCount < 2 else {
                     throw CancellationError()
                 }
@@ -1128,10 +1190,10 @@ actor OpenSubsonicClient {
 
     func ping() async throws -> StatusBody {
         let endpoint = "ping"
-        let url = try endpointURL(endpoint)
         do {
             let response = try await coalescedReadResponse(
-                from: url,
+                endpoint: endpoint,
+                queryItems: [],
                 key: ReadRequestKey(
                     endpoint: endpoint,
                     queryItems: [],
@@ -1191,10 +1253,15 @@ actor OpenSubsonicClient {
     private func bestEffortWithFallback<Payload: Decodable & Sendable>(
         _ endpoints: [String],
         parameters: [String: String] = [:]
-    ) async -> Payload? {
+    ) async throws -> Payload? {
         do {
             return try await readWithFallback(endpoints, parameters: parameters)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            if TransientServiceFailurePolicy.isAuthenticationFailure(error) {
+                throw error
+            }
             return nil
         }
     }
@@ -1206,7 +1273,8 @@ actor OpenSubsonicClient {
     }
 
     private func coalescedReadResponse(
-        from url: URL,
+        endpoint: String,
+        queryItems: [URLQueryItem],
         key: ReadRequestKey
     ) async throws -> HTTPResponseData {
         try Task.checkCancellation()
@@ -1217,7 +1285,8 @@ actor OpenSubsonicClient {
                     continuation,
                     key: key,
                     waiter: waiter,
-                    url: url
+                    endpoint: endpoint,
+                    queryItems: queryItems
                 )
             }
         } onCancel: {
@@ -1233,7 +1302,8 @@ actor OpenSubsonicClient {
         _ continuation: CheckedContinuation<HTTPResponseData, Error>,
         key: ReadRequestKey,
         waiter: UUID,
-        url: URL
+        endpoint: String,
+        queryItems: [URLQueryItem]
     ) {
         guard !Task.isCancelled else {
             continuation.resume(throwing: CancellationError())
@@ -1242,6 +1312,14 @@ actor OpenSubsonicClient {
         if var existing = inFlightReadRequests[key] {
             existing.waiters[waiter] = continuation
             inFlightReadRequests[key] = existing
+            return
+        }
+
+        let url: URL
+        do {
+            url = try endpointURL(endpoint, queryItems: queryItems)
+        } catch {
+            continuation.resume(throwing: error)
             return
         }
 
@@ -1517,10 +1595,18 @@ actor OpenSubsonicClient {
         }
         let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
         do {
-            let data = try await HTTPContentDecoder.decodeAsync(
+            let data: Data
+            if HTTPContentDecoder.requiresManualDecoding(
                 encodedData,
                 contentEncoding: contentEncoding
-            )
+            ) {
+                data = try await HTTPContentDecoder.decodeAsync(
+                    encodedData,
+                    contentEncoding: contentEncoding
+                )
+            } else {
+                data = encodedData
+            }
             return HTTPResponseData(
                 data: data,
                 statusCode: http.statusCode,
@@ -1563,14 +1649,13 @@ actor OpenSubsonicClient {
     }
 
     private func readResponse(
-        from url: URL,
         endpoint: String,
         queryItems: [URLQueryItem],
         cacheKey: String,
         cachePolicy: OpenSubsonicResponseCachePolicy,
         requestRevision: OpenSubsonicCacheRevision,
         allowsCachedResponse: Bool
-    ) async throws -> (HTTPResponseData, Bool) {
+    ) async throws -> (HTTPResponseData, ReadResponseSource) {
         let cacheHit: ResponseBodyCache.Lookup
         if allowsCachedResponse,
            !cacheRevisionState.hasMutation(affecting: cachePolicy.dependencies),
@@ -1587,20 +1672,21 @@ actor OpenSubsonicClient {
         if case .fresh(let cached) = cacheHit {
             return (
                 HTTPResponseData(data: cached, statusCode: 200, retryAfter: nil),
-                true
+                .freshCache
             )
         }
 
         do {
             let response = try await coalescedReadResponse(
-                from: url,
+                endpoint: endpoint,
+                queryItems: queryItems,
                 key: ReadRequestKey(
                     endpoint: endpoint,
                     queryItems: queryItems,
                     cacheRevision: requestRevision
                 )
             )
-            return (response, false)
+            return (response, .network)
         } catch {
             if case .stale(let cached) = cacheHit,
                TransientServiceFailurePolicy.allowsCachedFallback(error) {
@@ -1610,7 +1696,7 @@ actor OpenSubsonicClient {
                         statusCode: 200,
                         retryAfter: nil
                     ),
-                    true
+                    .staleFallback
                 )
             }
             throw error
@@ -1633,8 +1719,51 @@ actor OpenSubsonicClient {
         responseCache.insert(data, for: key)
     }
 
+    private func cachedDecodedPayload<Payload: Sendable>(
+        for key: String,
+        maximumAge: TimeInterval
+    ) -> Payload? {
+        guard maximumAge > 0,
+              var entry = decodedResponseCache[key] else {
+            return nil
+        }
+        let now = ContinuousClock().now
+        guard entry.storedAt.duration(to: now) <= .seconds(maximumAge) else {
+            decodedResponseCache[key] = nil
+            return nil
+        }
+        guard let payload = entry.payload as? Payload else {
+            decodedResponseCache[key] = nil
+            return nil
+        }
+        decodedResponseAccessClock &+= 1
+        entry.accessOrdinal = decodedResponseAccessClock
+        decodedResponseCache[key] = entry
+        return payload
+    }
+
+    private func storeDecodedPayload<Payload: Sendable>(
+        _ payload: Payload,
+        for key: String
+    ) {
+        decodedResponseAccessClock &+= 1
+        decodedResponseCache[key] = DecodedResponseCacheEntry(
+            payload: payload,
+            storedAt: ContinuousClock().now,
+            accessOrdinal: decodedResponseAccessClock
+        )
+        while decodedResponseCache.count > Self.decodedResponseCacheLimit,
+              let oldestKey = decodedResponseCache.min(by: {
+                  $0.value.accessOrdinal < $1.value.accessOrdinal
+              })?.key {
+            decodedResponseCache[oldestKey] = nil
+        }
+    }
+
     private func clearResponseCache() {
         responseCache.removeAll(keepingCapacity: false)
+        decodedResponseCache.removeAll(keepingCapacity: false)
+        decodedResponseAccessClock = 0
     }
 
     private static func responseCacheKey(
@@ -1798,11 +1927,10 @@ actor OpenSubsonicClient {
         if canReuseEnrichment {
             snapshot.adoptServerEnrichment(from: fallback)
         } else {
-            let popularAlbumsValue: AlbumListPayload? = try await albumList(
+            async let popularAlbumsRequest: AlbumListPayload? = albumList(
                 "highest",
                 size: "8"
             )
-            let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
             let enrichmentLimiter = HomeEnrichmentRequestLimiter(
                 limit: OpenSubsonicRequestPolicy.homeEnrichmentConcurrencyLimit
             )
@@ -1859,6 +1987,8 @@ actor OpenSubsonicClient {
                 count: resultLimit,
                 limiter: enrichmentLimiter
             )
+            let popularAlbumsValue = try await popularAlbumsRequest
+            let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
             async let popularSongsRequest = songs(
                 from: Array(
                     popularAlbumValues.prefix(
@@ -2078,8 +2208,12 @@ actor OpenSubsonicClient {
         let similarEndpoints = SubsonicCompatibilityPolicy.similarSongEndpoints(
             for: apiFamily
         )
+        let supportsSonicExtension = await supportsExtension(
+            "sonicSimilarity",
+            limiter: limiter
+        )
         let supportsSonic = similarEndpoints.contains("getSonicSimilarTracks")
-            && await supportsExtension("sonicSimilarity", limiter: limiter)
+            && supportsSonicExtension
 
         for seed in distinctSeeds.prefix(
             OpenSubsonicRequestPolicy.homeRecommendationSeedLimit
@@ -2173,13 +2307,15 @@ actor OpenSubsonicClient {
         if let supportedExtensions {
             return supportedExtensions.contains(name)
         }
-        let fetchedPayload: OpenSubsonicExtensionsPayload? = try? await withEnrichmentPermit(
-            limiter
-        ) { [self] in
-            try await readRequest("getOpenSubsonicExtensions")
-        }
-        guard let payload = fetchedPayload else {
-            supportedExtensions = []
+        let payload: OpenSubsonicExtensionsPayload
+        do {
+            payload = try await withEnrichmentPermit(limiter) { [self] in
+                try await readRequest("getOpenSubsonicExtensions")
+            }
+        } catch {
+            // A transient/auth/cancellation failure is not an authoritative
+            // statement that the server supports no extensions. Leave the
+            // cache unresolved so a later healthy request can recover.
             return false
         }
         let names = Set(
@@ -2442,7 +2578,7 @@ actor OpenSubsonicClient {
         _ type: String,
         size: String
     ) async throws -> AlbumListPayload? {
-        await bestEffortWithFallback(
+        try await bestEffortWithFallback(
             SubsonicCompatibilityPolicy.albumListEndpoints(for: apiFamily),
             parameters: ["type": type, "size": size]
         )
@@ -2612,6 +2748,35 @@ actor OpenSubsonicClient {
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
         let usesArtistID = await supportsExtension("topSongsByArtistId")
+        if usesArtistID {
+            async let albumsPayload: ArtistAlbumsPayload = readRequest(
+                "getArtist",
+                parameters: ["id": id]
+            )
+            async let infoPayload: ArtistInfoPayload? = bestEffortRequest(
+                "getArtistInfo2",
+                parameters: ["id": id, "count": "8", "includeNotPresent": "false"]
+            )
+            async let topPayload: TopSongsPayload = readRequest(
+                "getTopSongs",
+                parameters: ["id": id, "artist": name, "count": "20"]
+            )
+            let (albums, info, top) = try await (
+                albumsPayload,
+                infoPayload,
+                topPayload
+            )
+            guard let artist = albums.artist else {
+                throw OpenSubsonicError.invalidResponse
+            }
+            return ArtistDetail(
+                artist: artist.artistValue,
+                albums: artist.album ?? [],
+                topSongs: Self.uniqueSongsByIdentity(top.topSongs?.song ?? []),
+                info: info?.artistInfo2
+            )
+        }
+
         async let albumsPayload: ArtistAlbumsPayload = readRequest(
             "getArtist",
             parameters: ["id": id]
@@ -2624,13 +2789,9 @@ actor OpenSubsonicClient {
         guard let artist = albums.artist else {
             throw OpenSubsonicError.invalidResponse
         }
-        // Servers without topSongsByArtistId use the artist name as identity.
-        // Use getArtist's authoritative name rather than a stale route label.
         let top: TopSongsPayload = try await readRequest(
             "getTopSongs",
-            parameters: usesArtistID
-                ? ["id": id, "artist": artist.name, "count": "20"]
-                : ["artist": artist.name, "count": "20"]
+            parameters: ["artist": artist.name, "count": "20"]
         )
         let info = try await infoPayload
         return ArtistDetail(
@@ -2775,7 +2936,7 @@ actor OpenSubsonicClient {
         var request = URLRequest(url: url)
         request.setValue("bytes=0-\(maxBytes - 1)", forHTTPHeaderField: "Range")
         request.timeoutInterval = 24
-        ModernNetworkPolicy.prepareMediaRequest(&request)
+        ModernNetworkPolicy.prepareAnalysisMediaRequest(&request)
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse,
@@ -2855,6 +3016,9 @@ actor OpenSubsonicClient {
         guard let url = swiftSonic.coverArtURL(id: id, size: size),
               url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
+        }
+        if coverURLCache.count >= Self.coverURLCacheLimit {
+            coverURLCache.removeAll(keepingCapacity: true)
         }
         coverURLCache[cacheKey] = url
         return url

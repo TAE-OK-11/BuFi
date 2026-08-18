@@ -1,11 +1,12 @@
 import Foundation
 
 /// Shared Core disposition for idempotent reads, artwork, and offline
-/// downloads. Mutations never consult this type. The split matches the
-/// playback classifier: retry only transport/5xx/429, fail closed on 4xx.
+/// downloads. Mutations never consult this type. All transport/status
+/// classification is delegated to NetworkResiliencePolicy so backend retry
+/// behavior cannot drift between OpenSubsonic, diagnostics, and media helpers.
 enum CoreRequestClassifier {
     static func shouldRetry(statusCode: Int) -> Bool {
-        statusCode == 408 || statusCode == 429 || (500...599).contains(statusCode)
+        NetworkResiliencePolicy.shouldRetryHTTPStatus(statusCode)
     }
 
     static func shouldRetry(error: Error) -> Bool {
@@ -16,23 +17,7 @@ enum CoreRequestClassifier {
             }
             return false
         }
-
-        let value = error as NSError
-        guard value.domain == NSURLErrorDomain else {
-            return false
-        }
-        let transientCodes: Set<Int> = [
-            URLError.Code.timedOut.rawValue,
-            URLError.Code.cannotFindHost.rawValue,
-            URLError.Code.cannotConnectToHost.rawValue,
-            URLError.Code.networkConnectionLost.rawValue,
-            URLError.Code.dnsLookupFailed.rawValue,
-            URLError.Code.notConnectedToInternet.rawValue,
-            URLError.Code.resourceUnavailable.rawValue,
-            URLError.Code.secureConnectionFailed.rawValue,
-            URLError.Code.cannotLoadFromNetwork.rawValue
-        ]
-        return transientCodes.contains(value.code)
+        return NetworkResiliencePolicy.shouldRetry(error)
     }
 
     static func shouldRetryImageFetch(_ error: Error) -> Bool {

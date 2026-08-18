@@ -2,9 +2,10 @@ import Foundation
 
 /// Shared transport policy for BuFi-owned URLSession traffic.
 ///
-/// URLSession negotiates TLS 1.3 and HTTP/2 automatically. Marking known BuFi
-/// endpoints as HTTP/3-capable additionally enables QUIC racing before an
-/// Alt-Svc discovery round trip, while retaining the system HTTP/2 fallback.
+/// Keep request preparation in one place so OpenSubsonic, artwork, playback,
+/// diagnostics, and external AI/recommendation APIs cannot slowly diverge into
+/// separate transport stacks. URLSession still owns TLS/HTTP negotiation; BuFi
+/// only supplies the endpoint-specific hints that are safe and measurable.
 enum ModernNetworkPolicy {
     static let modernContentEncodings = "zstd, br, gzip"
     static let compatibilityContentEncodings = "br, gzip"
@@ -22,10 +23,13 @@ enum ModernNetworkPolicy {
         configuration.timeoutIntervalForResource = resourceTimeout
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
-        configuration.httpMaximumConnectionsPerHost = maximumConnectionsPerHost
-        // This affects only the HTTP/1.1 fallback. HTTP/2 and HTTP/3 continue
-        // to multiplex streams through CFNetwork's native transport stack.
-        configuration.httpShouldUsePipelining = true
+        configuration.httpMaximumConnectionsPerHost = max(
+            1,
+            maximumConnectionsPerHost
+        )
+        // Let CFNetwork choose the HTTP/1.1 fallback behavior. H2/H3 already
+        // multiplex natively and forcing legacy pipelining adds no benefit to
+        // the common path while increasing compatibility risk on old origins.
         configuration.waitsForConnectivity = waitsForConnectivity
         configuration.allowsCellularAccess = true
         configuration.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
@@ -37,8 +41,7 @@ enum ModernNetworkPolicy {
     }
 
     /// Cached variant for public metadata services such as recommendation APIs.
-    /// It keeps the same connection, privacy, and fallback policy as BuFi's
-    /// authenticated traffic while allowing small JSON responses to be reused.
+    /// Authenticated/private requests continue to use the zero-cache path.
     static func makeCachedConfiguration(
         requestTimeout: TimeInterval,
         resourceTimeout: TimeInterval,
@@ -57,8 +60,8 @@ enum ModernNetworkPolicy {
         )
         configuration.requestCachePolicy = .useProtocolCachePolicy
         configuration.urlCache = URLCache(
-            memoryCapacity: memoryCapacity,
-            diskCapacity: diskCapacity
+            memoryCapacity: max(0, memoryCapacity),
+            diskCapacity: max(0, diskCapacity)
         )
         return configuration
     }
@@ -69,29 +72,25 @@ enum ModernNetworkPolicy {
     ) {
         prepareJSONRequest(
             &request,
+            assumesHTTP3Capable: true,
             acceptsZstandard: acceptsZstandard,
             cachePolicy: .reloadIgnoringLocalCacheData
         )
     }
 
     /// Third-party JSON APIs are not BuFi-controlled endpoints. Do not claim
-    /// HTTP/3 support before CFNetwork has learned it from DNS/Alt-Svc. Forcing
-    /// QUIC here can turn an otherwise healthy Groq/Gemini/OpenAI request into
-    /// a transport failure on networks or providers where H3 is unavailable.
-    /// Let URLSession negotiate the best supported protocol normally.
+    /// HTTP/3 support before CFNetwork learns it from DNS/Alt-Svc; an optimistic
+    /// QUIC race here can turn a healthy external API call into a transport
+    /// failure on providers or networks without H3.
     static func prepareExternalAPIRequest(
         _ request: inout URLRequest,
         acceptsZstandard: Bool
     ) {
-        request.assumesHTTP3Capable = false
-        request.httpShouldHandleCookies = false
-        request.allowsCellularAccess = true
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.networkServiceType = .responsiveData
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue(
-            acceptsZstandard ? modernContentEncodings : compatibilityContentEncodings,
-            forHTTPHeaderField: "Accept-Encoding"
+        prepareJSONRequest(
+            &request,
+            assumesHTTP3Capable: false,
+            acceptsZstandard: acceptsZstandard,
+            cachePolicy: .reloadIgnoringLocalCacheData
         )
     }
 
@@ -101,6 +100,7 @@ enum ModernNetworkPolicy {
     ) {
         prepareJSONRequest(
             &request,
+            assumesHTTP3Capable: true,
             acceptsZstandard: acceptsZstandard,
             cachePolicy: .reloadIgnoringLocalCacheData
         )
@@ -108,18 +108,35 @@ enum ModernNetworkPolicy {
     }
 
     static func prepareImageRequest(_ request: inout URLRequest) {
-        prepareHTTP3Request(&request)
+        prepareTransport(&request, assumesHTTP3Capable: true)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.networkServiceType = .responsiveData
         request.setValue("image/*, */*;q=0.8", forHTTPHeaderField: "Accept")
-        // CFNetwork natively expands Brotli and gzip. zstd is intentionally not
-        // advertised here because Nuke receives bytes outside BuFi's zstd decoder.
-        request.setValue(compatibilityContentEncodings, forHTTPHeaderField: "Accept-Encoding")
+        // Nuke receives bytes outside BuFi's zstd decoder, so images advertise
+        // only encodings CFNetwork expands transparently.
+        request.setValue(
+            compatibilityContentEncodings,
+            forHTTPHeaderField: "Accept-Encoding"
+        )
     }
 
     /// Analysis samples must not race the player for the AV streaming class.
     /// Keep identity encoding so the range maps to raw audio bytes.
     static func prepareAnalysisMediaRequest(_ request: inout URLRequest) {
+        prepareTransport(&request, assumesHTTP3Capable: false)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.networkServiceType = .background
+        request.setValue(
+            "audio/*, application/octet-stream;q=0.9, */*;q=0.1",
+            forHTTPHeaderField: "Accept"
+        )
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+    }
+
+    /// Full-file/offline transfers share the media headers but must not
+    /// compete with the active AVPlayer stream for responsive/AV bandwidth.
+    static func prepareBackgroundMediaRequest(_ request: inout URLRequest) {
+        prepareTransport(&request, assumesHTTP3Capable: true)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.networkServiceType = .background
         request.setValue(
@@ -130,7 +147,7 @@ enum ModernNetworkPolicy {
     }
 
     static func prepareMediaRequest(_ request: inout URLRequest) {
-        prepareHTTP3Request(&request)
+        prepareTransport(&request, assumesHTTP3Capable: true)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.networkServiceType = .avStreaming
         request.setValue(
@@ -138,21 +155,26 @@ enum ModernNetworkPolicy {
             forHTTPHeaderField: "Accept"
         )
         // Audio files are already compressed and AVFoundation relies on exact
-        // byte ranges for seeking. Content-coding would waste CPU and can make
-        // range offsets ambiguous, so media transfers explicitly use identity.
+        // byte ranges for seeking, so media transfers explicitly use identity.
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
     }
 
     /// Reapplies safe transport semantics after an HTTPS redirect. URLSession
-    /// may synthesize a new request and drop non-default request properties;
-    /// preserving these values keeps media byte ranges and JSON compression
-    /// behavior stable across CDN or object-storage redirects. Sensitive
-    /// headers such as Authorization are intentionally never copied here.
+    /// may synthesize a new request and drop non-default request properties.
+    /// Sensitive headers such as Authorization are intentionally never copied.
     static func prepareRedirect(
         _ request: inout URLRequest,
         inheriting originalRequest: URLRequest? = nil
     ) {
-        prepareHTTP3Request(&request)
+        // Preserve the policy chosen at the request boundary. In particular,
+        // an external API that intentionally avoided optimistic H3 must not be
+        // converted into an H3-assumed request just because it redirected.
+        let assumesHTTP3Capable = originalRequest?.assumesHTTP3Capable
+            ?? request.assumesHTTP3Capable
+        prepareTransport(
+            &request,
+            assumesHTTP3Capable: assumesHTTP3Capable
+        )
         guard let originalRequest else { return }
 
         request.cachePolicy = originalRequest.cachePolicy
@@ -167,21 +189,30 @@ enum ModernNetworkPolicy {
 
     private static func prepareJSONRequest(
         _ request: inout URLRequest,
+        assumesHTTP3Capable: Bool,
         acceptsZstandard: Bool,
         cachePolicy: URLRequest.CachePolicy
     ) {
-        prepareHTTP3Request(&request)
+        prepareTransport(
+            &request,
+            assumesHTTP3Capable: assumesHTTP3Capable
+        )
         request.cachePolicy = cachePolicy
         request.networkServiceType = .responsiveData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(
-            acceptsZstandard ? modernContentEncodings : compatibilityContentEncodings,
+            acceptsZstandard
+                ? modernContentEncodings
+                : compatibilityContentEncodings,
             forHTTPHeaderField: "Accept-Encoding"
         )
     }
 
-    private static func prepareHTTP3Request(_ request: inout URLRequest) {
-        request.assumesHTTP3Capable = true
+    private static func prepareTransport(
+        _ request: inout URLRequest,
+        assumesHTTP3Capable: Bool
+    ) {
+        request.assumesHTTP3Capable = assumesHTTP3Capable
         request.httpShouldHandleCookies = false
         request.allowsCellularAccess = true
     }

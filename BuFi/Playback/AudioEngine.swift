@@ -133,19 +133,9 @@ enum PlaybackTelemetryRetryPolicy {
         if error is CancellationError { return false }
         if let openSubsonicError = error as? OpenSubsonicError,
            case .http(let status) = openSubsonicError {
-            return status == 408 || status == 429 || (500...599).contains(status)
+            return NetworkResiliencePolicy.shouldRetryHTTPStatus(status)
         }
-        guard let urlError = error as? URLError else { return false }
-        return [
-            .timedOut,
-            .cannotFindHost,
-            .cannotConnectToHost,
-            .networkConnectionLost,
-            .dnsLookupFailed,
-            .notConnectedToInternet,
-            .internationalRoamingOff,
-            .dataNotAllowed
-        ].contains(urlError.code)
+        return NetworkResiliencePolicy.shouldRetry(error)
     }
 
     static func delay(afterFailedAttempt attempt: Int) -> Duration {
@@ -755,22 +745,29 @@ enum PlaybackFailureClassifier {
         guard let error else { return .tryCompatibilityFormat }
         let value = error as NSError
         if let status = httpStatusCode(in: value) {
-            if status == 408 || status == 429 || (500...599).contains(status) {
+            if NetworkResiliencePolicy.shouldRetryHTTPStatus(status) {
                 return .retryTransport
             }
-            if (400...499).contains(status) {
+            if status == 406 || status == 415 || status == 501 {
+                return .tryCompatibilityFormat
+            }
+            if (400...599).contains(status) {
                 return .failPermanent
             }
         }
         if value.domain == NSURLErrorDomain {
-            let code = URLError.Code(rawValue: value.code)
-            switch code {
-            case .timedOut, .cannotFindHost, .cannotConnectToHost,
-                 .dnsLookupFailed, .networkConnectionLost, .notConnectedToInternet,
-                 .internationalRoamingOff, .callIsActive, .dataNotAllowed,
-                 .secureConnectionFailed, .cannotLoadFromNetwork:
+            if NetworkResiliencePolicy.shouldRetry(value) {
                 return .retryTransport
-            case .fileDoesNotExist, .resourceUnavailable:
+            }
+            let code = URLError.Code(rawValue: value.code)
+            if (-1206 ... -1200).contains(value.code) {
+                // TLS/certificate failures cannot be healed by retrying
+                // the same stream or by transcoding the media.
+                return .failPermanent
+            }
+            switch code {
+            case .internationalRoamingOff, .callIsActive, .dataNotAllowed,
+                 .fileDoesNotExist:
                 return .failPermanent
             default:
                 break
@@ -837,14 +834,10 @@ enum PlaybackWatchdogPolicy {
         case .playing:
             return .cancelWatchdog
         case .waitingToPlayAtSpecifiedRate:
-            // TIDAL PE treats AVPlayer's own stall-minimization wait as
-            // healthy buffering, not a failed stream.
-            if PlaybackRecoveryPolicy.isManagedBufferingWait(
-                timeControlStatus: timeControlStatus,
-                waitingReason: waitingReason
-            ) {
-                return .ignore
-            }
+            // Managed buffering is normal, but it still needs a bounded
+            // watchdog. The recovery task gives AVPlayer its own grace period
+            // before nudging/reloading, preventing lossless streams from
+            // remaining in waitingToPlayAtSpecifiedRate indefinitely.
             return .arm(inStartupWindow ? .startup : .stall)
         case .paused:
             return .arm(inStartupWindow ? .startup : .stall)
@@ -956,8 +949,99 @@ struct GaplessSuccessorPlan: Equatable, Sendable {
     }
 }
 
-/// TIDAL-style AVPlayer buffering: keep a short music-sized lookahead so a
-/// brief radio dip does not underrun, without hoarding minutes of audio.
+/// Playback policy is based on the bytes AVPlayer receives, not the encoder
+/// brand that produced them. Apple AAC and FDK-AAC are both AAC at decode time;
+/// container/bitrate metadata is the useful signal for buffering decisions.
+enum PlaybackAudioProfile: Equatable, Sendable {
+    case aac
+    case compressed
+    case lossless
+    case unknown
+
+    private static let losslessSuffixes: Set<String> = [
+        "flac", "alac", "wav", "wave", "aif", "aiff"
+    ]
+    private static let compressedSuffixes: Set<String> = [
+        "mp3", "opus", "ogg", "oga", "vorbis", "webm"
+    ]
+
+    static func estimatedBitRateKbps(for song: Song) -> Double? {
+        if let bitRate = song.bitRate, bitRate > 0 {
+            return Double(bitRate)
+        }
+        guard let size = song.size,
+              size > 0,
+              song.safeDuration > 0 else {
+            return nil
+        }
+        return Double(size) * 8 / song.safeDuration / 1_000
+    }
+
+    static func resolve(
+        song: Song,
+        compatibilityFormat: String?
+    ) -> PlaybackAudioProfile {
+        let requested = compatibilityFormat?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch requested {
+        case "aac": return .aac
+        case "mp3", "opus": return .compressed
+        default: break
+        }
+
+        let suffix = song.suffix?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let fullContentType = song.contentType?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let baseContentType = fullContentType
+            .split(separator: ";", maxSplits: 1)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        // Preserve codec parameters such as `audio/mp4; codecs=alac` or
+        // `codecs=mp4a.40.2`; stripping everything after `;` would collapse
+        // Apple AAC/FDK-AAC and ALAC into the same generic M4A container.
+        if suffix == "aac"
+            || fullContentType.contains("aac")
+            || fullContentType.contains("mp4a") {
+            return .aac
+        }
+        if losslessSuffixes.contains(suffix)
+            || fullContentType.contains("alac")
+            || fullContentType.contains("flac")
+            || fullContentType.contains("lossless") {
+            return .lossless
+        }
+        if compressedSuffixes.contains(suffix)
+            || baseContentType.contains("mpeg")
+            || fullContentType.contains("opus")
+            || fullContentType.contains("vorbis") {
+            return .compressed
+        }
+
+        if ["m4a", "m4b", "mp4"].contains(suffix) {
+            // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive
+            // with audio/mp4. Prefer the server bitrate, then derive one from
+            // byte size + duration when older servers omit bitRate.
+            if let effectiveBitRate = estimatedBitRateKbps(for: song) {
+                if effectiveBitRate <= 384 { return .aac }
+                if effectiveBitRate >= 512 { return .lossless }
+            }
+            if (song.bitDepth ?? 0) > 16
+                || (song.samplingRate ?? 0) > 48_000 {
+                return .lossless
+            }
+        }
+        return .unknown
+    }
+}
+
+/// Keep startup latency small while bounding steady-state memory and bandwidth.
+/// Lossless streams get enough runway for jitter without buffering the same
+/// number of seconds as a much cheaper AAC/Opus stream.
 enum PlaybackBufferPolicy {
     enum Phase: Equatable, Sendable {
         case startup
@@ -966,52 +1050,59 @@ enum PlaybackBufferPolicy {
         case successor
     }
 
-    static let startupForwardBuffer: TimeInterval = 0
-    static let remoteForwardBuffer: TimeInterval = 16
-    static let localForwardBuffer: TimeInterval = 4
-    static let constrainedForwardBuffer: TimeInterval = 8
-    static let successorLeadIn: TimeInterval = 30
     static let stallConfirmDelay: Duration = .milliseconds(2_000)
 
     static func forwardBufferDuration(
         isLocalFile: Bool,
+        profile: PlaybackAudioProfile,
         phase: Phase = .settled
     ) -> TimeInterval {
+        if isLocalFile {
+            return phase == .startup ? 0.25 : 2
+        }
         switch phase {
         case .startup:
-            return startupForwardBuffer
-        case .constrained:
-            return constrainedForwardBuffer
-        case .successor:
-            return isLocalFile ? localForwardBuffer : successorLeadIn
+            return switch profile {
+            case .aac: 0.75
+            case .compressed: 0.9
+            case .unknown: 1.0
+            case .lossless: 1.25
+            }
         case .settled:
-            return isLocalFile ? localForwardBuffer : remoteForwardBuffer
+            return switch profile {
+            case .aac: 20
+            case .compressed: 18
+            case .unknown: 14
+            case .lossless: 12
+            }
+        case .constrained:
+            return switch profile {
+            case .aac: 10
+            case .compressed: 9
+            case .unknown, .lossless: 8
+            }
+        case .successor:
+            return switch profile {
+            case .aac: 6
+            case .compressed: 5
+            case .unknown: 4.5
+            case .lossless: 4
+            }
         }
     }
 
     static func configure(
         _ item: AVPlayerItem,
         isLocalFile: Bool,
+        profile: PlaybackAudioProfile,
         phase: Phase = .startup
     ) {
         item.preferredForwardBufferDuration = forwardBufferDuration(
             isLocalFile: isLocalFile,
+            profile: profile,
             phase: phase
         )
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-    }
-}
-
-enum PlaybackSuccessorWarmupPolicy {
-    static let readinessCheckDelay: Duration = .milliseconds(280)
-    static let maximumReadinessChecks = 3
-
-    static func shouldWarm(
-        isBuffering: Bool,
-        isActivelyPlaying: Bool,
-        isLikelyToKeepUp: Bool
-    ) -> Bool {
-        isActivelyPlaying && !isBuffering && isLikelyToKeepUp
     }
 }
 
@@ -1042,20 +1133,25 @@ enum PlaybackGaplessPreparationPolicy {
         elapsed: TimeInterval,
         duration: TimeInterval,
         isBuffering: Bool,
-        isActivelyPlaying: Bool
+        isActivelyPlaying: Bool,
+        profile: PlaybackAudioProfile
     ) -> Bool {
         guard isActivelyPlaying,
               !isBuffering,
-              elapsed.isFinite else {
+              elapsed.isFinite,
+              elapsed >= stablePlaybackWindow,
+              duration.isFinite,
+              duration > 0 else {
             return false
         }
-        if elapsed >= stablePlaybackWindow {
-            return true
-        }
-        guard duration.isFinite, duration > 0 else { return false }
         let position = min(max(0, elapsed), duration)
         let remaining = max(0, duration - position)
-        let leadTime = min(20, max(6, duration * 0.12))
+        let leadTime: TimeInterval = switch profile {
+        case .lossless: min(10, max(5, duration * 0.04))
+        case .aac: min(16, max(7, duration * 0.06))
+        case .compressed: min(14, max(6, duration * 0.05))
+        case .unknown: min(12, max(6, duration * 0.05))
+        }
         return remaining <= leadTime
     }
 
@@ -1063,20 +1159,24 @@ enum PlaybackGaplessPreparationPolicy {
         elapsed: TimeInterval,
         duration: TimeInterval,
         isBuffering: Bool,
-        isActivelyPlaying: Bool
+        isActivelyPlaying: Bool,
+        profile: PlaybackAudioProfile
     ) -> Bool {
         guard isActivelyPlaying,
               !isBuffering,
-              elapsed.isFinite else {
+              elapsed.isFinite,
+              elapsed >= stablePlaybackWindow,
+              duration.isFinite,
+              duration > 0 else {
             return false
         }
-        if elapsed >= stablePlaybackWindow {
-            return true
-        }
-        guard duration.isFinite, duration > 0 else { return false }
         let position = min(max(0, elapsed), duration)
         let remaining = max(0, duration - position)
-        let leadTime = min(8, max(3, duration * 0.04))
+        let leadTime: TimeInterval = switch profile {
+        case .lossless: min(5, max(2.5, duration * 0.02))
+        case .aac: min(7, max(3, duration * 0.025))
+        case .compressed, .unknown: min(6, max(3, duration * 0.025))
+        }
         return remaining <= leadTime
     }
 }
@@ -1871,9 +1971,11 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
         if let item = player.currentItem {
+            let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
             PlaybackBufferPolicy.configure(
                 item,
-                isLocalFile: false,
+                isLocalFile: isLocal,
+                profile: currentPlaybackAudioProfile(),
                 phase: .constrained
             )
         }
@@ -2584,6 +2686,14 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
+    private func currentPlaybackAudioProfile() -> PlaybackAudioProfile {
+        guard let song = currentSong else { return .unknown }
+        return PlaybackAudioProfile.resolve(
+            song: song,
+            compatibilityFormat: activeCompatibilityFormat
+        )
+    }
+
     private static func initialCompatibilityFormat(
         for quality: StreamQuality,
         song: Song
@@ -2591,10 +2701,28 @@ final class AudioEngine: NSObject, ObservableObject {
         switch quality {
         case .automatic:
             automaticCompatibilityFormat(for: song)
-        case .aac320: "aac"
+        case .aac320:
+            canPassThroughAAC(song, maximumBitRate: 320) ? "raw" : "aac"
         case .opus160: "opus"
         case .original: "raw"
         }
+    }
+
+    private static func canPassThroughAAC(
+        _ song: Song,
+        maximumBitRate: Double
+    ) -> Bool {
+        guard PlaybackAudioProfile.resolve(
+            song: song,
+            compatibilityFormat: "raw"
+        ) == .aac,
+        let bitRate = PlaybackAudioProfile.estimatedBitRateKbps(for: song) else {
+            return false
+        }
+        // Size-derived rates include MP4 container overhead, so keep a small
+        // tolerance around a nominal 320 kbps encode rather than re-encoding
+        // an already compliant Apple AAC / FDK-AAC file.
+        return bitRate <= maximumBitRate * 1.03
     }
 
     private static func fallbackFormats(
@@ -2608,7 +2736,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 ? ["aac", "mp3"]
                 : ["mp3", "raw"]
         case .aac320:
-            ["mp3", "raw"]
+            initialCompatibilityFormat(for: quality, song: song) == "raw"
+                ? ["aac", "mp3"]
+                : ["mp3", "raw"]
         case .opus160:
             ["aac", "mp3", "raw"]
         case .original:
@@ -2824,7 +2954,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 elapsed: currentPlayerPosition(),
                 duration: duration,
                 isBuffering: isBuffering,
-                isActivelyPlaying: activelyPlaying
+                isActivelyPlaying: activelyPlaying,
+                profile: currentPlaybackAudioProfile()
               ),
               let plan = GaplessSuccessorPlan.make(
                 queueCount: queue.count,
@@ -2847,7 +2978,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 elapsed: currentPlayerPosition(),
                 duration: duration,
                 isBuffering: isBuffering,
-                isActivelyPlaying: player.timeControlStatus == .playing
+                isActivelyPlaying: player.timeControlStatus == .playing,
+                profile: currentPlaybackAudioProfile()
               ),
               let currentItem = player.currentItem,
               queue.indices.contains(queueIndex),
@@ -2872,6 +3004,10 @@ final class AudioEngine: NSObject, ObservableObject {
         PlaybackBufferPolicy.configure(
             item,
             isLocalFile: prepared.asset.url.isFileURL,
+            profile: PlaybackAudioProfile.resolve(
+                song: successor,
+                compatibilityFormat: prepared.compatibilityFormat
+            ),
             phase: .successor
         )
         guard player.canInsert(item, after: currentItem) else { return }
@@ -3068,41 +3204,14 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
-    private func warmImmediateSuccessorAfterStablePlayback(
-        currentPlaybackID: UUID?,
-        entry: PlaybackQueueEntry?
-    ) async {
-        guard let currentPlaybackID, let entry else { return }
-        for _ in 0..<PlaybackSuccessorWarmupPolicy.maximumReadinessChecks {
-            do {
-                try await Task.sleep(
-                    for: PlaybackSuccessorWarmupPolicy.readinessCheckDelay
-                )
-            } catch {
-                return
-            }
-            guard !Task.isCancelled,
-                  allowsSpeculativeNetworkPrefetch,
-                  currentPlaybackItem?.id == currentPlaybackID,
-                  wantsPlayback else {
-                return
-            }
-            if PlaybackSuccessorWarmupPolicy.shouldWarm(
-                isBuffering: isBuffering,
-                isActivelyPlaying: player.timeControlStatus == .playing,
-                isLikelyToKeepUp: player.currentItem?.isPlaybackLikelyToKeepUp == true
-            ) {
-                preparePlaybackAsset(for: entry)
-                return
-            }
-        }
-    }
-
     private func scheduleNetworkPrefetch() {
+        let metadataPrefetchCount = currentPlaybackAudioProfile() == .lossless
+            ? 1
+            : UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
-                maximumUpcoming: UpcomingArtworkPrefetchPolicy.upcomingCount,
+                maximumUpcoming: metadataPrefetchCount,
                 requiresActivePlayback: false
               ) else {
             cancelNetworkPrefetch(resetKey: true)
@@ -3121,21 +3230,6 @@ final class AudioEngine: NSObject, ObservableObject {
         cancelNetworkPrefetch(resetKey: false)
         lastNetworkPrefetchKey = plan.key
 
-        // Warm only the deterministic immediate successor, and only after the
-        // active item has demonstrated stable playback. The warmup is a
-        // structured child of this prefetch task, so queue/account cancellation
-        // tears it down with the rest of the speculative work.
-        let currentPlaybackID = currentPlaybackItem?.id
-        let successorEntry: PlaybackQueueEntry? = GaplessSuccessorPlan.make(
-            queueCount: queue.count,
-            currentIndex: queueIndex,
-            repeatMode: repeatMode
-        ).flatMap { plan in
-            playbackState.entries.indices.contains(plan.queueIndex)
-                ? playbackState.entries[plan.queueIndex]
-                : nil
-        }
-
         let token = UUID()
         networkPrefetchToken = token
         networkPrefetchTask = Task(priority: .utility) { [weak self] in
@@ -3146,10 +3240,6 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.networkPrefetchToken = nil
                 }
             }
-            async let successorWarmup: Void = self.warmImmediateSuccessorAfterStablePlayback(
-                currentPlaybackID: currentPlaybackID,
-                entry: successorEntry
-            )
             async let lyricsPrefetch: Void = client.prefetchLyrics(
                 songIDs: plan.upcomingSongs.map(\.id)
             )
@@ -3189,7 +3279,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 pixelSize: artworkPixelSize
             )
             await lyricsPrefetch
-            await successorWarmup
             guard !Task.isCancelled else { return }
         }
     }
@@ -3208,10 +3297,13 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let cappedCount = min(max(defaultCount, 0), 3)
+        let mediaAwareCount = currentPlaybackAudioProfile() == .lossless
+            ? min(cappedCount, 1)
+            : cappedCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
-                maximumUpcoming: cappedCount
+                maximumUpcoming: mediaAwareCount
               ) else {
             cancelOfflinePrefetch(resetKey: true)
             return
@@ -3344,6 +3436,7 @@ final class AudioEngine: NSObject, ObservableObject {
         PlaybackBufferPolicy.configure(
             item,
             isLocalFile: asset.url.isFileURL,
+            profile: currentPlaybackAudioProfile(),
             phase: .startup
         )
         observeActiveItem(item, resumePosition: resumePosition)
@@ -3767,12 +3860,19 @@ final class AudioEngine: NSObject, ObservableObject {
     private func expandSettledForwardBufferIfNeeded() {
         guard let item = player.currentItem ?? logicalCurrentItem else { return }
         let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
+        let profile = currentPlaybackAudioProfile()
         let settled = PlaybackBufferPolicy.forwardBufferDuration(
             isLocalFile: isLocal,
+            profile: profile,
             phase: .settled
         )
         guard item.preferredForwardBufferDuration + 0.01 < settled else { return }
-        PlaybackBufferPolicy.configure(item, isLocalFile: isLocal, phase: .settled)
+        PlaybackBufferPolicy.configure(
+            item,
+            isLocalFile: isLocal,
+            profile: profile,
+            phase: .settled
+        )
     }
 
     private func cancelStallConfirmation() {
@@ -3782,13 +3882,6 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func confirmPossibleStall() {
         guard wantsPlayback, stallConfirmTask == nil else { return }
-        if PlaybackRecoveryPolicy.isManagedBufferingWait(
-            timeControlStatus: player.timeControlStatus,
-            waitingReason: player.reasonForWaitingToPlay
-        ) {
-            isBuffering = true
-            return
-        }
         if player.timeControlStatus != .playing {
             isBuffering = true
         }
@@ -3805,17 +3898,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 self?.stallConfirmTask = nil
                 return
             }
-            if PlaybackRecoveryPolicy.isManagedBufferingWait(
-                timeControlStatus: self.player.timeControlStatus,
-                waitingReason: self.player.reasonForWaitingToPlay
-            ) {
-                self.stallConfirmTask = nil
-                return
-            }
             self.stallConfirmTask = nil
             self.invalidateStagedSuccessor(removeFromPlayer: true)
             self.suspendSpeculativePrefetch()
-            self.schedulePlaybackRecovery(mode: .stall)
+            let mode: PlaybackWatchdogMode =
+                self.currentPlayerPosition() < PlaybackWatchdogPolicy.startupArmWindow
+                    ? .startup
+                    : .stall
+            self.schedulePlaybackRecovery(mode: mode)
         }
     }
 

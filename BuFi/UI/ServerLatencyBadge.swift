@@ -3,6 +3,7 @@ import SwiftUI
 struct ServerLatencyBadge: View {
     let client: OpenSubsonicClient?
 
+    @Environment(\.scenePhase) private var scenePhase
     @State private var latencyMilliseconds: Double?
     @State private var isMeasuring = false
     @State private var measurementFailed = false
@@ -35,14 +36,16 @@ struct ServerLatencyBadge: View {
         .buttonStyle(.plain)
         .disabled(client == nil || isMeasuring)
         .accessibilityLabel("서버 Ping 측정")
-        .accessibilityValue(latencyText)
+        .accessibilityValue(accessibilityLatencyValue)
         .onAppear {
             startMeasurement()
         }
         .onChange(of: clientIdentifier) { _, _ in
-            latencyMilliseconds = nil
-            measurementFailed = false
-            lastMeasuredAt = nil
+            resetMeasurementState()
+            startMeasurement()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
             startMeasurement()
         }
         .onDisappear {
@@ -56,7 +59,7 @@ struct ServerLatencyBadge: View {
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("서버 Ping 실패")
+                .accessibilityLabel("서버 Ping 측정 불안정")
         } else {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 18, weight: .semibold))
@@ -66,10 +69,24 @@ struct ServerLatencyBadge: View {
     }
 
     private var latencyText: String {
+        // Keep the last healthy value visible while a refresh is in progress.
+        // This avoids replacing useful information with a transient “Ping”.
+        if let latencyMilliseconds {
+            return "\(Int(latencyMilliseconds.rounded())) ms"
+        }
         if isMeasuring { return "Ping" }
         if measurementFailed { return "재시도" }
-        guard let latencyMilliseconds else { return "Ping" }
-        return "\(Int(latencyMilliseconds.rounded())) ms"
+        return "Ping"
+    }
+
+    private var accessibilityLatencyValue: String {
+        if isMeasuring, latencyMilliseconds != nil {
+            return "\(latencyText), 새로 측정 중"
+        }
+        if measurementFailed, latencyMilliseconds != nil {
+            return "\(latencyText), 마지막 정상 측정값"
+        }
+        return latencyText
     }
 
     private var clientIdentifier: ObjectIdentifier? {
@@ -78,12 +95,7 @@ struct ServerLatencyBadge: View {
 
     private func startMeasurement(force: Bool = false) {
         guard let client else {
-            measurementTask?.cancel()
-            measurementTask = nil
-            latencyMilliseconds = nil
-            measurementFailed = false
-            lastMeasuredAt = nil
-            isMeasuring = false
+            resetMeasurementState()
             return
         }
 
@@ -102,7 +114,7 @@ struct ServerLatencyBadge: View {
         let generation = measurementGeneration
         isMeasuring = true
         measurementFailed = false
-        measurementTask = Task {
+        measurementTask = Task(priority: .userInitiated) {
             do {
                 let latency = try await client.measuredServerLatency()
                 guard !Task.isCancelled,
@@ -116,17 +128,27 @@ struct ServerLatencyBadge: View {
                 guard measurementGeneration == generation else { return }
                 isMeasuring = false
                 measurementTask = nil
-                return
             } catch {
                 guard !Task.isCancelled,
                       measurementGeneration == generation else { return }
-                latencyMilliseconds = nil
+                // Preserve the last known-good number. A single transient probe
+                // failure should not erase useful state or make Settings flicker.
                 measurementFailed = true
                 lastMeasuredAt = nil
                 isMeasuring = false
                 measurementTask = nil
             }
         }
+    }
+
+    private func resetMeasurementState() {
+        measurementGeneration &+= 1
+        measurementTask?.cancel()
+        measurementTask = nil
+        latencyMilliseconds = nil
+        measurementFailed = false
+        lastMeasuredAt = nil
+        isMeasuring = false
     }
 
     private func cancelMeasurement() {

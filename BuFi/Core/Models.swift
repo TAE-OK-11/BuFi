@@ -65,6 +65,11 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
     var track: Int?
     var suffix: String?
     var contentType: String?
+    var bitRate: Int? = nil
+    var samplingRate: Int? = nil
+    var bitDepth: Int? = nil
+    var channelCount: Int? = nil
+    var size: Int64? = nil
     var starred: String?
     var playCount: Int? = nil
     var played: String? = nil
@@ -109,6 +114,11 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
             track.map { String($0) } ?? "",
             suffix ?? "",
             contentType ?? "",
+            bitRate.map(String.init) ?? "",
+            samplingRate.map(String.init) ?? "",
+            bitDepth.map(String.init) ?? "",
+            channelCount.map(String.init) ?? "",
+            size.map(String.init) ?? "",
             created ?? "",
             externalStreamURL ?? ""
         ])
@@ -117,6 +127,9 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
     /// Identifies the playable bytes without coupling transport caches to
     /// mutable display metadata such as title, artist, or cover art.
     var audioResourceRevision: String {
+        // Codec/bitrate/depth/size fields may arrive later from canonical
+        // metadata without changing the underlying bytes. Do not invalidate a
+        // partially warmed AVURLAsset merely because those hints were enriched.
         stableMediaRevision([
             id,
             duration.map { String($0) } ?? "",
@@ -256,7 +269,8 @@ struct PlaybackMediaItem: Identifiable, Equatable, Sendable {
 extension Song {
     private enum CodingKeys: String, CodingKey {
         case id, title, artist, album, artistId, albumId, coverArt, duration
-        case track, suffix, contentType, starred, playCount, played, genre
+        case track, suffix, contentType, bitRate, samplingRate, bitDepth
+        case channelCount, size, starred, playCount, played, genre
         case genres, musicBrainzId, isrc, bpm, moods, created
         case externalStreamURL
     }
@@ -277,6 +291,11 @@ extension Song {
         track = try values.decodeIfPresent(Int.self, forKey: .track)
         suffix = try values.decodeIfPresent(String.self, forKey: .suffix)
         contentType = try values.decodeIfPresent(String.self, forKey: .contentType)
+        bitRate = try values.decodeIfPresent(Int.self, forKey: .bitRate)
+        samplingRate = try values.decodeIfPresent(Int.self, forKey: .samplingRate)
+        bitDepth = try values.decodeIfPresent(Int.self, forKey: .bitDepth)
+        channelCount = try values.decodeIfPresent(Int.self, forKey: .channelCount)
+        size = try values.decodeIfPresent(Int64.self, forKey: .size)
         starred = try values.decodeIfPresent(String.self, forKey: .starred)
         playCount = try values.decodeIfPresent(Int.self, forKey: .playCount)
         played = try values.decodeIfPresent(String.self, forKey: .played)
