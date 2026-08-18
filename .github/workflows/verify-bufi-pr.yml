@@ -36,20 +36,7 @@ jobs:
       - name: Apply API latency audit
         if: github.actor != 'github-actions[bot]'
         run: |
-          python3 <<'PY'
-          from pathlib import Path
-
-          workflow = Path('.github/workflows/backend-api-speed-once.yml').read_text()
-          marker = "          python3 <<'PY'\n"
-          start = workflow.index(marker) + len(marker)
-          end = workflow.index("\n          PY\n", start)
-          block = workflow[start:end]
-          code = "\n".join(
-              line[10:] if line.startswith("          ") else line
-              for line in block.splitlines()
-          )
-          exec(compile(code, 'backend-api-speed-patch.py', 'exec'))
-          PY
+          python3 Scripts/backend-api-speed-patch.py
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
