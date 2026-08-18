@@ -28,11 +28,8 @@ enum NetworkResiliencePolicy {
         // concrete URLError. Normalize that bridge here instead of duplicating
         // the domain/code table in every caller.
         let value = error as NSError
-        guard value.domain == NSURLErrorDomain,
-              let code = URLError.Code(rawValue: value.code) else {
-            return false
-        }
-        return transientURLCodes.contains(code)
+        guard value.domain == NSURLErrorDomain else { return false }
+        return transientURLCodes.contains { $0.rawValue == value.code }
     }
 
     static func shouldRetryHTTPStatus(_ statusCode: Int) -> Bool {
