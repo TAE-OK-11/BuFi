@@ -20,8 +20,19 @@ enum NetworkResiliencePolicy {
 
     static func shouldRetry(_ error: Error) -> Bool {
         if error is CancellationError { return false }
-        guard let urlError = error as? URLError else { return false }
-        return transientURLCodes.contains(urlError.code)
+        if let urlError = error as? URLError {
+            return transientURLCodes.contains(urlError.code)
+        }
+
+        // Some frameworks surface CFNetwork failures as NSError rather than a
+        // concrete URLError. Normalize that bridge here instead of duplicating
+        // the domain/code table in every caller.
+        let value = error as NSError
+        guard value.domain == NSURLErrorDomain,
+              let code = URLError.Code(rawValue: value.code) else {
+            return false
+        }
+        return transientURLCodes.contains(code)
     }
 
     static func shouldRetryHTTPStatus(_ statusCode: Int) -> Bool {
