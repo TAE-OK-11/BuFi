@@ -1,0 +1,863 @@
+name: Backend API speed audit once
+
+on:
+  push:
+    branches:
+      - backend-core-lightweight
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: backend-core-lightweight
+          fetch-depth: 0
+      - name: Apply API latency and processing optimizations
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, got {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          def replace_region(path, start, end, replacement):
+              p = Path(path)
+              text = p.read_text()
+              i = text.find(start)
+              if i < 0:
+                  raise SystemExit(f"{path}: start marker not found: {start!r}")
+              j = text.find(end, i + len(start))
+              if j < 0:
+                  raise SystemExit(f"{path}: end marker not found: {end!r}")
+              p.write_text(text[:i] + replacement + text[j:])
+
+          # 1) Most API bodies are already expanded by CFNetwork. Avoid a
+          # detached/concurrent decode hop unless the bytes are actually zstd.
+          replace_once(
+              'BuFi/Core/HTTPContentDecoder.swift',
+              '''    static func decode(_ data: Data, contentEncoding: String?) throws -> Data {
+                  try Task.checkCancellation()
+                  guard isZstandardFrame(data) else {
+                      // URLSession expands gzip and Brotli, and newer CFNetwork versions
+                      // may also expand zstd before returning the body.
+                      return data
+                  }
+                  guard declaresZstandard(contentEncoding) != false else {
+                      return data
+                  }
+                  return try decompressZstandard(data)
+              }
+''',
+              '''    static func requiresManualDecoding(
+                  _ data: Data,
+                  contentEncoding: String?
+              ) -> Bool {
+                  isZstandardFrame(data)
+                      && declaresZstandard(contentEncoding) != false
+              }
+
+              static func decode(_ data: Data, contentEncoding: String?) throws -> Data {
+                  try Task.checkCancellation()
+                  guard requiresManualDecoding(
+                      data,
+                      contentEncoding: contentEncoding
+                  ) else {
+                      // URLSession expands gzip and Brotli, and newer CFNetwork versions
+                      // may also expand zstd before returning the body.
+                      return data
+                  }
+                  return try decompressZstandard(data)
+              }
+'''
+          )
+
+          osc = 'BuFi/Core/OpenSubsonicClient.swift'
+
+          # 2) Session-scoped token material mirrors SwiftSonic's reusesSalt
+          # configuration and removes repeated random/MD5/hex allocation from
+          # every actual API request.
+          replace_once(
+              osc,
+              '''    private let swiftSonic: SwiftSonicClient
+              private let retryPolicy = ReadRequestRetryPolicy()
+              private var supportedExtensions: Set<String>?
+''',
+              '''    private let swiftSonic: SwiftSonicClient
+              private let retryPolicy = ReadRequestRetryPolicy()
+              private let authenticationQueryItems: [URLQueryItem]
+              private var supportedExtensions: Set<String>?
+'''
+          )
+          replace_once(
+              osc,
+              '''        self.credentials = normalizedCredentials
+              self.accountScope = AccountScope.identifier(for: normalizedCredentials)
+              self.swiftSonic = SwiftSonicClient(
+''',
+              '''        self.credentials = normalizedCredentials
+              self.accountScope = AccountScope.identifier(for: normalizedCredentials)
+              self.authenticationQueryItems = Self.makeAuthenticationItems(
+                  for: normalizedCredentials
+              )
+              self.swiftSonic = SwiftSonicClient(
+'''
+          )
+          replace_once(
+              osc,
+              '''    private func authenticationItems() -> [URLQueryItem] {
+              let salt = (0..<12).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+              let tokenData = Data((credentials.password + salt).utf8)
+              let token = Insecure.MD5.hash(data: tokenData).map { String(format: "%02hhx", $0) }.joined()
+              return [
+                  URLQueryItem(name: "u", value: credentials.username),
+                  URLQueryItem(name: "s", value: salt),
+                  URLQueryItem(name: "t", value: token),
+                  URLQueryItem(name: "v", value: Self.apiVersion),
+                  URLQueryItem(name: "c", value: Self.clientName)
+              ]
+          }
+''',
+              '''    private static func makeAuthenticationItems(
+              for credentials: ServerCredentials
+          ) -> [URLQueryItem] {
+              // Subsonic token authentication does not require a new salt per
+              // request. Keep one random salt/token pair for this client
+              // session, matching SwiftSonic's `reusesSalt` configuration.
+              let salt = (0..<12)
+                  .map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }
+                  .joined()
+              let tokenData = Data((credentials.password + salt).utf8)
+              let token = Insecure.MD5.hash(data: tokenData)
+                  .map { String(format: "%02hhx", $0) }
+                  .joined()
+              return [
+                  URLQueryItem(name: "u", value: credentials.username),
+                  URLQueryItem(name: "s", value: salt),
+                  URLQueryItem(name: "t", value: token),
+                  URLQueryItem(name: "v", value: Self.apiVersion),
+                  URLQueryItem(name: "c", value: Self.clientName)
+              ]
+          }
+
+          private func authenticationItems() -> [URLQueryItem] {
+              authenticationQueryItems
+          }
+'''
+          )
+
+          # 3) Parsed payload cache: cache hits no longer rebuild authenticated
+          # URLs and re-run JSONDecoder for the same fresh representation.
+          replace_once(
+              osc,
+              '''    private static let responseCacheLimit = 128
+              private static let responseCacheByteLimit = 16 * 1_024 * 1_024
+              private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
+              private static let coverURLCacheLimit = 512
+              private var responseCache = ResponseBodyCache(
+                  countLimit: OpenSubsonicClient.responseCacheLimit,
+                  byteLimit: OpenSubsonicClient.responseCacheByteLimit,
+                  maximumEntryBytes: OpenSubsonicClient.maximumCachedResponseBytes
+              )
+              private var lyricsCache = LyricsDocumentCache(countLimit: 64)
+''',
+              '''    private enum ReadResponseSource {
+              case network
+              case freshCache
+              case staleFallback
+          }
+
+          private struct DecodedResponseCacheEntry {
+              let payload: any Sendable
+              let storedAt: ContinuousClock.Instant
+              var accessOrdinal: UInt64
+          }
+
+          private static let responseCacheLimit = 128
+          private static let responseCacheByteLimit = 16 * 1_024 * 1_024
+          private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
+          private static let decodedResponseCacheLimit = 32
+          private static let coverURLCacheLimit = 512
+          private var responseCache = ResponseBodyCache(
+              countLimit: OpenSubsonicClient.responseCacheLimit,
+              byteLimit: OpenSubsonicClient.responseCacheByteLimit,
+              maximumEntryBytes: OpenSubsonicClient.maximumCachedResponseBytes
+          )
+          private var decodedResponseCache: [String: DecodedResponseCacheEntry] = [:]
+          private var decodedResponseAccessClock: UInt64 = 0
+          private var lyricsCache = LyricsDocumentCache(countLimit: 64)
+'''
+          )
+          replace_once(
+              osc,
+              '''        mutationWaiters.removeAll(keepingCapacity: false)
+              coverURLCache.removeAll(keepingCapacity: false)
+              session.invalidateAndCancel()
+''',
+              '''        mutationWaiters.removeAll(keepingCapacity: false)
+              decodedResponseCache.removeAll(keepingCapacity: false)
+              decodedResponseAccessClock = 0
+              coverURLCache.removeAll(keepingCapacity: false)
+              session.invalidateAndCancel()
+'''
+          )
+
+          # Playlist headers are library-list representations and must share the
+          # same mutation revision as playlist details.
+          replace_once(
+              osc,
+              '''        case "getPlaylists":
+              return OpenSubsonicResponseCachePolicy(
+                  lifetime: 5 * 60,
+                  staleGrace: 20 * 60
+              )
+''',
+              '''        case "getPlaylists":
+              return OpenSubsonicResponseCachePolicy(
+                  lifetime: 5 * 60,
+                  staleGrace: 20 * 60,
+                  dependencies: [.libraryLists]
+              )
+'''
+          )
+
+          perform = '''    private func performRequest<Payload: Decodable & Sendable>(
+              _ endpoint: String,
+              queryItems: [URLQueryItem],
+              semantics: RequestSemantics,
+              allowsCachedResponse: Bool = true,
+              staleReadRetryCount: Int = 0
+          ) async throws -> Payload {
+              let cachePolicy = OpenSubsonicRequestPolicy.responseCachePolicy(
+                  for: endpoint,
+                  queryItems: queryItems
+              )
+              let requestRevision = cacheRevisionState.revision(
+                  for: cachePolicy.dependencies
+              )
+              let cacheKey = Self.responseCacheKey(
+                  endpoint: endpoint,
+                  queryItems: queryItems,
+                  revision: requestRevision
+              )
+
+              if case .readOnly = semantics,
+                 allowsCachedResponse,
+                 cachePolicy.lifetime > 0,
+                 !cacheRevisionState.hasMutation(
+                     affecting: cachePolicy.dependencies
+                 ),
+                 let cached: Payload = cachedDecodedPayload(
+                     for: cacheKey,
+                     maximumAge: cachePolicy.lifetime
+                 ) {
+                  return cached
+              }
+
+              do {
+                  let response: HTTPResponseData
+                  let responseSource: ReadResponseSource
+                  switch semantics {
+                  case .readOnly:
+                      (response, responseSource) = try await readResponse(
+                          endpoint: endpoint,
+                          queryItems: queryItems,
+                          cacheKey: cacheKey,
+                          cachePolicy: cachePolicy,
+                          requestRevision: requestRevision,
+                          allowsCachedResponse: allowsCachedResponse
+                      )
+                  case .mutation(let impact):
+                      cacheRevisionState.begin(impact)
+                      let url = try endpointURL(endpoint, queryItems: queryItems)
+                      response = try await responseData(
+                          from: url,
+                          allowsRetry: Self.allowsIdempotentMutationRetry(endpoint)
+                      )
+                      responseSource = .network
+                  }
+                  let payload: Payload = try await decodeResponse(response)
+                  switch semantics {
+                  case .readOnly where !cacheRevisionState.hasMutation(
+                          affecting: cachePolicy.dependencies
+                      )
+                          && cacheRevisionState.revision(
+                              for: cachePolicy.dependencies
+                          ) == requestRevision:
+                      if cachePolicy.lifetime > 0 {
+                          switch responseSource {
+                          case .network:
+                              // Store only a body that decoded into the
+                              // endpoint's expected payload.
+                              storeResponse(response.data, for: cacheKey)
+                              if response.data.count <= Self.maximumCachedResponseBytes {
+                                  storeDecodedPayload(payload, for: cacheKey)
+                              }
+                          case .freshCache:
+                              if response.data.count <= Self.maximumCachedResponseBytes {
+                                  storeDecodedPayload(payload, for: cacheKey)
+                              }
+                          case .staleFallback:
+                              // A stale-if-error response must not become fresh
+                              // merely because decoding it succeeded.
+                              break
+                          }
+                      }
+                  case .readOnly:
+                      // Never hand a caller a representation that completed
+                      // across a relevant mutation boundary.
+                      guard staleReadRetryCount < 2 else {
+                          throw CancellationError()
+                      }
+                      try await waitForRelevantMutations(
+                          affecting: cachePolicy.dependencies
+                      )
+                      return try await performRequest(
+                          endpoint,
+                          queryItems: queryItems,
+                          semantics: semantics,
+                          allowsCachedResponse: allowsCachedResponse,
+                          staleReadRetryCount: staleReadRetryCount + 1
+                      )
+                  case .mutation(let impact):
+                      finishMutation(impact)
+                  }
+                  return payload
+              } catch {
+                  if case .mutation(let impact) = semantics {
+                      finishMutation(impact)
+                  }
+                  logFailure(error, endpoint: endpoint)
+                  throw error
+              }
+          }
+
+'''
+          replace_region(
+              osc,
+              '    private func performRequest<Payload: Decodable & Sendable>(\n',
+              '    private func bestEffortRequest<Payload: Decodable & Sendable>(\n',
+              perform
+          )
+
+          # Coalesce before building authentication/URL material: additional
+          # waiters on the same read now do zero URL/auth work.
+          coalesced = '''    private func coalescedReadResponse(
+              endpoint: String,
+              queryItems: [URLQueryItem],
+              key: ReadRequestKey
+          ) async throws -> HTTPResponseData {
+              try Task.checkCancellation()
+              let waiter = UUID()
+              let response = try await withTaskCancellationHandler {
+                  try await withCheckedThrowingContinuation { continuation in
+                      registerReadWaiter(
+                          continuation,
+                          key: key,
+                          waiter: waiter,
+                          endpoint: endpoint,
+                          queryItems: queryItems
+                      )
+                  }
+              } onCancel: {
+                  Task {
+                      await self.cancelReadWaiter(key: key, waiter: waiter)
+                  }
+              }
+              try Task.checkCancellation()
+              return response
+          }
+
+          private func registerReadWaiter(
+              _ continuation: CheckedContinuation<HTTPResponseData, Error>,
+              key: ReadRequestKey,
+              waiter: UUID,
+              endpoint: String,
+              queryItems: [URLQueryItem]
+          ) {
+              guard !Task.isCancelled else {
+                  continuation.resume(throwing: CancellationError())
+                  return
+              }
+              if var existing = inFlightReadRequests[key] {
+                  existing.waiters[waiter] = continuation
+                  inFlightReadRequests[key] = existing
+                  return
+              }
+
+              let url: URL
+              do {
+                  url = try endpointURL(endpoint, queryItems: queryItems)
+              } catch {
+                  continuation.resume(throwing: error)
+                  return
+              }
+
+              let token = UUID()
+              let task = Task { [self] in
+                  do {
+                      let response = try await responseData(
+                          from: url,
+                          allowsRetry: true
+                      )
+                      finishReadRequest(
+                          key: key,
+                          token: token,
+                          result: .success(response)
+                      )
+                  } catch {
+                      finishReadRequest(
+                          key: key,
+                          token: token,
+                          result: .failure(error)
+                      )
+                  }
+              }
+              inFlightReadRequests[key] = InFlightReadRequest(
+                  token: token,
+                  task: task,
+                  waiters: [waiter: continuation]
+              )
+          }
+
+'''
+          replace_region(
+              osc,
+              '    private func coalescedReadResponse(\n',
+              '    private func cancelReadWaiter(\n',
+              coalesced
+          )
+
+          # Ping uses the same coalescing-before-auth path.
+          replace_once(
+              osc,
+              '''        let endpoint = "ping"
+              let url = try endpointURL(endpoint)
+              do {
+                  let response = try await coalescedReadResponse(
+                      from: url,
+                      key: ReadRequestKey(
+                          endpoint: endpoint,
+                          queryItems: [],
+                          cacheRevision: OpenSubsonicCacheRevision(entries: [])
+                      )
+                  )
+''',
+              '''        let endpoint = "ping"
+              do {
+                  let response = try await coalescedReadResponse(
+                      endpoint: endpoint,
+                      queryItems: [],
+                      key: ReadRequestKey(
+                          endpoint: endpoint,
+                          queryItems: [],
+                          cacheRevision: OpenSubsonicCacheRevision(entries: [])
+                      )
+                  )
+'''
+          )
+
+          read_response = '''    private func readResponse(
+              endpoint: String,
+              queryItems: [URLQueryItem],
+              cacheKey: String,
+              cachePolicy: OpenSubsonicResponseCachePolicy,
+              requestRevision: OpenSubsonicCacheRevision,
+              allowsCachedResponse: Bool
+          ) async throws -> (HTTPResponseData, ReadResponseSource) {
+              let cacheHit: ResponseBodyCache.Lookup
+              if allowsCachedResponse,
+                 !cacheRevisionState.hasMutation(affecting: cachePolicy.dependencies),
+                 cachePolicy.lifetime > 0 {
+                  cacheHit = cachedResponse(
+                      for: cacheKey,
+                      lifetime: cachePolicy.lifetime,
+                      staleGrace: cachePolicy.staleGrace
+                  )
+              } else {
+                  cacheHit = .miss
+              }
+
+              if case .fresh(let cached) = cacheHit {
+                  return (
+                      HTTPResponseData(data: cached, statusCode: 200, retryAfter: nil),
+                      .freshCache
+                  )
+              }
+
+              do {
+                  let response = try await coalescedReadResponse(
+                      endpoint: endpoint,
+                      queryItems: queryItems,
+                      key: ReadRequestKey(
+                          endpoint: endpoint,
+                          queryItems: queryItems,
+                          cacheRevision: requestRevision
+                      )
+                  )
+                  return (response, .network)
+              } catch {
+                  if case .stale(let cached) = cacheHit,
+                     TransientServiceFailurePolicy.allowsCachedFallback(error) {
+                      return (
+                          HTTPResponseData(
+                              data: cached,
+                              statusCode: 200,
+                              retryAfter: nil
+                          ),
+                          .staleFallback
+                      )
+                  }
+                  throw error
+              }
+          }
+
+'''
+          replace_region(
+              osc,
+              '    private func readResponse(\n',
+              '    private func cachedResponse(\n',
+              read_response
+          )
+
+          replace_once(
+              osc,
+              '''    private func storeResponse(_ data: Data, for key: String) {
+              responseCache.insert(data, for: key)
+          }
+
+          private func clearResponseCache() {
+              responseCache.removeAll(keepingCapacity: false)
+          }
+''',
+              '''    private func storeResponse(_ data: Data, for key: String) {
+              responseCache.insert(data, for: key)
+          }
+
+          private func cachedDecodedPayload<Payload: Sendable>(
+              for key: String,
+              maximumAge: TimeInterval
+          ) -> Payload? {
+              guard maximumAge > 0,
+                    var entry = decodedResponseCache[key] else {
+                  return nil
+              }
+              let now = ContinuousClock().now
+              guard entry.storedAt.duration(to: now) <= .seconds(maximumAge) else {
+                  decodedResponseCache[key] = nil
+                  return nil
+              }
+              guard let payload = entry.payload as? Payload else {
+                  decodedResponseCache[key] = nil
+                  return nil
+              }
+              decodedResponseAccessClock &+= 1
+              entry.accessOrdinal = decodedResponseAccessClock
+              decodedResponseCache[key] = entry
+              return payload
+          }
+
+          private func storeDecodedPayload<Payload: Sendable>(
+              _ payload: Payload,
+              for key: String
+          ) {
+              decodedResponseAccessClock &+= 1
+              decodedResponseCache[key] = DecodedResponseCacheEntry(
+                  payload: payload,
+                  storedAt: ContinuousClock().now,
+                  accessOrdinal: decodedResponseAccessClock
+              )
+              while decodedResponseCache.count > Self.decodedResponseCacheLimit,
+                    let oldestKey = decodedResponseCache.min(by: {
+                        $0.value.accessOrdinal < $1.value.accessOrdinal
+                    })?.key {
+                  decodedResponseCache[oldestKey] = nil
+              }
+          }
+
+          private func clearResponseCache() {
+              responseCache.removeAll(keepingCapacity: false)
+              decodedResponseCache.removeAll(keepingCapacity: false)
+              decodedResponseAccessClock = 0
+          }
+'''
+          )
+
+          # Skip the concurrent decoder hop when CFNetwork already returned
+          # identity/gzip/brotli-expanded bytes.
+          replace_once(
+              osc,
+              '''        let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
+              do {
+                  let data = try await HTTPContentDecoder.decodeAsync(
+                      encodedData,
+                      contentEncoding: contentEncoding
+                  )
+                  return HTTPResponseData(
+''',
+              '''        let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
+              do {
+                  let data: Data
+                  if HTTPContentDecoder.requiresManualDecoding(
+                      encodedData,
+                      contentEncoding: contentEncoding
+                  ) {
+                      data = try await HTTPContentDecoder.decodeAsync(
+                          encodedData,
+                          contentEncoding: contentEncoding
+                      )
+                  } else {
+                      data = encodedData
+                  }
+                  return HTTPResponseData(
+'''
+          )
+
+          # Start the independent home enrichment requests while the popular
+          # album list is still in flight instead of paying that RTT first.
+          replace_once(
+              osc,
+              '''            let popularAlbumsValue: AlbumListPayload? = try await albumList(
+                  "highest",
+                  size: "8"
+              )
+              let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
+              let enrichmentLimiter = HomeEnrichmentRequestLimiter(
+''',
+              '''            async let popularAlbumsRequest: AlbumListPayload? = albumList(
+                  "highest",
+                  size: "8"
+              )
+              let enrichmentLimiter = HomeEnrichmentRequestLimiter(
+'''
+          )
+          replace_once(
+              osc,
+              '''            async let recentlyAddedSongsRequest = songs(
+                  from: Array(
+                      recentAlbums.prefix(
+                          OpenSubsonicRequestPolicy.homeAlbumTrackLimit
+                      )
+                  ),
+                  fallback: fallback.recentlyAddedSongs,
+                  count: resultLimit,
+                  limiter: enrichmentLimiter
+              )
+              async let popularSongsRequest = songs(
+''',
+              '''            async let recentlyAddedSongsRequest = songs(
+                  from: Array(
+                      recentAlbums.prefix(
+                          OpenSubsonicRequestPolicy.homeAlbumTrackLimit
+                      )
+                  ),
+                  fallback: fallback.recentlyAddedSongs,
+                  count: resultLimit,
+                  limiter: enrichmentLimiter
+              )
+              let popularAlbumsValue = try await popularAlbumsRequest
+              let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
+              async let popularSongsRequest = songs(
+'''
+          )
+
+          # On servers that support topSongsByArtistId, getArtist/getArtistInfo/
+          # getTopSongs are independent. Run all three in parallel and retain
+          # the existing sequential name fallback for older servers.
+          artist_block = '''    func artist(id: String, name: String) async throws -> ArtistDetail {
+              let usesArtistID = await supportsExtension("topSongsByArtistId")
+              if usesArtistID {
+                  async let albumsPayload: ArtistAlbumsPayload = readRequest(
+                      "getArtist",
+                      parameters: ["id": id]
+                  )
+                  async let infoPayload: ArtistInfoPayload? = bestEffortRequest(
+                      "getArtistInfo2",
+                      parameters: [
+                          "id": id,
+                          "count": "8",
+                          "includeNotPresent": "false"
+                      ]
+                  )
+                  async let topPayload: TopSongsPayload = readRequest(
+                      "getTopSongs",
+                      parameters: ["id": id, "artist": name, "count": "20"]
+                  )
+                  let (albums, info, top) = try await (
+                      albumsPayload,
+                      infoPayload,
+                      topPayload
+                  )
+                  guard let artist = albums.artist else {
+                      throw OpenSubsonicError.invalidResponse
+                  }
+                  return ArtistDetail(
+                      artist: artist.artistValue,
+                      albums: artist.album ?? [],
+                      topSongs: Self.uniqueSongsByIdentity(top.topSongs?.song ?? []),
+                      info: info?.artistInfo2
+                  )
+              }
+
+              async let albumsPayload: ArtistAlbumsPayload = readRequest(
+                  "getArtist",
+                  parameters: ["id": id]
+              )
+              async let infoPayload: ArtistInfoPayload? = bestEffortRequest(
+                  "getArtistInfo2",
+                  parameters: ["id": id, "count": "8", "includeNotPresent": "false"]
+              )
+              let albums = try await albumsPayload
+              guard let artist = albums.artist else {
+                  throw OpenSubsonicError.invalidResponse
+              }
+              let top: TopSongsPayload = try await readRequest(
+                  "getTopSongs",
+                  parameters: ["artist": artist.name, "count": "20"]
+              )
+              let info = try await infoPayload
+              return ArtistDetail(
+                  artist: artist.artistValue,
+                  albums: artist.album ?? [],
+                  topSongs: Self.uniqueSongsByIdentity(top.topSongs?.song ?? []),
+                  info: info?.artistInfo2
+              )
+          }
+
+'''
+          replace_region(
+              osc,
+              '    func artist(id: String, name: String) async throws -> ArtistDetail {\n',
+              '    func lyrics(\n',
+              artist_block
+          )
+
+          # 4) Local post-processing that follows the API response can overlap
+          # independent stores, and external refresh can start while the home
+          # snapshot is being persisted.
+          app = 'BuFi/App/AppModel.swift'
+          replace_once(
+              app,
+              '''        let snapshotChanged = publishHome(resolvedSnapshot)
+              let saveNow = runtimeClock.now
+''',
+              '''        let snapshotChanged = publishHome(resolvedSnapshot)
+              scheduleLibraryCatalogRefresh(snapshot: resolvedSnapshot)
+              if needsFullRefresh {
+                  scheduleExternalRecommendationRefresh(
+                      client: client,
+                      generation: generation
+                  )
+              }
+              let saveNow = runtimeClock.now
+'''
+          )
+          replace_once(
+              app,
+              '''            scheduleLibraryCatalogRefresh(snapshot: resolvedSnapshot)
+              if needsFullRefresh {
+                  scheduleExternalRecommendationRefresh(
+                      client: client,
+                      generation: generation
+                  )
+              }
+''',
+              ''''''
+          )
+          replace_once(
+              app,
+              '''        let history = await ListeningHistoryStore.shared.snapshot()
+              let offlineSongIDs = await OfflineStore.shared.availableSongIDs()
+              var value = snapshot
+''',
+              '''        async let historyRequest = ListeningHistoryStore.shared.snapshot()
+              async let offlineSongIDsRequest = OfflineStore.shared.availableSongIDs()
+              let (history, offlineSongIDs) = await (
+                  historyRequest,
+                  offlineSongIDsRequest
+              )
+              var value = snapshot
+'''
+          )
+          replace_once(
+              app,
+              '''        var value = await mergingListeningHistory(into: snapshot)
+              let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
+              let weights = RecommendationWeights.current()
+''',
+              '''        async let mergedSnapshot = mergingListeningHistory(into: snapshot)
+              async let behaviorRequest = ListeningHistoryStore.shared.recommendationSnapshot()
+              var value = await mergedSnapshot
+              let behavior = await behaviorRequest
+              let weights = RecommendationWeights.current()
+'''
+          )
+
+          # 5) External API responses get the same no-hop fast path and reuse one
+          # retry policy value rather than constructing it for every transfer.
+          rec = 'BuFi/Core/RecommendationEngine.swift'
+          replace_once(
+              rec,
+              '''    private let publicSession: URLSession
+              private let privateSession: URLSession
+              private let decoder = JSONDecoder()
+''',
+              '''    private let publicSession: URLSession
+              private let privateSession: URLSession
+              private let decoder = JSONDecoder()
+              private let retryPolicy = ReadRequestRetryPolicy()
+'''
+          )
+          replace_once(
+              rec,
+              '''        let session = allowsCaching ? publicSession : privateSession
+              let retryPolicy = ReadRequestRetryPolicy()
+              var retryCount = 0
+''',
+              '''        let session = allowsCaching ? publicSession : privateSession
+              var retryCount = 0
+'''
+          )
+          replace_once(
+              rec,
+              '''            let decoded = try await HTTPContentDecoder.decodeAsync(
+                  data,
+                  contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+              )
+''',
+              '''            let contentEncoding = http.value(
+                  forHTTPHeaderField: "Content-Encoding"
+              )
+              let decoded: Data
+              if HTTPContentDecoder.requiresManualDecoding(
+                  data,
+                  contentEncoding: contentEncoding
+              ) {
+                  decoded = try await HTTPContentDecoder.decodeAsync(
+                      data,
+                      contentEncoding: contentEncoding
+                  )
+              } else {
+                  decoded = data
+              }
+'''
+          )
+          PY
+
+          git diff --check
+          git status --short
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add BuFi/Core/HTTPContentDecoder.swift BuFi/Core/OpenSubsonicClient.swift BuFi/App/AppModel.swift BuFi/Core/RecommendationEngine.swift
+          git commit -m 'Reduce API latency without dropping features'
+          git push origin HEAD:backend-core-lightweight
