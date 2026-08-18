@@ -785,6 +785,11 @@ actor OfflineStore {
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as OpenSubsonicError {
+                // HTTP status handling above already consumed the bounded
+                // retry decision, including Retry-After. Do not catch the
+                // terminal status again as a headerless transport retry.
+                throw error
             } catch {
                 guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
                       retryPolicy.shouldRetry(error: error),
