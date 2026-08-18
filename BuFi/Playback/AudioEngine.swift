@@ -1006,11 +1006,21 @@ enum PlaybackAudioProfile: Equatable, Sendable {
 
         if ["m4a", "m4b", "mp4"].contains(suffix) {
             // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive
-            // with audio/mp4. Use OpenSubsonic media hints when the codec name
-            // itself is absent instead of treating every M4A as lossless.
+            // with audio/mp4. Prefer the server bitrate, then derive one from
+            // byte size + duration when older servers omit bitRate.
+            let effectiveBitRate: Double?
             if let bitRate = song.bitRate, bitRate > 0 {
-                if bitRate <= 384 { return .aac }
-                if bitRate >= 512 { return .lossless }
+                effectiveBitRate = Double(bitRate)
+            } else if let size = song.size,
+                      size > 0,
+                      song.safeDuration > 0 {
+                effectiveBitRate = Double(size) * 8 / song.safeDuration / 1_000
+            } else {
+                effectiveBitRate = nil
+            }
+            if let effectiveBitRate {
+                if effectiveBitRate <= 384 { return .aac }
+                if effectiveBitRate >= 512 { return .lossless }
             }
             if (song.bitDepth ?? 0) > 16
                 || (song.samplingRate ?? 0) > 48_000 {
@@ -3167,10 +3177,13 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleNetworkPrefetch() {
+        let metadataPrefetchCount = currentPlaybackAudioProfile() == .lossless
+            ? 1
+            : UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
-                maximumUpcoming: UpcomingArtworkPrefetchPolicy.upcomingCount,
+                maximumUpcoming: metadataPrefetchCount,
                 requiresActivePlayback: false
               ) else {
             cancelNetworkPrefetch(resetKey: true)
@@ -3256,10 +3269,13 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let cappedCount = min(max(defaultCount, 0), 3)
+        let mediaAwareCount = currentPlaybackAudioProfile() == .lossless
+            ? min(cappedCount, 1)
+            : cappedCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
-                maximumUpcoming: cappedCount
+                maximumUpcoming: mediaAwareCount
               ) else {
             cancelOfflinePrefetch(resetKey: true)
             return

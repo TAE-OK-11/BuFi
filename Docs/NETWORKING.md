@@ -40,6 +40,10 @@ radio scheduling, and background behavior integrated with iOS.
   Buffer windows are codec/bitrate aware, so ALAC/high-bitrate M4A uses a smaller
   bounded steady-state/successor window while AAC (whether encoded by Apple or
   FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.
+  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A bitrate can be
+  inferred from byte size and duration when the server omits `bitRate`. Lossless
+  playback also reduces metadata/offline speculative prefetch breadth to keep the
+  active stream ahead of background transfers.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's scoped caches
   remain in control. Generated cover-art URLs are also bounded in memory rather
