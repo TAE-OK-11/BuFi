@@ -2,10 +2,10 @@ import Foundation
 
 /// Single source of truth for transient backend failures.
 ///
-/// Only idempotent reads and diagnostics should consult this policy. Mutating
-/// OpenSubsonic calls deliberately bypass it so a retry can never duplicate a
-/// write. TLS/certificate failures are intentionally excluded: retrying them
-/// wastes time and can hide a real security/configuration problem.
+/// Idempotent reads, diagnostics, and explicitly idempotent writes may consult
+/// this policy. Non-idempotent mutations bypass it so transport recovery cannot
+/// duplicate a write. TLS/certificate failures are intentionally excluded:
+/// retrying them wastes time and can hide a real security/configuration problem.
 enum NetworkResiliencePolicy {
     private static let transientURLCodes: Set<URLError.Code> = [
         .timedOut,
