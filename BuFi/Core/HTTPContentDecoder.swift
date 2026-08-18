@@ -14,14 +14,22 @@ enum HTTPContentDecoder {
         return try decode(data, contentEncoding: contentEncoding)
     }
 
+    static func requiresManualDecoding(
+        _ data: Data,
+        contentEncoding: String?
+    ) -> Bool {
+        isZstandardFrame(data)
+            && declaresZstandard(contentEncoding) != false
+    }
+
     static func decode(_ data: Data, contentEncoding: String?) throws -> Data {
         try Task.checkCancellation()
-        guard isZstandardFrame(data) else {
+        guard requiresManualDecoding(
+            data,
+            contentEncoding: contentEncoding
+        ) else {
             // URLSession expands gzip and Brotli, and newer CFNetwork versions
             // may also expand zstd before returning the body.
-            return data
-        }
-        guard declaresZstandard(contentEncoding) != false else {
             return data
         }
         return try decompressZstandard(data)

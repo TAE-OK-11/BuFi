@@ -2780,6 +2780,7 @@ actor ExternalRecommendationClient {
     private let publicSession: URLSession
     private let privateSession: URLSession
     private let decoder = JSONDecoder()
+    private let retryPolicy = ReadRequestRetryPolicy()
 
     private init() {
         let configuration = ModernNetworkPolicy.makeCachedConfiguration(
@@ -3052,7 +3053,6 @@ actor ExternalRecommendationClient {
         }
 
         let session = allowsCaching ? publicSession : privateSession
-        let retryPolicy = ReadRequestRetryPolicy()
         var retryCount = 0
         while true {
             try Task.checkCancellation()
@@ -3103,10 +3103,21 @@ actor ExternalRecommendationClient {
             guard data.count <= 4 * 1_024 * 1_024 else {
                 throw URLError(.dataLengthExceedsMaximum)
             }
-            let decoded = try await HTTPContentDecoder.decodeAsync(
-                data,
-                contentEncoding: http.value(forHTTPHeaderField: "Content-Encoding")
+            let contentEncoding = http.value(
+                forHTTPHeaderField: "Content-Encoding"
             )
+            let decoded: Data
+            if HTTPContentDecoder.requiresManualDecoding(
+                data,
+                contentEncoding: contentEncoding
+            ) {
+                decoded = try await HTTPContentDecoder.decodeAsync(
+                    data,
+                    contentEncoding: contentEncoding
+                )
+            } else {
+                decoded = data
+            }
             guard decoded.count <= 4 * 1_024 * 1_024 else {
                 throw URLError(.dataLengthExceedsMaximum)
             }
