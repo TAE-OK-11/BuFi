@@ -2078,8 +2078,12 @@ actor OpenSubsonicClient {
         let similarEndpoints = SubsonicCompatibilityPolicy.similarSongEndpoints(
             for: apiFamily
         )
+        let supportsSonicExtension = await supportsExtension(
+            "sonicSimilarity",
+            limiter: limiter
+        )
         let supportsSonic = similarEndpoints.contains("getSonicSimilarTracks")
-            && await supportsExtension("sonicSimilarity", limiter: limiter)
+            && supportsSonicExtension
 
         for seed in distinctSeeds.prefix(
             OpenSubsonicRequestPolicy.homeRecommendationSeedLimit
