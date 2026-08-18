@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
@@ -29,22 +29,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: backend-core-lightweight
-          fetch-depth: 0
-
-      - name: Apply API latency audit
-        if: github.actor != 'github-actions[bot]'
-        run: |
-          python3 Scripts/backend-api-speed-patch.py
-          git diff --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add BuFi/Core/HTTPContentDecoder.swift BuFi/Core/OpenSubsonicClient.swift BuFi/App/AppModel.swift BuFi/Core/RecommendationEngine.swift
-          if ! git diff --cached --quiet; then
-            git commit -m 'Reduce API latency without dropping features'
-            git push origin HEAD:backend-core-lightweight
-          fi
 
       - name: Show build toolchain
         run: |
