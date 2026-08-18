@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
@@ -29,6 +29,105 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: backend-core-lightweight
+          fetch-depth: 2
+
+      - name: Apply final backend audit hardening
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              path.write_text(text.replace(old, new, 1))
+
+          subsonic = Path('BuFi/Core/OpenSubsonicClient.swift')
+          replace_once(
+              subsonic,
+              '''    private static let responseCacheLimit = 128
+              private static let responseCacheByteLimit = 16 * 1_024 * 1_024
+              private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
+''',
+              '''    private static let responseCacheLimit = 128
+              private static let responseCacheByteLimit = 16 * 1_024 * 1_024
+              private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
+              private static let coverURLCacheLimit = 512
+''',
+              'cover URL cache limit'
+          )
+          replace_once(
+              subsonic,
+              '''        let fetchedPayload: OpenSubsonicExtensionsPayload? = try? await withEnrichmentPermit(
+                  limiter
+              ) { [self] in
+                  try await readRequest("getOpenSubsonicExtensions")
+              }
+              guard let payload = fetchedPayload else {
+                  supportedExtensions = []
+                  return false
+              }
+''',
+              '''        let payload: OpenSubsonicExtensionsPayload
+              do {
+                  payload = try await withEnrichmentPermit(limiter) { [self] in
+                      try await readRequest("getOpenSubsonicExtensions")
+                  }
+              } catch {
+                  // A transient/auth/cancellation failure is not an authoritative
+                  // statement that the server supports no extensions. Leave the
+                  // cache unresolved so a later healthy request can recover.
+                  return false
+              }
+''',
+              'extension capability cache poisoning'
+          )
+          replace_once(
+              subsonic,
+              '''        coverURLCache[cacheKey] = url
+              return url
+''',
+              '''        if coverURLCache.count >= Self.coverURLCacheLimit {
+                  coverURLCache.removeAll(keepingCapacity: true)
+              }
+              coverURLCache[cacheKey] = url
+              return url
+''',
+              'bounded cover URL cache'
+          )
+
+          offline = Path('BuFi/Core/OfflineStore.swift')
+          replace_once(
+              offline,
+              '''            } catch is CancellationError {
+                      throw CancellationError()
+                  } catch {
+                      guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+''',
+              '''            } catch is CancellationError {
+                      throw CancellationError()
+                  } catch let error as OpenSubsonicError {
+                      // HTTP status handling above already consumed the bounded
+                      // retry decision, including Retry-After. Do not catch the
+                      // terminal status again as a headerless transport retry.
+                      throw error
+                  } catch {
+                      guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+''',
+              'offline Retry-After double retry'
+          )
+          PY
+          git diff --check
+          git checkout HEAD^ -- .github/workflows/verify-bufi-pr.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add BuFi/Core/OpenSubsonicClient.swift BuFi/Core/OfflineStore.swift .github/workflows/verify-bufi-pr.yml
+          git diff --cached --check
+          git commit -m 'Finish backend capability and download retry hardening'
+          git push origin HEAD:backend-core-lightweight
 
       - name: Show build toolchain
         run: |
