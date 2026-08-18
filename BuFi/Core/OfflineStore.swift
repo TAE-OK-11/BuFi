@@ -755,7 +755,7 @@ actor OfflineStore {
         while true {
             try Task.checkCancellation()
             var request = URLRequest(url: remote)
-            ModernNetworkPolicy.prepareMediaRequest(&request)
+            ModernNetworkPolicy.prepareBackgroundMediaRequest(&request)
             do {
                 let (temporary, response) = try await session.download(for: request)
                 try Task.checkCancellation()

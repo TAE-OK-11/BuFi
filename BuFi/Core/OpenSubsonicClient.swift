@@ -2779,7 +2779,7 @@ actor OpenSubsonicClient {
         var request = URLRequest(url: url)
         request.setValue("bytes=0-\(maxBytes - 1)", forHTTPHeaderField: "Range")
         request.timeoutInterval = 24
-        ModernNetworkPolicy.prepareMediaRequest(&request)
+        ModernNetworkPolicy.prepareAnalysisMediaRequest(&request)
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse,

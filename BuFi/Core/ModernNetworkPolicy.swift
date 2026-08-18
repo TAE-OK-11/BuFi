@@ -133,6 +133,19 @@ enum ModernNetworkPolicy {
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
     }
 
+    /// Full-file/offline transfers share the media headers but must not
+    /// compete with the active AVPlayer stream for responsive/AV bandwidth.
+    static func prepareBackgroundMediaRequest(_ request: inout URLRequest) {
+        prepareTransport(&request, assumesHTTP3Capable: true)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.networkServiceType = .background
+        request.setValue(
+            "audio/*, application/octet-stream;q=0.9, */*;q=0.1",
+            forHTTPHeaderField: "Accept"
+        )
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+    }
+
     static func prepareMediaRequest(_ request: inout URLRequest) {
         prepareTransport(&request, assumesHTTP3Capable: true)
         request.cachePolicy = .reloadIgnoringLocalCacheData

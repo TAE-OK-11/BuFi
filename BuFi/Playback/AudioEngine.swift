@@ -133,19 +133,9 @@ enum PlaybackTelemetryRetryPolicy {
         if error is CancellationError { return false }
         if let openSubsonicError = error as? OpenSubsonicError,
            case .http(let status) = openSubsonicError {
-            return status == 408 || status == 429 || (500...599).contains(status)
+            return NetworkResiliencePolicy.shouldRetryHTTPStatus(status)
         }
-        guard let urlError = error as? URLError else { return false }
-        return [
-            .timedOut,
-            .cannotFindHost,
-            .cannotConnectToHost,
-            .networkConnectionLost,
-            .dnsLookupFailed,
-            .notConnectedToInternet,
-            .internationalRoamingOff,
-            .dataNotAllowed
-        ].contains(urlError.code)
+        return NetworkResiliencePolicy.shouldRetry(error)
     }
 
     static func delay(afterFailedAttempt attempt: Int) -> Duration {
@@ -755,22 +745,29 @@ enum PlaybackFailureClassifier {
         guard let error else { return .tryCompatibilityFormat }
         let value = error as NSError
         if let status = httpStatusCode(in: value) {
-            if status == 408 || status == 429 || (500...599).contains(status) {
+            if NetworkResiliencePolicy.shouldRetryHTTPStatus(status) {
                 return .retryTransport
             }
-            if (400...499).contains(status) {
+            if status == 406 || status == 415 || status == 501 {
+                return .tryCompatibilityFormat
+            }
+            if (400...599).contains(status) {
                 return .failPermanent
             }
         }
         if value.domain == NSURLErrorDomain {
-            let code = URLError.Code(rawValue: value.code)
-            switch code {
-            case .timedOut, .cannotFindHost, .cannotConnectToHost,
-                 .dnsLookupFailed, .networkConnectionLost, .notConnectedToInternet,
-                 .internationalRoamingOff, .callIsActive, .dataNotAllowed,
-                 .secureConnectionFailed, .cannotLoadFromNetwork:
+            if NetworkResiliencePolicy.shouldRetry(value) {
                 return .retryTransport
-            case .fileDoesNotExist, .resourceUnavailable:
+            }
+            let code = URLError.Code(rawValue: value.code)
+            if (-1206 ... -1200).contains(value.code) {
+                // TLS/certificate failures cannot be healed by retrying
+                // the same stream or by transcoding the media.
+                return .failPermanent
+            }
+            switch code {
+            case .internationalRoamingOff, .callIsActive, .dataNotAllowed,
+                 .fileDoesNotExist:
                 return .failPermanent
             default:
                 break
@@ -837,14 +834,10 @@ enum PlaybackWatchdogPolicy {
         case .playing:
             return .cancelWatchdog
         case .waitingToPlayAtSpecifiedRate:
-            // TIDAL PE treats AVPlayer's own stall-minimization wait as
-            // healthy buffering, not a failed stream.
-            if PlaybackRecoveryPolicy.isManagedBufferingWait(
-                timeControlStatus: timeControlStatus,
-                waitingReason: waitingReason
-            ) {
-                return .ignore
-            }
+            // Managed buffering is normal, but it still needs a bounded
+            // watchdog. The recovery task gives AVPlayer its own grace period
+            // before nudging/reloading, preventing lossless streams from
+            // remaining in waitingToPlayAtSpecifiedRate indefinitely.
             return .arm(inStartupWindow ? .startup : .stall)
         case .paused:
             return .arm(inStartupWindow ? .startup : .stall)
@@ -966,11 +959,14 @@ enum PlaybackBufferPolicy {
         case successor
     }
 
-    static let startupForwardBuffer: TimeInterval = 0
+    // Apple documents 0 as "let AVPlayer choose", not "buffer nothing".
+    // Use an explicit small startup window so high-bitrate ALAC/M4A does not
+    // inherit an unexpectedly large automatic startup buffer.
+    static let startupForwardBuffer: TimeInterval = 1.5
     static let remoteForwardBuffer: TimeInterval = 16
     static let localForwardBuffer: TimeInterval = 4
     static let constrainedForwardBuffer: TimeInterval = 8
-    static let successorLeadIn: TimeInterval = 30
+    static let successorLeadIn: TimeInterval = 8
     static let stallConfirmDelay: Duration = .milliseconds(2_000)
 
     static func forwardBufferDuration(
@@ -1046,13 +1042,12 @@ enum PlaybackGaplessPreparationPolicy {
     ) -> Bool {
         guard isActivelyPlaying,
               !isBuffering,
-              elapsed.isFinite else {
+              elapsed.isFinite,
+              elapsed >= stablePlaybackWindow,
+              duration.isFinite,
+              duration > 0 else {
             return false
         }
-        if elapsed >= stablePlaybackWindow {
-            return true
-        }
-        guard duration.isFinite, duration > 0 else { return false }
         let position = min(max(0, elapsed), duration)
         let remaining = max(0, duration - position)
         let leadTime = min(20, max(6, duration * 0.12))
@@ -1067,13 +1062,12 @@ enum PlaybackGaplessPreparationPolicy {
     ) -> Bool {
         guard isActivelyPlaying,
               !isBuffering,
-              elapsed.isFinite else {
+              elapsed.isFinite,
+              elapsed >= stablePlaybackWindow,
+              duration.isFinite,
+              duration > 0 else {
             return false
         }
-        if elapsed >= stablePlaybackWindow {
-            return true
-        }
-        guard duration.isFinite, duration > 0 else { return false }
         let position = min(max(0, elapsed), duration)
         let remaining = max(0, duration - position)
         let leadTime = min(8, max(3, duration * 0.04))
@@ -1871,9 +1865,10 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
         if let item = player.currentItem {
+            let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
             PlaybackBufferPolicy.configure(
                 item,
-                isLocalFile: false,
+                isLocalFile: isLocal,
                 phase: .constrained
             )
         }
@@ -3782,13 +3777,6 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func confirmPossibleStall() {
         guard wantsPlayback, stallConfirmTask == nil else { return }
-        if PlaybackRecoveryPolicy.isManagedBufferingWait(
-            timeControlStatus: player.timeControlStatus,
-            waitingReason: player.reasonForWaitingToPlay
-        ) {
-            isBuffering = true
-            return
-        }
         if player.timeControlStatus != .playing {
             isBuffering = true
         }
@@ -3805,17 +3793,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 self?.stallConfirmTask = nil
                 return
             }
-            if PlaybackRecoveryPolicy.isManagedBufferingWait(
-                timeControlStatus: self.player.timeControlStatus,
-                waitingReason: self.player.reasonForWaitingToPlay
-            ) {
-                self.stallConfirmTask = nil
-                return
-            }
             self.stallConfirmTask = nil
             self.invalidateStagedSuccessor(removeFromPlayer: true)
             self.suspendSpeculativePrefetch()
-            self.schedulePlaybackRecovery(mode: .stall)
+            let mode: PlaybackWatchdogMode =
+                self.currentPlayerPosition() < PlaybackWatchdogPolicy.startupArmWindow
+                    ? .startup
+                    : .stall
+            self.schedulePlaybackRecovery(mode: mode)
         }
     }
 
