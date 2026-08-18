@@ -127,16 +127,14 @@ struct Song: Codable, Identifiable, Hashable, Sendable {
     /// Identifies the playable bytes without coupling transport caches to
     /// mutable display metadata such as title, artist, or cover art.
     var audioResourceRevision: String {
+        // Codec/bitrate/depth/size fields may arrive later from canonical
+        // metadata without changing the underlying bytes. Do not invalidate a
+        // partially warmed AVURLAsset merely because those hints were enriched.
         stableMediaRevision([
             id,
             duration.map { String($0) } ?? "",
             suffix ?? "",
             contentType ?? "",
-            bitRate.map(String.init) ?? "",
-            samplingRate.map(String.init) ?? "",
-            bitDepth.map(String.init) ?? "",
-            channelCount.map(String.init) ?? "",
-            size.map(String.init) ?? "",
             created ?? ""
         ])
     }

@@ -958,6 +958,18 @@ enum PlaybackAudioProfile: Equatable, Sendable {
     case lossless
     case unknown
 
+    static func estimatedBitRateKbps(for song: Song) -> Double? {
+        if let bitRate = song.bitRate, bitRate > 0 {
+            return Double(bitRate)
+        }
+        guard let size = song.size,
+              size > 0,
+              song.safeDuration > 0 else {
+            return nil
+        }
+        return Double(size) * 8 / song.safeDuration / 1_000
+    }
+
     static func resolve(
         song: Song,
         compatibilityFormat: String?
@@ -1008,17 +1020,7 @@ enum PlaybackAudioProfile: Equatable, Sendable {
             // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive
             // with audio/mp4. Prefer the server bitrate, then derive one from
             // byte size + duration when older servers omit bitRate.
-            let effectiveBitRate: Double?
-            if let bitRate = song.bitRate, bitRate > 0 {
-                effectiveBitRate = Double(bitRate)
-            } else if let size = song.size,
-                      size > 0,
-                      song.safeDuration > 0 {
-                effectiveBitRate = Double(size) * 8 / song.safeDuration / 1_000
-            } else {
-                effectiveBitRate = nil
-            }
-            if let effectiveBitRate {
+            if let effectiveBitRate = estimatedBitRateKbps(for: song) {
                 if effectiveBitRate <= 384 { return .aac }
                 if effectiveBitRate >= 512 { return .lossless }
             }
@@ -2693,10 +2695,28 @@ final class AudioEngine: NSObject, ObservableObject {
         switch quality {
         case .automatic:
             automaticCompatibilityFormat(for: song)
-        case .aac320: "aac"
+        case .aac320:
+            canPassThroughAAC(song, maximumBitRate: 320) ? "raw" : "aac"
         case .opus160: "opus"
         case .original: "raw"
         }
+    }
+
+    private static func canPassThroughAAC(
+        _ song: Song,
+        maximumBitRate: Double
+    ) -> Bool {
+        guard PlaybackAudioProfile.resolve(
+            song: song,
+            compatibilityFormat: "raw"
+        ) == .aac,
+        let bitRate = PlaybackAudioProfile.estimatedBitRateKbps(for: song) else {
+            return false
+        }
+        // Size-derived rates include MP4 container overhead, so keep a small
+        // tolerance around a nominal 320 kbps encode rather than re-encoding
+        // an already compliant Apple AAC / FDK-AAC file.
+        return bitRate <= maximumBitRate * 1.03
     }
 
     private static func fallbackFormats(
@@ -2710,7 +2730,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 ? ["aac", "mp3"]
                 : ["mp3", "raw"]
         case .aac320:
-            ["mp3", "raw"]
+            initialCompatibilityFormat(for: quality, song: song) == "raw"
+                ? ["aac", "mp3"]
+                : ["mp3", "raw"]
         case .opus160:
             ["aac", "mp3", "raw"]
         case .original:

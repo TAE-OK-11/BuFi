@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
@@ -29,73 +29,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: backend-core-lightweight
-          fetch-depth: 2
-
-      - name: Apply AAC passthrough and asset identity audit
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path: Path, old: str, new: str, label: str) -> None:
-              text = path.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
-              path.write_text(text.replace(old, new, 1))
-
-          models = Path('BuFi/Core/Models.swift')
-          replace_once(
-              models,
-              '''    var audioResourceRevision: String {\n        stableMediaRevision([\n            id,\n            duration.map { String($0) } ?? "",\n            suffix ?? "",\n            contentType ?? "",\n            bitRate.map(String.init) ?? "",\n            samplingRate.map(String.init) ?? "",\n            bitDepth.map(String.init) ?? "",\n            channelCount.map(String.init) ?? "",\n            size.map(String.init) ?? "",\n            created ?? ""\n        ])\n    }\n''',
-              '''    var audioResourceRevision: String {\n        // Codec/bitrate/depth/size fields may arrive later from canonical\n        // metadata without changing the underlying bytes. Do not invalidate a\n        // partially warmed AVURLAsset merely because those hints were enriched.\n        stableMediaRevision([\n            id,\n            duration.map { String($0) } ?? "",\n            suffix ?? "",\n            contentType ?? "",\n            created ?? ""\n        ])\n    }\n''',
-              'stable audio resource identity'
-          )
-
-          audio = Path('BuFi/Playback/AudioEngine.swift')
-          replace_once(
-              audio,
-              '''enum PlaybackAudioProfile: Equatable, Sendable {\n    case aac\n    case compressed\n    case lossless\n    case unknown\n\n    static func resolve(\n''',
-              '''enum PlaybackAudioProfile: Equatable, Sendable {\n    case aac\n    case compressed\n    case lossless\n    case unknown\n\n    static func estimatedBitRateKbps(for song: Song) -> Double? {\n        if let bitRate = song.bitRate, bitRate > 0 {\n            return Double(bitRate)\n        }\n        guard let size = song.size,\n              size > 0,\n              song.safeDuration > 0 else {\n            return nil\n        }\n        return Double(size) * 8 / song.safeDuration / 1_000\n    }\n\n    static func resolve(\n''',
-              'shared bitrate estimate'
-          )
-          replace_once(
-              audio,
-              '''        if ["m4a", "m4b", "mp4"].contains(suffix) {\n            // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive\n            // with audio/mp4. Prefer the server bitrate, then derive one from\n            // byte size + duration when older servers omit bitRate.\n            let effectiveBitRate: Double?\n            if let bitRate = song.bitRate, bitRate > 0 {\n                effectiveBitRate = Double(bitRate)\n            } else if let size = song.size,\n                      size > 0,\n                      song.safeDuration > 0 {\n                effectiveBitRate = Double(size) * 8 / song.safeDuration / 1_000\n            } else {\n                effectiveBitRate = nil\n            }\n            if let effectiveBitRate {\n                if effectiveBitRate <= 384 { return .aac }\n                if effectiveBitRate >= 512 { return .lossless }\n            }\n''',
-              '''        if ["m4a", "m4b", "mp4"].contains(suffix) {\n            // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive\n            // with audio/mp4. Prefer the server bitrate, then derive one from\n            // byte size + duration when older servers omit bitRate.\n            if let effectiveBitRate = estimatedBitRateKbps(for: song) {\n                if effectiveBitRate <= 384 { return .aac }\n                if effectiveBitRate >= 512 { return .lossless }\n            }\n''',
-              'reuse bitrate estimate'
-          )
-
-          replace_once(
-              audio,
-              '''    private static func initialCompatibilityFormat(\n        for quality: StreamQuality,\n        song: Song\n    ) -> String {\n        switch quality {\n        case .automatic:\n            automaticCompatibilityFormat(for: song)\n        case .aac320: "aac"\n        case .opus160: "opus"\n        case .original: "raw"\n        }\n    }\n''',
-              '''    private static func initialCompatibilityFormat(\n        for quality: StreamQuality,\n        song: Song\n    ) -> String {\n        switch quality {\n        case .automatic:\n            automaticCompatibilityFormat(for: song)\n        case .aac320:\n            canPassThroughAAC(song, maximumBitRate: 320) ? "raw" : "aac"\n        case .opus160: "opus"\n        case .original: "raw"\n        }\n    }\n\n    private static func canPassThroughAAC(\n        _ song: Song,\n        maximumBitRate: Double\n    ) -> Bool {\n        guard PlaybackAudioProfile.resolve(\n            song: song,\n            compatibilityFormat: "raw"\n        ) == .aac,\n        let bitRate = PlaybackAudioProfile.estimatedBitRateKbps(for: song) else {\n            return false\n        }\n        // Size-derived rates include MP4 container overhead, so keep a small\n        // tolerance around a nominal 320 kbps encode rather than re-encoding\n        // an already compliant Apple AAC / FDK-AAC file.\n        return bitRate <= maximumBitRate * 1.03\n    }\n''',
-              'AAC passthrough selection'
-          )
-          replace_once(
-              audio,
-              '''        case .aac320:\n            ["mp3", "raw"]\n''',
-              '''        case .aac320:\n            initialCompatibilityFormat(for: quality, song: song) == "raw"\n                ? ["aac", "mp3"]\n                : ["mp3", "raw"]\n''',
-              'AAC passthrough fallback order'
-          )
-
-          docs = Path('Docs/NETWORKING.md')
-          replace_once(
-              docs,
-              '''  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A bitrate can be\n  inferred from byte size and duration when the server omits `bitRate`. Lossless\n  playback also reduces metadata/offline speculative prefetch breadth to keep the\n  active stream ahead of background transfers.\n''',
-              '''  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A bitrate can be\n  inferred from byte size and duration when the server omits `bitRate`. For the\n  AAC 320 setting, an already compliant AAC source is passed through bit-for-bit\n  instead of AAC→AAC transcoding; this preserves Apple AAC/FDK-AAC output and\n  removes avoidable server CPU, generation loss, and startup latency. Codec hints\n  are deliberately excluded from AVURLAsset resource identity so late canonical\n  metadata enrichment does not throw away a warmed stream. Lossless playback also\n  reduces metadata/offline speculative prefetch breadth to keep the active stream\n  ahead of background transfers.\n''',
-              'document AAC passthrough and stable asset identity'
-          )
-          PY
-          git diff --check
-          git checkout HEAD^ -- .github/workflows/verify-bufi-pr.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add BuFi/Core/Models.swift BuFi/Playback/AudioEngine.swift Docs/NETWORKING.md .github/workflows/verify-bufi-pr.yml
-          git diff --cached --check
-          git commit -m 'Pass through compliant AAC and stabilize media assets'
-          git push origin HEAD:backend-core-lightweight
 
       - name: Show build toolchain
         run: |

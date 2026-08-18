@@ -41,9 +41,14 @@ radio scheduling, and background behavior integrated with iOS.
   bounded steady-state/successor window while AAC (whether encoded by Apple or
   FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.
   OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A bitrate can be
-  inferred from byte size and duration when the server omits `bitRate`. Lossless
-  playback also reduces metadata/offline speculative prefetch breadth to keep the
-  active stream ahead of background transfers.
+  inferred from byte size and duration when the server omits `bitRate`. For the
+  AAC 320 setting, an already compliant AAC source is passed through bit-for-bit
+  instead of AAC→AAC transcoding; this preserves Apple AAC/FDK-AAC output and
+  removes avoidable server CPU, generation loss, and startup latency. Codec hints
+  are deliberately excluded from AVURLAsset resource identity so late canonical
+  metadata enrichment does not throw away a warmed stream. Lossless playback also
+  reduces metadata/offline speculative prefetch breadth to keep the active stream
+  ahead of background transfers.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's scoped caches
   remain in control. Generated cover-art URLs are also bounded in memory rather
