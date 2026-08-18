@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
@@ -29,52 +29,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: backend-core-lightweight
-          fetch-depth: 2
-
-      - name: Apply precise M4A codec detection audit
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path: Path, old: str, new: str, label: str) -> None:
-              text = path.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
-              path.write_text(text.replace(old, new, 1))
-
-          audio = Path('BuFi/Playback/AudioEngine.swift')
-          replace_once(
-              audio,
-              '''enum PlaybackAudioProfile: Equatable, Sendable {\n    case aac\n    case compressed\n    case lossless\n    case unknown\n\n    static func estimatedBitRateKbps(for song: Song) -> Double? {\n''',
-              '''enum PlaybackAudioProfile: Equatable, Sendable {\n    case aac\n    case compressed\n    case lossless\n    case unknown\n\n    private static let losslessSuffixes: Set<String> = [\n        "flac", "alac", "wav", "wave", "aif", "aiff"\n    ]\n    private static let compressedSuffixes: Set<String> = [\n        "mp3", "opus", "ogg", "oga", "vorbis", "webm"\n    ]\n\n    static func estimatedBitRateKbps(for song: Song) -> Double? {\n''',
-              'static codec suffix tables'
-          )
-          replace_once(
-              audio,
-              '''        let contentType = song.contentType?\n            .split(separator: ";", maxSplits: 1)\n            .first?\n            .trimmingCharacters(in: .whitespacesAndNewlines)\n            .lowercased() ?? ""\n\n        if suffix == "aac"\n            || contentType.contains("aac")\n            || contentType.contains("mp4a") {\n            return .aac\n        }\n        let losslessSuffixes: Set<String> = [\n            "flac", "alac", "wav", "wave", "aif", "aiff"\n        ]\n        if losslessSuffixes.contains(suffix)\n            || contentType.contains("alac")\n            || contentType.contains("flac")\n            || contentType.contains("lossless") {\n            return .lossless\n        }\n        let compressedSuffixes: Set<String> = [\n            "mp3", "opus", "ogg", "oga", "vorbis", "webm"\n        ]\n        if compressedSuffixes.contains(suffix)\n            || contentType.contains("mpeg")\n            || contentType.contains("opus")\n            || contentType.contains("vorbis") {\n            return .compressed\n        }\n''',
-              '''        let fullContentType = song.contentType?\n            .trimmingCharacters(in: .whitespacesAndNewlines)\n            .lowercased() ?? ""\n        let baseContentType = fullContentType\n            .split(separator: ";", maxSplits: 1)\n            .first?\n            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""\n\n        // Preserve codec parameters such as `audio/mp4; codecs=alac` or\n        // `codecs=mp4a.40.2`; stripping everything after `;` would collapse\n        // Apple AAC/FDK-AAC and ALAC into the same generic M4A container.\n        if suffix == "aac"\n            || fullContentType.contains("aac")\n            || fullContentType.contains("mp4a") {\n            return .aac\n        }\n        if losslessSuffixes.contains(suffix)\n            || fullContentType.contains("alac")\n            || fullContentType.contains("flac")\n            || fullContentType.contains("lossless") {\n            return .lossless\n        }\n        if compressedSuffixes.contains(suffix)\n            || baseContentType.contains("mpeg")\n            || fullContentType.contains("opus")\n            || fullContentType.contains("vorbis") {\n            return .compressed\n        }\n''',
-              'preserve MIME codec parameters'
-          )
-
-          docs = Path('Docs/NETWORKING.md')
-          replace_once(
-              docs,
-              '''  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A bitrate can be\n  inferred from byte size and duration when the server omits `bitRate`. For the\n''',
-              '''  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A codec parameters\n  such as `codecs=alac`/`codecs=mp4a` are honored before bitrate inference, and\n  bitrate can be inferred from byte size and duration when the server omits it. For the\n''',
-              'document precise M4A codec detection'
-          )
-          PY
-          git diff --check
-          git checkout HEAD^ -- .github/workflows/verify-bufi-pr.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add BuFi/Playback/AudioEngine.swift Docs/NETWORKING.md .github/workflows/verify-bufi-pr.yml
-          git diff --cached --check
-          git commit -m 'Harden M4A AAC and ALAC codec detection'
-          git push origin HEAD:backend-core-lightweight
 
       - name: Show build toolchain
         run: |

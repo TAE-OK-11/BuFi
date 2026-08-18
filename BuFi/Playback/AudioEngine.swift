@@ -958,6 +958,13 @@ enum PlaybackAudioProfile: Equatable, Sendable {
     case lossless
     case unknown
 
+    private static let losslessSuffixes: Set<String> = [
+        "flac", "alac", "wav", "wave", "aif", "aiff"
+    ]
+    private static let compressedSuffixes: Set<String> = [
+        "mp3", "opus", "ogg", "oga", "vorbis", "webm"
+    ]
+
     static func estimatedBitRateKbps(for song: Song) -> Double? {
         if let bitRate = song.bitRate, bitRate > 0 {
             return Double(bitRate)
@@ -986,33 +993,32 @@ enum PlaybackAudioProfile: Equatable, Sendable {
         let suffix = song.suffix?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        let contentType = song.contentType?
-            .split(separator: ";", maxSplits: 1)
-            .first?
+        let fullContentType = song.contentType?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
+        let baseContentType = fullContentType
+            .split(separator: ";", maxSplits: 1)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
+        // Preserve codec parameters such as `audio/mp4; codecs=alac` or
+        // `codecs=mp4a.40.2`; stripping everything after `;` would collapse
+        // Apple AAC/FDK-AAC and ALAC into the same generic M4A container.
         if suffix == "aac"
-            || contentType.contains("aac")
-            || contentType.contains("mp4a") {
+            || fullContentType.contains("aac")
+            || fullContentType.contains("mp4a") {
             return .aac
         }
-        let losslessSuffixes: Set<String> = [
-            "flac", "alac", "wav", "wave", "aif", "aiff"
-        ]
         if losslessSuffixes.contains(suffix)
-            || contentType.contains("alac")
-            || contentType.contains("flac")
-            || contentType.contains("lossless") {
+            || fullContentType.contains("alac")
+            || fullContentType.contains("flac")
+            || fullContentType.contains("lossless") {
             return .lossless
         }
-        let compressedSuffixes: Set<String> = [
-            "mp3", "opus", "ogg", "oga", "vorbis", "webm"
-        ]
         if compressedSuffixes.contains(suffix)
-            || contentType.contains("mpeg")
-            || contentType.contains("opus")
-            || contentType.contains("vorbis") {
+            || baseContentType.contains("mpeg")
+            || fullContentType.contains("opus")
+            || fullContentType.contains("vorbis") {
             return .compressed
         }
 

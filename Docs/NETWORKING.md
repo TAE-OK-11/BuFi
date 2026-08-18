@@ -40,8 +40,9 @@ radio scheduling, and background behavior integrated with iOS.
   Buffer windows are codec/bitrate aware, so ALAC/high-bitrate M4A uses a smaller
   bounded steady-state/successor window while AAC (whether encoded by Apple or
   FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.
-  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A bitrate can be
-  inferred from byte size and duration when the server omits `bitRate`. For the
+  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A codec parameters
+  such as `codecs=alac`/`codecs=mp4a` are honored before bitrate inference, and
+  bitrate can be inferred from byte size and duration when the server omits it. For the
   AAC 320 setting, an already compliant AAC source is passed through bit-for-bit
   instead of AAC→AAC transcoding; this preserves Apple AAC/FDK-AAC output and
   removes avoidable server CPU, generation loss, and startup latency. Codec hints
