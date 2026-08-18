@@ -153,7 +153,15 @@ enum ModernNetworkPolicy {
         _ request: inout URLRequest,
         inheriting originalRequest: URLRequest? = nil
     ) {
-        prepareTransport(&request, assumesHTTP3Capable: true)
+        // Preserve the policy chosen at the request boundary. In particular,
+        // an external API that intentionally avoided optimistic H3 must not be
+        // converted into an H3-assumed request just because it redirected.
+        let assumesHTTP3Capable = originalRequest?.assumesHTTP3Capable
+            ?? request.assumesHTTP3Capable
+        prepareTransport(
+            &request,
+            assumesHTTP3Capable: assumesHTTP3Capable
+        )
         guard let originalRequest else { return }
 
         request.cachePolicy = originalRequest.cachePolicy
