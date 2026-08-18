@@ -1,5 +1,26 @@
 import Foundation
 
+private enum OpenSubsonicDiagnosticTransport {
+    /// Diagnostics are read-only and carry authentication in each generated
+    /// request, so one process-wide session is enough. Reusing it avoids
+    /// repeatedly creating connection pools/TLS state whenever Settings asks
+    /// for latency while still measuring the same CFNetwork transport path.
+    static let session: URLSession = {
+        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
+            requestTimeout: 8,
+            resourceTimeout: 12,
+            maximumConnectionsPerHost: 2,
+            allowsExpensiveNetworkAccess: true,
+            allowsConstrainedNetworkAccess: true
+        )
+        return URLSession(
+            configuration: configuration,
+            delegate: HTTPSOnlyURLSessionDelegate(),
+            delegateQueue: nil
+        )
+    }()
+}
+
 extension OpenSubsonicClient {
     /// Measures the real authenticated OpenSubsonic request path instead of an
     /// ICMP echo. The result therefore includes DNS/connection reuse, TLS,
@@ -8,19 +29,7 @@ extension OpenSubsonicClient {
         let targetCount = min(max(sampleCount, 1), 5)
         let minimumSuccessfulSamples = min(targetCount, 2)
         let maximumAttempts = targetCount + 2
-        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
-            requestTimeout: 8,
-            resourceTimeout: 12,
-            maximumConnectionsPerHost: 2,
-            allowsExpensiveNetworkAccess: true,
-            allowsConstrainedNetworkAccess: true
-        )
-        let session = URLSession(
-            configuration: configuration,
-            delegate: HTTPSOnlyURLSessionDelegate(),
-            delegateQueue: nil
-        )
-        defer { session.invalidateAndCancel() }
+        let session = OpenSubsonicDiagnosticTransport.session
 
         var samples: [Double] = []
         samples.reserveCapacity(targetCount)
