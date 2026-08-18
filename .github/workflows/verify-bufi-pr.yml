@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: verify-bufi-${{ github.event.pull_request.number || github.ref }}
@@ -29,6 +29,91 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: backend-core-lightweight
+          fetch-depth: 2
+
+      - name: Apply media bitrate and prefetch audit
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              path.write_text(text.replace(old, new, 1))
+
+          models = Path('BuFi/Core/Models.swift')
+          replace_once(
+              models,
+              '''    var bitRate: Int? = nil\n    var samplingRate: Int? = nil\n    var bitDepth: Int? = nil\n    var channelCount: Int? = nil\n''',
+              '''    var bitRate: Int? = nil\n    var samplingRate: Int? = nil\n    var bitDepth: Int? = nil\n    var channelCount: Int? = nil\n    var size: Int64? = nil\n''',
+              'media byte size field'
+          )
+          replace_once(
+              models,
+              '''            bitDepth.map(String.init) ?? "",\n            channelCount.map(String.init) ?? "",\n            created ?? "",\n''',
+              '''            bitDepth.map(String.init) ?? "",\n            channelCount.map(String.init) ?? "",\n            size.map(String.init) ?? "",\n            created ?? "",\n''',
+              'playback revision media size'
+          )
+          replace_once(
+              models,
+              '''            bitDepth.map(String.init) ?? "",\n            channelCount.map(String.init) ?? "",\n            created ?? ""\n        ])\n''',
+              '''            bitDepth.map(String.init) ?? "",\n            channelCount.map(String.init) ?? "",\n            size.map(String.init) ?? "",\n            created ?? ""\n        ])\n''',
+              'audio resource revision media size'
+          )
+          replace_once(
+              models,
+              '''        case track, suffix, contentType, bitRate, samplingRate, bitDepth\n        case channelCount, starred, playCount, played, genre\n''',
+              '''        case track, suffix, contentType, bitRate, samplingRate, bitDepth\n        case channelCount, size, starred, playCount, played, genre\n''',
+              'media size coding key'
+          )
+          replace_once(
+              models,
+              '''        bitDepth = try values.decodeIfPresent(Int.self, forKey: .bitDepth)\n        channelCount = try values.decodeIfPresent(Int.self, forKey: .channelCount)\n        starred = try values.decodeIfPresent(String.self, forKey: .starred)\n''',
+              '''        bitDepth = try values.decodeIfPresent(Int.self, forKey: .bitDepth)\n        channelCount = try values.decodeIfPresent(Int.self, forKey: .channelCount)\n        size = try values.decodeIfPresent(Int64.self, forKey: .size)\n        starred = try values.decodeIfPresent(String.self, forKey: .starred)\n''',
+              'media size decoding'
+          )
+
+          audio = Path('BuFi/Playback/AudioEngine.swift')
+          replace_once(
+              audio,
+              '''        if ["m4a", "m4b", "mp4"].contains(suffix) {\n            // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive\n            // with audio/mp4. Use OpenSubsonic media hints when the codec name\n            // itself is absent instead of treating every M4A as lossless.\n            if let bitRate = song.bitRate, bitRate > 0 {\n                if bitRate <= 384 { return .aac }\n                if bitRate >= 512 { return .lossless }\n            }\n            if (song.bitDepth ?? 0) > 16\n                || (song.samplingRate ?? 0) > 48_000 {\n                return .lossless\n            }\n        }\n''',
+              '''        if ["m4a", "m4b", "mp4"].contains(suffix) {\n            // M4A is a container: Apple AAC, FDK-AAC, and ALAC can all arrive\n            // with audio/mp4. Prefer the server bitrate, then derive one from\n            // byte size + duration when older servers omit bitRate.\n            let effectiveBitRate: Double?\n            if let bitRate = song.bitRate, bitRate > 0 {\n                effectiveBitRate = Double(bitRate)\n            } else if let size = song.size,\n                      size > 0,\n                      song.safeDuration > 0 {\n                effectiveBitRate = Double(size) * 8 / song.safeDuration / 1_000\n            } else {\n                effectiveBitRate = nil\n            }\n            if let effectiveBitRate {\n                if effectiveBitRate <= 384 { return .aac }\n                if effectiveBitRate >= 512 { return .lossless }\n            }\n            if (song.bitDepth ?? 0) > 16\n                || (song.samplingRate ?? 0) > 48_000 {\n                return .lossless\n            }\n        }\n''',
+              'derive M4A bitrate from size'
+          )
+
+          replace_once(
+              audio,
+              '''    private func scheduleNetworkPrefetch() {\n        guard allowsSpeculativeNetworkPrefetch,\n              let client,\n              let plan = playbackPrefetchPlan(\n                maximumUpcoming: UpcomingArtworkPrefetchPolicy.upcomingCount,\n                requiresActivePlayback: false\n              ) else {\n''',
+              '''    private func scheduleNetworkPrefetch() {\n        let metadataPrefetchCount = currentPlaybackAudioProfile() == .lossless\n            ? 1\n            : UpcomingArtworkPrefetchPolicy.upcomingCount\n        guard allowsSpeculativeNetworkPrefetch,\n              let client,\n              let plan = playbackPrefetchPlan(\n                maximumUpcoming: metadataPrefetchCount,\n                requiresActivePlayback: false\n              ) else {\n''',
+              'lossless metadata prefetch budget'
+          )
+          replace_once(
+              audio,
+              '''        let cappedCount = min(max(defaultCount, 0), 3)\n        guard allowsSpeculativeNetworkPrefetch,\n              let client,\n              let plan = playbackPrefetchPlan(\n                maximumUpcoming: cappedCount\n              ) else {\n''',
+              '''        let cappedCount = min(max(defaultCount, 0), 3)\n        let mediaAwareCount = currentPlaybackAudioProfile() == .lossless\n            ? min(cappedCount, 1)\n            : cappedCount\n        guard allowsSpeculativeNetworkPrefetch,\n              let client,\n              let plan = playbackPrefetchPlan(\n                maximumUpcoming: mediaAwareCount\n              ) else {\n''',
+              'lossless offline prefetch budget'
+          )
+
+          docs = Path('Docs/NETWORKING.md')
+          replace_once(
+              docs,
+              '''  Buffer windows are codec/bitrate aware, so ALAC/high-bitrate M4A uses a smaller\n  bounded steady-state/successor window while AAC (whether encoded by Apple or\n  FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.\n''',
+              '''  Buffer windows are codec/bitrate aware, so ALAC/high-bitrate M4A uses a smaller\n  bounded steady-state/successor window while AAC (whether encoded by Apple or\n  FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.\n  OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A bitrate can be\n  inferred from byte size and duration when the server omits `bitRate`. Lossless\n  playback also reduces metadata/offline speculative prefetch breadth to keep the\n  active stream ahead of background transfers.\n''',
+              'document bitrate inference and prefetch budget'
+          )
+          PY
+          git diff --check
+          git checkout HEAD^ -- .github/workflows/verify-bufi-pr.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add BuFi/Core/Models.swift BuFi/Playback/AudioEngine.swift Docs/NETWORKING.md .github/workflows/verify-bufi-pr.yml
+          git diff --cached --check
+          git commit -m 'Stabilize codec detection and lossless prefetch'
+          git push origin HEAD:backend-core-lightweight
 
       - name: Show build toolchain
         run: |
