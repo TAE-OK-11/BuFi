@@ -1,0 +1,53 @@
+name: Apply frozen playback reprime refinement once
+
+on:
+  push:
+    branches:
+      - fix/player-artwork-reopen-position
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/player-artwork-reopen-position
+          fetch-depth: 0
+
+      - name: Force a real decoder/range reprime
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('BuFi/Playback/AudioEngine.swift')
+          text = p.read_text()
+
+          def r(old, new):
+              global text
+              if old not in text:
+                  raise SystemExit(f'missing target: {old[:160]!r}')
+              text = text.replace(old, new, 1)
+
+          r(
+              '''    static func hasMeaningfulProgress(\n        from start: TimeInterval,\n        to end: TimeInterval\n    ) -> Bool {\n        start.isFinite && end.isFinite && end >= start + 0.1\n    }\n\n    static func isManagedBufferingWait(\n''',
+              '''    static func hasMeaningfulProgress(\n        from start: TimeInterval,\n        to end: TimeInterval\n    ) -> Bool {\n        start.isFinite && end.isFinite && end >= start + 0.1\n    }\n\n    static func stallReprimeCandidates(\n        elapsed: TimeInterval,\n        duration: TimeInterval\n    ) -> [TimeInterval] {\n        guard elapsed.isFinite, elapsed >= 0 else { return [] }\n        let delta: TimeInterval = 0.08\n        var candidates: [TimeInterval] = []\n        if elapsed > delta {\n            candidates.append(elapsed - delta)\n        }\n        let forward = elapsed + delta\n        if !duration.isFinite || duration <= 0 || forward < duration - 0.01 {\n            candidates.append(forward)\n        }\n        return candidates\n    }\n\n    static func isManagedBufferingWait(\n'''
+          )
+
+          r(
+              '''        if recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries,\n           canSeek(item, to: position) {\n            Self.logger.warning(\n                "Playback clock stopped while AVPlayer still reports playing; reprime the current byte range"\n            )\n            seekPlayer(\n                to: position,\n                persistsQueue: false,\n                resumesPlayback: true,\n                exactly: true\n            )\n            return\n        }\n''',
+              '''        if recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries,\n           let reprimeTarget = PlaybackRecoveryPolicy.stallReprimeCandidates(\n                elapsed: position,\n                duration: duration\n           ).first(where: { canSeek(item, to: $0) }) {\n            Self.logger.warning(\n                "Playback clock stopped while AVPlayer still reports playing; reprime the current byte range"\n            )\n            // A same-position seek can be optimized away by AVPlayer. Move by\n            // only 80 ms (prefer backward) so the decoder/range pipeline must\n            // actually reposition, mirroring the manual scrub that recovers\n            // this failure without an audible jump in normal music.\n            item.cancelPendingSeeks()\n            seekPlayer(\n                to: reprimeTarget,\n                persistsQueue: false,\n                resumesPlayback: true,\n                exactly: true\n            )\n            return\n        }\n'''
+          )
+
+          p.write_text(text)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Playback/AudioEngine.swift
+          git diff --cached --check
+          git commit -m "Force real range reprime on frozen playback clock"
+          git push origin HEAD:fix/player-artwork-reopen-position
