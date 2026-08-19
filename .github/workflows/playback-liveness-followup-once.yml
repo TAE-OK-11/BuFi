@@ -1,0 +1,66 @@
+name: Apply playback liveness follow-up once
+
+on:
+  push:
+    branches:
+      - fix/player-artwork-reopen-position
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/player-artwork-reopen-position
+          fetch-depth: 0
+
+      - name: Refine playback liveness state handling
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('BuFi/Playback/AudioEngine.swift')
+          text = p.read_text()
+
+          def r(old, new):
+              global text
+              if old not in text:
+                  raise SystemExit(f'missing target: {old[:160]!r}')
+              text = text.replace(old, new, 1)
+
+          r(
+              '''/// Keep startup latency small while bounding steady-state memory and bandwidth.\n/// Lossless streams get enough runway for jitter without buffering the same\n/// number of seconds as a much cheaper AAC/Opus stream.\n''',
+              '''/// Keep startup latency small while bounding steady-state memory and bandwidth.\n/// Once playback is established, lossless gets a longer runway so a brief\n/// network dip is less likely to drain a high-bitrate ALAC buffer.\n'''
+          )
+
+          r(
+              '''        guard player.currentItem != nil else {\n            isSeekInFlight = false\n            if persistsQueue { scheduleQueueSave() }\n            return\n        }\n''',
+              '''        guard let seekItem = player.currentItem else {\n            isSeekInFlight = false\n            if persistsQueue { scheduleQueueSave() }\n            return\n        }\n'''
+          )
+          r(
+              '''        seekGeneration &+= 1\n        let generation = seekGeneration\n        let seekItem = player.currentItem\n        isSeekInFlight = true\n''',
+              '''        seekGeneration &+= 1\n        let generation = seekGeneration\n        isSeekInFlight = true\n'''
+          )
+
+          r(
+              '''            var lastPosition: TimeInterval?\n            var stationarySamples = 0\n            var stableSamples = 0\n''',
+              '''            var lastPosition: TimeInterval?\n            var stationarySamples = 0\n            var stableSamples = 0\n            var observedSeekGeneration: UInt64?\n'''
+          )
+          r(
+              '''                let position = self.currentPlayerPosition()\n                let nearEnd = self.duration > 0\n''',
+              '''                let position = self.currentPlayerPosition()\n                let currentSeekGeneration = self.seekGeneration\n                if observedSeekGeneration != currentSeekGeneration {\n                    observedSeekGeneration = currentSeekGeneration\n                    lastPosition = position\n                    stationarySamples = 0\n                    stableSamples = 0\n                    continue\n                }\n                let nearEnd = self.duration > 0\n'''
+          )
+
+          p.write_text(text)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Playback/AudioEngine.swift
+          git diff --cached --check
+          git commit -m "Refine playback clock liveness recovery"
+          git push origin HEAD:fix/player-artwork-reopen-position
