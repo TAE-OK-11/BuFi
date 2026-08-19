@@ -77,6 +77,13 @@ struct PlayerView: View {
 
     private let audio = AudioEngine.shared
 
+    init(initialArtworkPage: PlayerArtworkPageID? = nil) {
+        // Seed the pager before its first layout. Waiting for onAppear is too
+        // late after process restoration: the horizontal ScrollView can resolve
+        // a leading/stale offset before the current queue entry is selected.
+        _artworkPage = State(initialValue: initialArtworkPage)
+    }
+
     var body: some View {
         GeometryReader { proxy in
             ZStack {
@@ -395,12 +402,12 @@ struct PlayerView: View {
         .contentMargins(.horizontal, sideInset, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: pagerPosition, anchor: .center)
-    .simultaneousGesture(
-        DragGesture(minimumDistance: 5)
-            .onChanged { _ in
-                pagerSelectionGate.beginUserInteraction()
-            }
-    )
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 5)
+                .onChanged { _ in
+                    pagerSelectionGate.beginUserInteraction()
+                }
+        )
         .frame(width: viewportWidth)
         .frame(height: edge + heightPadding)
         .contentShape(Rectangle())
