@@ -896,6 +896,23 @@ enum PlaybackRecoveryPolicy {
         start.isFinite && end.isFinite && end >= start + 0.1
     }
 
+    static func stallReprimeCandidates(
+        elapsed: TimeInterval,
+        duration: TimeInterval
+    ) -> [TimeInterval] {
+        guard elapsed.isFinite, elapsed >= 0 else { return [] }
+        let delta: TimeInterval = 0.08
+        var candidates: [TimeInterval] = []
+        if elapsed > delta {
+            candidates.append(elapsed - delta)
+        }
+        let forward = elapsed + delta
+        if !duration.isFinite || duration <= 0 || forward < duration - 0.01 {
+            candidates.append(forward)
+        }
+        return candidates
+    }
+
     static func isManagedBufferingWait(
         timeControlStatus: AVPlayer.TimeControlStatus,
         waitingReason: AVPlayer.WaitingReason?
@@ -4053,12 +4070,20 @@ final class AudioEngine: NSObject, ObservableObject {
         recoveryAttempt += 1
 
         if recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries,
-           canSeek(item, to: position) {
+           let reprimeTarget = PlaybackRecoveryPolicy.stallReprimeCandidates(
+                elapsed: position,
+                duration: duration
+           ).first(where: { canSeek(item, to: $0) }) {
             Self.logger.warning(
                 "Playback clock stopped while AVPlayer still reports playing; reprime the current byte range"
             )
+            // A same-position seek can be optimized away by AVPlayer. Move by
+            // only 80 ms (prefer backward) so the decoder/range pipeline must
+            // actually reposition, mirroring the manual scrub that recovers
+            // this failure without an audible jump in normal music.
+            item.cancelPendingSeeks()
             seekPlayer(
-                to: position,
+                to: reprimeTarget,
                 persistsQueue: false,
                 resumesPlayback: true,
                 exactly: true
