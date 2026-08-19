@@ -3,11 +3,13 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
+    @Environment(\.scenePhase) private var scenePhase
     @State private var offlineBytes: Int64 = 0
     @State private var confirmOfflineRemoval = false
     @State private var confirmArtworkRemoval = false
     @State private var confirmLogout = false
     @State private var isLoggingOut = false
+    @State private var storageErrorMessage: String?
     @AppStorage("appearance-mode") private var appearanceMode = AppAppearance.system.rawValue
     @AppStorage("motion-enabled") private var motionEnabled = true
     @AppStorage("player-seekbar-appearance")
@@ -41,7 +43,24 @@ struct SettingsView: View {
             .toolbar(.hidden, for: .navigationBar)
             .tint(BuFiTheme.accent)
             .task {
-                offlineBytes = await OfflineStore.shared.totalBytes()
+                await observeOfflineStorageChanges()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { @MainActor in
+                    await refreshOfflineBytes()
+                }
+            }
+            .alert(
+                "저장 공간 오류",
+                isPresented: Binding(
+                    get: { storageErrorMessage != nil },
+                    set: { if !$0 { storageErrorMessage = nil } }
+                )
+            ) {
+                Button("확인", role: .cancel) { storageErrorMessage = nil }
+            } message: {
+                Text(storageErrorMessage ?? "")
             }
             .confirmationDialog(
                 "오프라인 음악을 모두 삭제할까요?",
@@ -49,9 +68,13 @@ struct SettingsView: View {
                 titleVisibility: .visible
             ) {
                 Button("모두 삭제", role: .destructive) {
-                    Task {
-                        try? await OfflineStore.shared.removeAll()
-                        offlineBytes = await OfflineStore.shared.totalBytes()
+                    Task { @MainActor in
+                        do {
+                            try await OfflineStore.shared.removeAll()
+                        } catch {
+                            storageErrorMessage = error.localizedDescription
+                        }
+                        await refreshOfflineBytes()
                     }
                 }
                 Button("취소", role: .cancel) {}
@@ -285,6 +308,22 @@ private struct PlaybackSettingsSection: View {
 }
 
 extension SettingsView {
+    @MainActor
+    private func refreshOfflineBytes() async {
+        offlineBytes = await OfflineStore.shared.totalBytes()
+    }
+
+    @MainActor
+    private func observeOfflineStorageChanges() async {
+        await refreshOfflineBytes()
+        for await _ in NotificationCenter.default.notifications(
+            named: OfflineStore.storageDidChangeNotification
+        ) {
+            guard !Task.isCancelled else { return }
+            await refreshOfflineBytes()
+        }
+    }
+
     private var offlineSection: some View {
         SettingsGroup(title: "오프라인 및 저장 공간") {
             VStack(alignment: .leading, spacing: 14) {

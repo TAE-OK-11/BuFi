@@ -12,6 +12,8 @@ struct SearchView: View {
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
     @State private var personalizedMixes: [PersonalizedMix] = []
+    @State private var resolvedPersonalizedMixIdentity: SearchMixTaskIdentity?
+    @State private var viewportWidth: CGFloat = 0
     @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
@@ -61,6 +63,12 @@ struct SearchView: View {
             .task(id: personalizedMixTaskIdentity) {
                 await updatePersonalizedMixesIfNeeded()
             }
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard width.isFinite, width > 0, abs(viewportWidth - width) > 0.5 else { return }
+            viewportWidth = width
         }
     }
 
@@ -463,7 +471,8 @@ struct SearchView: View {
     }
 
     private var collectionCardWidth: CGFloat {
-        max(132, (UIScreen.main.bounds.width - 52) / 2)
+        let width = viewportWidth > 0 ? viewportWidth : 390
+        return max(132, (width - 52) / 2)
     }
 
     private static let searchShortcuts = [
@@ -499,7 +508,14 @@ struct SearchView: View {
 
     @ViewBuilder
     private func algorithmPlaylistGrid(_ mixes: [PersonalizedMix]) -> some View {
-        if mixes.isEmpty {
+        if resolvedPersonalizedMixIdentity != personalizedMixTaskIdentity {
+            HStack {
+                Spacer()
+                ProgressView("맞춤 믹스 준비 중…")
+                Spacer()
+            }
+            .padding(.top, 32)
+        } else if mixes.isEmpty {
             ContentUnavailableView(
                 "추천 플레이리스트를 만들 음악이 없습니다",
                 systemImage: "sparkles"
@@ -602,6 +618,7 @@ struct SearchView: View {
     @MainActor
     private func updatePersonalizedMixesIfNeeded() async {
         guard browseMode == .algorithmPlaylists else { return }
+        let taskIdentity = personalizedMixTaskIdentity
         let revision = library.revision
         let snapshot = library.snapshot
         let selectedArtistsStorage = selectedArtistMixes
@@ -618,6 +635,7 @@ struct SearchView: View {
             return
         }
         personalizedMixes = next
+        resolvedPersonalizedMixIdentity = taskIdentity
     }
 
     private var rowSeparator: some View {

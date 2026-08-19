@@ -6,6 +6,8 @@ struct LibraryView: View {
     @EnvironmentObject private var library: HomeLibraryState
     @State private var filter = LibraryFilter.playlists
     @State private var artistPresentation = LibraryArtistPresentation.empty
+    @State private var artistPresentationRevision: HomeSnapshotRevision?
+    @State private var viewportWidth: CGFloat = 0
 
     var body: some View {
         NavigationStack {
@@ -31,6 +33,12 @@ struct LibraryView: View {
         .task(id: artistPresentationTaskIdentity) {
             await updateArtistPresentation()
         }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            guard width.isFinite, width > 0, abs(viewportWidth - width) > 0.5 else { return }
+            viewportWidth = width
+        }
     }
 
     private var filters: some View {
@@ -50,6 +58,9 @@ struct LibraryView: View {
         case .songs:
             return [.songs]
         case .artists:
+            if artistPresentationRevision != library.revision {
+                return [.artistsLoading]
+            }
             if artistPresentation.allArtists.isEmpty {
                 return [.artistsEmpty]
             }
@@ -139,6 +150,13 @@ struct LibraryView: View {
                 }
                 .padding(.horizontal, 16)
             }
+        case .artistsLoading:
+            HStack {
+                Spacer()
+                ProgressView("아티스트 정리 중…")
+                Spacer()
+            }
+            .padding(.top, 48)
         case .artistsEmpty:
             empty("아티스트가 없습니다", icon: "person.2")
         case .favoriteArtists:
@@ -252,7 +270,8 @@ struct LibraryView: View {
     }
 
     private var libraryAlbumWidth: CGFloat {
-        max(132, (UIScreen.main.bounds.width - 46) / 2)
+        let width = viewportWidth > 0 ? viewportWidth : 390
+        return max(132, (width - 46) / 2)
     }
 
     private func librarySectionTitle(_ title: String) -> some View {
@@ -378,6 +397,7 @@ struct LibraryView: View {
         guard !Task.isCancelled,
               revision == library.revision else { return }
         artistPresentation = next
+        artistPresentationRevision = revision
     }
 }
 
@@ -459,6 +479,7 @@ private enum LibrarySurface: Hashable {
     case playlists
     case albums
     case songs
+    case artistsLoading
     case artistsEmpty
     case favoriteArtists
     case allArtistsHeader

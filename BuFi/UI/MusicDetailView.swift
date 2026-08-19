@@ -63,6 +63,11 @@ private struct MusicDetailFavoriteButtonContent: View {
     }
 }
 
+private struct DetailLoadTaskIdentity: Hashable {
+    let route: MusicRoute
+    let attempt: Int
+}
+
 struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.colorScheme) private var colorScheme
@@ -80,6 +85,8 @@ struct MusicDetailView: View {
     @State private var songRowLayout = SongRowLayout.standard
     @State private var albums: [Album] = []
     @State private var isLoading = true
+    @State private var loadErrorMessage: String?
+    @State private var loadAttempt = 0
     @State private var selectedSong: Song?
     @State private var palette = ArtworkPalette.fallback
     @State private var artistBiography = ""
@@ -100,6 +107,8 @@ struct MusicDetailView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 60)
                         .transition(.opacity)
+                } else if let loadErrorMessage {
+                    detailLoadError(loadErrorMessage)
                 } else {
                     controls
                     if isArtist {
@@ -120,11 +129,10 @@ struct MusicDetailView: View {
         .onChange(of: coverArt) { _, _ in
             palette = .fallback
         }
-        .task(id: route) { await load() }
+        .task(id: DetailLoadTaskIdentity(route: route, attempt: loadAttempt)) { await load() }
         .onDisappear {
-            downloadAllTask?.cancel()
-            downloadAllTask = nil
-            isDownloadingAll = false
+            // A user-requested offline download owns its own lifetime. Leaving
+            // this screen must not silently cancel a transfer already started.
             model.cancelDetailRequest(for: route)
         }
         .sheet(item: $selectedSong) { song in
@@ -132,6 +140,31 @@ struct MusicDetailView: View {
                 .presentationDetents([.height(335)])
                 .presentationDragIndicator(.visible)
         }
+    }
+
+    private func detailLoadError(_ message: String) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("불러오지 못했습니다")
+                .font(.system(size: 20, weight: .bold))
+            Text(message)
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("다시 시도") {
+                loadAttempt &+= 1
+            }
+            .font(.system(size: 15, weight: .semibold))
+            .padding(.horizontal, 18)
+            .frame(height: 42)
+            .buFiGlass(cornerRadius: 21, interactive: true)
+            .buttonStyle(BuFiPressStyle())
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.top, 52)
     }
 
     @ViewBuilder
@@ -363,7 +396,7 @@ struct MusicDetailView: View {
             addCurrentArtistMix()
         } label: {
             Label(
-                hasCurrentArtistMix ? "Artist Mix Added" : "Create Artist Mix",
+                hasCurrentArtistMix ? "아티스트 믹스 추가됨" : "아티스트 믹스 만들기",
                 systemImage: hasCurrentArtistMix
                     ? "checkmark.circle.fill"
                     : "sparkles.rectangle.stack"
@@ -377,6 +410,7 @@ struct MusicDetailView: View {
             .buFiSurface(cornerRadius: 21)
         }
         .buttonStyle(BuFiPressStyle())
+        .disabled(hasCurrentArtistMix)
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
         .accessibilityLabel(
@@ -649,6 +683,7 @@ struct MusicDetailView: View {
     private func load() async {
         let loadingRoute = route
         isLoading = true
+        loadErrorMessage = nil
         palette = .fallback
         title = ""
         subtitle = ""
@@ -742,7 +777,7 @@ struct MusicDetailView: View {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            model.errorMessage = error.localizedDescription
+            loadErrorMessage = error.localizedDescription
         }
         guard !Task.isCancelled, route == loadingRoute else { return }
         withAnimation(allowsMotion ? BuFiMotion.fade : .none) {
