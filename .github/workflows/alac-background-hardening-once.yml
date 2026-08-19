@@ -22,6 +22,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           p = Path('BuFi/Playback/AudioEngine.swift')
           s = p.read_text()
@@ -29,29 +30,33 @@ jobs:
               print('ALAC background hardening already applied')
               raise SystemExit(0)
 
-          def one(old, new, label):
+          def once(old, new, label):
               global s
               n = s.count(old)
               if n != 1:
                   raise SystemExit(f'{label}: expected 1 match, found {n}')
               s = s.replace(old, new, 1)
 
-          one('''        case constrained
-                  case successor
-          ''','''        case constrained
-                  case background
-                  case successor
-          ''','phase')
+          def rx(pattern, replacement, label):
+              global s
+              s2, n = re.subn(pattern, replacement, s, count=1, flags=re.S | re.M)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 regex match, found {n}')
+              s = s2
 
-          one('''        case .constrained:
+          once('''        case constrained
+                  case successor''','''        case constrained
+                  case background
+                  case successor''','phase enum')
+
+          once('''        case .constrained:
                       return switch profile {
                       case .aac: 10
                       case .compressed: 9
                       case .unknown: 9
                       case .lossless: 10
                       }
-                  case .successor:
-          ''','''        case .constrained:
+                  case .successor:''','''        case .constrained:
                       return switch profile {
                       case .aac: 10
                       case .compressed: 9
@@ -65,42 +70,22 @@ jobs:
                       case .unknown: 18
                       case .lossless: 32
                       }
-                  case .successor:
-          ''','background buffer')
+                  case .successor:''','background buffer')
 
-          one('''    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
-          ''','''    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+          once('''    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid''','''    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
               private var backgroundBridgeBaselinePosition: TimeInterval?
               private var backgroundBridgePlaybackID: UUID?
               private var backgroundTransitionVerificationTask: Task<Void, Never>?
-              private var backgroundTransitionVerificationToken: UUID?
-          ''','background state')
+              private var backgroundTransitionVerificationToken: UUID?''','background state')
 
-          # Replace existing resume calls first, then add the helper so its own
-          # playLatencyOptimized call isn't rewritten recursively.
+          # Context-sensitive resumes: foreground keeps low-latency start, but
+          # background lossless lets AVPlayer refill instead of forcing play.
           s = s.replace('self.playLatencyOptimized()', 'self.resumeTransportForCurrentContext()')
           s = s.replace('            playLatencyOptimized()\n', '            resumeTransportForCurrentContext()\n')
           s = s.replace('        playLatencyOptimized()\n', '        resumeTransportForCurrentContext()\n')
-
-          one('''    private func playLatencyOptimized() {
-                  // Keep AVPlayer's stall-management enabled globally, but do not pay its
-                  // startup buffering tax for explicit starts, resumes, seeks, or a
-                  // ready-to-play item. Mid-stream recovery still gets a bounded managed
-                  // buffering grace before this fast path is used.
-                  player.playImmediately(atRate: 1)
-              }
-          ''','''    private func playLatencyOptimized() {
-                  // Keep AVPlayer's stall-management enabled globally, but do not pay its
-                  // startup buffering tax for explicit starts, resumes, seeks, or a
-                  // ready-to-play item. Mid-stream recovery still gets a bounded managed
-                  // buffering grace before this fast path is used.
-                  player.playImmediately(atRate: 1)
-              }
+          rx(r'''(    private func playLatencyOptimized\(\) \{.*?^    \})\n''', r'''\1
 
               private func resumeTransportForCurrentContext() {
-                  // A progressive ALAC stream needs AVPlayer's managed stall
-                  // avoidance while backgrounded. Forcing playImmediately can
-                  // advertise `.playing` before enough lossless bytes are ready.
                   if !applicationIsActive,
                      currentPlaybackAudioProfile() == .lossless {
                       player.play()
@@ -108,26 +93,9 @@ jobs:
                   }
                   playLatencyOptimized()
               }
-          ''','resume helper')
+''', 'resume helper')
 
-          one('''    private func expandSettledForwardBufferIfNeeded() {
-                  guard let item = player.currentItem ?? logicalCurrentItem else { return }
-                  let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
-                  let profile = currentPlaybackAudioProfile()
-                  let settled = PlaybackBufferPolicy.forwardBufferDuration(
-                      isLocalFile: isLocal,
-                      profile: profile,
-                      phase: .settled
-                  )
-                  guard item.preferredForwardBufferDuration + 0.01 < settled else { return }
-                  PlaybackBufferPolicy.configure(
-                      item,
-                      isLocalFile: isLocal,
-                      profile: profile,
-                      phase: .settled
-                  )
-              }
-          ''','''    private func expandSettledForwardBufferIfNeeded() {
+          rx(r'''^    private func expandSettledForwardBufferIfNeeded\(\) \{.*?^    \}\n\n    private func cancelStallConfirmation''', '''    private func expandSettledForwardBufferIfNeeded() {
                   guard let item = player.currentItem ?? logicalCurrentItem else { return }
                   let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
                   let profile = currentPlaybackAudioProfile()
@@ -147,79 +115,50 @@ jobs:
                       phase: phase
                   )
               }
-          ''','buffer expansion')
 
-          one('''    private func scheduleGaplessSuccessor() {
+              private func cancelStallConfirmation''', 'buffer expansion')
+
+          once('''    private func scheduleGaplessSuccessor() {
                   let activelyPlaying = player.timeControlStatus == .playing
-                  guard wantsPlayback,
-                        stagedSuccessorItem == nil,
-                        PlaybackGaplessPreparationPolicy.shouldPrepare(
-                          elapsed: currentPlayerPosition(),
-                          duration: duration,
-                          isBuffering: isBuffering,
-                          isActivelyPlaying: activelyPlaying,
-                          profile: currentPlaybackAudioProfile()
-                        ),
-          ''','''    private func scheduleGaplessSuccessor() {
+                  guard wantsPlayback,''','''    private func scheduleGaplessSuccessor() {
                   let activelyPlaying = player.timeControlStatus == .playing
                   let profile = currentPlaybackAudioProfile()
-                  // Keep the active high-bitrate stream as the only media
-                  // transport while backgrounded. AAC/compressed is unchanged.
                   guard applicationIsActive || profile != .lossless else { return }
-                  guard wantsPlayback,
-                        stagedSuccessorItem == nil,
-                        PlaybackGaplessPreparationPolicy.shouldPrepare(
-                          elapsed: currentPlayerPosition(),
-                          duration: duration,
-                          isBuffering: isBuffering,
-                          isActivelyPlaying: activelyPlaying,
-                          profile: profile
-                        ),
-          ''','gapless background gate')
+                  guard wantsPlayback,''','gapless gate')
+          once('''                profile: currentPlaybackAudioProfile()
+                    ),
+                    let plan = GaplessSuccessorPlan.make(''','''                profile: profile
+                    ),
+                    let plan = GaplessSuccessorPlan.make(''','gapless profile')
 
-          one('''    private func scheduleNetworkPrefetch() {
-                  let metadataPrefetchCount = currentPlaybackAudioProfile() == .lossless
-          ''','''    private func scheduleNetworkPrefetch() {
+          once('''    private func scheduleNetworkPrefetch() {
+                  let metadataPrefetchCount''','''    private func scheduleNetworkPrefetch() {
                   guard applicationIsActive else {
                       cancelNetworkPrefetch(resetKey: true)
                       return
                   }
-                  let metadataPrefetchCount = currentPlaybackAudioProfile() == .lossless
-          ''','network prefetch gate')
-
-          one('''    private func scheduleOfflinePrefetch() {
-                  let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
-          ''','''    private func scheduleOfflinePrefetch() {
+                  let metadataPrefetchCount''','network prefetch')
+          once('''    private func scheduleOfflinePrefetch() {
+                  let configured''','''    private func scheduleOfflinePrefetch() {
                   guard applicationIsActive else {
                       cancelOfflinePrefetch(resetKey: true)
                       return
                   }
-                  let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
-          ''','offline prefetch gate')
+                  let configured''','offline prefetch')
 
-          one('''                    self.endBackgroundBridge()
-                          self.reportPlaybackState("playing")
-          ''','''                    self.completeBackgroundBridgeIfPlaybackProgressed()
-                          self.reportPlaybackState("playing")
-          ''','bridge playing state')
-
-          one('''            if self.duration > 0 {
+          once('''                    self.endBackgroundBridge()
+                              self.reportPlaybackState("playing")''','''                    self.completeBackgroundBridgeIfPlaybackProgressed()
+                              self.reportPlaybackState("playing")''','time-control bridge')
+          once('''            if self.duration > 0 {
                           self.elapsed = min(self.elapsed, self.duration)
                       }
-                      self.updateActiveLyric(at: lyricPosition)
-          ''','''            if self.duration > 0 {
+                      self.updateActiveLyric(at: lyricPosition)''','''            if self.duration > 0 {
                           self.elapsed = min(self.elapsed, self.duration)
                       }
                       self.completeBackgroundBridgeIfPlaybackProgressed()
-                      self.updateActiveLyric(at: lyricPosition)
-          ''','bridge clock progress')
+                      self.updateActiveLyric(at: lyricPosition)''','clock bridge')
 
-          one('''    private func setApplicationActive(_ value: Bool) {
-                  guard applicationIsActive != value else { return }
-                  applicationIsActive = value
-                  installPlaybackTimeObserver()
-              }
-          ''','''    private func setApplicationActive(_ value: Bool) {
+          rx(r'''^    private func setApplicationActive\(_ value: Bool\) \{.*?^    \}\n\n    private func handleDidEnterBackground''', '''    private func setApplicationActive(_ value: Bool) {
                   guard applicationIsActive != value else { return }
                   applicationIsActive = value
                   if value {
@@ -237,85 +176,17 @@ jobs:
                       scheduleGaplessSuccessor()
                   }
               }
-          ''','application activity')
 
-          one('''                    self.setApplicationActive(false)
-                              self.preserveActivePlayback()
-          ''','''                    self.setApplicationActive(false)
-                              // Leave a healthy active transport untouched here.
-                              // didEnterBackground performs bounded verification.
-          ''','will resign active')
+              private func handleDidEnterBackground''', 'application activity')
 
-          one('''    private func handleDidEnterBackground() {
-                  scheduleQueueSave(immediate: true)
-                  guard wantsPlayback else {
-                      playerTaskLifecycle.cancelBackgroundRecovery()
-                      scheduleAudioSessionDeactivation(immediate: true)
-                      return
-                  }
-                  beginBackgroundBridge()
-                  preserveActivePlayback()
-                  guard let playbackItem = currentPlaybackItem else {
-                      playerTaskLifecycle.cancelBackgroundRecovery()
-                      endBackgroundBridge()
-                      return
-                  }
-                  let sessionGeneration = playbackSessionGeneration
-                  let accountScope = currentAccountScope
-                  let playbackGenerationID = playbackItem.id
-                  let queueEntryID = playbackItem.queueEntryID
-                  playerTaskLifecycle.scheduleBackgroundRecovery(
-                      after: .seconds(4)
-                  ) { [weak self] in
-                      guard let self,
-                            sessionGeneration == self.playbackSessionGeneration,
-                            accountScope == self.currentAccountScope,
-                            self.currentPlaybackItem?.id == playbackGenerationID,
-                            self.currentPlaybackItem?.queueEntryID == queueEntryID,
-                            self.wantsPlayback else {
-                          return
-                      }
-                      guard self.player.timeControlStatus != .playing else {
-                          self.endBackgroundBridge()
-                          return
-                      }
-                      self.schedulePlaybackRecovery()
-                  }
-              }
+          once('''                    self.setApplicationActive(false)
+                              self.preserveActivePlayback()''','''                    self.setApplicationActive(false)
+                              // Leave a healthy transport untouched until the
+                              // actual background transition is verified.''','will resign active')
 
-              private func preserveActivePlayback() {
-                  guard wantsPlayback, currentSong != nil else { return }
-                  if player.currentItem == nil || player.currentItem?.status == .failed {
-                      restartPlaybackPlan(resumeFrom: elapsed)
-                      updateNowPlaying()
-                      return
-                  }
-                  configureAudioSession()
-                  player.isMuted = false
-                  player.volume = 1
-                  resumeTransportForCurrentContext()
-                  recomputeTimelineFromPlayer()
-                  installNextLyricBoundary(after: elapsed)
-                  updateNowPlaying()
-              }
-
-              private func beginBackgroundBridge() {
-                  endBackgroundBridge()
-                  backgroundTaskID = UIApplication.shared.beginBackgroundTask(
-                      withName: "BuFiPlaybackTransition"
-                  ) { @Sendable [weak self] in
-                      Task { @MainActor in self?.endBackgroundBridge() }
-                  }
-              }
-
-              private func endBackgroundBridge() {
-                  guard backgroundTaskID != .invalid else { return }
-                  UIApplication.shared.endBackgroundTask(backgroundTaskID)
-                  backgroundTaskID = .invalid
-              }
-          ''','''    private func handleDidEnterBackground() {
-                  // Local persistence is enough at the lifecycle boundary.
-                  // Avoid a server queue write competing with the ALAC stream.
+          background_block = '''    private func handleDidEnterBackground() {
+                  // Persist locally, but don't create a competing API write at
+                  // the same moment a high-bitrate ALAC transport goes background.
                   scheduleQueueSave(immediate: true, syncServer: false)
                   guard wantsPlayback else {
                       cancelBackgroundTransitionVerification()
@@ -358,9 +229,8 @@ jobs:
                       updateNowPlaying()
                       return
                   }
-                  // Do not restart an already advancing AVPlayer merely because
-                  // the app changed lifecycle state. That preserves the decoder
-                  // and progressive HTTP range request through the handoff.
+                  // A healthy progressive request is already the best path.
+                  // Don't reactivate/restart it just because lifecycle changed.
                   if player.timeControlStatus != .playing {
                       configureAudioSession()
                       player.isMuted = false
@@ -385,9 +255,8 @@ jobs:
                   let sessionGeneration = playbackSessionGeneration
                   let accountScope = currentAccountScope
                   backgroundTransitionVerificationTask = Task { [weak self] in
-                      do {
-                          try await Task.sleep(for: .milliseconds(2_500))
-                      } catch { return }
+                      do { try await Task.sleep(for: .milliseconds(2_500)) }
+                      catch { return }
                       guard let self,
                             !Task.isCancelled,
                             self.backgroundTransitionVerificationToken == token else { return }
@@ -465,9 +334,7 @@ jobs:
                         let baselinePosition = backgroundBridgeBaselinePosition,
                         let playbackItem = currentPlaybackItem else { return }
                   if playbackItem.id != bridgePlaybackID {
-                      if player.timeControlStatus == .playing {
-                          endBackgroundBridge()
-                      }
+                      if player.timeControlStatus == .playing { endBackgroundBridge() }
                       return
                   }
                   if PlaybackRecoveryPolicy.hasMeaningfulProgress(
@@ -485,36 +352,30 @@ jobs:
                   UIApplication.shared.endBackgroundTask(backgroundTaskID)
                   backgroundTaskID = .invalid
               }
-          ''','background lifecycle')
 
-          one('''    private func pausePlayback(persistsQueue: Bool) {
+'''
+          rx(r'''^    private func handleDidEnterBackground\(\) \{.*?(?=^    private func handleAudioInterruption)''', background_block, 'background lifecycle')
+
+          once('''    private func pausePlayback(persistsQueue: Bool) {
                   wantsPlayback = false
-                  cancelPlaybackRecovery()
-          ''','''    private func pausePlayback(persistsQueue: Bool) {
+                  cancelPlaybackRecovery()''','''    private func pausePlayback(persistsQueue: Bool) {
                   wantsPlayback = false
                   cancelBackgroundTransitionVerification()
-                  cancelPlaybackRecovery()
-          ''','pause cancel')
-
-          one('''        case .began:
+                  cancelPlaybackRecovery()''','pause cancel')
+          once('''        case .began:
                       resumeAfterInterruption = isPlaying || wantsPlayback
                       wantsPlayback = false
-                      cancelPlaybackRecovery()
-          ''','''        case .began:
+                      cancelPlaybackRecovery()''','''        case .began:
                       resumeAfterInterruption = isPlaying || wantsPlayback
                       wantsPlayback = false
                       cancelBackgroundTransitionVerification()
-                      cancelPlaybackRecovery()
-          ''','interruption cancel')
-
-          one('''    ) {
+                      cancelPlaybackRecovery()''','interruption cancel')
+          once('''    ) {
                   playbackSessionGeneration &+= 1
-                  let sessionGeneration = playbackSessionGeneration
-          ''','''    ) {
+                  let sessionGeneration = playbackSessionGeneration''','''    ) {
                   cancelBackgroundTransitionVerification()
                   playbackSessionGeneration &+= 1
-                  let sessionGeneration = playbackSessionGeneration
-          ''','session cancel')
+                  let sessionGeneration = playbackSessionGeneration''','session cancel')
 
           p.write_text(s)
           PY
