@@ -1077,6 +1077,7 @@ enum PlaybackBufferPolicy {
         case startup
         case settled
         case constrained
+        case background
         case successor
     }
 
@@ -1111,6 +1112,13 @@ enum PlaybackBufferPolicy {
             case .compressed: 9
             case .unknown: 9
             case .lossless: 10
+            }
+        case .background:
+            return switch profile {
+            case .aac: 20
+            case .compressed: 18
+            case .unknown: 18
+            case .lossless: 32
             }
         case .successor:
             return switch profile {
@@ -1566,6 +1574,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private var shuffleSessionPlayedEntryIDs: Set<UUID> = []
     private var pendingSeekPosition: TimeInterval?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    private var backgroundBridgeBaselinePosition: TimeInterval?
+    private var backgroundBridgePlaybackID: UUID?
+    private var backgroundTransitionVerificationTask: Task<Void, Never>?
+    private var backgroundTransitionVerificationToken: UUID?
     private var lastQueueSaveRequest = Date.distantPast
     private var lastServerQueueSaveRequest = Date.distantPast
     private var lastMaintenanceSecond = -1
@@ -1638,6 +1650,7 @@ final class AudioEngine: NSObject, ObservableObject {
             ) async -> [Song])? = nil,
         songChangeHandler: (@MainActor (Song) -> Void)? = nil
     ) {
+        cancelBackgroundTransitionVerification()
         playbackSessionGeneration &+= 1
         let sessionGeneration = playbackSessionGeneration
         playerTaskLifecycle.beginSessionTransition()
@@ -1955,6 +1968,15 @@ final class AudioEngine: NSObject, ObservableObject {
         player.playImmediately(atRate: 1)
     }
 
+    private func resumeTransportForCurrentContext() {
+        if !applicationIsActive,
+           currentPlaybackAudioProfile() == .lossless {
+            player.play()
+            return
+        }
+        playLatencyOptimized()
+    }
+
     func resumePlayback() {
         guard currentSong != nil else { return }
         activateRuntimeIfNeeded()
@@ -1980,7 +2002,7 @@ final class AudioEngine: NSObject, ObservableObject {
         player.volume = 1
         activateNowPlayingSession()
         if !needsReload {
-            playLatencyOptimized()
+            resumeTransportForCurrentContext()
             if let item = player.currentItem {
                 ensurePlaybackClockLivenessWatchdog(for: item)
             }
@@ -2036,6 +2058,7 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func pausePlayback(persistsQueue: Bool) {
         wantsPlayback = false
+        cancelBackgroundTransitionVerification()
         cancelPlaybackRecovery()
         cancelPlaybackClockLivenessWatchdog()
         player.pause()
@@ -2129,7 +2152,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     if finished {
                         self.isBuffering = false
                         self.configureAudioSession()
-                        self.playLatencyOptimized()
+                        self.resumeTransportForCurrentContext()
                         self.schedulePlaybackRecovery()
                     } else {
                         self.isBuffering = true
@@ -2884,7 +2907,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else {
                     guard self.player.timeControlStatus != .playing else { return }
                     self.configureAudioSession()
-                    self.playLatencyOptimized()
+                    self.resumeTransportForCurrentContext()
                     self.schedulePlaybackRecovery()
                 }
             }
@@ -3017,6 +3040,8 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func scheduleGaplessSuccessor() {
         let activelyPlaying = player.timeControlStatus == .playing
+        let profile = currentPlaybackAudioProfile()
+        guard applicationIsActive || profile != .lossless else { return }
         guard wantsPlayback,
               stagedSuccessorItem == nil,
               PlaybackGaplessPreparationPolicy.shouldPrepare(
@@ -3024,7 +3049,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 duration: duration,
                 isBuffering: isBuffering,
                 isActivelyPlaying: activelyPlaying,
-                profile: currentPlaybackAudioProfile()
+                profile: profile
               ),
               let plan = GaplessSuccessorPlan.make(
                 queueCount: queue.count,
@@ -3274,6 +3299,10 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleNetworkPrefetch() {
+        guard applicationIsActive else {
+            cancelNetworkPrefetch(resetKey: true)
+            return
+        }
         let metadataPrefetchCount = currentPlaybackAudioProfile() == .lossless
             ? 1
             : UpcomingArtworkPrefetchPolicy.upcomingCount
@@ -3353,6 +3382,10 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleOfflinePrefetch() {
+        guard applicationIsActive else {
+            cancelOfflinePrefetch(resetKey: true)
+            return
+        }
         let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
         let defaultCount =
             UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
@@ -3568,7 +3601,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         self.player.isMuted = false
                         self.player.volume = 1
                         self.activateNowPlayingSession()
-                        self.playLatencyOptimized()
+                        self.resumeTransportForCurrentContext()
                         self.schedulePlaybackRecovery()
                     }
                 case .failed:
@@ -3793,7 +3826,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.cancelStallConfirmation()
                 } else if self.wantsPlayback, self.player.timeControlStatus != .playing {
                     self.configureAudioSession()
-                    self.playLatencyOptimized()
+                    self.resumeTransportForCurrentContext()
                     self.recomputeTimelineFromPlayer()
                     self.installNextLyricBoundary(after: self.elapsed)
                 }
@@ -3936,17 +3969,18 @@ final class AudioEngine: NSObject, ObservableObject {
         guard let item = player.currentItem ?? logicalCurrentItem else { return }
         let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
         let profile = currentPlaybackAudioProfile()
-        let settled = PlaybackBufferPolicy.forwardBufferDuration(
+        let phase: PlaybackBufferPolicy.Phase = applicationIsActive ? .settled : .background
+        let target = PlaybackBufferPolicy.forwardBufferDuration(
             isLocalFile: isLocal,
             profile: profile,
-            phase: .settled
+            phase: phase
         )
-        guard item.preferredForwardBufferDuration + 0.01 < settled else { return }
+        guard item.preferredForwardBufferDuration + 0.01 < target else { return }
         PlaybackBufferPolicy.configure(
             item,
             isLocalFile: isLocal,
             profile: profile,
-            phase: .settled
+            phase: phase
         )
     }
 
@@ -4285,7 +4319,7 @@ final class AudioEngine: NSObject, ObservableObject {
             }
 
             self.configureAudioSession()
-            self.playLatencyOptimized()
+            self.resumeTransportForCurrentContext()
             self.recomputeTimelineFromPlayer()
             self.installNextLyricBoundary(after: self.elapsed)
 
@@ -4484,7 +4518,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         self.cancelPlaybackRecovery()
                     }
                     self.scheduleRecoveryAttemptReset(for: player.currentItem)
-                    self.endBackgroundBridge()
+                    self.completeBackgroundBridgeIfPlaybackProgressed()
                     self.reportPlaybackState("playing")
                     self.scheduleGaplessSuccessor()
                     self.scheduleNetworkPrefetch()
@@ -4557,6 +4591,7 @@ final class AudioEngine: NSObject, ObservableObject {
             if self.duration > 0 {
                 self.elapsed = min(self.elapsed, self.duration)
             }
+            self.completeBackgroundBridgeIfPlaybackProgressed()
             self.updateActiveLyric(at: lyricPosition)
 
             // UI progress may need four updates per second while the full
@@ -4900,7 +4935,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.setApplicationActive(false)
-                    self.preserveActivePlayback()
+                    // Keep an already healthy transport untouched here.
                 }
             })
             tokens.append(center.addObserver(
@@ -4922,44 +4957,51 @@ final class AudioEngine: NSObject, ObservableObject {
     private func setApplicationActive(_ value: Bool) {
         guard applicationIsActive != value else { return }
         applicationIsActive = value
+        if value {
+            cancelBackgroundTransitionVerification()
+            endBackgroundBridge()
+        } else if wantsPlayback {
+            prepareForBackgroundTransition()
+        }
         installPlaybackTimeObserver()
+        if value, wantsPlayback, player.timeControlStatus == .playing {
+            scheduleNetworkPrefetch()
+            scheduleOfflinePrefetch()
+            scheduleGaplessSuccessor()
+        }
     }
 
     private func handleDidEnterBackground() {
-        scheduleQueueSave(immediate: true)
+        scheduleQueueSave(immediate: true, syncServer: false)
         guard wantsPlayback else {
-            playerTaskLifecycle.cancelBackgroundRecovery()
+            cancelBackgroundTransitionVerification()
             scheduleAudioSessionDeactivation(immediate: true)
             return
         }
-        beginBackgroundBridge()
-        preserveActivePlayback()
+        prepareForBackgroundTransition()
         guard let playbackItem = currentPlaybackItem else {
-            playerTaskLifecycle.cancelBackgroundRecovery()
+            cancelBackgroundTransitionVerification()
             endBackgroundBridge()
             return
         }
-        let sessionGeneration = playbackSessionGeneration
-        let accountScope = currentAccountScope
-        let playbackGenerationID = playbackItem.id
-        let queueEntryID = playbackItem.queueEntryID
-        playerTaskLifecycle.scheduleBackgroundRecovery(
-            after: .seconds(4)
-        ) { [weak self] in
-            guard let self,
-                  sessionGeneration == self.playbackSessionGeneration,
-                  accountScope == self.currentAccountScope,
-                  self.currentPlaybackItem?.id == playbackGenerationID,
-                  self.currentPlaybackItem?.queueEntryID == queueEntryID,
-                  self.wantsPlayback else {
-                return
-            }
-            guard self.player.timeControlStatus != .playing else {
-                self.endBackgroundBridge()
-                return
-            }
-            self.schedulePlaybackRecovery()
+        let baselinePosition = currentPlayerPosition()
+        beginBackgroundBridge(playbackItem: playbackItem, baselinePosition: baselinePosition)
+        preserveActivePlayback()
+        scheduleBackgroundTransitionVerification(
+            playbackItem: playbackItem,
+            baselinePosition: baselinePosition
+        )
+    }
+
+    private func prepareForBackgroundTransition() {
+        guard wantsPlayback, currentSong != nil else { return }
+        suspendSpeculativePrefetch()
+        if currentPlaybackAudioProfile() == .lossless,
+           let stagedSuccessorItem,
+           player.currentItem !== stagedSuccessorItem {
+            invalidateStagedSuccessor(removeFromPlayer: true)
         }
+        expandSettledForwardBufferIfNeeded()
     }
 
     private func preserveActivePlayback() {
@@ -4969,17 +5011,90 @@ final class AudioEngine: NSObject, ObservableObject {
             updateNowPlaying()
             return
         }
-        configureAudioSession()
-        player.isMuted = false
-        player.volume = 1
-        playLatencyOptimized()
+        if player.timeControlStatus != .playing {
+            configureAudioSession()
+            player.isMuted = false
+            player.volume = 1
+            resumeTransportForCurrentContext()
+        }
+        if let item = player.currentItem {
+            ensurePlaybackClockLivenessWatchdog(for: item)
+        }
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
         updateNowPlaying()
     }
 
-    private func beginBackgroundBridge() {
+    private func scheduleBackgroundTransitionVerification(
+        playbackItem: PlaybackMediaItem,
+        baselinePosition: TimeInterval
+    ) {
+        cancelBackgroundTransitionVerification()
+        let token = UUID()
+        backgroundTransitionVerificationToken = token
+        let sessionGeneration = playbackSessionGeneration
+        let accountScope = currentAccountScope
+        backgroundTransitionVerificationTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(2_500)) }
+            catch { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.backgroundTransitionVerificationToken == token else { return }
+            defer {
+                if self.backgroundTransitionVerificationToken == token {
+                    self.backgroundTransitionVerificationToken = nil
+                    self.backgroundTransitionVerificationTask = nil
+                }
+            }
+            guard sessionGeneration == self.playbackSessionGeneration,
+                  accountScope == self.currentAccountScope,
+                  self.wantsPlayback else { return }
+            guard self.currentPlaybackItem?.id == playbackItem.id,
+                  self.currentPlaybackItem?.queueEntryID == playbackItem.queueEntryID else {
+                if self.player.timeControlStatus == .playing { self.endBackgroundBridge() }
+                return
+            }
+            let position = self.currentPlayerPosition()
+            if PlaybackRecoveryPolicy.hasMeaningfulProgress(from: baselinePosition, to: position) {
+                self.endBackgroundBridge()
+                return
+            }
+            guard self.networkPathIsSatisfied else {
+                self.isBuffering = true
+                return
+            }
+            self.isBuffering = true
+            guard let item = self.player.currentItem else {
+                self.loadCurrentItem(
+                    compatibilityFormat: self.activeCompatibilityFormat,
+                    resumeFrom: position
+                )
+                return
+            }
+            if item.status == .readyToPlay,
+               self.player.timeControlStatus == .playing {
+                self.recoverFrozenPlaybackClock(item: item, position: position)
+            } else {
+                self.configureAudioSession()
+                self.resumeTransportForCurrentContext()
+                self.schedulePlaybackRecovery(mode: .stall)
+            }
+        }
+    }
+
+    private func cancelBackgroundTransitionVerification() {
+        backgroundTransitionVerificationToken = nil
+        backgroundTransitionVerificationTask?.cancel()
+        backgroundTransitionVerificationTask = nil
+    }
+
+    private func beginBackgroundBridge(
+        playbackItem: PlaybackMediaItem,
+        baselinePosition: TimeInterval
+    ) {
         endBackgroundBridge()
+        backgroundBridgePlaybackID = playbackItem.id
+        backgroundBridgeBaselinePosition = baselinePosition
         backgroundTaskID = UIApplication.shared.beginBackgroundTask(
             withName: "BuFiPlaybackTransition"
         ) { @Sendable [weak self] in
@@ -4987,7 +5102,27 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
+    private func completeBackgroundBridgeIfPlaybackProgressed() {
+        guard !applicationIsActive,
+              backgroundTaskID != .invalid,
+              let bridgePlaybackID = backgroundBridgePlaybackID,
+              let baselinePosition = backgroundBridgeBaselinePosition,
+              let playbackItem = currentPlaybackItem else { return }
+        if playbackItem.id != bridgePlaybackID {
+            if player.timeControlStatus == .playing { endBackgroundBridge() }
+            return
+        }
+        if PlaybackRecoveryPolicy.hasMeaningfulProgress(
+            from: baselinePosition,
+            to: currentPlayerPosition()
+        ) {
+            endBackgroundBridge()
+        }
+    }
+
     private func endBackgroundBridge() {
+        backgroundBridgePlaybackID = nil
+        backgroundBridgeBaselinePosition = nil
         guard backgroundTaskID != .invalid else { return }
         UIApplication.shared.endBackgroundTask(backgroundTaskID)
         backgroundTaskID = .invalid
@@ -5005,6 +5140,7 @@ final class AudioEngine: NSObject, ObservableObject {
         case .began:
             resumeAfterInterruption = isPlaying || wantsPlayback
             wantsPlayback = false
+            cancelBackgroundTransitionVerification()
             cancelPlaybackRecovery()
             markAudioSessionInactive()
             player.pause()
