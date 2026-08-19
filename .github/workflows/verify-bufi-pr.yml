@@ -23,27 +23,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  patch-alac:
+    name: Apply ALAC background hardening
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+          fetch-depth: 0
+      - name: Apply patch once
+        run: |
+          python3 Scripts/apply-alac-background-hardening.py
+          if git diff --quiet -- BuFi/Playback/AudioEngine.swift; then
+            echo "ALAC background hardening already present"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Playback/AudioEngine.swift
+          git commit -m "Harden ALAC playback across background transitions"
+          git push origin HEAD:${{ github.head_ref }}
+
   unified-ios:
     name: Swift 6.4 unified iOS build
+    needs: patch-alac
     runs-on: xcode-27
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref || github.ref }}
-
-      - name: Apply ALAC background hardening once
-        run: |
-          python3 Scripts/apply-alac-background-hardening.py
-          if git diff --quiet -- BuFi/Playback/AudioEngine.swift; then
-            echo "ALAC background hardening already present"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add BuFi/Playback/AudioEngine.swift
-            git commit -m "Harden ALAC playback across background transitions"
-            git push origin HEAD:${{ github.head_ref }}
-          fi
 
       - name: Show build toolchain
         run: |
