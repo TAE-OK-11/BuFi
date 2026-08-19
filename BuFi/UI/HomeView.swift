@@ -14,6 +14,7 @@ struct HomeView: View {
     @State private var filter = HomeFilter.all
     @State private var presentation = HomePresentation.empty
     @State private var hasLoadedPresentation = false
+    @State private var resolvedPresentationIdentity: HomePresentationTaskIdentity?
 
     var body: some View {
         NavigationStack {
@@ -21,10 +22,27 @@ struct HomeView: View {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     BuFiPageHeader(title: "홈")
                     filterBar
-                    ForEach(visibleSections, id: \.self) { section in
-                        homeSection(section)
-                            .padding(.top, section == visibleSections.first ? 0 : 6)
-                            .transition(.opacity)
+                    if filter == .personalized,
+                       resolvedPresentationIdentity != presentationTaskIdentity {
+                        HStack {
+                            Spacer()
+                            ProgressView("맞춤 믹스 준비 중…")
+                            Spacer()
+                        }
+                        .padding(.top, 48)
+                    } else if filter == .personalized, visibleSections.isEmpty {
+                        ContentUnavailableView(
+                            "아직 만들 수 있는 맞춤 믹스가 없습니다",
+                            systemImage: "sparkles"
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 44)
+                    } else {
+                        ForEach(visibleSections, id: \.self) { section in
+                            homeSection(section)
+                                .padding(.top, section == visibleSections.first ? 0 : 6)
+                                .transition(.opacity)
+                        }
                     }
                 }
                 .padding(.top, 18)
@@ -371,6 +389,7 @@ struct HomeView: View {
 
     @MainActor
     private func updatePresentation() async {
+        let taskIdentity = presentationTaskIdentity
         let revision = library.revision
         let snapshot = library.snapshot
         let selectedArtistsStorage = selectedArtistMixes
@@ -398,6 +417,7 @@ struct HomeView: View {
               selectedArtistsStorage == selectedArtistMixes else { return }
         presentation = next
         hasLoadedPresentation = true
+        resolvedPresentationIdentity = taskIdentity
     }
 
     private func countText(_ count: Int) -> String {

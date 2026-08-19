@@ -9,6 +9,7 @@ struct LoginView: View {
     @State private var password = ""
     @State private var isSubmitting = false
     @State private var loginTask: Task<Void, Never>?
+    @State private var containerHeight: CGFloat = 0
     @FocusState private var focus: Field?
 
     private enum Field {
@@ -126,9 +127,15 @@ struct LoginView: View {
                         .padding(.top, 14)
                 }
                 .padding(.horizontal, 24)
-                .frame(minHeight: UIScreen.main.bounds.height - 30)
+                .frame(minHeight: max(0, containerHeight - 30))
             }
             .scrollDismissesKeyboard(.interactively)
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { height in
+            guard height.isFinite, height > 0, abs(containerHeight - height) > 0.5 else { return }
+            containerHeight = height
         }
     }
 

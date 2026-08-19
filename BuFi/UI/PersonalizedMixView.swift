@@ -229,6 +229,7 @@ struct PersonalizedMixDetailView: View {
                     )
             }
             .buttonStyle(BuFiPressStyle())
+            .disabled(mix.songs.isEmpty)
             .accessibilityLabel("셔플 재생")
 
             Button {
@@ -242,6 +243,7 @@ struct PersonalizedMixDetailView: View {
                     .background(BuFiTheme.accent, in: Circle())
             }
             .buttonStyle(BuFiPressStyle())
+            .disabled(mix.songs.isEmpty)
             .accessibilityLabel("전체 재생")
         }
         .padding(.horizontal, 18)

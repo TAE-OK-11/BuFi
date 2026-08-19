@@ -3,6 +3,9 @@ import Foundation
 
 actor OfflineStore {
     static let shared = OfflineStore()
+    static let storageDidChangeNotification = Notification.Name(
+        "BuFi.OfflineStore.storageDidChange"
+    )
 
     private struct Entry: Codable, Sendable, Equatable {
         var fileName: String
@@ -423,6 +426,10 @@ actor OfflineStore {
             markDirty(songID)
             try enforceStorageLimit(keeping: songID)
             scheduleIndexPersistence()
+            NotificationCenter.default.post(
+                name: Self.storageDidChangeNotification,
+                object: nil
+            )
             return destination
         } catch {
             try? FileManager.default.removeItem(at: staging)
@@ -472,6 +479,10 @@ actor OfflineStore {
         dirtySongIDs = Set(entries.keys)
         deletedSongIDs.removeAll(keepingCapacity: true)
         scheduleIndexPersistence(immediate: true)
+        NotificationCenter.default.post(
+            name: Self.storageDidChangeNotification,
+            object: nil
+        )
         if let firstError { throw firstError }
     }
 
