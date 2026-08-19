@@ -867,6 +867,7 @@ enum PlaybackRecoveryPolicy {
     static let initialRecoveryDelay: Duration = .milliseconds(900)
     static let progressObservationDelay: Duration = .milliseconds(1_600)
     static let managedBufferingGrace: Duration = .milliseconds(1_200)
+    static let seekCompletionTimeout: Duration = .milliseconds(3_500)
 
     static func startupNudgeTarget(
         elapsed: TimeInterval,
@@ -927,6 +928,18 @@ enum PlaybackRecoveryPolicy {
                 && (allowsRaw || formats[$0].lowercased() != "raw")
         }
     }
+}
+
+/// AVPlayer can occasionally keep reporting `.playing` after a progressive
+/// lossless request or decoder pipeline stops advancing. A time-control-only
+/// watchdog cannot see that state, so sample the media clock from wall time.
+/// Two consecutive stationary samples are long enough to reject scheduler
+/// jitter while recovering a frozen ALAC range request before it looks hung.
+enum PlaybackClockLivenessPolicy {
+    static let sampleInterval: Duration = .milliseconds(1_500)
+    static let stationarySampleLimit = 2
+    static let stableSampleLimit = 6
+    static let endTolerance: TimeInterval = 1.0
 }
 
 struct GaplessSuccessorPlan: Equatable, Sendable {
@@ -1072,14 +1085,15 @@ enum PlaybackBufferPolicy {
             return switch profile {
             case .aac: 20
             case .compressed: 18
-            case .unknown: 14
-            case .lossless: 12
+            case .unknown: 16
+            case .lossless: 20
             }
         case .constrained:
             return switch profile {
             case .aac: 10
             case .compressed: 9
-            case .unknown, .lossless: 8
+            case .unknown: 9
+            case .lossless: 10
             }
         case .successor:
             return switch profile {
@@ -1514,6 +1528,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingActivationTask: Task<Void, Never>?
     private let audioSessionController = AudioSessionController()
     private var stallConfirmTask: Task<Void, Never>?
+    private var playbackClockLivenessTask: Task<Void, Never>?
+    private var playbackClockLivenessToken: UUID?
+    private var seekTimeoutTask: Task<Void, Never>?
     private var recoveryToken: UUID?
     private weak var handledFailedItem: AVPlayerItem?
     private weak var startupNudgedItem: AVPlayerItem?
@@ -1947,6 +1964,9 @@ final class AudioEngine: NSObject, ObservableObject {
         activateNowPlayingSession()
         if !needsReload {
             playLatencyOptimized()
+            if let item = player.currentItem {
+                ensurePlaybackClockLivenessWatchdog(for: item)
+            }
         }
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
@@ -2000,6 +2020,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private func pausePlayback(persistsQueue: Bool) {
         wantsPlayback = false
         cancelPlaybackRecovery()
+        cancelPlaybackClockLivenessWatchdog()
         player.pause()
         suspendSpeculativePrefetch()
         isPlaying = false
@@ -2040,9 +2061,39 @@ final class AudioEngine: NSObject, ObservableObject {
         let tolerance = exactly
             ? CMTime.zero
             : CMTime(seconds: 0.1, preferredTimescale: 600)
+        seekTimeoutTask?.cancel()
+        seekTimeoutTask = nil
         seekGeneration &+= 1
         let generation = seekGeneration
+        let seekItem = player.currentItem
         isSeekInFlight = true
+        seekTimeoutTask = Task { [weak self, weak seekItem] in
+            do {
+                try await Task.sleep(for: PlaybackRecoveryPolicy.seekCompletionTimeout)
+            } catch {
+                return
+            }
+            guard let self,
+                  let seekItem,
+                  self.seekGeneration == generation,
+                  self.isSeekInFlight,
+                  self.player.currentItem === seekItem else {
+                return
+            }
+            Self.logger.warning(
+                "Playback seek timed out; reopening the active stream at the requested position"
+            )
+            self.seekGeneration &+= 1
+            self.isSeekInFlight = false
+            self.pendingSeekPosition = nil
+            self.seekTimeoutTask = nil
+            guard self.wantsPlayback else { return }
+            self.isBuffering = true
+            self.loadCurrentItem(
+                compatibilityFormat: self.activeCompatibilityFormat,
+                resumeFrom: target
+            )
+        }
         player.seek(
             to: CMTime(seconds: target, preferredTimescale: 600),
             toleranceBefore: tolerance,
@@ -2050,6 +2101,8 @@ final class AudioEngine: NSObject, ObservableObject {
         ) { @Sendable [weak self] finished in
             Task { @MainActor in
                 guard let self, self.seekGeneration == generation else { return }
+                self.seekTimeoutTask?.cancel()
+                self.seekTimeoutTask = nil
                 self.isSeekInFlight = false
                 self.pendingSeekPosition = nil
                 guard self.player.currentItem != nil else { return }
@@ -3358,6 +3411,8 @@ final class AudioEngine: NSObject, ObservableObject {
         let playbackItemID = playbackItem.id
         let resumePosition = max(0, requestedPosition ?? elapsed)
         itemLoadTask?.cancel()
+        seekTimeoutTask?.cancel()
+        seekTimeoutTask = nil
         itemLoadGeneration &+= 1
         let generation = itemLoadGeneration
         seekGeneration &+= 1
@@ -3456,6 +3511,7 @@ final class AudioEngine: NSObject, ObservableObject {
         logicalCurrentItem = item
         installItemObservers(for: item)
         installBufferObservers(for: item)
+        ensurePlaybackClockLivenessWatchdog(for: item)
         let observerGeneration = itemObserverGeneration
 
         itemObservation = item.observe(
@@ -3609,6 +3665,9 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func removeCurrentItemObservers() {
         itemObserverGeneration &+= 1
+        cancelPlaybackClockLivenessWatchdog()
+        seekTimeoutTask?.cancel()
+        seekTimeoutTask = nil
         logicalCurrentItem = nil
         itemObservation = nil
         itemBufferObservations.removeAll()
@@ -3880,29 +3939,204 @@ final class AudioEngine: NSObject, ObservableObject {
         stallConfirmTask = nil
     }
 
+    private func ensurePlaybackClockLivenessWatchdog(for item: AVPlayerItem) {
+        guard playbackClockLivenessTask == nil else { return }
+        let generation = itemObserverGeneration
+        let token = UUID()
+        playbackClockLivenessToken = token
+        playbackClockLivenessTask = Task { [weak self, weak item] in
+            var lastPosition: TimeInterval?
+            var stationarySamples = 0
+            var stableSamples = 0
+            defer {
+                if let self, self.playbackClockLivenessToken == token {
+                    self.playbackClockLivenessToken = nil
+                    self.playbackClockLivenessTask = nil
+                }
+            }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(
+                        for: PlaybackClockLivenessPolicy.sampleInterval
+                    )
+                } catch {
+                    return
+                }
+                guard let self,
+                      let item,
+                      self.itemObserverGeneration == generation,
+                      self.logicalCurrentItem === item,
+                      self.player.currentItem === item else {
+                    return
+                }
+                guard self.wantsPlayback else { return }
+
+                let position = self.currentPlayerPosition()
+                let nearEnd = self.duration > 0
+                    && position >= max(
+                        0,
+                        self.duration - PlaybackClockLivenessPolicy.endTolerance
+                    )
+                guard self.networkPathIsSatisfied,
+                      item.status == .readyToPlay,
+                      !nearEnd,
+                      !self.isSeekInFlight,
+                      self.pendingSeekPosition == nil,
+                      self.recoveryTask == nil,
+                      self.player.timeControlStatus == .playing else {
+                    lastPosition = position
+                    stationarySamples = 0
+                    stableSamples = 0
+                    continue
+                }
+
+                guard let previousPosition = lastPosition else {
+                    lastPosition = position
+                    continue
+                }
+                if PlaybackRecoveryPolicy.hasMeaningfulProgress(
+                    from: previousPosition,
+                    to: position
+                ) {
+                    lastPosition = position
+                    stationarySamples = 0
+                    stableSamples += 1
+                    if stableSamples >= PlaybackClockLivenessPolicy.stableSampleLimit {
+                        self.recoveryAttempt = 0
+                        stableSamples = 0
+                    }
+                    continue
+                }
+
+                stableSamples = 0
+                stationarySamples += 1
+                guard stationarySamples >= PlaybackClockLivenessPolicy.stationarySampleLimit,
+                      self.stallConfirmTask == nil else {
+                    continue
+                }
+                stationarySamples = 0
+                lastPosition = position
+                self.recoverFrozenPlaybackClock(item: item, position: position)
+            }
+        }
+    }
+
+    private func cancelPlaybackClockLivenessWatchdog() {
+        playbackClockLivenessToken = nil
+        playbackClockLivenessTask?.cancel()
+        playbackClockLivenessTask = nil
+    }
+
+    private func recoverFrozenPlaybackClock(
+        item: AVPlayerItem,
+        position: TimeInterval
+    ) {
+        guard wantsPlayback,
+              networkPathIsSatisfied,
+              player.currentItem === item,
+              !isSeekInFlight,
+              pendingSeekPosition == nil else {
+            return
+        }
+        isBuffering = true
+        cancelPlaybackRecovery()
+        invalidateStagedSuccessor(removeFromPlayer: true)
+        suspendSpeculativePrefetch()
+        recoveryAttempt += 1
+
+        if recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries,
+           canSeek(item, to: position) {
+            Self.logger.warning(
+                "Playback clock stopped while AVPlayer still reports playing; reprime the current byte range"
+            )
+            seekPlayer(
+                to: position,
+                persistsQueue: false,
+                resumesPlayback: true,
+                exactly: true
+            )
+            return
+        }
+
+        if recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries {
+            Self.logger.warning(
+                "Playback clock stopped and the item is not seekable; reopening the active stream"
+            )
+            loadCurrentItem(
+                compatibilityFormat: activeCompatibilityFormat,
+                resumeFrom: position
+            )
+            return
+        }
+
+        if let format = takeNextCompatibilityFormat(allowsRaw: false) {
+            Self.logger.warning(
+                "Repeated playback clock stalls; trying lower-bandwidth format \(format, privacy: .public)"
+            )
+            recoveryAttempt = 0
+            activeCompatibilityFormat = format
+            loadCurrentItem(compatibilityFormat: format, resumeFrom: position)
+            return
+        }
+
+        recoveryAttempt = 0
+        loadCurrentItem(
+            compatibilityFormat: activeCompatibilityFormat,
+            resumeFrom: position
+        )
+    }
+
     private func confirmPossibleStall() {
-        guard wantsPlayback, stallConfirmTask == nil else { return }
+        guard wantsPlayback,
+              stallConfirmTask == nil,
+              let item = player.currentItem else { return }
+        let baselinePosition = currentPlayerPosition()
         if player.timeControlStatus != .playing {
             isBuffering = true
         }
-        stallConfirmTask = Task { [weak self] in
+        stallConfirmTask = Task { [weak self, weak item] in
             do {
                 try await Task.sleep(for: PlaybackBufferPolicy.stallConfirmDelay)
             } catch {
                 return
             }
             guard let self,
+                  let item,
                   !Task.isCancelled,
                   self.wantsPlayback,
-                  self.player.timeControlStatus != .playing else {
+                  self.player.currentItem === item,
+                  !self.isSeekInFlight,
+                  self.pendingSeekPosition == nil else {
                 self?.stallConfirmTask = nil
                 return
             }
+            let position = self.currentPlayerPosition()
+            if PlaybackRecoveryPolicy.hasMeaningfulProgress(
+                from: baselinePosition,
+                to: position
+            ) {
+                self.stallConfirmTask = nil
+                return
+            }
+            if self.duration > 0,
+               position >= max(
+                    0,
+                    self.duration - PlaybackClockLivenessPolicy.endTolerance
+               ) {
+                self.stallConfirmTask = nil
+                return
+            }
+
             self.stallConfirmTask = nil
+            if self.player.timeControlStatus == .playing {
+                self.recoverFrozenPlaybackClock(item: item, position: position)
+                return
+            }
+
             self.invalidateStagedSuccessor(removeFromPlayer: true)
             self.suspendSpeculativePrefetch()
             let mode: PlaybackWatchdogMode =
-                self.currentPlayerPosition() < PlaybackWatchdogPolicy.startupArmWindow
+                position < PlaybackWatchdogPolicy.startupArmWindow
                     ? .startup
                     : .stall
             self.schedulePlaybackRecovery(mode: mode)
@@ -4199,6 +4433,9 @@ final class AudioEngine: NSObject, ObservableObject {
                         || player.currentItem?.status != .readyToPlay
                     )
                 if player.timeControlStatus == .playing {
+                    if let item = player.currentItem {
+                        self.ensurePlaybackClockLivenessWatchdog(for: item)
+                    }
                     self.expandSettledForwardBufferIfNeeded()
                     self.cancelStallConfirmation()
                     switch PlaybackWatchdogPolicy.decision(
