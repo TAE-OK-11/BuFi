@@ -1053,8 +1053,8 @@ enum PlaybackAudioProfile: Equatable, Sendable {
 }
 
 /// Keep startup latency small while bounding steady-state memory and bandwidth.
-/// Lossless streams get enough runway for jitter without buffering the same
-/// number of seconds as a much cheaper AAC/Opus stream.
+/// Once playback is established, lossless gets a longer runway so a brief
+/// network dip is less likely to drain a high-bitrate ALAC buffer.
 enum PlaybackBufferPolicy {
     enum Phase: Equatable, Sendable {
         case startup
@@ -2053,7 +2053,7 @@ final class AudioEngine: NSObject, ObservableObject {
         invalidateLyricBoundaryObserver()
         updateActiveLyric(at: target)
         updateNowPlaying()
-        guard player.currentItem != nil else {
+        guard let seekItem = player.currentItem else {
             isSeekInFlight = false
             if persistsQueue { scheduleQueueSave() }
             return
@@ -2065,7 +2065,6 @@ final class AudioEngine: NSObject, ObservableObject {
         seekTimeoutTask = nil
         seekGeneration &+= 1
         let generation = seekGeneration
-        let seekItem = player.currentItem
         isSeekInFlight = true
         seekTimeoutTask = Task { [weak self, weak seekItem] in
             do {
@@ -3948,6 +3947,7 @@ final class AudioEngine: NSObject, ObservableObject {
             var lastPosition: TimeInterval?
             var stationarySamples = 0
             var stableSamples = 0
+            var observedSeekGeneration: UInt64?
             defer {
                 if let self, self.playbackClockLivenessToken == token {
                     self.playbackClockLivenessToken = nil
@@ -3972,6 +3972,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 guard self.wantsPlayback else { return }
 
                 let position = self.currentPlayerPosition()
+                let currentSeekGeneration = self.seekGeneration
+                if observedSeekGeneration != currentSeekGeneration {
+                    observedSeekGeneration = currentSeekGeneration
+                    lastPosition = position
+                    stationarySamples = 0
+                    stableSamples = 0
+                    continue
+                }
                 let nearEnd = self.duration > 0
                     && position >= max(
                         0,
