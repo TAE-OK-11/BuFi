@@ -115,10 +115,6 @@ jobs:
 '''
           )
 
-          # Keep the actual UIImage locked to the square artwork bounds. This is
-          # intentionally redundant with the pager's outer frame: it prevents a
-          # restored image's intrinsic size from participating in the first ZStack
-          # layout before the parent ScrollView has resolved its target position.
           components = 'BuFi/UI/Components.swift'
           replace_once(
               components,
@@ -143,3 +139,5 @@ jobs:
           git add BuFi/UI/RootView.swift BuFi/UI/PlayerView.swift BuFi/UI/Components.swift
           git commit -m 'Fix restored full-player artwork position'
           git push origin HEAD:fix/player-artwork-reopen-position
+
+# Existing-workflow trigger
