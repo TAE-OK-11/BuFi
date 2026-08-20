@@ -70,6 +70,8 @@ struct PlayerView: View {
     @State private var pagerSelectionGate = PlayerPagerSelectionGate()
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
     @State private var cachedArtworkPages: [PlayerArtworkPage] = []
+    @State private var playerDragOffset: CGFloat = 0
+    @State private var playerDismissTask: Task<Void, Never>?
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -86,7 +88,10 @@ struct PlayerView: View {
                     let song = item.song
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
-                            header(item)
+                            header(
+                                item,
+                                availableHeight: proxy.size.height
+                            )
                             if resolvedPlayerAppearance == .dynamic {
                                 dynamicPlayer(
                                     item,
@@ -136,6 +141,22 @@ struct PlayerView: View {
                 }
             }
             .animation(allowsMotion ? BuFiMotion.lyricsPanel : .none, value: playerPresentation.showFullLyrics)
+            .offset(y: max(0, playerDragOffset))
+            .scaleEffect(
+                playerDismissScale(availableHeight: proxy.size.height),
+                anchor: .bottom
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: playerDismissCornerRadius,
+                    style: .continuous
+                )
+            )
+            .shadow(
+                color: .black.opacity(playerDismissShadowOpacity),
+                radius: playerDragOffset > 0 ? 24 : 0,
+                y: playerDragOffset > 0 ? 12 : 0
+            )
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQueue) {
@@ -163,6 +184,11 @@ struct PlayerView: View {
             refreshArtworkPages(from: playback.snapshot, fallback: currentPlayback.item)
             syncArtworkPage(to: playback.snapshot, animated: false)
         }
+        .onDisappear {
+            playerDismissTask?.cancel()
+            playerDismissTask = nil
+            playerDragOffset = 0
+        }
     }
 
     private func handleCurrentPlaybackChange(
@@ -174,6 +200,99 @@ struct PlayerView: View {
             transitionDirection = next.index >= previous.index ? 1 : -1
         }
         syncArtworkPage(to: playback.snapshot, animated: indexChanged)
+    }
+
+    private func playerDismissGesture(
+        availableHeight: CGFloat
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard !playerPresentation.showFullLyrics else { return }
+                let verticalTravel = value.translation.height
+                let horizontalTravel = value.translation.width
+                guard abs(verticalTravel) > abs(horizontalTravel) else { return }
+
+                playerDismissTask?.cancel()
+                playerDismissTask = nil
+                playerDragOffset = resistedPlayerDragOffset(
+                    max(0, verticalTravel),
+                    availableHeight: availableHeight
+                )
+            }
+            .onEnded { value in
+                guard playerDragOffset > 0 else { return }
+                let travelThreshold = min(150, availableHeight * 0.20)
+                let projectedThreshold = min(280, availableHeight * 0.34)
+                let shouldDismiss = value.translation.height > travelThreshold
+                    || value.predictedEndTranslation.height > projectedThreshold
+
+                if shouldDismiss {
+                    animatePlayerOffscreen(availableHeight: availableHeight)
+                } else {
+                    withAnimation(allowsMotion ? BuFiMotion.dismissal : .none) {
+                        playerDragOffset = 0
+                    }
+                }
+            }
+    }
+
+    private func resistedPlayerDragOffset(
+        _ translation: CGFloat,
+        availableHeight: CGFloat
+    ) -> CGFloat {
+        let directTravel = max(180, availableHeight * 0.44)
+        guard translation > directTravel else { return translation }
+        return directTravel + ((translation - directTravel) * 0.34)
+    }
+
+    private func animatePlayerOffscreen(availableHeight: CGFloat) {
+        playerDismissTask?.cancel()
+        guard allowsMotion else {
+            closePlayer()
+            return
+        }
+
+        withAnimation(BuFiMotion.dismissalExit) {
+            playerDragOffset = max(availableHeight + 80, playerDragOffset)
+        }
+        playerDismissTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(210))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            playerDismissTask = nil
+            finishPlayerDismiss()
+        }
+    }
+
+    private func closePlayer() {
+        playerDismissTask?.cancel()
+        playerDismissTask = nil
+        finishPlayerDismiss()
+    }
+
+    private func finishPlayerDismiss() {
+        audio.showPlayer = false
+        dismiss()
+    }
+
+    private func playerDismissScale(availableHeight: CGFloat) -> CGFloat {
+        guard allowsMotion else { return 1 }
+        let progress = min(
+            max(playerDragOffset / max(availableHeight * 0.58, 1), 0),
+            1
+        )
+        return 1 - (progress * 0.022)
+    }
+
+    private var playerDismissCornerRadius: CGFloat {
+        min(28, max(0, playerDragOffset * 0.20))
+    }
+
+    private var playerDismissShadowOpacity: Double {
+        min(0.22, Double(max(0, playerDragOffset) / 420) * 0.22)
     }
 
     private var background: some View {
@@ -195,12 +314,14 @@ struct PlayerView: View {
         )
     }
 
-    private func header(_ item: PlaybackMediaItem) -> some View {
+    private func header(
+        _ item: PlaybackMediaItem,
+        availableHeight: CGFloat
+    ) -> some View {
         let song = item.song
         return HStack {
             Button {
-                audio.showPlayer = false
-                dismiss()
+                closePlayer()
             } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 24, weight: .semibold))
@@ -232,6 +353,10 @@ struct PlayerView: View {
         .buttonStyle(.plain)
         .foregroundStyle(playerPrimary)
         .frame(height: 58)
+        .contentShape(Rectangle())
+        .highPriorityGesture(
+            playerDismissGesture(availableHeight: availableHeight)
+        )
     }
 
     private func nowPlayingContent(
@@ -384,10 +509,12 @@ struct PlayerView: View {
                     .frame(width: edge, height: edge)
                     .id(page.id)
                     .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                        // Keep the page size fixed. A tap or a tiny pager snap
+                        // must not make the current cover appear to grow; the
+                        // queue-entry identity above remains authoritative.
                         content
-                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.96)
-                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.80)
-                            .offset(y: phase.isIdentity || !animatesTransition ? 0 : 6)
+                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.84)
+                            .offset(y: phase.isIdentity || !animatesTransition ? 0 : 5)
                     }
                 }
             }
@@ -397,12 +524,12 @@ struct PlayerView: View {
         .contentMargins(.horizontal, sideInset, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: pagerPosition, anchor: .center)
-    .simultaneousGesture(
-        DragGesture(minimumDistance: 5)
-            .onChanged { _ in
-                pagerSelectionGate.beginUserInteraction()
-            }
-    )
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 5)
+                .onChanged { _ in
+                    pagerSelectionGate.beginUserInteraction()
+                }
+        )
         .frame(width: viewportWidth)
         .frame(height: edge + heightPadding)
         .contentShape(Rectangle())

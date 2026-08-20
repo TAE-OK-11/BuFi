@@ -6,6 +6,7 @@ struct MiniPlayerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
+    @GestureState private var isPressed = false
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
@@ -119,12 +120,27 @@ struct MiniPlayerView: View {
                     .animation(motionEnabled ? BuFiMotion.color : .none, value: resolvedPalette)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .scaleEffect(isPressed && motionEnabled ? 0.992 : 1)
+            .brightness(isPressed ? -0.008 : 0)
+            .animation(
+                motionEnabled ? BuFiMotion.press(isPressed: isPressed) : .none,
+                value: isPressed
+            )
             .shadow(
                 color: .black.opacity(colorScheme == .dark ? 0.20 : 0.09),
                 radius: colorScheme == .dark ? 12 : 9,
                 y: colorScheme == .dark ? 6 : 4
             )
+            .simultaneousGesture(pressGesture)
         }
+    }
+
+    private var pressGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0, maximumDistance: 18)
+            .updating($isPressed) { pressed, state, _ in
+                state = pressed
+            }
     }
 
     private var miniPlayerBackground: Color {
