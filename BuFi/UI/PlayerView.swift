@@ -1411,7 +1411,7 @@ private struct PlayerPaletteBackground: View, Equatable {
 
         var colorInfluence: Double {
             switch self {
-            case .restrained: 0.72
+            case .restrained: 0.92
             case .vivid: 1.72
             case .bright: 1.88
             }
@@ -1419,7 +1419,7 @@ private struct PlayerPaletteBackground: View, Equatable {
 
         var fallbackOpacity: Double {
             switch self {
-            case .restrained: 0.34
+            case .restrained: 0.40
             case .vivid: 0.76
             case .bright: 0.82
             }
@@ -1616,7 +1616,7 @@ private struct PlayerPaletteBackground: View, Equatable {
             Color.white.opacity(0.20)
         } else {
             LinearGradient(
-                colors: [.black.opacity(0.05), .clear, .black.opacity(0.18)],
+                colors: [.clear, .clear, .black.opacity(0.06)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -1629,7 +1629,7 @@ private struct PlayerPaletteBackground: View, Equatable {
             Color.white.opacity(colorScheme == .light ? 0.18 : 0.42)
         } else {
             LinearGradient(
-                colors: [.black.opacity(0.06), .clear, .black.opacity(0.24)],
+                colors: [.black.opacity(0.02), .clear, .black.opacity(0.10)],
                 startPoint: .top,
                 endPoint: .bottom
             )

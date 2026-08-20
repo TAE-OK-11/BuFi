@@ -110,7 +110,7 @@ actor ArtworkStore {
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
     private static let cacheSchemaRevision = "media-v2"
     private static let artworkFreshnessInterval: TimeInterval = 12 * 60 * 60
-    private static let paletteEngineVersion = 7
+    private static let paletteEngineVersion = 8
     private static let sampleSide = 64
     private static let acceleratedSamplePixelLimit = 512 * 512
     private static let neutralChromaLimit = 0.035
@@ -622,7 +622,7 @@ actor ArtworkStore {
         )
     }
 
-    // MARK: - Palette Engine V7
+    // MARK: - Palette Engine V8
 
     private struct OKLab {
         var lightness: Double
@@ -1132,13 +1132,15 @@ actor ArtworkStore {
         let highlightSwatch = highlight ?? secondary ?? accent
         let top = adjusted(
             mood,
-            lightness: clamp(0.12 + 0.66 * mood.lightness, 0.34, 0.64),
-            chromaScale: 0.78
+            lightness: clamp(0.14 + 0.67 * mood.lightness, 0.38, 0.66),
+            chromaScale: 0.84
         )
         let bottom = adjusted(
             mood,
-            lightness: clamp(0.10 + 0.38 * mood.lightness, 0.22, 0.42),
-            chromaScale: 0.60
+            // Keep enough depth for white controls, but avoid the previous
+            // maroon/black falloff that made pastel artwork feel heavy.
+            lightness: clamp(0.17 + 0.45 * mood.lightness, 0.32, 0.52),
+            chromaScale: 0.72
         )
         let accentColor = adjusted(
             accent.lab,
