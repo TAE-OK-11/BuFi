@@ -73,28 +73,34 @@ enum BuFiMotion {
 }
 
 enum BuFiTransition {
-    static let scene = AnyTransition.asymmetric(
-        insertion: .opacity.combined(with: .scale(scale: 0.992)),
-        removal: .opacity
-    )
+    static var scene: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.992)),
+            removal: .opacity
+        )
+    }
 
-    static let section = AnyTransition.asymmetric(
-        insertion: .opacity
-            .combined(with: .offset(y: 10))
-            .combined(with: .scale(scale: 0.996, anchor: .top)),
-        removal: .opacity.combined(with: .offset(y: -4))
-    )
+    static var section: AnyTransition {
+        .asymmetric(
+            insertion: .opacity
+                .combined(with: .offset(y: 10))
+                .combined(with: .scale(scale: 0.996, anchor: .top)),
+            removal: .opacity.combined(with: .offset(y: -4))
+        )
+    }
 
-    static let artworkReveal = AnyTransition.opacity.combined(
-        with: .scale(scale: 0.992)
-    )
+    static var artworkReveal: AnyTransition {
+        .opacity.combined(with: .scale(scale: 0.992))
+    }
 
-    static let miniPlayer = AnyTransition.asymmetric(
-        insertion: .move(edge: .bottom)
-            .combined(with: .opacity)
-            .combined(with: .scale(scale: 0.98, anchor: .bottom)),
-        removal: .move(edge: .bottom).combined(with: .opacity)
-    )
+    static var miniPlayer: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: .bottom)
+                .combined(with: .opacity)
+                .combined(with: .scale(scale: 0.98, anchor: .bottom)),
+            removal: .move(edge: .bottom).combined(with: .opacity)
+        )
+    }
 }
 
 private struct BuFiHorizontalScrollMotionModifier: ViewModifier {
