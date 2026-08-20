@@ -44,8 +44,6 @@ enum BuFiMotion {
     static let trackPage = Animation.spring(duration: 0.50, bounce: 0.10)
     static let color = Animation.smooth(duration: 0.62, extraBounce: 0)
     static let page = Animation.spring(duration: 0.46, bounce: 0.10)
-    static let dismissal = Animation.spring(duration: 0.42, bounce: 0.10)
-    static let dismissalExit = Animation.smooth(duration: 0.20, extraBounce: 0)
     static let miniLyrics = Animation.spring(duration: 0.50, bounce: 0.08)
     static let lyrics = Animation.spring(duration: 0.42, bounce: 0.10)
     static let lyricsPanel = Animation.spring(duration: 0.50, bounce: 0.12)

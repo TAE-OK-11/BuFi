@@ -126,11 +126,9 @@ struct RootView: View {
                         MusicDetailView(route: route)
                     }
             }
-            .background(Color.clear)
             .environmentObject(model)
             .environmentObject(audio)
             .environment(\.buFiMotionEnabled, effectiveMotion)
-            .presentationBackground(.clear)
             .id(presentation.id)
         }
     }
