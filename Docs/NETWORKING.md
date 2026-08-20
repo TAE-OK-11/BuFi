@@ -43,6 +43,8 @@ radio scheduling, and background behavior integrated with iOS.
 - Remote high-bitrate lossless playback does not overlap the active stream with
   successor warmup, upcoming artwork/lyrics prefetch, or offline downloads. This
   preserves bandwidth and decoder headroom for ALAC and reduces radio/CPU work.
+  For other codecs, speculative prefetch begins only after AVPlayer reaches the
+  playing state and is cancelled again whenever playback starts waiting.
   Local lossless files retain the gapless preparation path because they do not
   compete for the network. AAC (whether encoded by Apple or FDK-AAC) continues
   through the same native Apple decode path.

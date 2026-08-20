@@ -659,10 +659,9 @@ struct PlaybackPrefetchPlan: Equatable, Sendable {
         queueIndex: Int,
         quality: StreamQuality,
         maximumUpcoming: Int,
-        isActivelyPlaying: Bool,
-        requiresActivePlayback: Bool = true
+        isActivelyPlaying: Bool
     ) -> PlaybackPrefetchPlan? {
-        guard (!requiresActivePlayback || isActivelyPlaying),
+        guard isActivelyPlaying,
               maximumUpcoming > 0,
               let currentSong,
               queue.indices.contains(queueIndex),
@@ -1821,8 +1820,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private func seekPlayer(
         to seconds: TimeInterval,
         persistsQueue: Bool,
-        resumesPlayback: Bool = false,
-        exactly: Bool = false
+        resumesPlayback: Bool = false
     ) {
         guard seconds.isFinite else { return }
         let itemDuration = player.currentItem?.duration.seconds ?? 0
@@ -1839,9 +1837,7 @@ final class AudioEngine: NSObject, ObservableObject {
             if persistsQueue { scheduleQueueSave() }
             return
         }
-        let tolerance = exactly
-            ? CMTime.zero
-            : CMTime(seconds: 0.1, preferredTimescale: 600)
+        let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
         seekGeneration &+= 1
         let generation = seekGeneration
         isSeekInFlight = true
@@ -2991,8 +2987,7 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func playbackPrefetchPlan(
-        maximumUpcoming: Int,
-        requiresActivePlayback: Bool = true
+        maximumUpcoming: Int
     ) -> PlaybackPrefetchPlan? {
         PlaybackPrefetchPlan.make(
             currentSong: currentSong,
@@ -3001,8 +2996,7 @@ final class AudioEngine: NSObject, ObservableObject {
             quality: quality,
             maximumUpcoming: maximumUpcoming,
             isActivelyPlaying:
-                wantsPlayback && player.timeControlStatus == .playing,
-            requiresActivePlayback: requiresActivePlayback
+                wantsPlayback && player.timeControlStatus == .playing
         )
     }
 
@@ -3015,8 +3009,7 @@ final class AudioEngine: NSObject, ObservableObject {
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
-                maximumUpcoming: metadataPrefetchCount,
-                requiresActivePlayback: false
+                maximumUpcoming: metadataPrefetchCount
               ) else {
             cancelNetworkPrefetch(resetKey: true)
             return
@@ -3884,19 +3877,6 @@ final class AudioEngine: NSObject, ObservableObject {
     private func currentPlayerPosition() -> TimeInterval {
         let seconds = player.currentTime().seconds
         return seconds.isFinite ? max(0, seconds) : max(0, elapsed)
-    }
-
-    private func canSeek(_ item: AVPlayerItem, to seconds: TimeInterval) -> Bool {
-        guard seconds.isFinite else { return false }
-        return item.seekableTimeRanges.contains { value in
-            let range = value.timeRangeValue
-            let start = range.start.seconds
-            let end = CMTimeRangeGetEnd(range).seconds
-            return start.isFinite
-                && end.isFinite
-                && seconds >= start
-                && seconds <= end
-        }
     }
 
     private func invalidateLyricBoundaryObserver() {
