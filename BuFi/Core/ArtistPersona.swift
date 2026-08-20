@@ -149,8 +149,11 @@ enum ArtistPersonaResolver {
 final class ArtistPersonaCache: @unchecked Sendable {
     static let shared = ArtistPersonaCache()
 
+    private static let maximumEntries = 512
+    private static let evictionBatchSize = 64
     private let lock = NSLock()
     private var values: [String: ArtistPersona] = [:]
+    private var insertionOrder: [String] = []
 
     func resolved(
         artist: String,
@@ -188,7 +191,18 @@ final class ArtistPersonaCache: @unchecked Sendable {
                     : persona.formation
             )
         } else {
+            if values.count >= Self.maximumEntries {
+                let evictionCount = min(
+                    Self.evictionBatchSize,
+                    insertionOrder.count
+                )
+                for staleKey in insertionOrder.prefix(evictionCount) {
+                    values[staleKey] = nil
+                }
+                insertionOrder.removeFirst(evictionCount)
+            }
             values[key] = persona
+            insertionOrder.append(key)
         }
         lock.unlock()
     }

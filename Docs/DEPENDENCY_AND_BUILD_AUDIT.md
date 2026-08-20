@@ -130,6 +130,22 @@ and
 
 ## Runtime and dead-code audit
 
+- SQLite read transactions now copy only scalar/blob rows before releasing the
+  reader; Swift 6.4 `@concurrent` work decodes Home, queue, listening-history,
+  and catalog payloads afterwards. Listening-history encoding likewise finishes
+  before a write transaction begins, keeping both reader and writer occupancy
+  bounded to database work.
+- Queue item persistence is incremental. Shortening a queue deletes only its
+  removed tail, while inserts and moves upsert by position and skip byte-identical
+  rows instead of deleting and rebuilding the account's complete queue.
+- Artwork palette access touches share the next palette-save transaction when
+  possible, and failed touch batches are retained for retry. External
+  recommendation rows expire after seven days and are capped per source and
+  globally, while individual payloads remain size-bounded.
+- Offline-download byte totals are maintained with each index mutation instead
+  of rescanning the complete entry map for every quota check. History previews
+  maintain only their requested top 20-30 rows rather than sorting all retained
+  behavior, and the process-local artist-persona cache now has a fixed ceiling.
 - Album/playlist rows previously recomputed two sets and scanned the entire
   queue inside every row render. The collection layout is now classified once
   per detail render and each fallback track number is supplied by the parent,

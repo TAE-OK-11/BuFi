@@ -17,6 +17,7 @@ It is designed around the iOS media stack rather than a web view.
 - Nuke-backed artwork request coalescing, caching, and downsampling
 - HTTP/3 racing for API, artwork, and offline downloads; HTTP/2 fallback; gzip, Brotli, and bounded Zstandard API decoding
 - In-flight API request coalescing, a 16 MiB bounded response cache, and energy-aware next-track lyrics/artwork/AVURLAsset preparation for instant skips
+- Incremental GRDB queue/history/catalog persistence with bounded recommendation and artwork caches
 - Korean (default), English, and Japanese localization
 - Favorite songs, albums, and artists, with favorite artists pinned above an indexed artist library
 - Offline downloads stored in Application Support

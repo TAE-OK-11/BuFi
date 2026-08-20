@@ -41,6 +41,7 @@ actor OfflineStore {
     private var deletedSongIDs: Set<String> = []
     private var indexMutationEpoch: UInt64 = 0
     private var accessRecency = OfflineAccessRecency()
+    private var indexedByteCount: Int64 = 0
 
     init() {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -141,6 +142,7 @@ actor OfflineStore {
         directory = scopedDirectory
         indexURL = scopedIndexURL
         entries = loadedEntries
+        indexedByteCount = Self.totalByteCount(of: loadedEntries.values)
         accessRecency.seed(
             lastAccess: loadedEntries.values.map(\.lastAccessedAt).max()
         )
@@ -176,6 +178,7 @@ actor OfflineStore {
         directory = nil
         indexURL = nil
         entries.removeAll(keepingCapacity: false)
+        indexedByteCount = 0
         accessRecency = OfflineAccessRecency()
         indexIsDirty = false
         indexRetryCount = 0
@@ -212,6 +215,7 @@ actor OfflineStore {
                 if FileManager.default.fileExists(atPath: url.path) {
                     try? FileManager.default.removeItem(at: url)
                 }
+                indexedByteCount = max(0, indexedByteCount - entry.byteCount)
                 entries[songID] = nil
                 markDeleted(songID)
                 scheduleIndexPersistence()
@@ -414,12 +418,16 @@ actor OfflineStore {
                 [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                 ofItemAtPath: destination.path
             )
+            if let previous = entries[songID] {
+                indexedByteCount = max(0, indexedByteCount - previous.byteCount)
+            }
             entries[songID] = Entry(
                 fileName: destination.lastPathComponent,
                 byteCount: byteCount,
                 lastAccessedAt: accessRecency.next(),
                 mediaRevision: mediaRevision
             )
+            indexedByteCount += byteCount
             markDirty(songID)
             try enforceStorageLimit(keeping: songID)
             scheduleIndexPersistence()
@@ -458,6 +466,7 @@ actor OfflineStore {
                 result[pair.key] = pair.value
             }
         }
+        indexedByteCount = Self.totalByteCount(of: entries.values)
         accessRecency.seed(
             lastAccess: entries.values.map(\.lastAccessedAt).max()
         )
@@ -477,8 +486,7 @@ actor OfflineStore {
 
     func totalBytes() -> Int64 {
         guard activeScope != nil, let directory else { return 0 }
-        let indexed = entries.values.reduce(into: Int64(0)) { $0 += $1.byteCount }
-        if indexed > 0 { return indexed }
+        if !entries.isEmpty { return indexedByteCount }
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.fileSizeKey],
@@ -570,7 +578,7 @@ actor OfflineStore {
         let configured = UserDefaults.standard.object(forKey: "offline-storage-limit-gb") as? Double ?? 10
         guard configured > 0 else { return }
         let limit = Int64(configured * 1_024 * 1_024 * 1_024)
-        var total = entries.values.reduce(into: Int64(0)) { $0 += $1.byteCount }
+        var total = indexedByteCount
         guard total > limit else { return }
 
         let candidates = entries
@@ -585,6 +593,7 @@ actor OfflineStore {
                 entries[id] = nil
                 markDeleted(id)
                 total -= entry.byteCount
+                indexedByteCount = max(0, indexedByteCount - entry.byteCount)
             } catch {
                 // Keep the index entry when deletion fails so storage accounting
                 // remains truthful and a later cleanup can retry.
@@ -887,6 +896,15 @@ actor OfflineStore {
             lastAccessedAt: entry.lastAccessedAt,
             mediaRevision: entry.mediaRevision
         )
+    }
+
+    private static func totalByteCount(
+        of entries: Dictionary<String, Entry>.Values
+    ) -> Int64 {
+        entries.reduce(into: Int64(0)) { total, entry in
+            let (next, overflow) = total.addingReportingOverflow(entry.byteCount)
+            total = overflow ? Int64.max : next
+        }
     }
 
     private static func makeDownloadSession(allowsExpensiveAccess: Bool) -> URLSession {

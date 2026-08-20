@@ -28,6 +28,11 @@ actor LocalLibraryCatalog {
         let deleted: Set<String>
     }
 
+    private struct DecodedRecords: Sendable {
+        let entries: [Entry]
+        let invalidSongIDs: Set<String>
+    }
+
     private var activeScope: String?
     private var scopeGeneration: UInt64 = 0
     private var entries: [String: Entry] = [:]
@@ -70,6 +75,13 @@ actor LocalLibraryCatalog {
         }
         let loaded = await AppDatabase.shared.loadLibraryCatalog(scope: accountScope)
         guard generation == scopeGeneration, activeScope == nil else { return nil }
+        let decoded: DecodedRecords
+        do {
+            decoded = try await Self.decodeRecordsConcurrently(loaded)
+        } catch {
+            return nil
+        }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         activeScope = accountScope
         entries.removeAll(keepingCapacity: true)
         songsByMBID.removeAll(keepingCapacity: true)
@@ -77,15 +89,8 @@ actor LocalLibraryCatalog {
         songsByIdentity.removeAll(keepingCapacity: true)
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
-        for record in loaded {
-            guard let song = try? Self.decodeSong(record.songData),
-                  song.id == record.songID,
-                  !song.id.isEmpty else {
-                deletedSongIDs.insert(record.songID)
-                continue
-            }
-            install(makeEntry(song))
-        }
+        deletedSongIDs.formUnion(decoded.invalidSongIDs)
+        for entry in decoded.entries { install(entry) }
         evictIfNeeded()
         if hasPendingPersistence {
             schedulePersist()
@@ -130,7 +135,7 @@ actor LocalLibraryCatalog {
             if let existing = entries[song.id], existing.song == song {
                 continue
             }
-            install(makeEntry(song))
+            install(Self.makeEntry(song))
             dirtySongIDs.insert(song.id)
             deletedSongIDs.remove(song.id)
             inserted = true
@@ -261,7 +266,7 @@ actor LocalLibraryCatalog {
         }
     }
 
-    private func makeEntry(_ song: Song) -> Entry {
+    private static func makeEntry(_ song: Song) -> Entry {
         let titleKey = Self.normalizedKey(song.title)
         let artistKey = Self.normalizedKey(song.artist)
         return Entry(
@@ -272,6 +277,31 @@ actor LocalLibraryCatalog {
             mbid: Self.normalizedKey(song.musicBrainzId),
             isrc: Self.normalizedKey(song.isrc?.first),
             identityKey: titleKey + "\u{1F}" + artistKey
+        )
+    }
+
+    @concurrent
+    private static func decodeRecordsConcurrently(
+        _ records: [LibraryCatalogRecord]
+    ) async throws -> DecodedRecords {
+        try Task.checkCancellation()
+        var entries: [Entry] = []
+        entries.reserveCapacity(records.count)
+        var invalidSongIDs = Set<String>()
+        let decoder = JSONDecoder()
+        for (index, record) in records.enumerated() {
+            if index.isMultiple(of: 32) { try Task.checkCancellation() }
+            guard let song = try? decoder.decode(Song.self, from: record.songData),
+                  song.id == record.songID,
+                  !song.id.isEmpty else {
+                invalidSongIDs.insert(record.songID)
+                continue
+            }
+            entries.append(makeEntry(song))
+        }
+        return DecodedRecords(
+            entries: entries,
+            invalidSongIDs: invalidSongIDs
         )
     }
 
@@ -368,6 +398,7 @@ actor LocalLibraryCatalog {
         try Task.checkCancellation()
         var records: [LibraryCatalogRecord] = []
         records.reserveCapacity(entries.count)
+        let encoder = JSONEncoder()
         for (index, pair) in entries.enumerated() {
             if index.isMultiple(of: 32) {
                 try Task.checkCancellation()
@@ -375,7 +406,7 @@ actor LocalLibraryCatalog {
             let entry = pair.value
             records.append(LibraryCatalogRecord(
                 songID: pair.key,
-                songData: try encodeSong(entry.song),
+                songData: try encoder.encode(entry.song),
                 titleKey: entry.titleKey,
                 artistKey: entry.artistKey,
                 albumKey: entry.albumKey,
@@ -397,11 +428,4 @@ actor LocalLibraryCatalog {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func encodeSong(_ song: Song) throws -> Data {
-        try JSONEncoder().encode(song)
-    }
-
-    private static func decodeSong(_ data: Data) throws -> Song {
-        try JSONDecoder().decode(Song.self, from: data)
-    }
 }

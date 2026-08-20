@@ -20,7 +20,8 @@ actor HomeSnapshotStore {
         let epoch = scopeEpochs[accountScope, default: 0]
         if let snapshot = await AppDatabase.shared.loadHomeSnapshot(
             scope: accountScope,
-            maximumAge: maximumAge
+            maximumAge: maximumAge,
+            maximumBytes: maximumBytes
         ) {
             guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
             removeLegacySnapshot(accountScope: accountScope)

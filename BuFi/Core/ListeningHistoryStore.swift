@@ -495,17 +495,19 @@ actor ListeningHistoryStore {
 
     func snapshot(limit: Int = 30) -> ListeningHistorySnapshot {
         let boundedLimit = max(0, limit)
-        let values = Array(entries.values)
-        let mostPlayed = values.sorted {
-            if $0.playCount == $1.playCount {
-                return $0.lastPlayed > $1.lastPlayed
-            }
-            return $0.playCount > $1.playCount
-        }
-        let recent = values.sorted { $0.lastPlayed > $1.lastPlayed }
+        let mostPlayed = Self.leadingBehaviors(
+            in: entries,
+            limit: boundedLimit,
+            orderedBefore: Self.mostPlayedBefore
+        )
+        let recent = Self.leadingBehaviors(
+            in: entries,
+            limit: boundedLimit,
+            orderedBefore: Self.recentlyPlayedBefore
+        )
         return ListeningHistorySnapshot(
-            mostPlayedSongs: Array(mostPlayed.prefix(boundedLimit).map(\.song)),
-            recentlyPlayedSongs: Array(recent.prefix(boundedLimit).map(\.song))
+            mostPlayedSongs: mostPlayed.map(\.song),
+            recentlyPlayedSongs: recent.map(\.song)
         )
     }
 
@@ -513,15 +515,67 @@ actor ListeningHistoryStore {
         recentLimit: Int = 20
     ) -> RecommendationBehaviorSnapshot {
         let boundedLimit = max(0, recentLimit)
-        let recent = entries.values
-            .sorted { $0.lastPlayed > $1.lastPlayed }
-            .prefix(boundedLimit)
-            .map(\.song)
+        let recent = Self.leadingBehaviors(
+            in: entries,
+            limit: boundedLimit,
+            orderedBefore: Self.recentlyPlayedBefore
+        ).map(\.song)
         return RecommendationBehaviorSnapshot(
             songs: entries,
-            recentSongs: Array(recent),
+            recentSongs: recent,
             revision: revision
         )
+    }
+
+    /// The UI only needs a small prefix (normally 20-30 entries). Maintaining
+    /// that prefix directly avoids allocating and sorting all 600 retained
+    /// history rows every time recommendations or Home refreshes.
+    private static func leadingBehaviors(
+        in entries: [String: SongBehavior],
+        limit: Int,
+        orderedBefore: (SongBehavior, SongBehavior) -> Bool
+    ) -> [SongBehavior] {
+        guard limit > 0, !entries.isEmpty else { return [] }
+        var leading: [SongBehavior] = []
+        leading.reserveCapacity(min(limit, entries.count))
+        for value in entries.values {
+            if leading.count == limit,
+               let last = leading.last,
+               !orderedBefore(value, last) {
+                continue
+            }
+            var lowerBound = 0
+            var upperBound = leading.count
+            while lowerBound < upperBound {
+                let middle = lowerBound + (upperBound - lowerBound) / 2
+                if orderedBefore(value, leading[middle]) {
+                    upperBound = middle
+                } else {
+                    lowerBound = middle + 1
+                }
+            }
+            guard lowerBound < limit else { continue }
+            leading.insert(value, at: lowerBound)
+            if leading.count > limit { leading.removeLast() }
+        }
+        return leading
+    }
+
+    private static func mostPlayedBefore(
+        _ lhs: SongBehavior,
+        _ rhs: SongBehavior
+    ) -> Bool {
+        if lhs.playCount != rhs.playCount { return lhs.playCount > rhs.playCount }
+        if lhs.lastPlayed != rhs.lastPlayed { return lhs.lastPlayed > rhs.lastPlayed }
+        return lhs.song.id < rhs.song.id
+    }
+
+    private static func recentlyPlayedBefore(
+        _ lhs: SongBehavior,
+        _ rhs: SongBehavior
+    ) -> Bool {
+        if lhs.lastPlayed != rhs.lastPlayed { return lhs.lastPlayed > rhs.lastPlayed }
+        return lhs.song.id < rhs.song.id
     }
 
     /// Lightweight validation for work that already captured the full

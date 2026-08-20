@@ -46,6 +46,46 @@ actor AppDatabase {
         let songData: Data
     }
 
+    private struct StoredListeningBehavior: Sendable {
+        let songID: String
+        let songData: Data
+        let playCount: Int
+        let firstPlayed: Double
+        let lastPlayed: Double
+        let completedCount: Int
+        let skipCount: Int
+        let earlySkipCount: Int
+        let repeatedSkipCount: Int
+        let repeatCount: Int
+        let manualPlayCount: Int
+        let searchPlayCount: Int
+        let albumSelectionCount: Int
+        let playlistPlayCount: Int
+        let autoplayCount: Int
+        let queueRemovalCount: Int
+        let playlistAddCount: Int
+        let favoriteCount: Int
+        let totalCompletion: Double
+        let completionSamples: Int
+        let consecutiveSkips: Int
+    }
+
+    private struct EncodedListeningBehavior: Sendable {
+        let songID: String
+        let songData: Data
+        let value: SongBehavior
+    }
+
+    private struct DecodedQueueItem: Sendable {
+        let position: Int
+        let entry: PlaybackQueueEntry
+    }
+
+    private struct DecodedQueueItems: Sendable {
+        let values: [DecodedQueueItem]
+        let repairedItems: Bool
+    }
+
     private struct PaletteTouch: Hashable, Sendable {
         let scope: String
         let artworkKey: String
@@ -58,6 +98,11 @@ actor AppDatabase {
     private var poolTask: Task<DatabasePool?, Never>?
     private var pendingPaletteTouches = Set<PaletteTouch>()
     private var paletteTouchTask: Task<Void, Never>?
+
+    private static let externalRecommendationMaximumBytes = 512 * 1_024
+    private static let externalRecommendationRetention: TimeInterval = 7 * 24 * 60 * 60
+    private static let externalRecommendationEntriesPerSource = 48
+    private static let externalRecommendationTotalEntries = 128
 
     private init() {
         currentDate = { Date() }
@@ -124,7 +169,7 @@ actor AppDatabase {
     func loadListeningHistory(scope: String) async -> [String: SongBehavior] {
         guard let pool = await databasePool() else { return [:] }
         do {
-            return try await pool.read { db in
+            let stored = try await pool.read { db in
                 let rows = try Row.fetchAll(
                     db,
                     sql: """
@@ -133,41 +178,33 @@ actor AppDatabase {
                     """,
                     arguments: [scope]
                 )
-                return Dictionary(uniqueKeysWithValues: rows.compactMap {
-                    row -> (String, SongBehavior)? in
-                    do {
-                        let songID: String = row["song_id"]
-                        let songData: Data = row["song_data"]
-                        let song = try Self.decode(Song.self, from: songData)
-                        guard song.id == songID else { return nil }
-                        let behavior = SongBehavior(
-                            song: song,
-                            playCount: row["play_count"],
-                            firstPlayed: Self.date(row["first_played"]),
-                            lastPlayed: Self.date(row["last_played"]),
-                            completedCount: row["completed_count"],
-                            skipCount: row["skip_count"],
-                            earlySkipCount: row["early_skip_count"],
-                            repeatedSkipCount: row["repeated_skip_count"],
-                            repeatCount: row["repeat_count"],
-                            manualPlayCount: row["manual_play_count"],
-                            searchPlayCount: row["search_play_count"],
-                            albumSelectionCount: row["album_selection_count"],
-                            playlistPlayCount: row["playlist_play_count"],
-                            autoplayCount: row["autoplay_count"],
-                            queueRemovalCount: row["queue_removal_count"],
-                            playlistAddCount: row["playlist_add_count"],
-                            favoriteCount: row["favorite_count"],
-                            totalCompletion: row["total_completion"],
-                            completionSamples: row["completion_samples"],
-                            consecutiveSkips: row["consecutive_skips"]
-                        )
-                        return (songID, behavior)
-                    } catch {
-                        return nil
-                    }
-                })
+                return rows.map { row in
+                    StoredListeningBehavior(
+                        songID: row["song_id"],
+                        songData: row["song_data"],
+                        playCount: row["play_count"],
+                        firstPlayed: row["first_played"],
+                        lastPlayed: row["last_played"],
+                        completedCount: row["completed_count"],
+                        skipCount: row["skip_count"],
+                        earlySkipCount: row["early_skip_count"],
+                        repeatedSkipCount: row["repeated_skip_count"],
+                        repeatCount: row["repeat_count"],
+                        manualPlayCount: row["manual_play_count"],
+                        searchPlayCount: row["search_play_count"],
+                        albumSelectionCount: row["album_selection_count"],
+                        playlistPlayCount: row["playlist_play_count"],
+                        autoplayCount: row["autoplay_count"],
+                        queueRemovalCount: row["queue_removal_count"],
+                        playlistAddCount: row["playlist_add_count"],
+                        favoriteCount: row["favorite_count"],
+                        totalCompletion: row["total_completion"],
+                        completionSamples: row["completion_samples"],
+                        consecutiveSkips: row["consecutive_skips"]
+                    )
+                }
             }
+            return await Self.decodeListeningHistoryConcurrently(stored)
         } catch {
             return [:]
         }
@@ -179,6 +216,13 @@ actor AppDatabase {
         deletedIDs: Set<String>,
         scope: String
     ) async -> Bool {
+        let encoded: [EncodedListeningBehavior]
+        do {
+            encoded = try await Self.encodeListeningHistoryConcurrently(values)
+        } catch {
+            return false
+        }
+        guard !Task.isCancelled else { return false }
         guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
@@ -188,13 +232,12 @@ actor AppDatabase {
                         arguments: [scope, id]
                     )
                 }
-                for (id, value) in values {
-                    guard id == value.song.id else { continue }
-                    let songData = try Self.encode(value.song)
+                for item in encoded {
+                    let value = item.value
                     try db.execute(
                         sql: Self.listeningUpsertSQL,
                         arguments: [
-                            scope, id, songData, value.playCount,
+                            scope, item.songID, item.songData, value.playCount,
                             value.firstPlayed.timeIntervalSince1970,
                             value.lastPlayed.timeIntervalSince1970,
                             value.completedCount, value.skipCount,
@@ -220,6 +263,13 @@ actor AppDatabase {
         _ values: [String: SongBehavior],
         scope: String
     ) async -> Bool {
+        let encoded: [EncodedListeningBehavior]
+        do {
+            encoded = try await Self.encodeListeningHistoryConcurrently(values)
+        } catch {
+            return false
+        }
+        guard !Task.isCancelled else { return false }
         guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
@@ -227,13 +277,12 @@ actor AppDatabase {
                     sql: "DELETE FROM listening_behavior WHERE account_scope = ?",
                     arguments: [scope]
                 )
-                for (id, value) in values {
-                    guard id == value.song.id else { continue }
-                    let songData = try Self.encode(value.song)
+                for item in encoded {
+                    let value = item.value
                     try db.execute(
                         sql: Self.listeningUpsertSQL,
                         arguments: [
-                            scope, id, songData, value.playCount,
+                            scope, item.songID, item.songData, value.playCount,
                             value.firstPlayed.timeIntervalSince1970,
                             value.lastPlayed.timeIntervalSince1970,
                             value.completedCount, value.skipCount,
@@ -424,26 +473,27 @@ actor AppDatabase {
 
     func loadHomeSnapshot(
         scope: String,
-        maximumAge: TimeInterval
+        maximumAge: TimeInterval,
+        maximumBytes: Int
     ) async -> HomeSnapshot? {
+        let cutoff = currentDate()
+            .addingTimeInterval(-max(0, maximumAge))
+            .timeIntervalSince1970
         guard let pool = await databasePool() else { return nil }
         do {
-            return try await pool.read { db in
+            guard let data = try await pool.read({ db -> Data? in
                 guard let row = try Row.fetchOne(
                     db,
                     sql: """
-                    SELECT saved_at, snapshot_data FROM home_snapshot
+                    SELECT snapshot_data FROM home_snapshot
                     WHERE account_scope = ? AND saved_at >= ?
                     """,
-                    arguments: [scope, Date().addingTimeInterval(-maximumAge).timeIntervalSince1970]
+                    arguments: [scope, cutoff]
                 ) else { return nil }
-                let savedAt = Self.date(row["saved_at"] as Double)
-                guard Date().timeIntervalSince(savedAt) <= maximumAge else {
-                    return nil
-                }
                 let data: Data = row["snapshot_data"]
-                return try Self.decode(HomeSnapshot.self, from: data)
-            }
+                return data
+            }), data.count <= max(0, maximumBytes) else { return nil }
+            return await Self.decodeHomeSnapshotConcurrently(data)
         } catch {
             return nil
         }
@@ -455,11 +505,11 @@ actor AppDatabase {
         scope: String,
         maximumBytes: Int
     ) async -> Bool {
-        guard let pool = await databasePool(),
-              let data = await Self.encodeHomeSnapshotConcurrently(
-                snapshot,
-                maximumBytes: maximumBytes
-              ) else { return false }
+        guard let data = await Self.encodeHomeSnapshotConcurrently(
+            snapshot,
+            maximumBytes: maximumBytes
+        ), let pool = await databasePool() else { return false }
+        let savedAt = currentDate().timeIntervalSince1970
         do {
             try await pool.write { db in
                 try db.execute(
@@ -470,7 +520,7 @@ actor AppDatabase {
                         saved_at = excluded.saved_at,
                         snapshot_data = excluded.snapshot_data
                     """,
-                    arguments: [scope, Date().timeIntervalSince1970, data]
+                    arguments: [scope, savedAt, data]
                 )
             }
             return true
@@ -570,27 +620,30 @@ actor AppDatabase {
         key: String,
         maximumAge: TimeInterval
     ) async -> [Song] {
-        guard let pool = await databasePool(),
-              !scope.isEmpty,
+        guard !scope.isEmpty,
               !source.isEmpty,
               !key.isEmpty else { return [] }
+        let cutoff = currentDate()
+            .addingTimeInterval(-max(0, maximumAge))
+            .timeIntervalSince1970
+        guard let pool = await databasePool() else { return [] }
         do {
-            return try await pool.read { db in
+            guard let data = try await pool.read({ db -> Data? in
                 guard let row = try Row.fetchOne(
                     db,
                     sql: """
-                    SELECT saved_at, song_data FROM external_recommendation_cache
+                    SELECT song_data FROM external_recommendation_cache
                     WHERE account_scope = ? AND source = ? AND cache_key = ?
+                      AND saved_at >= ?
                     """,
-                    arguments: [scope, source, key]
-                ) else { return [] }
-                let savedAt = Self.date(row["saved_at"] as Double)
-                guard Date().timeIntervalSince(savedAt) <= maximumAge else {
-                    return []
-                }
+                    arguments: [scope, source, key, cutoff]
+                ) else { return nil }
                 let data: Data = row["song_data"]
-                return (try? Self.decode([Song].self, from: data)) ?? []
+                return data
+            }), data.count <= Self.externalRecommendationMaximumBytes else {
+                return []
             }
+            return await Self.decodeSongsConcurrently(data) ?? []
         } catch {
             return []
         }
@@ -603,14 +656,24 @@ actor AppDatabase {
         source: String,
         key: String
     ) async -> Bool {
-        guard let pool = await databasePool(),
-              !scope.isEmpty,
+        guard !scope.isEmpty,
               !source.isEmpty,
               !key.isEmpty,
               !songs.isEmpty,
-              let data = try? Self.encode(songs) else { return false }
+              let data = await Self.encodeSongsConcurrently(songs),
+              data.count <= Self.externalRecommendationMaximumBytes,
+              let pool = await databasePool() else { return false }
+        let savedAt = currentDate().timeIntervalSince1970
+        let expirationCutoff = savedAt - Self.externalRecommendationRetention
         do {
             try await pool.write { db in
+                try db.execute(
+                    sql: """
+                    DELETE FROM external_recommendation_cache
+                    WHERE saved_at < ?
+                    """,
+                    arguments: [expirationCutoff]
+                )
                 try db.execute(
                     sql: """
                     INSERT INTO external_recommendation_cache (
@@ -621,8 +684,18 @@ actor AppDatabase {
                         song_data = excluded.song_data
                     """,
                     arguments: [
-                        scope, source, key, Date().timeIntervalSince1970, data
+                        scope, source, key, savedAt, data
                     ]
+                )
+                try Self.pruneExternalRecommendationCache(
+                    in: db,
+                    scope: scope,
+                    source: source,
+                    maximumEntries: Self.externalRecommendationEntriesPerSource
+                )
+                try Self.pruneExternalRecommendationCache(
+                    in: db,
+                    maximumEntries: Self.externalRecommendationTotalEntries
                 )
             }
             return true
@@ -699,15 +772,14 @@ actor AppDatabase {
         maximumEntriesPerScope: Int = 384,
         maximumTotalEntries: Int = 1_024
     ) async -> Bool {
-        await flushPaletteTouchesNow()
-        guard let pool = await databasePool(),
-              !scope.isEmpty,
+        guard !scope.isEmpty,
               scope.utf8.count <= 512,
               !artworkKey.isEmpty,
               artworkKey.utf8.count <= 4_096,
               engineVersion > 0,
               let data = try? Self.encode(palette),
-              data.count <= 32_768 else { return false }
+              data.count <= 32_768,
+              let pool = await databasePool() else { return false }
 
         let totalLimit = min(max(maximumTotalEntries, 1), 4_096)
         let scopedLimit = min(
@@ -715,11 +787,17 @@ actor AppDatabase {
             totalLimit
         )
         let wallClock = currentDate().timeIntervalSince1970
+        let touches = takePendingPaletteTouches()
         do {
             try await pool.write { db in
-                let accessedAt = try Self.nextPaletteAccessTimestamp(
+                var accessedAt = try Self.nextPaletteAccessTimestamp(
                     in: db,
                     wallClock: wallClock
+                )
+                try Self.applyPaletteTouches(
+                    touches,
+                    in: db,
+                    nextAccessedAt: &accessedAt
                 )
                 // A palette is meaningful only to the engine version that produced it.
                 // Removing older representations of the same artwork prevents stale
@@ -763,6 +841,7 @@ actor AppDatabase {
             }
             return true
         } catch {
+            restorePaletteTouches(touches)
             return false
         }
     }
@@ -828,25 +907,9 @@ actor AppDatabase {
                 )
             }
             guard let stored else { return nil }
-            var repairedItems = false
-            let decodedItems = stored.items.compactMap { item -> (
-                position: Int,
-                entry: PlaybackQueueEntry
-            )? in
-                guard let song = try? Self.decode(Song.self, from: item.songData) else {
-                    repairedItems = true
-                    return nil
-                }
-                let parsedID = item.queueEntryID.flatMap(UUID.init(uuidString:))
-                if parsedID == nil { repairedItems = true }
-                return (
-                    position: item.position,
-                    entry: PlaybackQueueEntry(
-                        song: song,
-                        queueEntryID: parsedID ?? UUID()
-                    )
-                )
-            }
+            let decoded = try await Self.decodeQueueItemsConcurrently(stored.items)
+            let decodedItems = decoded.values
+            var repairedItems = decoded.repairedItems
             let storedRevision = UInt64(max(0, stored.revision))
             guard !decodedItems.isEmpty else {
                 let emptyStateNeedsRepair = repairedItems
@@ -999,15 +1062,23 @@ actor AppDatabase {
                 )
                 guard replacingItems else { return true }
                 try db.execute(
-                    sql: "DELETE FROM queue_item WHERE account_scope = ?",
-                    arguments: [scope]
+                    sql: """
+                    DELETE FROM queue_item
+                    WHERE account_scope = ? AND position >= ?
+                    """,
+                    arguments: [scope, encodedItems.count]
                 )
                 for item in encodedItems {
                     try db.execute(
                         sql: """
-                            INSERT INTO queue_item
+                        INSERT INTO queue_item
                             (account_scope, position, occurrence_id, song_data)
-                            VALUES (?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(account_scope, position) DO UPDATE SET
+                            occurrence_id = excluded.occurrence_id,
+                            song_data = excluded.song_data
+                        WHERE queue_item.occurrence_id IS NOT excluded.occurrence_id
+                           OR queue_item.song_data IS NOT excluded.song_data
                         """,
                         arguments: [
                             scope, item.position, item.queueEntryID,
@@ -1116,12 +1187,126 @@ actor AppDatabase {
     }
 
     @concurrent
+    private static func decodeHomeSnapshotConcurrently(
+        _ data: Data
+    ) async -> HomeSnapshot? {
+        guard !Task.isCancelled else { return nil }
+        return try? decode(HomeSnapshot.self, from: data)
+    }
+
+    @concurrent
+    private static func decodeListeningHistoryConcurrently(
+        _ stored: [StoredListeningBehavior]
+    ) async -> [String: SongBehavior] {
+        guard !Task.isCancelled else { return [:] }
+        var result: [String: SongBehavior] = [:]
+        result.reserveCapacity(stored.count)
+        let decoder = PropertyListDecoder()
+        for (index, item) in stored.enumerated() {
+            if index.isMultiple(of: 32), Task.isCancelled { return [:] }
+            guard let song = try? decoder.decode(Song.self, from: item.songData),
+                  song.id == item.songID else {
+                continue
+            }
+            result[item.songID] = SongBehavior(
+                song: song,
+                playCount: item.playCount,
+                firstPlayed: date(item.firstPlayed),
+                lastPlayed: date(item.lastPlayed),
+                completedCount: item.completedCount,
+                skipCount: item.skipCount,
+                earlySkipCount: item.earlySkipCount,
+                repeatedSkipCount: item.repeatedSkipCount,
+                repeatCount: item.repeatCount,
+                manualPlayCount: item.manualPlayCount,
+                searchPlayCount: item.searchPlayCount,
+                albumSelectionCount: item.albumSelectionCount,
+                playlistPlayCount: item.playlistPlayCount,
+                autoplayCount: item.autoplayCount,
+                queueRemovalCount: item.queueRemovalCount,
+                playlistAddCount: item.playlistAddCount,
+                favoriteCount: item.favoriteCount,
+                totalCompletion: item.totalCompletion,
+                completionSamples: item.completionSamples,
+                consecutiveSkips: item.consecutiveSkips
+            )
+        }
+        return result
+    }
+
+    @concurrent
+    private static func encodeListeningHistoryConcurrently(
+        _ values: [String: SongBehavior]
+    ) async throws -> [EncodedListeningBehavior] {
+        try Task.checkCancellation()
+        var result: [EncodedListeningBehavior] = []
+        result.reserveCapacity(values.count)
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        for (index, pair) in values.enumerated() {
+            if index.isMultiple(of: 32) { try Task.checkCancellation() }
+            guard pair.key == pair.value.song.id else { continue }
+            result.append(EncodedListeningBehavior(
+                songID: pair.key,
+                songData: try encoder.encode(pair.value.song),
+                value: pair.value
+            ))
+        }
+        return result
+    }
+
+    @concurrent
+    private static func decodeQueueItemsConcurrently(
+        _ items: [StoredQueueItem]
+    ) async throws -> DecodedQueueItems {
+        try Task.checkCancellation()
+        var values: [DecodedQueueItem] = []
+        values.reserveCapacity(items.count)
+        var repairedItems = false
+        let decoder = PropertyListDecoder()
+        for (index, item) in items.enumerated() {
+            if index.isMultiple(of: 32) { try Task.checkCancellation() }
+            guard let song = try? decoder.decode(Song.self, from: item.songData) else {
+                repairedItems = true
+                continue
+            }
+            let parsedID = item.queueEntryID.flatMap(UUID.init(uuidString:))
+            if parsedID == nil { repairedItems = true }
+            values.append(DecodedQueueItem(
+                position: item.position,
+                entry: PlaybackQueueEntry(
+                    song: song,
+                    queueEntryID: parsedID ?? UUID()
+                )
+            ))
+        }
+        return DecodedQueueItems(
+            values: values,
+            repairedItems: repairedItems
+        )
+    }
+
+    @concurrent
+    private static func encodeSongsConcurrently(_ songs: [Song]) async -> Data? {
+        guard !Task.isCancelled else { return nil }
+        return try? encode(songs)
+    }
+
+    @concurrent
+    private static func decodeSongsConcurrently(_ data: Data) async -> [Song]? {
+        guard !Task.isCancelled else { return nil }
+        return try? decode([Song].self, from: data)
+    }
+
+    @concurrent
     private static func encodeQueueItemsConcurrently(
         _ entries: [PlaybackQueueEntry]
     ) async throws -> [EncodedQueueItem] {
         try Task.checkCancellation()
         var encoded: [EncodedQueueItem] = []
         encoded.reserveCapacity(entries.count)
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
         for (position, entry) in entries.enumerated() {
             if position.isMultiple(of: 32) {
                 try Task.checkCancellation()
@@ -1129,7 +1314,7 @@ actor AppDatabase {
             encoded.append(EncodedQueueItem(
                 position: position,
                 queueEntryID: entry.id.uuidString,
-                songData: try encode(entry.song)
+                songData: try encoder.encode(entry.song)
             ))
         }
         return encoded
@@ -1150,6 +1335,11 @@ actor AppDatabase {
 
     private func schedulePaletteTouch(_ touch: PaletteTouch) {
         pendingPaletteTouches.insert(touch)
+        schedulePaletteTouchFlushIfNeeded()
+    }
+
+    private func schedulePaletteTouchFlushIfNeeded() {
+        guard !pendingPaletteTouches.isEmpty else { return }
         guard paletteTouchTask == nil else { return }
         paletteTouchTask = Task { [weak self] in
             do {
@@ -1168,10 +1358,20 @@ actor AppDatabase {
         paletteTouchTask = nil
     }
 
-    private func flushPaletteTouchesNow() async {
+    private func takePendingPaletteTouches() -> [PaletteTouch] {
         paletteTouchTask?.cancel()
         paletteTouchTask = nil
-        await flushPaletteTouches()
+        let touches = pendingPaletteTouches.sorted {
+            ($0.scope, $0.artworkKey, $0.engineVersion)
+                < ($1.scope, $1.artworkKey, $1.engineVersion)
+        }
+        pendingPaletteTouches.removeAll(keepingCapacity: true)
+        return touches
+    }
+
+    private func restorePaletteTouches(_ touches: [PaletteTouch]) {
+        guard !touches.isEmpty else { return }
+        pendingPaletteTouches.formUnion(touches)
     }
 
     private func flushScheduledPaletteTouches() async {
@@ -1181,34 +1381,89 @@ actor AppDatabase {
 
     private func flushPaletteTouches() async {
         guard !pendingPaletteTouches.isEmpty else { return }
-        let touches = pendingPaletteTouches.sorted {
-            ($0.scope, $0.artworkKey, $0.engineVersion)
-                < ($1.scope, $1.artworkKey, $1.engineVersion)
+        let touches = takePendingPaletteTouches()
+        guard let pool = await databasePool() else {
+            restorePaletteTouches(touches)
+            return
         }
-        pendingPaletteTouches.removeAll(keepingCapacity: true)
-        guard let pool = await databasePool() else { return }
         let wallClock = currentDate().timeIntervalSince1970
-        try? await pool.write { db in
-            var accessedAt = try Self.nextPaletteAccessTimestamp(
-                in: db,
-                wallClock: wallClock
-            )
-            for touch in touches {
-                try db.execute(
-                    sql: """
-                    UPDATE artwork_palette_cache SET last_accessed_at = ?
-                    WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
-                    """,
-                    arguments: [
-                        accessedAt,
-                        touch.scope,
-                        touch.artworkKey,
-                        touch.engineVersion
-                    ]
+        do {
+            try await pool.write { db in
+                var accessedAt = try Self.nextPaletteAccessTimestamp(
+                    in: db,
+                    wallClock: wallClock
                 )
-                accessedAt = accessedAt.nextUp
+                try Self.applyPaletteTouches(
+                    touches,
+                    in: db,
+                    nextAccessedAt: &accessedAt
+                )
             }
+        } catch {
+            restorePaletteTouches(touches)
         }
+    }
+
+    private static func applyPaletteTouches(
+        _ touches: [PaletteTouch],
+        in db: Database,
+        nextAccessedAt: inout Double
+    ) throws {
+        for touch in touches {
+            try db.execute(
+                sql: """
+                UPDATE artwork_palette_cache SET last_accessed_at = ?
+                WHERE account_scope = ? AND artwork_key = ? AND engine_version = ?
+                """,
+                arguments: [
+                    nextAccessedAt,
+                    touch.scope,
+                    touch.artworkKey,
+                    touch.engineVersion
+                ]
+            )
+            nextAccessedAt = nextAccessedAt.nextUp
+        }
+    }
+
+    private static func pruneExternalRecommendationCache(
+        in db: Database,
+        scope: String,
+        source: String,
+        maximumEntries: Int
+    ) throws {
+        try db.execute(
+            sql: """
+            DELETE FROM external_recommendation_cache
+            WHERE (account_scope, source, cache_key) IN (
+                SELECT account_scope, source, cache_key
+                FROM external_recommendation_cache
+                WHERE account_scope = ? AND source = ?
+                ORDER BY saved_at DESC, cache_key ASC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            arguments: [scope, source, maximumEntries]
+        )
+    }
+
+    private static func pruneExternalRecommendationCache(
+        in db: Database,
+        maximumEntries: Int
+    ) throws {
+        try db.execute(
+            sql: """
+            DELETE FROM external_recommendation_cache
+            WHERE (account_scope, source, cache_key) IN (
+                SELECT account_scope, source, cache_key
+                FROM external_recommendation_cache
+                ORDER BY saved_at DESC, account_scope ASC, source ASC,
+                         cache_key ASC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            arguments: [maximumEntries]
+        )
     }
 
     private static func pruneArtworkPalettes(
