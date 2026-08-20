@@ -909,6 +909,13 @@ enum PlaybackAudioProfile: Equatable, Sendable {
                 || (song.samplingRate ?? 0) > 48_000 {
                 return .lossless
             }
+            // A generic audio/mp4 response cannot distinguish AAC from ALAC.
+            // When older servers omit every useful signal, classify the raw
+            // container conservatively so an unlabelled ALAC stream still gets
+            // the no-competing-prefetch stability policy.
+            if requested == nil || requested == "raw" {
+                return .lossless
+            }
         }
         return .unknown
     }

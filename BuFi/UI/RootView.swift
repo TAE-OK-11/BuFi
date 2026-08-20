@@ -319,7 +319,7 @@ struct RootView: View {
 
 private struct AutomaticSyncHost: View {
     @EnvironmentObject private var session: AppSessionState
-    @EnvironmentObject private var playbackActivity: PlaybackActivityState
+    @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.scenePhase) private var scenePhase
 
     let model: AppModel
@@ -342,7 +342,7 @@ private struct AutomaticSyncHost: View {
             isSceneActive: scenePhase == .active,
             syncInterval: syncInterval,
             lowPowerMode: lowPowerMode,
-            isPlaying: playbackActivity.isPlaying,
+            wantsPlayback: playbackControl.wantsPlayback,
             thermalKey: thermalKey
         )
     }
@@ -374,14 +374,11 @@ private struct AutomaticSyncHost: View {
         case .serious, .critical:
             return max(selected, 900)
         case .fair:
-            return max(selected, playbackActivity.isPlaying ? 300 : 120)
+            return max(selected, 120)
         case .nominal:
             break
         @unknown default:
             return max(selected, 900)
-        }
-        if playbackActivity.isPlaying {
-            return max(selected, 180)
         }
         return selected
     }
@@ -390,6 +387,7 @@ private struct AutomaticSyncHost: View {
         guard session.phase == .ready,
               scenePhase == .active,
               !lowPowerMode,
+              !playbackControl.wantsPlayback,
               !isThermallyConstrained else {
             return
         }
@@ -404,6 +402,7 @@ private struct AutomaticSyncHost: View {
             guard session.phase == .ready,
                   scenePhase == .active,
                   !lowPowerMode,
+                  !playbackControl.wantsPlayback,
                   !isThermallyConstrained else {
                 return
             }
@@ -417,6 +416,6 @@ private struct AutomaticSyncIdentity: Hashable, Sendable {
     let isSceneActive: Bool
     let syncInterval: TimeInterval
     let lowPowerMode: Bool
-    let isPlaying: Bool
+    let wantsPlayback: Bool
     let thermalKey: String
 }

@@ -39,6 +39,82 @@ enum LyricsTranslationPhase: Equatable {
     }
 }
 
+struct LyricsTranslationEligibilityIdentity: Hashable, Sendable {
+    let targetLanguageCode: String
+    let lines: [LyricLine]
+
+    init(
+        lines: [LyricLine],
+        targetLanguageCode: String = LyricsTranslationEligibility.targetLanguageCode
+    ) {
+        self.targetLanguageCode = targetLanguageCode
+        self.lines = lines
+    }
+}
+
+enum LyricsTranslationEligibility {
+    static var targetLanguageCode: String {
+        Locale.current.language.languageCode?.identifier ?? "ko"
+    }
+
+    /// Translation is an explicit affordance. Korean-only lyrics never show it,
+    /// regardless of the device locale. A deterministic Unicode scan keeps even
+    /// very short Hangul lyrics out of the language recognizer, while mixed or
+    /// foreign-language lyrics remain eligible for an explicit translation.
+    static func shouldOfferTranslation(
+        lines: [LyricLine],
+        targetLanguageCode: String = LyricsTranslationEligibility.targetLanguageCode
+    ) -> Bool {
+        let meaningfulLines = lines.filter {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !meaningfulLines.isEmpty else { return false }
+
+        let letterScalars = meaningfulLines.flatMap { line in
+            line.text.unicodeScalars.filter {
+                CharacterSet.letters.contains($0)
+            }
+        }
+        guard let firstLetter = letterScalars.first else { return false }
+        let isKoreanOnly = isHangul(firstLetter.value)
+            && letterScalars.dropFirst().allSatisfy { isHangul($0.value) }
+        if isKoreanOnly {
+            return false
+        }
+
+        let targetBase = baseLanguageCode(targetLanguageCode)
+        if targetBase == "ko" { return true }
+
+        let sample = String(
+            meaningfulLines
+                .lazy
+                .map(\.text)
+                .joined(separator: "\n")
+                .prefix(4_000)
+        )
+        guard let language = NLLanguageRecognizer.dominantLanguage(for: sample) else {
+            return false
+        }
+        return baseLanguageCode(language.rawValue) != targetBase
+    }
+
+    private static func isHangul(_ value: UInt32) -> Bool {
+        (0x1100...0x11FF).contains(value)
+            || (0x3130...0x318F).contains(value)
+            || (0xA960...0xA97F).contains(value)
+            || (0xAC00...0xD7AF).contains(value)
+            || (0xD7B0...0xD7FF).contains(value)
+    }
+
+    private static func baseLanguageCode(_ identifier: String) -> String {
+        identifier
+            .replacingOccurrences(of: "_", with: "-")
+            .split(separator: "-", maxSplits: 1)
+            .first
+            .map { String($0).lowercased() } ?? identifier.lowercased()
+    }
+}
+
 struct LyricsTranslationTaskHost: View {
     let accountScope: String?
     let songID: String
@@ -50,7 +126,7 @@ struct LyricsTranslationTaskHost: View {
     @State private var loadedCacheIdentity: LyricsTranslationCacheIdentity?
 
     private var targetLanguageCode: String {
-        Locale.current.language.languageCode?.identifier ?? "ko"
+        LyricsTranslationEligibility.targetLanguageCode
     }
 
     @ViewBuilder

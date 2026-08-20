@@ -927,7 +927,10 @@ actor OfflineStore {
         let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
             requestTimeout: 30,
             resourceTimeout: 60 * 60,
-            maximumConnectionsPerHost: 2,
+            // Offline media is optional background work. One transfer per
+            // origin avoids competing with AVPlayer for server, radio, and
+            // thermal headroom while still benefiting from HTTP multiplexing.
+            maximumConnectionsPerHost: 1,
             allowsExpensiveNetworkAccess: allowsExpensiveAccess,
             allowsConstrainedNetworkAccess: allowsExpensiveAccess
         )

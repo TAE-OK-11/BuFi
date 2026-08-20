@@ -72,16 +72,13 @@ enum ModernNetworkPolicy {
     ) {
         prepareJSONRequest(
             &request,
-            assumesHTTP3Capable: true,
             acceptsZstandard: acceptsZstandard,
             cachePolicy: .reloadIgnoringLocalCacheData
         )
     }
 
-    /// Third-party JSON APIs are not BuFi-controlled endpoints. Do not claim
-    /// HTTP/3 support before CFNetwork learns it from DNS/Alt-Svc; an optimistic
-    /// QUIC race here can turn a healthy external API call into a transport
-    /// failure on providers or networks without H3.
+    /// URLSession learns HTTP/3 availability from service discovery. BuFi does
+    /// not force QUIC racing for either private servers or third-party APIs.
     static func prepareExternalAPIRequest(
         _ request: inout URLRequest,
         acceptsZstandard: Bool,
@@ -89,7 +86,6 @@ enum ModernNetworkPolicy {
     ) {
         prepareJSONRequest(
             &request,
-            assumesHTTP3Capable: false,
             acceptsZstandard: acceptsZstandard,
             cachePolicy: allowsCaching
                 ? .useProtocolCachePolicy
@@ -103,7 +99,6 @@ enum ModernNetworkPolicy {
     ) {
         prepareJSONRequest(
             &request,
-            assumesHTTP3Capable: true,
             acceptsZstandard: acceptsZstandard,
             cachePolicy: .reloadIgnoringLocalCacheData
         )
@@ -111,7 +106,7 @@ enum ModernNetworkPolicy {
     }
 
     static func prepareImageRequest(_ request: inout URLRequest) {
-        prepareTransport(&request, assumesHTTP3Capable: true)
+        prepareTransport(&request)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.networkServiceType = .responsiveData
         request.setValue("image/*, */*;q=0.8", forHTTPHeaderField: "Accept")
@@ -126,7 +121,7 @@ enum ModernNetworkPolicy {
     /// Analysis samples must not race the player for the AV streaming class.
     /// Keep identity encoding so the range maps to raw audio bytes.
     static func prepareAnalysisMediaRequest(_ request: inout URLRequest) {
-        prepareTransport(&request, assumesHTTP3Capable: false)
+        prepareTransport(&request)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.networkServiceType = .background
         request.setValue(
@@ -139,7 +134,7 @@ enum ModernNetworkPolicy {
     /// Full-file/offline transfers share the media headers but must not
     /// compete with the active AVPlayer stream for responsive/AV bandwidth.
     static func prepareBackgroundMediaRequest(_ request: inout URLRequest) {
-        prepareTransport(&request, assumesHTTP3Capable: true)
+        prepareTransport(&request)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.networkServiceType = .background
         request.setValue(
@@ -150,7 +145,7 @@ enum ModernNetworkPolicy {
     }
 
     static func prepareMediaRequest(_ request: inout URLRequest) {
-        prepareTransport(&request, assumesHTTP3Capable: true)
+        prepareTransport(&request)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.networkServiceType = .avStreaming
         request.setValue(
@@ -169,15 +164,7 @@ enum ModernNetworkPolicy {
         _ request: inout URLRequest,
         inheriting originalRequest: URLRequest? = nil
     ) {
-        // Preserve the policy chosen at the request boundary. In particular,
-        // an external API that intentionally avoided optimistic H3 must not be
-        // converted into an H3-assumed request just because it redirected.
-        let assumesHTTP3Capable = originalRequest?.assumesHTTP3Capable
-            ?? request.assumesHTTP3Capable
-        prepareTransport(
-            &request,
-            assumesHTTP3Capable: assumesHTTP3Capable
-        )
+        prepareTransport(&request)
         guard let originalRequest else { return }
 
         request.cachePolicy = originalRequest.cachePolicy
@@ -198,14 +185,10 @@ enum ModernNetworkPolicy {
 
     private static func prepareJSONRequest(
         _ request: inout URLRequest,
-        assumesHTTP3Capable: Bool,
         acceptsZstandard: Bool,
         cachePolicy: URLRequest.CachePolicy
     ) {
-        prepareTransport(
-            &request,
-            assumesHTTP3Capable: assumesHTTP3Capable
-        )
+        prepareTransport(&request)
         request.cachePolicy = cachePolicy
         request.networkServiceType = .responsiveData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -217,11 +200,7 @@ enum ModernNetworkPolicy {
         )
     }
 
-    private static func prepareTransport(
-        _ request: inout URLRequest,
-        assumesHTTP3Capable: Bool
-    ) {
-        request.assumesHTTP3Capable = assumesHTTP3Capable
+    private static func prepareTransport(_ request: inout URLRequest) {
         request.httpShouldHandleCookies = false
         request.allowsCellularAccess = true
     }

@@ -340,6 +340,10 @@ final class AppModel: ObservableObject {
     private var recommendationTask: Task<Void, Never>?
     private var automaticRefreshTask: Task<Void, Never>?
     private var automaticRefreshToken: UUID?
+    private var cachedHomePreparationTask: Task<Void, Never>?
+    private var cachedHomePreparationToken: UUID?
+    private var catalogRefreshTask: Task<Void, Never>?
+    private var catalogRefreshToken: UUID?
     private var recommendationGeneration: UInt64 = 0
     private var lastFMKeyOperationGeneration: UInt64 = 0
     private var listenBrainzOperationGeneration: UInt64 = 0
@@ -452,6 +456,7 @@ final class AppModel: ObservableObject {
         recommendationTask?.cancel()
         recommendationTask = nil
         cancelAutomaticRefresh()
+        cancelBackgroundPreparation()
         clearFavoriteState()
         clearDetailCaches()
         errorMessage = nil
@@ -994,7 +999,9 @@ final class AppModel: ObservableObject {
 
     func handleMemoryPressure() {
         // In-flight detail requests belong to visible screens and are allowed
-        // to finish. Only reusable snapshots are discarded.
+        // to finish. Optional catalog/home preparation is cancelled because a
+        // later refresh can rebuild it without retaining another large snapshot.
+        cancelBackgroundPreparation()
         albumDetailCache.removeAll(keepingCapacity: false)
         playlistDetailCache.removeAll(keepingCapacity: false)
         artistDetailCache.removeAll(keepingCapacity: false)
@@ -1022,6 +1029,7 @@ final class AppModel: ObservableObject {
         }
         recommendationTask?.cancel()
         recommendationTask = nil
+        cancelBackgroundPreparation()
     }
 
     func album(id: String) async throws -> AlbumDetail {
@@ -2455,6 +2463,7 @@ final class AppModel: ObservableObject {
         recommendationTask = nil
         lastExternalRecommendationIdentity = nil
         cancelAutomaticRefresh()
+        cancelBackgroundPreparation()
         let previousLeases = StoreActivationLeases(
             offline: offlineSessionToken,
             artwork: artworkSessionToken,
@@ -2710,10 +2719,25 @@ final class AppModel: ObservableObject {
         _ snapshot: HomeSnapshot,
         generation: Int
     ) {
-        Task { [weak self] in
+        cachedHomePreparationTask?.cancel()
+        guard allowsBackgroundPreparation else {
+            cachedHomePreparationTask = nil
+            cachedHomePreparationToken = nil
+            return
+        }
+        let token = UUID()
+        cachedHomePreparationToken = token
+        cachedHomePreparationTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.cachedHomePreparationToken == token {
+                    self.cachedHomePreparationTask = nil
+                    self.cachedHomePreparationToken = nil
+                }
+            }
             let prepared = await self.preparedHomeSnapshot(snapshot)
-            guard generation == self.sessionGeneration,
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration,
                   self.lastFullRefresh == nil else {
                 return
             }
@@ -2748,6 +2772,27 @@ final class AppModel: ObservableObject {
         automaticRefreshToken = nil
     }
 
+    private func cancelBackgroundPreparation() {
+        cachedHomePreparationTask?.cancel()
+        cachedHomePreparationTask = nil
+        cachedHomePreparationToken = nil
+        catalogRefreshTask?.cancel()
+        catalogRefreshTask = nil
+        catalogRefreshToken = nil
+    }
+
+    private var allowsBackgroundPreparation: Bool {
+        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal, .fair:
+            true
+        case .serious, .critical:
+            false
+        @unknown default:
+            false
+        }
+    }
+
     private func deactivateStores(_ leases: StoreActivationLeases) async {
         if let offline = leases.offline {
             await OfflineStore.shared.deactivate(session: offline)
@@ -2765,10 +2810,34 @@ final class AppModel: ObservableObject {
 
     private func scheduleLibraryCatalogRefresh(snapshot: HomeSnapshot) {
         let seedSongs = snapshot.knownSongs()
-        Task(priority: .utility) {
+        catalogRefreshTask?.cancel()
+        guard allowsBackgroundPreparation else {
+            catalogRefreshTask = nil
+            catalogRefreshToken = nil
+            return
+        }
+        let generation = sessionGeneration
+        let token = UUID()
+        catalogRefreshToken = token
+        catalogRefreshTask = Task(priority: .utility) { [weak self] in
+            guard let self,
+                  !Task.isCancelled,
+                  generation == self.sessionGeneration else { return }
+            defer {
+                if self.catalogRefreshToken == token {
+                    self.catalogRefreshTask = nil
+                    self.catalogRefreshToken = nil
+                }
+            }
             await LocalLibraryCatalog.shared.ingest(seedSongs)
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration else { return }
             let historySongs = await ListeningHistoryStore.shared.catalogSongs()
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration else { return }
             await LocalLibraryCatalog.shared.ingest(historySongs)
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration else { return }
             await LocalLibraryCatalog.shared.persistNow()
         }
     }

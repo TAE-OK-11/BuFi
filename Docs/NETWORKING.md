@@ -6,12 +6,13 @@ radio scheduling, and background behavior integrated with iOS.
 
 ## Enabled transport behavior
 
-- BuFi-controlled API and artwork requests set `assumesHTTP3Capable` so CFNetwork
-  can race QUIC immediately; HTTP/2 and HTTP/1.1 remain system-managed fallback
-  paths. Offline media transfers use the same optimistic H3 hint but run as
-  background traffic rather than competing in the AV streaming service class.
-- Last.fm and ListenBrainz are third-party origins. Their requests deliberately
-  do not claim H3 capability before CFNetwork has learned it from DNS/Alt-Svc.
+- API, artwork, analysis, and offline requests leave HTTP/3 discovery to
+  CFNetwork. `assumesHTTP3Capable` is not forced because a user-configured
+  OpenSubsonic endpoint is not known in advance to support HTTP/3; the property
+  is intended only for known-capable endpoints and otherwise starts an
+  unnecessary QUIC race. HTTP/3 remains available through normal DNS/Alt-Svc
+  discovery, with system-managed HTTP/2 and HTTP/1.1 fallback.
+- Last.fm and ListenBrainz follow the same system discovery policy.
   Public metadata may use the small protocol cache; requests carrying an API key
   or token stay on the ephemeral no-cache path. The public request policy keeps
   `useProtocolCachePolicy` intact so the configured memory cache is actually
@@ -26,12 +27,14 @@ radio scheduling, and background behavior integrated with iOS.
   bounded to 64 MiB, uses a known frame content size for preallocation when
   available, rejects known oversized frames before decompression, and falls back
   to `br, gzip` when zstd negotiation or decoding is incompatible.
-- Artwork requests use H3 racing and the system Brotli/gzip decoder. Nuke forwards
+- Artwork requests use the system HTTP negotiation and Brotli/gzip decoder. Nuke forwards
   redirect handling through BuFi's HTTPS-only delegate. zstd is not advertised
   for image requests because those bytes do not pass through BuFi's zstd decoder.
 - Offline media downloads and audio-analysis range samples explicitly request
   `identity` content coding and use background network service priority. Audio is
   already compressed, and byte identity keeps range/seek offsets deterministic.
+  Offline media is serialized per origin so a bulk album download cannot
+  saturate the same server path used by active playback.
 - Active AVPlayer streams use byte-identical compressed audio. AVPlayer owns its
   transport connection and forward-buffer duration. BuFi uses AVPlayer's default
   system-managed buffer (`preferredForwardBufferDuration == 0`), starts with
@@ -50,12 +53,18 @@ radio scheduling, and background behavior integrated with iOS.
   through the same native Apple decode path.
   OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A codec parameters
   such as `codecs=alac`/`codecs=mp4a` are honored before bitrate inference, and
-  bitrate can be inferred from byte size and duration when the server omits it. For the
+  bitrate can be inferred from byte size and duration when the server omits it.
+  A raw generic M4A with no codec or bitrate metadata is treated conservatively
+  as lossless for network scheduling, preventing an unlabelled ALAC stream from
+  accidentally enabling competing prefetch. For the
   AAC 320 setting, an already compliant AAC source is passed through bit-for-bit
   instead of AAC→AAC transcoding; this preserves Apple AAC/FDK-AAC output and
   removes avoidable server CPU, generation loss, and startup latency. Codec hints
   are deliberately excluded from AVURLAsset resource identity so late canonical
   metadata enrichment does not throw away a warmed stream.
+- Periodic library synchronization pauses while playback is requested and
+  resumes after playback stops. Manual refresh remains available, but background
+  API bursts cannot compete with the active media path.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's scoped caches
   remain in control. Generated cover-art URLs are also bounded in memory rather
@@ -84,15 +93,15 @@ radio scheduling, and background behavior integrated with iOS.
   HTTP/2 and HTTP/3 use their native multiplexing paths.
 
 HTTP/3 remains opportunistic: the origin, proxy, network path, and current iOS
-transport policy must all permit QUIC. A failed or unavailable QUIC attempt falls
-back through the system transport stack without changing OpenSubsonic semantics.
+transport policy must all permit QUIC. Discovery and fallback stay inside the
+system transport stack without changing OpenSubsonic semantics.
 Debug builds log the final `URLSessionTaskMetrics.networkProtocolName` and
 connection-reuse flag by host without retaining those metrics in release builds.
 
 ## System-managed streaming behavior
 
-AVPlayer/AVURLAsset does not expose the `assumesHTTP3Capable` request switch.
-Active playback therefore learns HTTP/3 through the origin's normal system
-advertisement/discovery path and keeps system fallback behavior. QUIC 0-RTT,
+AVPlayer/AVURLAsset and BuFi-owned URLSession requests learn HTTP/3 through the
+origin's normal system advertisement/discovery path and keep system fallback
+behavior. QUIC 0-RTT,
 ECH, congestion control, TLS session resumption, and the concrete AVFoundation
 media transport remain system-managed rather than being emulated in app code.

@@ -47,7 +47,7 @@ struct OverflowMarqueeText: View {
                             .onGeometryChange(for: CGSize.self) { textProxy in
                                 textProxy.size
                             } action: { size in
-                                textSize = size
+                                if textSize != size { textSize = size }
                             }
                     }
                     .frame(
@@ -61,7 +61,7 @@ struct OverflowMarqueeText: View {
             .onGeometryChange(for: CGSize.self) { proxy in
                 proxy.size
             } action: { size in
-                containerSize = size
+                if containerSize != size { containerSize = size }
             }
             .task(id: animationIdentity) {
                 let runID = UUID()

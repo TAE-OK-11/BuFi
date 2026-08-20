@@ -630,7 +630,9 @@ struct MusicDetailView: View {
                 downloadAllTask = nil
                 isDownloadingAll = false
             }
-            let maxConcurrent = 3
+            // The offline URLSession intentionally serializes transfers so an
+            // album download cannot starve active lossless playback.
+            let maxConcurrent = 1
             await withTaskGroup(of: Void.self) { group in
                 var iterator = items.makeIterator()
 

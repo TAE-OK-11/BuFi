@@ -27,7 +27,12 @@ struct MiniPlayerView: View {
                             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(
+                    MiniPlayerOpenButtonStyle(
+                        pressedTint: miniPlayerForeground,
+                        cornerRadius: cornerRadius
+                    )
+                )
                 .accessibilityLabel("\(song.title), \(song.artist)")
                 .accessibilityHint("전체 플레이어 열기")
 
@@ -182,6 +187,33 @@ struct MiniPlayerView: View {
             removal: .offset(x: -12 * transitionDirection)
                 .combined(with: .opacity)
         )
+    }
+}
+
+private struct MiniPlayerOpenButtonStyle: ButtonStyle {
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+
+    let pressedTint: Color
+    let cornerRadius: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                pressedTint.opacity(configuration.isPressed ? 0.075 : 0),
+                in: RoundedRectangle(
+                    cornerRadius: cornerRadius,
+                    style: .continuous
+                )
+            )
+            .scaleEffect(
+                configuration.isPressed && motionEnabled ? 0.994 : 1
+            )
+            .animation(
+                motionEnabled
+                    ? BuFiMotion.press(isPressed: configuration.isPressed)
+                    : .none,
+                value: configuration.isPressed
+            )
     }
 }
 

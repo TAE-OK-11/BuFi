@@ -604,8 +604,8 @@ actor ArtworkStore {
             )
         )
         // Nuke forwards URLSession delegate callbacks to this proxy. Keeping
-        // BuFi's delegate attached ensures HTTPS-only redirects, HTTP/3 request
-        // policy reapplication, and transport metrics also cover artwork CDNs.
+        // BuFi's delegate attached ensures HTTPS-only redirects, request-policy
+        // reapplication, and transport metrics also cover artwork CDNs.
         dataLoader.delegate = HTTPSOnlyURLSessionDelegate()
         configuration.dataLoader = dataLoader
         // Nuke defaults to ImageCache.shared. A pipeline can outlive an account

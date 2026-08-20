@@ -577,13 +577,11 @@ private struct SongFavoriteIconButtonContent: View {
         Button {
             Task { await model.toggleStar(song: song) }
         } label: {
-            Image(systemName: isStarred ? "heart.fill" : "heart")
+            favoriteIcon
                 .font(.system(size: iconSize, weight: .semibold))
                 .foregroundStyle(
                     isStarred ? BuFiTheme.accent : inactiveForeground
                 )
-                .contentTransition(.symbolEffect(.replace))
-                .symbolEffect(.bounce, value: isStarred)
                 .frame(width: hitTarget, height: hitTarget)
         }
         .buttonStyle(BuFiPressStyle())
@@ -595,6 +593,18 @@ private struct SongFavoriteIconButtonContent: View {
             hapticsEnabled && motionEnabled && oldValue != newValue
         }
         .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
+    }
+
+    @ViewBuilder
+    private var favoriteIcon: some View {
+        let image = Image(systemName: isStarred ? "heart.fill" : "heart")
+        if motionEnabled {
+            image
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, value: isStarred)
+        } else {
+            image
+        }
     }
 }
 

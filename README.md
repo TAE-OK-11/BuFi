@@ -7,7 +7,7 @@ It is designed around the iOS media stack rather than a web view.
 
 - Token-authenticated OpenSubsonic connection with credentials stored in Keychain
 - Home, search, albums, artists, playlists, starred music, and server diagnostics
-- Native `AVPlayer` playback with a persistent queue, shuffle, repeat, seeking, AirPlay, scrobbling, and background recovery
+- Native `AVPlayer` playback with a persistent queue, shuffle, repeat, seeking, AirPlay, scrobbling, and system-managed background playback
 - Control Center, Lock Screen, Dynamic Island, wired-headset, and Bluetooth media controls through `MPNowPlayingSession`
 - Automatic original streaming for iPhone-native AAC, MP3, ALAC, and related formats, with server-side AAC 256 kbps conversion for FLAC, Opus, Vorbis, and WebM sources
 - Built-in speaker/route/interruption recovery and Subsonic MIME compatibility handling adapted from Amperfy
@@ -15,7 +15,7 @@ It is designed around the iOS media stack rather than a web view.
 - Apple Music-led visual system with Spotify-style separated artwork paging, a subtle Deezer accent, and an optional native Liquid Glass seek bar on iOS 26+ while retaining Classic transport controls
 - Deterministic OKLab artwork clustering with neutral-cover support, spatial multicolor fields, and a versioned GRDB palette cache
 - Nuke-backed artwork request coalescing, caching, and downsampling
-- HTTP/3 racing for API, artwork, and offline downloads; HTTP/2 fallback; gzip, Brotli, and bounded Zstandard API decoding
+- System-negotiated HTTP/3/HTTP/2 for API, artwork, and offline downloads; gzip, Brotli, and bounded Zstandard API decoding
 - In-flight API request coalescing, a 16 MiB bounded response cache, and energy-aware next-track lyrics/artwork/AVURLAsset preparation for instant skips
 - Incremental GRDB queue/history/catalog persistence with bounded recommendation and artwork caches
 - Deterministic multi-source recommendation ranking with behavior confidence, quality-gated discovery, and artist/album diversity
