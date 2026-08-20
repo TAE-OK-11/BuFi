@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import Nuke
 import UIKit
@@ -101,12 +102,19 @@ actor ArtworkStore {
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
     private static let cacheSchemaRevision = "media-v2"
     private static let artworkFreshnessInterval: TimeInterval = 12 * 60 * 60
-    private static let paletteEngineVersion = 5
+    private static let paletteEngineVersion = 6
     private static let sampleSide = 48
+    private static let acceleratedSamplePixelLimit = 512 * 512
     private static let neutralChromaLimit = 0.035
     private static let darkLightnessLimit = 0.12
     private static let darkCanvasLimit = 0.55
     private static let meaningfulColorLimit = 0.06
+    private static let sRGBLinearTable: [Double] = (0...255).map { value in
+        let component = Double(value) / 255
+        return component <= 0.04045
+            ? component / 12.92
+            : pow((component + 0.055) / 1.055, 2.4)
+    }
 
     private var pipeline: ImagePipeline
     private var pipelineScope: String?
@@ -606,7 +614,7 @@ actor ArtworkStore {
         )
     }
 
-    // MARK: - Palette Engine V3
+    // MARK: - Palette Engine V6
 
     private struct OKLab {
         var lightness: Double
@@ -618,6 +626,7 @@ actor ArtworkStore {
 
     private struct Sample {
         let lab: OKLab
+        let chroma: Double
         let x: Double
         let y: Double
         let alpha: Double
@@ -652,21 +661,29 @@ actor ArtworkStore {
     }
 
     private static func analyzedPalette(from bytes: [UInt8]) -> ArtworkPalette? {
-        guard !bytes.isEmpty else { return nil }
+        guard !bytes.isEmpty, !Task.isCancelled else { return nil }
         let samples = makeSamples(from: bytes)
-        guard !samples.isEmpty else { return nil }
+        guard !samples.isEmpty, !Task.isCancelled else { return nil }
 
-        let visibleWeight = samples.reduce(0) { $0 + $1.visibility }
+        // Classify the sample set in one pass. The previous independent
+        // reductions walked the same 2,304 pixels four times and recalculated
+        // perceptual chroma for each classification.
+        var visibleWeight = 0.0
+        var neutralWeight = 0.0
+        var darkWeight = 0.0
+        var colorfulWeight = 0.0
+        for sample in samples {
+            visibleWeight += sample.visibility
+            if sample.chroma <= neutralChromaLimit {
+                neutralWeight += sample.visibility
+            } else {
+                colorfulWeight += sample.visibility
+            }
+            if sample.lab.lightness <= darkLightnessLimit {
+                darkWeight += sample.visibility
+            }
+        }
         guard visibleWeight > 0 else { return nil }
-        let neutralWeight = samples.reduce(0) { partial, sample in
-            partial + (sample.lab.chroma <= neutralChromaLimit ? sample.visibility : 0)
-        }
-        let darkWeight = samples.reduce(0) { partial, sample in
-            partial + (sample.lab.lightness <= darkLightnessLimit ? sample.visibility : 0)
-        }
-        let colorfulWeight = samples.reduce(0) { partial, sample in
-            partial + (sample.lab.chroma > neutralChromaLimit ? sample.visibility : 0)
-        }
         // A dark canvas should not swallow a real colored subject. Six percent
         // survives small logos and edge accents while rejecting compression
         // speckles and isolated colored noise.
@@ -680,9 +697,9 @@ actor ArtworkStore {
             )
         let clusteringSamples: [Sample]
         if isNeutralFamily {
-            clusteringSamples = samples.filter { $0.lab.chroma <= neutralChromaLimit }
+            clusteringSamples = samples.filter { $0.chroma <= neutralChromaLimit }
         } else if prefersColorOnDarkCanvas {
-            clusteringSamples = samples.filter { $0.lab.chroma > neutralChromaLimit }
+            clusteringSamples = samples.filter { $0.chroma > neutralChromaLimit }
         } else {
             clusteringSamples = samples
         }
@@ -718,10 +735,11 @@ actor ArtworkStore {
         }
         guard let primary = populationOrdered.first else { return nil }
         let distinctDistance = isNeutralFamily ? 0.075 : 0.055
+        let distinctDistanceSquared = distinctDistance * distinctDistance
         let secondary = swatches.first {
-            colorDistance($0.lab, primary.lab) >= distinctDistance
+            squaredDistance($0.lab, primary.lab) >= distinctDistanceSquared
         } ?? swatches.first {
-            colorDistance($0.lab, primary.lab) > 0.000_001
+            squaredDistance($0.lab, primary.lab) > 0.000_000_000_001
         }
 
         return isNeutralFamily
@@ -730,10 +748,99 @@ actor ArtworkStore {
     }
 
     private static func sampleBytes(from image: UIImage) -> [UInt8]? {
-        guard let source = image.cgImage else { return nil }
+        guard !Task.isCancelled, let source = image.cgImage else { return nil }
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
             return nil
         }
+        if let accelerated = acceleratedSampleBytes(
+            from: source,
+            colorSpace: colorSpace
+        ) {
+            return accelerated
+        }
+        return coreGraphicsSampleBytes(from: source, colorSpace: colorSpace)
+    }
+
+    /// vImage's vectorized Lanczos resampler is the fast path for the normal
+    /// 96-pixel palette request. Converting a very large CGImage into a full
+    /// vImage source buffer can cost more memory and time than it saves, so
+    /// larger UI-provided artwork stays on the allocation-bounded Core Graphics
+    /// path below. Any Accelerate conversion/scaling failure also falls back.
+    private static func acceleratedSampleBytes(
+        from source: CGImage,
+        colorSpace: CGColorSpace
+    ) -> [UInt8]? {
+        guard !Task.isCancelled else { return nil }
+        let (sourcePixelCount, overflow) = source.width.multipliedReportingOverflow(
+            by: source.height
+        )
+        guard !overflow,
+              sourcePixelCount <= acceleratedSamplePixelLimit else {
+            return nil
+        }
+
+        let bitmapInfo = CGBitmapInfo(
+            rawValue: CGImageAlphaInfo.premultipliedLast.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue
+        )
+        guard let format = vImage_CGImageFormat(
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            colorSpace: colorSpace,
+            bitmapInfo: bitmapInfo
+        ), var sourceBuffer = try? vImage_Buffer(
+            cgImage: source,
+            format: format
+        ) else {
+            return nil
+        }
+        defer { sourceBuffer.free() }
+
+        let side = sampleSide
+        guard var destinationBuffer = try? vImage_Buffer(
+            width: side,
+            height: side,
+            bitsPerPixel: format.bitsPerPixel
+        ) else {
+            return nil
+        }
+        defer { destinationBuffer.free() }
+
+        // Lanczos-3 is vImage's default and gives the palette sampler a better
+        // quality/throughput balance than the slower high-quality Lanczos-5 flag.
+        let error = vImageScale_ARGB8888(
+            &sourceBuffer,
+            &destinationBuffer,
+            nil,
+            vImage_Flags(kvImageNoFlags)
+        )
+        guard error == kvImageNoError,
+              let sourceBase = destinationBuffer.data else {
+            return nil
+        }
+
+        let contiguousRowBytes = side * 4
+        var bytes = [UInt8](repeating: 0, count: side * contiguousRowBytes)
+        bytes.withUnsafeMutableBytes { storage in
+            guard let destinationBase = storage.baseAddress else { return }
+            for row in 0..<side {
+                destinationBase
+                    .advanced(by: row * contiguousRowBytes)
+                    .copyMemory(
+                        from: sourceBase.advanced(
+                            by: row * destinationBuffer.rowBytes
+                        ),
+                        byteCount: contiguousRowBytes
+                    )
+            }
+        }
+        return bytes
+    }
+
+    private static func coreGraphicsSampleBytes(
+        from source: CGImage,
+        colorSpace: CGColorSpace
+    ) -> [UInt8]? {
         let side = sampleSide
         var bytes = [UInt8](repeating: 0, count: side * side * 4)
         let rendered = bytes.withUnsafeMutableBytes { storage -> Bool in
@@ -765,22 +872,43 @@ actor ArtworkStore {
         var samples: [Sample] = []
         samples.reserveCapacity(side * side)
         for offset in stride(from: 0, to: bytes.count, by: 4) {
-            let alpha = Double(bytes[offset + 3]) / 255
+            if offset.isMultiple(of: side * 4 * 8), Task.isCancelled {
+                return []
+            }
+            let alphaByte = bytes[offset + 3]
+            let alpha = Double(alphaByte) / 255
             guard alpha >= 0.01 else { continue }
 
             // The bitmap is premultiplied. Recover the source color before the
             // perceptual conversion and use alpha only as visibility evidence.
-            let inverseAlpha = 1 / alpha
-            let red = clamp(Double(bytes[offset]) / 255 * inverseAlpha, 0, 1)
-            let green = clamp(Double(bytes[offset + 1]) / 255 * inverseAlpha, 0, 1)
-            let blue = clamp(Double(bytes[offset + 2]) / 255 * inverseAlpha, 0, 1)
+            // Album covers are overwhelmingly opaque. The lookup-table fast
+            // path removes three fractional pow operations from every such
+            // pixel while the translucent path preserves exact unpremultiplying.
+            let lab: OKLab
+            let visibility: Double
+            if alphaByte == 255 {
+                lab = oklabFromLinear(
+                    red: sRGBLinearTable[Int(bytes[offset])],
+                    green: sRGBLinearTable[Int(bytes[offset + 1])],
+                    blue: sRGBLinearTable[Int(bytes[offset + 2])]
+                )
+                visibility = 1
+            } else {
+                let inverseAlpha = 1 / alpha
+                let red = clamp(Double(bytes[offset]) / 255 * inverseAlpha, 0, 1)
+                let green = clamp(Double(bytes[offset + 1]) / 255 * inverseAlpha, 0, 1)
+                let blue = clamp(Double(bytes[offset + 2]) / 255 * inverseAlpha, 0, 1)
+                lab = oklab(red: red, green: green, blue: blue)
+                visibility = alpha * sqrt(alpha)
+            }
             let pixel = offset / 4
             samples.append(Sample(
-                lab: oklab(red: red, green: green, blue: blue),
+                lab: lab,
+                chroma: hypot(lab.a, lab.b),
                 x: Double(pixel % side) / Double(side - 1),
                 y: Double(pixel / side) / Double(side - 1),
                 alpha: alpha,
-                visibility: pow(alpha, 1.5)
+                visibility: visibility
             ))
         }
         return samples
@@ -796,18 +924,20 @@ actor ArtworkStore {
 
         var centers = [weightedMean(of: samples)]
         while centers.count < clusterLimit {
+            guard !Task.isCancelled else { return [] }
             var bestIndex: Int?
             var bestMerit = -Double.infinity
             for index in samples.indices {
                 let sample = samples[index]
-                let nearest = centers.reduce(Double.infinity) {
-                    min($0, squaredDistance(sample.lab, $1))
-                }
+                let nearest = nearestSquaredDistance(
+                    to: sample.lab,
+                    centers: centers
+                )
                 let colorPriority: Double
                 if neutralFamily {
                     colorPriority = 1
-                } else if sample.lab.chroma > neutralChromaLimit {
-                    colorPriority = 0.55 + min(sample.lab.chroma / 0.16, 1.25)
+                } else if sample.chroma > neutralChromaLimit {
+                    colorPriority = 0.55 + min(sample.chroma / 0.16, 1.25)
                 } else if sample.lab.lightness < 0.10 || sample.lab.lightness > 0.93 {
                     colorPriority = 0.025
                 } else {
@@ -824,6 +954,7 @@ actor ArtworkStore {
         }
 
         for _ in 0..<9 {
+            guard !Task.isCancelled else { return [] }
             var accumulators = [ClusterAccumulator](
                 repeating: ClusterAccumulator(),
                 count: centers.count
@@ -853,6 +984,7 @@ actor ArtworkStore {
 
         // Reassign once after the final center update so population and spatial
         // centroids describe the final clusters, not the preceding iteration.
+        guard !Task.isCancelled else { return [] }
         var accumulators = [ClusterAccumulator](
             repeating: ClusterAccumulator(),
             count: centers.count
@@ -1072,15 +1204,22 @@ actor ArtworkStore {
         return bestIndex
     }
 
+    private static func nearestSquaredDistance(
+        to lab: OKLab,
+        centers: [OKLab]
+    ) -> Double {
+        var bestDistance = squaredDistance(lab, centers[0])
+        for index in centers.indices.dropFirst() {
+            bestDistance = min(bestDistance, squaredDistance(lab, centers[index]))
+        }
+        return bestDistance
+    }
+
     private static func squaredDistance(_ lhs: OKLab, _ rhs: OKLab) -> Double {
         let lightness = lhs.lightness - rhs.lightness
         let a = lhs.a - rhs.a
         let b = lhs.b - rhs.b
         return lightness * lightness + a * a + b * b
-    }
-
-    private static func colorDistance(_ lhs: OKLab, _ rhs: OKLab) -> Double {
-        sqrt(squaredDistance(lhs, rhs))
     }
 
     private static func adjusted(
@@ -1116,9 +1255,18 @@ actor ArtworkStore {
                 ? component / 12.92
                 : pow((component + 0.055) / 1.055, 2.4)
         }
-        let red = linear(red)
-        let green = linear(green)
-        let blue = linear(blue)
+        return oklabFromLinear(
+            red: linear(red),
+            green: linear(green),
+            blue: linear(blue)
+        )
+    }
+
+    private static func oklabFromLinear(
+        red: Double,
+        green: Double,
+        blue: Double
+    ) -> OKLab {
         let l = 0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue
         let m = 0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue
         let s = 0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue
