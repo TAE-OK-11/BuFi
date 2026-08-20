@@ -160,9 +160,6 @@ struct OpenSubsonicMutationImpact: Equatable, Sendable {
 
 struct OpenSubsonicResponseCachePolicy: Equatable, Sendable {
     enum RevalidationStrategy: Equatable, Sendable {
-        // ResponseBodyCache currently stores only decoded bodies. This policy
-        // keeps the validator seam explicit so ETag/Last-Modified can be added
-        // without changing endpoint classification once headers are retained.
         case timeToLive
         case conditionalValidators
     }
@@ -176,7 +173,7 @@ struct OpenSubsonicResponseCachePolicy: Equatable, Sendable {
         lifetime: TimeInterval,
         staleGrace: TimeInterval = 0,
         dependencies: Set<OpenSubsonicCacheDependency> = [],
-        revalidation: RevalidationStrategy = .timeToLive
+        revalidation: RevalidationStrategy = .conditionalValidators
     ) {
         self.lifetime = max(0, lifetime)
         self.staleGrace = max(0, staleGrace)
@@ -737,6 +734,8 @@ actor OpenSubsonicClient {
         let data: Data
         let statusCode: Int
         let retryAfter: String?
+        let validators: ResponseBodyCache.Validators
+        let decodeIdentity: UUID
     }
 
     private struct ZstandardNegotiationError: Error, Sendable {}
@@ -756,20 +755,34 @@ actor OpenSubsonicClient {
 
     private enum ReadResponseSource {
         case network
-        case freshCache
+        case freshCache(storedAt: ContinuousClock.Instant)
+        case revalidatedCache
         case staleFallback
     }
 
     private struct DecodedResponseCacheEntry {
         let payload: any Sendable
         let storedAt: ContinuousClock.Instant
+        let byteCost: Int
         var accessOrdinal: UInt64
+    }
+
+    private struct DecodedResponseRequestKey: Hashable, Sendable {
+        let responseKey: String
+        let payloadType: String
+        let responseIdentity: UUID
+    }
+
+    private struct InFlightDecodedResponse {
+        let token: UUID
+        let task: Task<any Sendable, Error>
     }
 
     private static let responseCacheLimit = 128
     private static let responseCacheByteLimit = 16 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
     private static let decodedResponseCacheLimit = 32
+    private static let decodedResponseCacheByteLimit = 8 * 1_024 * 1_024
     private static let coverURLCacheLimit = 512
     private var responseCache = ResponseBodyCache(
         countLimit: OpenSubsonicClient.responseCacheLimit,
@@ -777,7 +790,11 @@ actor OpenSubsonicClient {
         maximumEntryBytes: OpenSubsonicClient.maximumCachedResponseBytes
     )
     private var decodedResponseCache: [String: DecodedResponseCacheEntry] = [:]
+    private var decodedResponseCacheByteCount = 0
     private var decodedResponseAccessClock: UInt64 = 0
+    private var inFlightDecodedResponses: [
+        DecodedResponseRequestKey: InFlightDecodedResponse
+    ] = [:]
     private var lyricsCache = LyricsDocumentCache(countLimit: 64)
     private var coverURLCache: [String: URL] = [:]
 
@@ -850,7 +867,12 @@ actor OpenSubsonicClient {
             waiter.continuation.resume(throwing: CancellationError())
         }
         mutationWaiters.removeAll(keepingCapacity: false)
+        for request in inFlightDecodedResponses.values {
+            request.task.cancel()
+        }
+        inFlightDecodedResponses.removeAll(keepingCapacity: false)
         decodedResponseCache.removeAll(keepingCapacity: false)
+        decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
         coverURLCache.removeAll(keepingCapacity: false)
         session.invalidateAndCancel()
@@ -1071,7 +1093,16 @@ actor OpenSubsonicClient {
                 )
                 responseSource = .network
             }
-            let payload: Payload = try await decodeResponse(response)
+            let payload: Payload
+            switch semantics {
+            case .readOnly:
+                payload = try await decodeReadResponse(
+                    response,
+                    cacheKey: cacheKey
+                )
+            case .mutation(_):
+                payload = try await decodeResponse(response)
+            }
             switch semantics {
             case .readOnly where !cacheRevisionState.hasMutation(
                     affecting: cachePolicy.dependencies
@@ -1081,16 +1112,26 @@ actor OpenSubsonicClient {
                     ) == requestRevision:
                 if cachePolicy.lifetime > 0 {
                     switch responseSource {
-                    case .network:
+                    case .network, .revalidatedCache:
                         // Store only a body that decoded into the endpoint's
                         // expected payload, never an HTTP/schema error body.
-                        storeResponse(response.data, for: cacheKey)
+                        storeResponse(response, for: cacheKey)
                         if response.data.count <= Self.maximumCachedResponseBytes {
-                            storeDecodedPayload(payload, for: cacheKey)
+                            storeDecodedPayload(
+                                payload,
+                                for: cacheKey,
+                                byteCost: response.data.count,
+                                storedAt: ContinuousClock().now
+                            )
                         }
-                    case .freshCache:
+                    case .freshCache(let storedAt):
                         if response.data.count <= Self.maximumCachedResponseBytes {
-                            storeDecodedPayload(payload, for: cacheKey)
+                            storeDecodedPayload(
+                                payload,
+                                for: cacheKey,
+                                byteCost: response.data.count,
+                                storedAt: storedAt
+                            )
                         }
                     case .staleFallback:
                         // stale-if-error data must not become fresh merely
@@ -1118,12 +1159,64 @@ actor OpenSubsonicClient {
                 finishMutation(impact)
             }
             return payload
-        } catch {
+        } catch let requestError {
             if case .mutation(let impact) = semantics {
                 finishMutation(impact)
             }
-            logFailure(error, endpoint: endpoint)
-            throw error
+            if case .readOnly = semantics,
+               allowsCachedResponse,
+               TransientServiceFailurePolicy.allowsCachedFallback(requestError),
+               let cached = staleCachedResponse(
+                   for: cacheKey,
+                   cachePolicy: cachePolicy
+               ) {
+                let payload: Payload
+                do {
+                    let fallback = HTTPResponseData(
+                        data: cached.data,
+                        statusCode: 200,
+                        retryAfter: nil,
+                        validators: cached.validators,
+                        decodeIdentity: cached.identity
+                    )
+                    payload = try await decodeReadResponse(
+                        fallback,
+                        cacheKey: cacheKey
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // The cache only contains bodies that decoded successfully,
+                    // but a future model migration could still make an old body
+                    // incompatible. Preserve the original network/server error.
+                    logFailure(requestError, endpoint: endpoint)
+                    throw requestError
+                }
+
+                let crossedMutationBoundary = cacheRevisionState.hasMutation(
+                    affecting: cachePolicy.dependencies
+                ) || cacheRevisionState.revision(
+                    for: cachePolicy.dependencies
+                ) != requestRevision
+                if crossedMutationBoundary {
+                    guard staleReadRetryCount < 2 else {
+                        throw CancellationError()
+                    }
+                    try await waitForRelevantMutations(
+                        affecting: cachePolicy.dependencies
+                    )
+                    return try await performRequest(
+                        endpoint,
+                        queryItems: queryItems,
+                        semantics: semantics,
+                        allowsCachedResponse: allowsCachedResponse,
+                        staleReadRetryCount: staleReadRetryCount + 1
+                    )
+                }
+                return payload
+            }
+            logFailure(requestError, endpoint: endpoint)
+            throw requestError
         }
     }
 
@@ -1156,6 +1249,51 @@ actor OpenSubsonicClient {
             throw OpenSubsonicError.http(response.statusCode)
         }
         return try await decodeResponseData(response.data)
+    }
+
+    private func decodeReadResponse<Payload: Decodable & Sendable>(
+        _ response: HTTPResponseData,
+        cacheKey: String
+    ) async throws -> Payload {
+        guard (200..<300).contains(response.statusCode) else {
+            throw OpenSubsonicError.http(response.statusCode)
+        }
+        let key = DecodedResponseRequestKey(
+            responseKey: cacheKey,
+            payloadType: String(reflecting: Payload.self),
+            responseIdentity: response.decodeIdentity
+        )
+        let request: InFlightDecodedResponse
+        if let existing = inFlightDecodedResponses[key] {
+            request = existing
+        } else {
+            let token = UUID()
+            let task = Task<any Sendable, Error> {
+                let payload: Payload = try await Self.decodePayloadConcurrently(
+                    response.data
+                )
+                return payload
+            }
+            request = InFlightDecodedResponse(token: token, task: task)
+            inFlightDecodedResponses[key] = request
+        }
+
+        do {
+            let value = try await request.task.value
+            try Task.checkCancellation()
+            if inFlightDecodedResponses[key]?.token == request.token {
+                inFlightDecodedResponses[key] = nil
+            }
+            guard let payload = value as? Payload else {
+                throw OpenSubsonicError.invalidResponse
+            }
+            return payload
+        } catch {
+            if inFlightDecodedResponses[key]?.token == request.token {
+                inFlightDecodedResponses[key] = nil
+            }
+            throw error
+        }
     }
 
     private func decodeResponseData<Payload: Decodable & Sendable>(
@@ -1275,7 +1413,8 @@ actor OpenSubsonicClient {
     private func coalescedReadResponse(
         endpoint: String,
         queryItems: [URLQueryItem],
-        key: ReadRequestKey
+        key: ReadRequestKey,
+        validators: ResponseBodyCache.Validators = .none
     ) async throws -> HTTPResponseData {
         try Task.checkCancellation()
         let waiter = UUID()
@@ -1286,7 +1425,8 @@ actor OpenSubsonicClient {
                     key: key,
                     waiter: waiter,
                     endpoint: endpoint,
-                    queryItems: queryItems
+                    queryItems: queryItems,
+                    validators: validators
                 )
             }
         } onCancel: {
@@ -1303,7 +1443,8 @@ actor OpenSubsonicClient {
         key: ReadRequestKey,
         waiter: UUID,
         endpoint: String,
-        queryItems: [URLQueryItem]
+        queryItems: [URLQueryItem],
+        validators: ResponseBodyCache.Validators
     ) {
         guard !Task.isCancelled else {
             continuation.resume(throwing: CancellationError())
@@ -1323,11 +1464,19 @@ actor OpenSubsonicClient {
             return
         }
 
+        var request = URLRequest(url: url)
+        if let entityTag = validators.entityTag {
+            request.setValue(entityTag, forHTTPHeaderField: "If-None-Match")
+        }
+        if let lastModified = validators.lastModified {
+            request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since")
+        }
+
         let token = UUID()
         let task = Task { [self] in
             do {
                 let response = try await responseData(
-                    from: url,
+                    from: request,
                     allowsRetry: true
                 )
                 finishReadRequest(
@@ -1583,6 +1732,8 @@ actor OpenSubsonicClient {
         guard http.url?.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
+        let validators = Self.responseValidators(from: http)
+        let decodeIdentity = UUID()
         // Error response bodies are not decoded by callers. Returning the
         // status first ensures 408/429/5xx retry decisions do not depend on a
         // server's optional error-body content encoding.
@@ -1590,7 +1741,9 @@ actor OpenSubsonicClient {
             return HTTPResponseData(
                 data: encodedData,
                 statusCode: http.statusCode,
-                retryAfter: http.value(forHTTPHeaderField: "Retry-After")
+                retryAfter: http.value(forHTTPHeaderField: "Retry-After"),
+                validators: validators,
+                decodeIdentity: decodeIdentity
             )
         }
         let contentEncoding = http.value(forHTTPHeaderField: "Content-Encoding")
@@ -1610,13 +1763,37 @@ actor OpenSubsonicClient {
             return HTTPResponseData(
                 data: data,
                 statusCode: http.statusCode,
-                retryAfter: http.value(forHTTPHeaderField: "Retry-After")
+                retryAfter: http.value(forHTTPHeaderField: "Retry-After"),
+                validators: validators,
+                decodeIdentity: decodeIdentity
             )
         } catch let error as URLError
             where acceptsZstandard
                 && error.code == .cannotDecodeContentData {
             throw ZstandardNegotiationError()
         }
+    }
+
+    private nonisolated static func responseValidators(
+        from response: HTTPURLResponse
+    ) -> ResponseBodyCache.Validators {
+        ResponseBodyCache.Validators(
+            entityTag: boundedValidatorHeader(
+                response.value(forHTTPHeaderField: "ETag")
+            ),
+            lastModified: boundedValidatorHeader(
+                response.value(forHTTPHeaderField: "Last-Modified")
+            )
+        )
+    }
+
+    private nonisolated static func boundedValidatorHeader(
+        _ value: String?
+    ) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 1_024 else { return nil }
+        return trimmed
     }
 
     private func logFailure(_ error: Error, endpoint: String) {
@@ -1669,11 +1846,31 @@ actor OpenSubsonicClient {
             cacheHit = .miss
         }
 
+        let staleValue: ResponseBodyCache.Value?
         if case .fresh(let cached) = cacheHit {
             return (
-                HTTPResponseData(data: cached, statusCode: 200, retryAfter: nil),
-                .freshCache
+                HTTPResponseData(
+                    data: cached.data,
+                    statusCode: 200,
+                    retryAfter: nil,
+                    validators: cached.validators,
+                    decodeIdentity: cached.identity
+                ),
+                .freshCache(storedAt: cached.storedAt)
             )
+        } else if case .stale(let cached) = cacheHit {
+            staleValue = cached
+        } else {
+            staleValue = nil
+        }
+
+        let validators: ResponseBodyCache.Validators
+        if cachePolicy.revalidation == .conditionalValidators,
+           let staleValue,
+           !staleValue.validators.isEmpty {
+            validators = staleValue.validators
+        } else {
+            validators = .none
         }
 
         do {
@@ -1683,18 +1880,52 @@ actor OpenSubsonicClient {
                 key: ReadRequestKey(
                     endpoint: endpoint,
                     queryItems: queryItems,
-                    cacheRevision: requestRevision
-                )
+                    cacheRevision: requestRevision,
+                    entityTag: validators.entityTag,
+                    lastModified: validators.lastModified
+                ),
+                validators: validators
             )
+            if response.statusCode == 304, let staleValue {
+                return (
+                    HTTPResponseData(
+                        data: staleValue.data,
+                        statusCode: 200,
+                        retryAfter: nil,
+                        validators: staleValue.validators.merging(
+                            response.validators
+                        ),
+                        decodeIdentity: staleValue.identity
+                    ),
+                    .revalidatedCache
+                )
+            }
+            if let staleValue,
+               TransientServiceFailurePolicy.allowsCachedFallback(
+                   OpenSubsonicError.http(response.statusCode)
+               ) {
+                return (
+                    HTTPResponseData(
+                        data: staleValue.data,
+                        statusCode: 200,
+                        retryAfter: nil,
+                        validators: staleValue.validators,
+                        decodeIdentity: staleValue.identity
+                    ),
+                    .staleFallback
+                )
+            }
             return (response, .network)
         } catch {
-            if case .stale(let cached) = cacheHit,
+            if let staleValue,
                TransientServiceFailurePolicy.allowsCachedFallback(error) {
                 return (
                     HTTPResponseData(
-                        data: cached,
+                        data: staleValue.data,
                         statusCode: 200,
-                        retryAfter: nil
+                        retryAfter: nil,
+                        validators: staleValue.validators,
+                        decodeIdentity: staleValue.identity
                     ),
                     .staleFallback
                 )
@@ -1715,25 +1946,53 @@ actor OpenSubsonicClient {
         )
     }
 
-    private func storeResponse(_ data: Data, for key: String) {
-        responseCache.insert(data, for: key)
+    private func staleCachedResponse(
+        for key: String,
+        cachePolicy: OpenSubsonicResponseCachePolicy
+    ) -> ResponseBodyCache.Value? {
+        guard cachePolicy.lifetime > 0, cachePolicy.staleGrace > 0 else {
+            return nil
+        }
+        let maximumFallbackAge = cachePolicy.lifetime
+            + cachePolicy.staleGrace
+        guard case .stale(let value) = responseCache.lookup(
+            for: key,
+            maximumAge: 0,
+            staleGrace: maximumFallbackAge
+        ) else {
+            return nil
+        }
+        return value
+    }
+
+    private func storeResponse(_ response: HTTPResponseData, for key: String) {
+        responseCache.insert(
+            response.data,
+            for: key,
+            validators: response.validators,
+            identity: response.decodeIdentity
+        )
     }
 
     private func cachedDecodedPayload<Payload: Sendable>(
         for key: String,
         maximumAge: TimeInterval
     ) -> Payload? {
+        let key = Self.decodedResponseKey(
+            responseKey: key,
+            payloadType: Payload.self
+        )
         guard maximumAge > 0,
               var entry = decodedResponseCache[key] else {
             return nil
         }
         let now = ContinuousClock().now
         guard entry.storedAt.duration(to: now) <= .seconds(maximumAge) else {
-            decodedResponseCache[key] = nil
+            removeDecodedResponse(for: key)
             return nil
         }
         guard let payload = entry.payload as? Payload else {
-            decodedResponseCache[key] = nil
+            removeDecodedResponse(for: key)
             return nil
         }
         decodedResponseAccessClock &+= 1
@@ -1744,25 +2003,59 @@ actor OpenSubsonicClient {
 
     private func storeDecodedPayload<Payload: Sendable>(
         _ payload: Payload,
-        for key: String
+        for key: String,
+        byteCost: Int,
+        storedAt: ContinuousClock.Instant
     ) {
+        let key = Self.decodedResponseKey(
+            responseKey: key,
+            payloadType: Payload.self
+        )
+        removeDecodedResponse(for: key)
+        guard byteCost > 0,
+              byteCost <= Self.maximumCachedResponseBytes,
+              byteCost <= Self.decodedResponseCacheByteLimit else {
+            return
+        }
         decodedResponseAccessClock &+= 1
         decodedResponseCache[key] = DecodedResponseCacheEntry(
             payload: payload,
-            storedAt: ContinuousClock().now,
+            storedAt: storedAt,
+            byteCost: byteCost,
             accessOrdinal: decodedResponseAccessClock
         )
-        while decodedResponseCache.count > Self.decodedResponseCacheLimit,
+        decodedResponseCacheByteCount += byteCost
+        while decodedResponseCache.count > Self.decodedResponseCacheLimit
+                || decodedResponseCacheByteCount
+                    > Self.decodedResponseCacheByteLimit,
               let oldestKey = decodedResponseCache.min(by: {
                   $0.value.accessOrdinal < $1.value.accessOrdinal
               })?.key {
-            decodedResponseCache[oldestKey] = nil
+            removeDecodedResponse(for: oldestKey)
         }
+    }
+
+    private func removeDecodedResponse(for key: String) {
+        guard let removed = decodedResponseCache.removeValue(forKey: key) else {
+            return
+        }
+        decodedResponseCacheByteCount = max(
+            0,
+            decodedResponseCacheByteCount - removed.byteCost
+        )
+    }
+
+    private static func decodedResponseKey<Payload>(
+        responseKey: String,
+        payloadType: Payload.Type
+    ) -> String {
+        responseKey + "\u{1c}" + String(reflecting: payloadType)
     }
 
     private func clearResponseCache() {
         responseCache.removeAll(keepingCapacity: false)
         decodedResponseCache.removeAll(keepingCapacity: false)
+        decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
     }
 
@@ -1771,18 +2064,64 @@ actor OpenSubsonicClient {
         queryItems: [URLQueryItem],
         revision: OpenSubsonicCacheRevision
     ) -> String {
-        var parameters: [String] = []
-        parameters.reserveCapacity(queryItems.count + revision.entries.count)
-        for item in queryItems {
-            parameters.append("\(item.name)\u{1f}\(item.value ?? "")")
+        var material = Data()
+        appendCacheField(endpoint, to: &material)
+
+        let orderedQueryItems = queryItems.sorted(by: cacheQueryItemSort)
+        appendCacheInteger(UInt64(orderedQueryItems.count), to: &material)
+        for item in orderedQueryItems {
+            appendCacheField(item.name, to: &material)
+            if let value = item.value {
+                material.append(1)
+                appendCacheField(value, to: &material)
+            } else {
+                material.append(0)
+            }
         }
+
+        appendCacheInteger(UInt64(revision.entries.count), to: &material)
         for entry in revision.entries {
-            parameters.append(
-                "revision.\(entry.dependency.rawValue)\u{1f}\(entry.value)"
-            )
+            appendCacheField(entry.dependency.rawValue, to: &material)
+            appendCacheInteger(entry.value, to: &material)
         }
-        parameters.sort()
-        return endpoint + "\u{1e}" + parameters.joined(separator: "\u{1d}")
+        return SHA256.hash(data: material)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private static func cacheQueryItemSort(
+        _ lhs: URLQueryItem,
+        _ rhs: URLQueryItem
+    ) -> Bool {
+        if lhs.name != rhs.name { return lhs.name < rhs.name }
+        switch (lhs.value, rhs.value) {
+        case (nil, .some):
+            return true
+        case (.some, nil):
+            return false
+        case (.some(let left), .some(let right)):
+            return left < right
+        case (nil, nil):
+            return false
+        }
+    }
+
+    private static func appendCacheField(
+        _ value: String,
+        to material: inout Data
+    ) {
+        appendCacheInteger(UInt64(value.utf8.count), to: &material)
+        material.append(contentsOf: value.utf8)
+    }
+
+    private static func appendCacheInteger(
+        _ value: UInt64,
+        to material: inout Data
+    ) {
+        var bigEndian = value.bigEndian
+        withUnsafeBytes(of: &bigEndian) { bytes in
+            material.append(contentsOf: bytes)
+        }
     }
 
     private static func allowsIdempotentMutationRetry(_ endpoint: String) -> Bool {

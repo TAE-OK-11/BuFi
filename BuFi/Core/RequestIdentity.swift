@@ -13,19 +13,27 @@ struct OpenSubsonicQueryIdentity: Hashable, Sendable {
 /// Immutable identity for one coalescible OpenSubsonic read.
 ///
 /// The cache revision is part of the identity, so a request started before a
-/// relevant mutation can never be reused by a request created after it.
+/// relevant mutation can never be reused by a request created after it. Cache
+/// validators are also distinct: an unconditional refresh must never join a
+/// conditional request that is allowed to return an empty 304 response.
 struct OpenSubsonicReadRequestKey: Hashable, Sendable {
     let endpoint: String
     let queryItems: [OpenSubsonicQueryIdentity]
     let cacheRevision: OpenSubsonicCacheRevision
+    let entityTag: String?
+    let lastModified: String?
 
     init(
         endpoint: String,
         queryItems: [URLQueryItem],
-        cacheRevision: OpenSubsonicCacheRevision
+        cacheRevision: OpenSubsonicCacheRevision,
+        entityTag: String? = nil,
+        lastModified: String? = nil
     ) {
         self.endpoint = endpoint
         self.cacheRevision = cacheRevision
+        self.entityTag = entityTag
+        self.lastModified = lastModified
         self.queryItems = queryItems
             .map {
                 OpenSubsonicQueryIdentity(

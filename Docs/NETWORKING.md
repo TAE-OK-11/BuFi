@@ -13,9 +13,12 @@ radio scheduling, and background behavior integrated with iOS.
 - Last.fm and ListenBrainz are third-party origins. Their requests deliberately
   do not claim H3 capability before CFNetwork has learned it from DNS/Alt-Svc.
   Public metadata may use the small protocol cache; requests carrying an API key
-  or token stay on the ephemeral no-cache path. Transient transport failures,
-  408/425/429 and the selected temporary 5xx statuses use the same bounded retry
-  policy as first-party reads, including a capped `Retry-After` delay.
+  or token stay on the ephemeral no-cache path. The public request policy keeps
+  `useProtocolCachePolicy` intact so the configured memory cache is actually
+  reachable, while zstd compatibility retries always bypass it. Transient
+  transport failures, 408/425/429, and selected temporary 5xx statuses use the
+  same bounded retry policy as first-party reads, including a capped
+  `Retry-After` delay.
 - TLS is negotiated by the system. App Transport Security and the HTTPS-only
   redirect delegate reject cleartext downgrade redirects. TLS/certificate
   failures are terminal instead of being hidden behind repeated retries.
@@ -54,10 +57,17 @@ radio scheduling, and background behavior integrated with iOS.
   disabled for authenticated API and download sessions. BuFi's scoped caches
   remain in control. Generated cover-art URLs are also bounded in memory rather
   than growing for the entire account session.
-- Identical OpenSubsonic reads share one in-flight transfer. A 16 MiB bounded
-  actor-local response cache absorbs overlapping view/recommendation bursts.
-  Mutation boundaries invalidate dependent representations, and stale cached
-  reads are never published across a relevant in-flight mutation.
+- Identical OpenSubsonic reads share both one in-flight transfer and one JSON
+  decode. A 16 MiB bounded body cache absorbs overlapping view/recommendation
+  bursts, while decoded values use a separate 32-entry/8 MiB response-cost
+  budget so convenience caching cannot grow without a memory bound. Raw and
+  decoded entries retain the same original timestamp, preventing a late decode
+  from extending TTL. After TTL, ETag/Last-Modified responses are conditionally
+  revalidated when the server provides validators. Transient HTTP status and
+  OpenSubsonic error envelopes may use stale-if-error within the endpoint's
+  bounded grace window. Mutation boundaries invalidate dependent
+  representations, and stale reads are never published across a relevant
+  in-flight mutation.
 - OpenSubsonic/Subsonic/legacy endpoint fallback is a compatibility mechanism,
   not a transport retry mechanism. BuFi advances to an older endpoint only for
   explicit missing/unsupported endpoint responses or an incompatible response

@@ -11,7 +11,7 @@ actor LocalLibraryCatalog {
 
     static let maximumSongs = 2_500
 
-    private struct Entry: Sendable {
+    private struct Entry: Sendable, Equatable {
         var song: Song
         var titleKey: String
         var artistKey: String
@@ -21,6 +21,13 @@ actor LocalLibraryCatalog {
         var identityKey: String
     }
 
+    private struct PersistenceBatch: Sendable {
+        let scope: String
+        let generation: UInt64
+        let dirty: [String: Entry]
+        let deleted: Set<String>
+    }
+
     private var activeScope: String?
     private var scopeGeneration: UInt64 = 0
     private var entries: [String: Entry] = [:]
@@ -28,13 +35,20 @@ actor LocalLibraryCatalog {
     private var songsByISRC: [String: String] = [:]
     private var songsByIdentity: [String: String] = [:]
     private var persistTask: Task<Void, Never>?
+    private var dirtySongIDs: Set<String> = []
+    private var deletedSongIDs: Set<String> = []
 
     private init() {}
 
     @discardableResult
     func activate(accountScope: String) async -> AccountSessionToken? {
         if activeScope == accountScope {
+            persistTask?.cancel()
+            persistTask = nil
             scopeGeneration &+= 1
+            if hasPendingPersistence {
+                schedulePersist()
+            }
             return AccountSessionToken(
                 accountScope: accountScope,
                 generation: scopeGeneration
@@ -44,22 +58,38 @@ actor LocalLibraryCatalog {
         persistTask = nil
         scopeGeneration &+= 1
         let generation = scopeGeneration
-        if let previous = activeScope {
-            await persist(scope: previous)
+        let previousScope = activeScope
+        activeScope = nil
+        if let previousScope {
+            await persist(
+                scope: previousScope,
+                generation: generation,
+                permitsInactiveScope: true
+            )
             guard generation == scopeGeneration else { return nil }
         }
         let loaded = await AppDatabase.shared.loadLibraryCatalog(scope: accountScope)
-        guard generation == scopeGeneration else { return nil }
+        guard generation == scopeGeneration, activeScope == nil else { return nil }
         activeScope = accountScope
         entries.removeAll(keepingCapacity: true)
         songsByMBID.removeAll(keepingCapacity: true)
         songsByISRC.removeAll(keepingCapacity: true)
         songsByIdentity.removeAll(keepingCapacity: true)
+        dirtySongIDs.removeAll(keepingCapacity: true)
+        deletedSongIDs.removeAll(keepingCapacity: true)
         for record in loaded {
-            guard let song = try? Self.decodeSong(record.songData) else { continue }
+            guard let song = try? Self.decodeSong(record.songData),
+                  song.id == record.songID,
+                  !song.id.isEmpty else {
+                deletedSongIDs.insert(record.songID)
+                continue
+            }
             install(makeEntry(song))
         }
         evictIfNeeded()
+        if hasPendingPersistence {
+            schedulePersist()
+        }
         return AccountSessionToken(
             accountScope: accountScope,
             generation: generation
@@ -75,14 +105,20 @@ actor LocalLibraryCatalog {
         persistTask?.cancel()
         persistTask = nil
         scopeGeneration &+= 1
-        if let scope = activeScope {
-            await persist(scope: scope)
-        }
+        let generation = scopeGeneration
         activeScope = nil
+        await persist(
+            scope: session.accountScope,
+            generation: generation,
+            permitsInactiveScope: true
+        )
+        guard generation == scopeGeneration, activeScope == nil else { return true }
         entries.removeAll(keepingCapacity: false)
         songsByMBID.removeAll(keepingCapacity: false)
         songsByISRC.removeAll(keepingCapacity: false)
         songsByIdentity.removeAll(keepingCapacity: false)
+        dirtySongIDs.removeAll(keepingCapacity: false)
+        deletedSongIDs.removeAll(keepingCapacity: false)
         return true
     }
 
@@ -95,6 +131,8 @@ actor LocalLibraryCatalog {
                 continue
             }
             install(makeEntry(song))
+            dirtySongIDs.insert(song.id)
+            deletedSongIDs.remove(song.id)
             inserted = true
         }
         if inserted {
@@ -107,7 +145,7 @@ actor LocalLibraryCatalog {
         persistTask?.cancel()
         persistTask = nil
         guard let scope = activeScope else { return }
-        await persist(scope: scope)
+        await persist(scope: scope, generation: scopeGeneration)
     }
 
     func cachedMatches(
@@ -218,6 +256,8 @@ actor LocalLibraryCatalog {
         for entry in victims {
             removeIndexes(entry)
             entries[entry.song.id] = nil
+            dirtySongIDs.remove(entry.song.id)
+            deletedSongIDs.insert(entry.song.id)
         }
     }
 
@@ -238,18 +278,104 @@ actor LocalLibraryCatalog {
     private func schedulePersist() {
         persistTask?.cancel()
         guard let scope = activeScope else { return }
+        let generation = scopeGeneration
         persistTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled, let self else { return }
-            await self.persist(scope: scope)
+            await self.flushScheduledPersistence(
+                scope: scope,
+                generation: generation
+            )
         }
     }
 
-    private func persist(scope: String) async {
-        let records = entries.values.map { entry in
-            LibraryCatalogRecord(
-                songID: entry.song.id,
-                songData: (try? Self.encodeSong(entry.song)) ?? Data(),
+    private var hasPendingPersistence: Bool {
+        !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty
+    }
+
+    private func flushScheduledPersistence(
+        scope: String,
+        generation: UInt64
+    ) async {
+        guard AccountSessionToken(
+            accountScope: scope,
+            generation: generation
+        ).matches(accountScope: activeScope, generation: scopeGeneration) else {
+            return
+        }
+        persistTask = nil
+        await persist(scope: scope, generation: generation)
+    }
+
+    private func persist(
+        scope: String,
+        generation: UInt64,
+        permitsInactiveScope: Bool = false
+    ) async {
+        let token = AccountSessionToken(
+            accountScope: scope,
+            generation: generation
+        )
+        let ownsGeneration = permitsInactiveScope
+            ? activeScope == nil && scopeGeneration == generation
+            : token.matches(
+                accountScope: activeScope,
+                generation: scopeGeneration
+            )
+        guard ownsGeneration, hasPendingPersistence else { return }
+
+        let batch = PersistenceBatch(
+            scope: scope,
+            generation: generation,
+            dirty: Dictionary(
+                uniqueKeysWithValues: dirtySongIDs.compactMap { id in
+                    entries[id].map { (id, $0) }
+                }
+            ),
+            deleted: deletedSongIDs
+        )
+        let records: [LibraryCatalogRecord]
+        do {
+            records = try await Self.encodeRecordsConcurrently(batch.dirty)
+        } catch {
+            return
+        }
+        guard await AppDatabase.shared.applyLibraryCatalog(
+            records,
+            deletedIDs: batch.deleted,
+            scope: batch.scope
+        ) else { return }
+
+        let stillOwnsGeneration = permitsInactiveScope
+            ? activeScope == nil && scopeGeneration == generation
+            : token.matches(
+                accountScope: activeScope,
+                generation: scopeGeneration
+            )
+        guard stillOwnsGeneration, batch.generation == generation else { return }
+        for (id, savedEntry) in batch.dirty where entries[id] == savedEntry {
+            dirtySongIDs.remove(id)
+        }
+        for id in batch.deleted where entries[id] == nil {
+            deletedSongIDs.remove(id)
+        }
+    }
+
+    @concurrent
+    private static func encodeRecordsConcurrently(
+        _ entries: [String: Entry]
+    ) async throws -> [LibraryCatalogRecord] {
+        try Task.checkCancellation()
+        var records: [LibraryCatalogRecord] = []
+        records.reserveCapacity(entries.count)
+        for (index, pair) in entries.enumerated() {
+            if index.isMultiple(of: 32) {
+                try Task.checkCancellation()
+            }
+            let entry = pair.value
+            records.append(LibraryCatalogRecord(
+                songID: pair.key,
+                songData: try encodeSong(entry.song),
                 titleKey: entry.titleKey,
                 artistKey: entry.artistKey,
                 albumKey: entry.albumKey,
@@ -257,12 +383,9 @@ actor LocalLibraryCatalog {
                 isrc: entry.isrc,
                 hashEmbedding: Data(),
                 neuralEmbedding: Data()
-            )
-        }.filter { !$0.songData.isEmpty }
-        _ = await AppDatabase.shared.replaceLibraryCatalog(
-            records,
-            scope: scope
-        )
+            ))
+        }
+        return records
     }
 
     private static func normalizedKey(_ value: String?) -> String {

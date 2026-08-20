@@ -84,13 +84,16 @@ enum ModernNetworkPolicy {
     /// failure on providers or networks without H3.
     static func prepareExternalAPIRequest(
         _ request: inout URLRequest,
-        acceptsZstandard: Bool
+        acceptsZstandard: Bool,
+        allowsCaching: Bool
     ) {
         prepareJSONRequest(
             &request,
             assumesHTTP3Capable: false,
             acceptsZstandard: acceptsZstandard,
-            cachePolicy: .reloadIgnoringLocalCacheData
+            cachePolicy: allowsCaching
+                ? .useProtocolCachePolicy
+                : .reloadIgnoringLocalCacheData
         )
     }
 
@@ -180,7 +183,13 @@ enum ModernNetworkPolicy {
         request.cachePolicy = originalRequest.cachePolicy
         request.timeoutInterval = originalRequest.timeoutInterval
         request.networkServiceType = originalRequest.networkServiceType
-        for header in ["Accept", "Accept-Encoding"] {
+        for header in [
+            "Accept",
+            "Accept-Encoding",
+            "If-None-Match",
+            "If-Modified-Since",
+            "Range"
+        ] {
             if let value = originalRequest.value(forHTTPHeaderField: header) {
                 request.setValue(value, forHTTPHeaderField: header)
             }

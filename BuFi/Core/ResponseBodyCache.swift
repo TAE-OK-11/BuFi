@@ -4,16 +4,52 @@ import Foundation
 /// only when a configured bound is exceeded, keeping the common cache-hit path
 /// independent of the number of cached endpoints.
 struct ResponseBodyCache: Sendable {
+    struct Validators: Equatable, Sendable {
+        let entityTag: String?
+        let lastModified: String?
+
+        static let none = Validators(entityTag: nil, lastModified: nil)
+
+        var isEmpty: Bool {
+            entityTag == nil && lastModified == nil
+        }
+
+        func merging(_ newer: Validators) -> Validators {
+            Validators(
+                entityTag: newer.entityTag ?? entityTag,
+                lastModified: newer.lastModified ?? lastModified
+            )
+        }
+    }
+
+    struct Value: Equatable, Sendable {
+        let data: Data
+        let storedAt: ContinuousClock.Instant
+        let validators: Validators
+        let identity: UUID
+    }
+
     enum Lookup: Equatable, Sendable {
-        case fresh(Data)
-        case stale(Data)
+        case fresh(Value)
+        case stale(Value)
         case miss
     }
 
     private struct Entry: Sendable {
         let data: Data
         let storedAt: ContinuousClock.Instant
+        let validators: Validators
+        let identity: UUID
         var accessOrdinal: UInt64
+
+        var value: Value {
+            Value(
+                data: data,
+                storedAt: storedAt,
+                validators: validators,
+                identity: identity
+            )
+        }
     }
 
     let countLimit: Int
@@ -41,13 +77,13 @@ struct ResponseBodyCache: Sendable {
         maximumAge: TimeInterval,
         now: ContinuousClock.Instant = ContinuousClock().now
     ) -> Data? {
-        if case .fresh(let data) = lookup(
+        if case .fresh(let value) = lookup(
             for: key,
             maximumAge: maximumAge,
             staleGrace: 0,
             now: now
         ) {
-            return data
+            return value.data
         }
         return nil
     }
@@ -63,12 +99,12 @@ struct ResponseBodyCache: Sendable {
         if maximumAge > 0, age <= .seconds(maximumAge) {
             entry.accessOrdinal = nextAccessOrdinal()
             entries[key] = entry
-            return .fresh(entry.data)
+            return .fresh(entry.value)
         }
         if staleGrace > 0, age <= .seconds(maximumAge + staleGrace) {
             entry.accessOrdinal = nextAccessOrdinal()
             entries[key] = entry
-            return .stale(entry.data)
+            return .stale(entry.value)
         }
         removeValue(for: key)
         return .miss
@@ -77,6 +113,8 @@ struct ResponseBodyCache: Sendable {
     mutating func insert(
         _ data: Data,
         for key: String,
+        validators: Validators = .none,
+        identity: UUID = UUID(),
         now: ContinuousClock.Instant = ContinuousClock().now
     ) {
         // A response that cannot be cached must still invalidate an older body
@@ -92,6 +130,8 @@ struct ResponseBodyCache: Sendable {
         entries[key] = Entry(
             data: data,
             storedAt: now,
+            validators: validators,
+            identity: identity,
             accessOrdinal: nextAccessOrdinal()
         )
         byteCount += data.count

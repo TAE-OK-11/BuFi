@@ -20,12 +20,12 @@ It is designed around the iOS media stack rather than a web view.
 - Korean (default), English, and Japanese localization
 - Favorite songs, albums, and artists, with favorite artists pinned above an indexed artist library
 - Offline downloads stored in Application Support
-- GitHub Actions generation of an unsigned IPA with Xcode 26.6 plus an advisory Xcode 27/iOS 27 beta compatibility build
+- GitHub Actions generation of an unsigned IPA with Xcode 27 and Swift 6.4
 
 ## Requirements
 
 - iOS 17 or later
-- Xcode 26.6 or later (the advisory CI compatibility job also validates Xcode 27 beta)
+- Xcode 27 with the Swift 6.4 compiler
 - A Navidrome/OpenSubsonic server reachable over HTTPS
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) 2.46 or later for generating the Xcode project
 

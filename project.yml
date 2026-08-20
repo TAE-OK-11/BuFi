@@ -14,9 +14,9 @@ options:
   createIntermediateGroups: true
 settings:
   base:
-    # Swift 6 language mode makes the complete-concurrency diagnostics below
-    # enforceable instead of advisory. Keep this at the project level so the
-    # app cannot silently drift onto a different language mode.
+    # Swift 6.4 is a compiler/toolchain release; its current language-mode
+    # selector remains 6.0. Xcode 27 supplies the 6.4 compiler, while this value
+    # makes complete-concurrency diagnostics enforceable instead of advisory.
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES

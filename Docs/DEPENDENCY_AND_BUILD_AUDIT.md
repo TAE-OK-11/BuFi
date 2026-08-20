@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-08-17
+Audit date: 2026-08-20
 
 ## Decisions
 
@@ -57,16 +57,15 @@ a build-time project generator.
   [XcodeGen 2.46.0](https://github.com/yonaskolb/XcodeGen/releases/tag/2.46.0).
   It uses the documented `xcode16_3` project format (already present in the
   [2.45.4 ProjectSpec](https://github.com/yonaskolb/XcodeGen/blob/2.45.4/Docs/ProjectSpec.md))
-  while recording Xcode 26.6 as the last-upgrade version. Xcode 27 can open and
-  build this format without a source migration.
-- The BuFi app target uses `SWIFT_VERSION = 6.0` with
-  `SWIFT_STRICT_CONCURRENCY = complete`. CI verifies both settings for Debug and
-  Release before compiling or packaging.
+  while recording Xcode 27 as the last-upgrade version.
+- Xcode 27 supplies Swift 6.4. The BuFi app target correctly keeps
+  `SWIFT_VERSION = 6.0` because compiler release and language mode are separate,
+  and uses `SWIFT_STRICT_CONCURRENCY = complete`. CI verifies the Xcode/Swift
+  toolchain and both settings for Debug and Release before compiling.
 - The iOS 27 beta playback crash was isolated to a `MPMediaItemArtwork` callback
   inheriting main-actor isolation while MediaPlayer invoked it on its private
-  access queue. The callback now has an explicit Sendable boundary and the
-  exact Swift 6 build passes the Xcode 26.6 test/launch job and Xcode 27/iOS 27
-  Release launch job.
+  access queue. The callback now has an explicit Sendable boundary and remains
+  covered by the Xcode 27/Swift 6.4 Release build.
 - Swift warnings are treated as errors for BuFi-owned targets so new migration
   regressions cannot silently enter CI.
 - Release retains speed optimization, whole-module compilation, documented
@@ -93,12 +92,10 @@ Swift 6 in
 
 ## CI toolchain policy
 
-- The required build uses GitHub's `macos-26` Arm64 runner and Xcode 26.6.
-- The Xcode 27 beta build uses GitHub's official `xcode-27` preview label. It is
-  advisory because GitHub explicitly warns that preview software and capacity
-  can be unstable.
-- Xcode 27 logs are uploaded on every run to retain new SDK and compiler
-  warnings.
+- The required build uses GitHub's `xcode-27` runner and verifies the Swift 6.4
+  compiler before compiling or packaging.
+- Failure logs are uploaded so new SDK and compiler diagnostics remain available
+  after the job ends.
 - CI keeps a toolchain-specific Swift Package clone cache, disables the unused
   compiler index store, explicitly parallelizes targets, and emits Xcode's
   build-timing summary. DerivedData is intentionally not cached so verification
@@ -109,7 +106,6 @@ Swift 6 in
   tests. Physical iOS 17 and iOS 27 beta devices remain release gates.
 
 Runner availability and installed toolchains are verified against GitHub's
-[macOS 26 image manifest](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md),
 [Xcode 27 image manifest](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-Readme.md),
 and [Xcode 27 public preview announcement](https://github.com/actions/runner-images/issues/14404).
 

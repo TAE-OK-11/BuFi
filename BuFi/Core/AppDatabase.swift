@@ -513,17 +513,24 @@ actor AppDatabase {
     }
 
     @discardableResult
-    func replaceLibraryCatalog(
+    func applyLibraryCatalog(
         _ records: [LibraryCatalogRecord],
+        deletedIDs: Set<String>,
         scope: String
     ) async -> Bool {
+        guard !records.isEmpty || !deletedIDs.isEmpty else { return true }
         guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
-                try db.execute(
-                    sql: "DELETE FROM library_catalog WHERE account_scope = ?",
-                    arguments: [scope]
-                )
+                for id in deletedIDs {
+                    try db.execute(
+                        sql: """
+                        DELETE FROM library_catalog
+                        WHERE account_scope = ? AND song_id = ?
+                        """,
+                        arguments: [scope, id]
+                    )
+                }
                 for record in records {
                     try db.execute(
                         sql: """
@@ -532,6 +539,15 @@ actor AppDatabase {
                             artist_key, album_key, mbid, isrc,
                             hash_embedding, neural_embedding
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(account_scope, song_id) DO UPDATE SET
+                            song_data = excluded.song_data,
+                            title_key = excluded.title_key,
+                            artist_key = excluded.artist_key,
+                            album_key = excluded.album_key,
+                            mbid = excluded.mbid,
+                            isrc = excluded.isrc,
+                            hash_embedding = excluded.hash_embedding,
+                            neural_embedding = excluded.neural_embedding
                         """,
                         arguments: [
                             scope, record.songID, record.songData,
@@ -1468,6 +1484,20 @@ actor AppDatabase {
                     song_data BLOB NOT NULL,
                     PRIMARY KEY (account_scope, source, cache_key)
                 ) WITHOUT ROWID;
+                """)
+        }
+        migrator.registerMigration("drop-unused-write-indexes-v9") { db in
+            // These indexes were inherited from the first persistence schema,
+            // but every current reader loads one account through the composite
+            // primary key and processes its in-memory snapshot. Maintaining the
+            // unused trees on every playback/catalog write only adds WAL, flash,
+            // and checkpoint work.
+            try db.execute(sql: """
+                DROP INDEX IF EXISTS listening_behavior_recent;
+                DROP INDEX IF EXISTS listening_behavior_popular;
+                DROP INDEX IF EXISTS offline_entry_lru;
+                DROP INDEX IF EXISTS library_catalog_mbid;
+                DROP INDEX IF EXISTS library_catalog_identity;
                 """)
         }
         return migrator

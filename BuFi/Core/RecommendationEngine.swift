@@ -3037,7 +3037,8 @@ actor ExternalRecommendationClient {
         var request = URLRequest(url: url)
         ModernNetworkPolicy.prepareExternalAPIRequest(
             &request,
-            acceptsZstandard: acceptsZstandard
+            acceptsZstandard: acceptsZstandard,
+            allowsCaching: allowsCaching
         )
         if !acceptsZstandard {
             // Do not let a malformed zstd response cached by an intermediary
@@ -3079,6 +3080,9 @@ actor ExternalRecommendationClient {
             }
 
             try Task.checkCancellation()
+            guard data.count <= 4 * 1_024 * 1_024 else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
             guard let http = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
             }
@@ -3099,9 +3103,6 @@ actor ExternalRecommendationClient {
                     nanoseconds: UInt64(delay * 1_000_000_000)
                 )
                 continue
-            }
-            guard data.count <= 4 * 1_024 * 1_024 else {
-                throw URLError(.dataLengthExceedsMaximum)
             }
             let contentEncoding = http.value(
                 forHTTPHeaderField: "Content-Encoding"
