@@ -151,12 +151,13 @@ private enum LyricsTranslationPlanner {
         }
         guard !candidates.isEmpty else { return nil }
 
-        let recognized = Dictionary(uniqueKeysWithValues: candidates.compactMap { line in
+        var recognized = [Int: String](minimumCapacity: candidates.count)
+        for line in candidates {
             guard let language = NLLanguageRecognizer.dominantLanguage(
                 for: line.text
-            ) else { return nil }
-            return (line.id, language.rawValue)
-        })
+            ) else { continue }
+            recognized[line.id] = language.rawValue
+        }
         var weights = [String: Int]()
         for line in candidates {
             guard let code = recognized[line.id] else { continue }
