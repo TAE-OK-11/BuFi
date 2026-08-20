@@ -147,7 +147,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                settingsNote("기본은 대표색을 단색으로, 다중 컬러는 앨범 속 색의 위치를 반영합니다. 밝게는 추출색만 더 밝고 선명하게 표시합니다.")
+                settingsNote("기본은 대표색을 중심으로 은은하게 섞고, 다중 컬러는 앨범 속 세 가지 예술색의 위치를 더 선명하게 반영합니다. 밝게는 같은 색 구성을 화사하게 표시합니다.")
 
                 SettingsDivider()
 

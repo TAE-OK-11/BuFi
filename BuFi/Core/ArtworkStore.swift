@@ -33,6 +33,7 @@ struct PalettePosition: Codable, Equatable, Sendable {
     let y: Double
 
     static let topTrailing = PalettePosition(x: 0.78, y: 0.18)
+    static let topLeading = PalettePosition(x: 0.22, y: 0.18)
     static let bottomLeading = PalettePosition(x: 0.22, y: 0.82)
 }
 
@@ -41,30 +42,37 @@ struct ArtworkPalette: Codable, Equatable, Sendable {
     let bottom: RGBAColor
     let accent: RGBAColor
     let secondary: RGBAColor
+    let highlight: RGBAColor
     let accentPosition: PalettePosition
     let secondaryPosition: PalettePosition
+    let highlightPosition: PalettePosition
 
     init(
         top: RGBAColor,
         bottom: RGBAColor,
         accent: RGBAColor? = nil,
         secondary: RGBAColor? = nil,
+        highlight: RGBAColor? = nil,
         accentPosition: PalettePosition = .bottomLeading,
-        secondaryPosition: PalettePosition = .topTrailing
+        secondaryPosition: PalettePosition = .topTrailing,
+        highlightPosition: PalettePosition = .topLeading
     ) {
         self.top = top
         self.bottom = bottom
         self.accent = accent ?? top
         self.secondary = secondary ?? bottom
+        self.highlight = highlight ?? secondary ?? accent ?? top
         self.accentPosition = accentPosition
         self.secondaryPosition = secondaryPosition
+        self.highlightPosition = highlightPosition
     }
 
     static let fallback = ArtworkPalette(
         top: .fallbackTop,
         bottom: .fallbackBottom,
         accent: RGBAColor(red: 0.36, green: 0.48, blue: 0.42, alpha: 1),
-        secondary: RGBAColor(red: 0.18, green: 0.27, blue: 0.34, alpha: 1)
+        secondary: RGBAColor(red: 0.18, green: 0.27, blue: 0.34, alpha: 1),
+        highlight: RGBAColor(red: 0.48, green: 0.38, blue: 0.52, alpha: 1)
     )
 }
 
@@ -102,8 +110,8 @@ actor ArtworkStore {
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
     private static let cacheSchemaRevision = "media-v2"
     private static let artworkFreshnessInterval: TimeInterval = 12 * 60 * 60
-    private static let paletteEngineVersion = 6
-    private static let sampleSide = 48
+    private static let paletteEngineVersion = 7
+    private static let sampleSide = 64
     private static let acceleratedSamplePixelLimit = 512 * 512
     private static let neutralChromaLimit = 0.035
     private static let darkLightnessLimit = 0.12
@@ -614,7 +622,7 @@ actor ArtworkStore {
         )
     }
 
-    // MARK: - Palette Engine V6
+    // MARK: - Palette Engine V7
 
     private struct OKLab {
         var lightness: Double
@@ -666,7 +674,7 @@ actor ArtworkStore {
         guard !samples.isEmpty, !Task.isCancelled else { return nil }
 
         // Classify the sample set in one pass. The previous independent
-        // reductions walked the same 2,304 pixels four times and recalculated
+        // reductions walked the same 4,096 pixels four times and recalculated
         // perceptual chroma for each classification.
         var visibleWeight = 0.0
         var neutralWeight = 0.0
@@ -734,17 +742,47 @@ actor ArtworkStore {
             return lhs.position.x < rhs.position.x
         }
         guard let primary = populationOrdered.first else { return nil }
-        let distinctDistance = isNeutralFamily ? 0.075 : 0.055
-        let distinctDistanceSquared = distinctDistance * distinctDistance
-        let secondary = swatches.first {
-            squaredDistance($0.lab, primary.lab) >= distinctDistanceSquared
-        } ?? swatches.first {
-            squaredDistance($0.lab, primary.lab) > 0.000_000_000_001
+        if isNeutralFamily {
+            let secondary = artisticCompanion(
+                in: swatches,
+                anchors: [primary],
+                minimumDistance: 0.075
+            ) ?? artisticCompanion(
+                in: swatches,
+                anchors: [primary],
+                minimumDistance: 0.000_001
+            )
+            return neutralPalette(primary: primary, secondary: secondary)
         }
 
-        return isNeutralFamily
-            ? neutralPalette(primary: primary, secondary: secondary)
-            : colorfulPalette(primary: primary, secondary: secondary)
+        // Population still defines the cover's overall mood, while the
+        // highest-value colorful swatch drives the first ambient light. Two
+        // further companions are selected for both perceptual and spatial
+        // separation, allowing pastel covers to retain pink, blue, and gold
+        // instead of collapsing them into a single average hue.
+        let accent = swatches.first ?? primary
+        let secondary = artisticCompanion(
+            in: swatches,
+            anchors: [accent],
+            minimumDistance: 0.055
+        ) ?? artisticCompanion(
+            in: swatches,
+            anchors: [accent],
+            minimumDistance: 0.035
+        )
+        let highlightAnchors = [accent] + (secondary.map { [$0] } ?? [])
+        let highlight = artisticCompanion(
+            in: swatches,
+            anchors: highlightAnchors,
+            minimumDistance: 0.042
+        )
+
+        return colorfulPalette(
+            primary: primary,
+            accent: accent,
+            secondary: secondary,
+            highlight: highlight
+        )
     }
 
     private static func sampleBytes(from image: UIImage) -> [UInt8]? {
@@ -1081,36 +1119,59 @@ actor ArtworkStore {
 
     private static func colorfulPalette(
         primary: Swatch,
-        secondary: Swatch?
+        accent: Swatch,
+        secondary: Swatch?,
+        highlight: Swatch?
     ) -> ArtworkPalette {
-        let secondaryLab = secondary?.lab ?? primary.lab
+        let accentDistance = sqrt(squaredDistance(primary.lab, accent.lab))
+        let accentBlend = accentDistance < 0.025
+            ? 0
+            : min(0.24, 0.08 + accent.population * 0.38)
+        let mood = blended(primary.lab, accent.lab, amount: accentBlend)
+        let secondarySwatch = secondary ?? primary
+        let highlightSwatch = highlight ?? secondary ?? accent
         let top = adjusted(
-            primary.lab,
-            lightness: clamp(primary.lab.lightness * 0.78, 0.28, 0.62),
-            chromaScale: 0.82
+            mood,
+            lightness: clamp(0.12 + 0.66 * mood.lightness, 0.34, 0.64),
+            chromaScale: 0.78
         )
         let bottom = adjusted(
-            primary.lab,
-            lightness: clamp(primary.lab.lightness * 0.29, 0.055, 0.19),
-            chromaScale: 0.42
+            mood,
+            lightness: clamp(0.10 + 0.38 * mood.lightness, 0.22, 0.42),
+            chromaScale: 0.60
         )
-        let accent = adjusted(
-            primary.lab,
-            lightness: clamp(primary.lab.lightness, 0.42, 0.78),
-            chromaScale: 0.98
+        let accentColor = adjusted(
+            accent.lab,
+            lightness: clamp(0.08 + 0.82 * accent.lab.lightness, 0.38, 0.76),
+            chromaScale: 0.94
         )
         let secondaryColor = adjusted(
-            secondaryLab,
-            lightness: clamp(secondaryLab.lightness, 0.38, 0.74),
-            chromaScale: 0.94
+            secondarySwatch.lab,
+            lightness: clamp(
+                0.08 + 0.80 * secondarySwatch.lab.lightness,
+                0.36,
+                0.74
+            ),
+            chromaScale: 0.90
+        )
+        let highlightColor = adjusted(
+            highlightSwatch.lab,
+            lightness: clamp(
+                0.12 + 0.84 * highlightSwatch.lab.lightness,
+                0.48,
+                0.84
+            ),
+            chromaScale: 0.84
         )
         return ArtworkPalette(
             top: rgba(from: top),
             bottom: rgba(from: bottom),
-            accent: rgba(from: accent),
+            accent: rgba(from: accentColor),
             secondary: rgba(from: secondaryColor),
-            accentPosition: primary.position,
-            secondaryPosition: secondary?.position ?? opposite(of: primary.position)
+            highlight: rgba(from: highlightColor),
+            accentPosition: accent.position,
+            secondaryPosition: secondarySwatch.position,
+            highlightPosition: highlightSwatch.position
         )
     }
 
@@ -1171,8 +1232,64 @@ actor ArtworkStore {
             bottom: rgba(from: bottom),
             accent: rgba(from: accent),
             secondary: rgba(from: secondaryLab),
+            highlight: rgba(from: adjusted(
+                secondary?.lab ?? primary.lab,
+                lightness: clamp(
+                    0.18 + 0.72 * (secondary?.lab.lightness ?? primary.lab.lightness),
+                    isDarkNeutral ? 0.28 : 0.18,
+                    0.88
+                ),
+                chromaScale: 0.72
+            )),
             accentPosition: primary.position,
-            secondaryPosition: secondary?.position ?? opposite(of: primary.position)
+            secondaryPosition: secondary?.position ?? opposite(of: primary.position),
+            highlightPosition: secondary?.position ?? .topLeading
+        )
+    }
+
+    private static func artisticCompanion(
+        in swatches: [Swatch],
+        anchors: [Swatch],
+        minimumDistance: Double
+    ) -> Swatch? {
+        guard !anchors.isEmpty else { return swatches.first }
+        var best: Swatch?
+        var bestValue = -Double.infinity
+        for candidate in swatches where candidate.population >= 0.006 {
+            let colorDistance = anchors
+                .map { sqrt(squaredDistance(candidate.lab, $0.lab)) }
+                .min() ?? 0
+            guard colorDistance >= minimumDistance else { continue }
+            let spatialDistance = anchors
+                .map {
+                    hypot(
+                        candidate.position.x - $0.position.x,
+                        candidate.position.y - $0.position.y
+                    )
+                }
+                .min() ?? 0
+            let separation = 0.78 + min(colorDistance / 0.14, 1.30)
+            let placement = 0.92 + min(spatialDistance, 0.60) * 0.28
+            let value = candidate.score * separation * placement
+            if value > bestValue + 1e-15 {
+                best = candidate
+                bestValue = value
+            }
+        }
+        return best
+    }
+
+    private static func blended(
+        _ lhs: OKLab,
+        _ rhs: OKLab,
+        amount: Double
+    ) -> OKLab {
+        let amount = clamp(amount, 0, 1)
+        let inverse = 1 - amount
+        return OKLab(
+            lightness: lhs.lightness * inverse + rhs.lightness * amount,
+            a: lhs.a * inverse + rhs.a * amount,
+            b: lhs.b * inverse + rhs.b * amount
         )
     }
 

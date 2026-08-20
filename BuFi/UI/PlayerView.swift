@@ -1395,6 +1395,36 @@ private struct FullLyricsFooter: View {
 }
 
 private struct PlayerPaletteBackground: View, Equatable {
+    private enum ArtisticFieldStyle {
+        case restrained
+        case vivid
+        case bright
+
+        var baseWeight: Double {
+            switch self {
+            case .restrained: 1.55
+            case .vivid: 0.88
+            case .bright: 0.82
+            }
+        }
+
+        var colorInfluence: Double {
+            switch self {
+            case .restrained: 0.72
+            case .vivid: 1.72
+            case .bright: 1.88
+            }
+        }
+
+        var fallbackOpacity: Double {
+            switch self {
+            case .restrained: 0.34
+            case .vivid: 0.76
+            case .bright: 0.82
+            }
+        }
+    }
+
     let palette: ArtworkPalette
     let playerAppearance: PlayerAppearance
     let appearance: PlayerBackgroundAppearance
@@ -1404,179 +1434,191 @@ private struct PlayerPaletteBackground: View, Equatable {
     var body: some View {
         switch appearance {
         case .classic:
-            if playerAppearance == .dynamic {
-                ZStack {
-                    LinearGradient(
-                        colors: [
-                            adaptivePaletteColor(
-                                palette.top,
-                                lightBrightnessFloor: 0.82,
-                                lightSaturationCeiling: 0.28
-                            ),
-                            adaptivePaletteColor(
-                                palette.bottom,
-                                lightBrightnessFloor: 0.74,
-                                lightSaturationCeiling: 0.22
-                            )
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    RadialGradient(
-                        colors: [
-                            adaptivePaletteColor(
-                                palette.secondary,
-                                lightBrightnessFloor: 0.80,
-                                lightSaturationCeiling: 0.26
-                            ).opacity(colorScheme == .light ? 0.14 : 0.18),
-                            .clear
-                        ],
-                        center: secondaryPoint,
-                        startRadius: 8,
-                        endRadius: 540
-                    )
-                    RadialGradient(
-                        colors: [
-                            adaptivePaletteColor(
-                                palette.accent,
-                                lightBrightnessFloor: 0.80,
-                                lightSaturationCeiling: 0.28
-                            ).opacity(colorScheme == .light ? 0.13 : 0.16),
-                            .clear
-                        ],
-                        center: accentPoint,
-                        startRadius: 12,
-                        endRadius: 620
-                    )
-                    if colorScheme == .light {
-                        LinearGradient(
-                            colors: [.white.opacity(0.18), .white.opacity(0.38)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    } else {
-                        LinearGradient(
-                            colors: [.white.opacity(0.13), .clear, .black.opacity(0.24)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-                }
-            } else {
-                ZStack {
-                    adaptivePaletteColor(
-                        palette.top,
-                        lightBrightnessFloor: 0.86,
-                        lightSaturationCeiling: 0.20
-                    )
-                    if colorScheme == .light {
-                        Color.white.opacity(0.26)
-                    } else {
-                        Color.black.opacity(0.18)
-                    }
-                }
+            ZStack {
+                artisticField(style: .restrained)
+                restrainedReadabilityOverlay
             }
         case .multicolor:
             ZStack {
-                LinearGradient(
-                    colors: [
-                        adaptivePaletteColor(
-                            palette.top,
-                            lightBrightnessFloor: 0.84,
-                            lightSaturationCeiling: 0.30
-                        ),
-                        adaptivePaletteColor(
-                            palette.bottom,
-                            lightBrightnessFloor: 0.82,
-                            lightSaturationCeiling: 0.22
-                        )
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                RadialGradient(
-                    colors: [
-                        adaptivePaletteColor(
-                            palette.top,
-                            lightBrightnessFloor: 0.84,
-                            lightSaturationCeiling: 0.30
-                        ).opacity(colorScheme == .light ? 0.30 : 0.46),
-                        .clear
-                    ],
-                    center: UnitPoint(x: 0.50, y: 0.12),
-                    startRadius: 0,
-                    endRadius: 760
-                )
-                RadialGradient(
-                    colors: [
-                        adaptivePaletteColor(
-                            palette.secondary,
-                            lightBrightnessFloor: 0.82,
-                            lightSaturationCeiling: 0.30
-                        ).opacity(colorScheme == .light ? 0.28 : 0.78),
-                        .clear
-                    ],
-                    center: secondaryPoint,
-                    startRadius: 0,
-                    endRadius: 620
-                )
-                RadialGradient(
-                    colors: [
-                        adaptivePaletteColor(
-                            palette.accent,
-                            lightBrightnessFloor: 0.82,
-                            lightSaturationCeiling: 0.32
-                        ).opacity(colorScheme == .light ? 0.26 : 0.72),
-                        .clear
-                    ],
-                    center: accentPoint,
-                    startRadius: 0,
-                    endRadius: 560
-                )
+                artisticField(style: .vivid)
                 readabilityOverlay
             }
         case .bright:
             ZStack {
-                LinearGradient(
-                    colors: [
-                        brightenedColor(palette.top, brightnessFloor: 0.72),
-                        brightenedColor(palette.bottom, brightnessFloor: 0.58)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                RadialGradient(
-                    colors: [
-                        brightenedColor(palette.top, brightnessFloor: 0.76)
-                            .opacity(0.46),
-                        .clear
-                    ],
-                    center: UnitPoint(x: 0.50, y: 0.12),
-                    startRadius: 0,
-                    endRadius: 760
-                )
-                RadialGradient(
-                    colors: [
-                        brightenedColor(palette.secondary, brightnessFloor: 0.70)
-                            .opacity(0.76),
-                        .clear
-                    ],
-                    center: secondaryPoint,
-                    startRadius: 0,
-                    endRadius: 620
-                )
-                RadialGradient(
-                    colors: [
-                        brightenedColor(palette.accent, brightnessFloor: 0.72)
-                            .opacity(0.70),
-                        .clear
-                    ],
-                    center: accentPoint,
-                    startRadius: 0,
-                    endRadius: 560
-                )
+                artisticField(style: .bright)
                 Color.white.opacity(0.04)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func artisticField(style: ArtisticFieldStyle) -> some View {
+        if #available(iOS 18.0, *) {
+            MeshGradient(
+                width: 3,
+                height: 3,
+                points: meshPoints,
+                colors: meshColors(style: style),
+                background: fieldColor(palette.bottom, style: style),
+                smoothsColors: true,
+                colorSpace: .perceptual
+            )
+        } else {
+            radialArtisticField(style: style)
+        }
+    }
+
+    private func radialArtisticField(
+        style: ArtisticFieldStyle
+    ) -> some View {
+        let opacity = style.fallbackOpacity
+        return ZStack {
+            LinearGradient(
+                colors: [
+                    fieldColor(palette.top, style: style),
+                    fieldColor(palette.bottom, style: style)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            RadialGradient(
+                colors: [
+                    fieldColor(palette.accent, style: style).opacity(opacity),
+                    .clear
+                ],
+                center: accentPoint,
+                startRadius: 0,
+                endRadius: 600
+            )
+            RadialGradient(
+                colors: [
+                    fieldColor(palette.secondary, style: style).opacity(opacity * 0.94),
+                    .clear
+                ],
+                center: secondaryPoint,
+                startRadius: 0,
+                endRadius: 680
+            )
+            RadialGradient(
+                colors: [
+                    fieldColor(palette.highlight, style: style).opacity(opacity * 0.82),
+                    .clear
+                ],
+                center: highlightPoint,
+                startRadius: 0,
+                endRadius: 560
+            )
+        }
+    }
+
+    private var meshPoints: [SIMD2<Float>] {
+        [
+            .init(0, 0), .init(0.5, 0), .init(1, 0),
+            .init(0, 0.5), .init(0.5, 0.5), .init(1, 0.5),
+            .init(0, 1), .init(0.5, 1), .init(1, 1)
+        ]
+    }
+
+    private func meshColors(style: ArtisticFieldStyle) -> [Color] {
+        [
+            (0.0, 0.0), (0.5, 0.0), (1.0, 0.0),
+            (0.0, 0.5), (0.5, 0.5), (1.0, 0.5),
+            (0.0, 1.0), (0.5, 1.0), (1.0, 1.0)
+        ].map { point in
+            fieldColor(
+                mixedPaletteColor(
+                    x: point.0,
+                    y: point.1,
+                    style: style
+                ),
+                style: style
+            )
+        }
+    }
+
+    private func mixedPaletteColor(
+        x: Double,
+        y: Double,
+        style: ArtisticFieldStyle
+    ) -> RGBAColor {
+        let base = interpolatedColor(palette.top, palette.bottom, amount: y)
+        var red = base.red * style.baseWeight
+        var green = base.green * style.baseWeight
+        var blue = base.blue * style.baseWeight
+        var weight = style.baseWeight
+        let positionedColors: [(RGBAColor, PalettePosition, Double)] = [
+            (palette.accent, palette.accentPosition, 1.0),
+            (palette.secondary, palette.secondaryPosition, 0.96),
+            (palette.highlight, palette.highlightPosition, 0.82)
+        ]
+
+        for (color, position, roleStrength) in positionedColors {
+            let distance = hypot(x - position.x, y - position.y)
+            let falloff = max(0, 1 - distance / 0.92)
+            let influence = falloff * falloff
+                * style.colorInfluence
+                * roleStrength
+            red += color.red * influence
+            green += color.green * influence
+            blue += color.blue * influence
+            weight += influence
+        }
+
+        return RGBAColor(
+            red: min(max(red / weight, 0), 1),
+            green: min(max(green / weight, 0), 1),
+            blue: min(max(blue / weight, 0), 1),
+            alpha: 1
+        )
+    }
+
+    private func interpolatedColor(
+        _ start: RGBAColor,
+        _ end: RGBAColor,
+        amount: Double
+    ) -> RGBAColor {
+        let amount = min(max(amount, 0), 1)
+        let inverse = 1 - amount
+        return RGBAColor(
+            red: start.red * inverse + end.red * amount,
+            green: start.green * inverse + end.green * amount,
+            blue: start.blue * inverse + end.blue * amount,
+            alpha: start.alpha * inverse + end.alpha * amount
+        )
+    }
+
+    private func fieldColor(
+        _ color: RGBAColor,
+        style: ArtisticFieldStyle
+    ) -> Color {
+        switch style {
+        case .restrained:
+            adaptivePaletteColor(
+                color,
+                lightBrightnessFloor: 0.80,
+                lightSaturationCeiling: 0.28
+            )
+        case .vivid:
+            adaptivePaletteColor(
+                color,
+                lightBrightnessFloor: 0.82,
+                lightSaturationCeiling: 0.32
+            )
+        case .bright:
+            brightenedColor(color, brightnessFloor: 0.70)
+        }
+    }
+
+    @ViewBuilder
+    private var restrainedReadabilityOverlay: some View {
+        if colorScheme == .light {
+            Color.white.opacity(0.20)
+        } else {
+            LinearGradient(
+                colors: [.black.opacity(0.05), .clear, .black.opacity(0.18)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
     }
 
@@ -1693,6 +1735,13 @@ private struct PlayerPaletteBackground: View, Equatable {
             y: CGFloat(palette.secondaryPosition.y)
         )
     }
+
+    private var highlightPoint: UnitPoint {
+        UnitPoint(
+            x: CGFloat(palette.highlightPosition.x),
+            y: CGFloat(palette.highlightPosition.y)
+        )
+    }
 }
 
 private func palettePrefersDarkForeground(_ palette: ArtworkPalette) -> Bool {
@@ -1706,10 +1755,11 @@ private func palettePrefersDarkForeground(_ palette: ArtworkPalette) -> Bool {
             + 0.7152 * linear(color.green)
             + 0.0722 * linear(color.blue)
     }
-    let fieldLuminance = 0.30 * luminance(palette.top)
-        + 0.25 * luminance(palette.accent)
-        + 0.25 * luminance(palette.secondary)
-        + 0.20 * luminance(palette.bottom)
+    let fieldLuminance = 0.24 * luminance(palette.top)
+        + 0.22 * luminance(palette.accent)
+        + 0.20 * luminance(palette.secondary)
+        + 0.18 * luminance(palette.highlight)
+        + 0.16 * luminance(palette.bottom)
     return fieldLuminance >= 0.46
 }
 
