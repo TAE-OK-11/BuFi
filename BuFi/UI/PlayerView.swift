@@ -239,8 +239,10 @@ struct PlayerView: View {
         availableWidth: CGFloat,
         availableHeight: CGFloat
     ) -> some View {
-        let viewportWidth = max(240, availableWidth - 44)
-        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
+        let layout = artworkLayout(
+            availableWidth: availableWidth,
+            availableHeight: availableHeight
+        )
 
         return VStack(spacing: 0) {
             artworkPager(
@@ -250,11 +252,11 @@ struct PlayerView: View {
                 heightPadding: 42
             )
 
-            metadataContent(item, availableWidth: viewportWidth)
+            metadataContent(item, availableWidth: layout.viewportWidth)
                 .padding(.bottom, 18)
         }
-        .frame(width: viewportWidth)
-        .frame(height: edge + 116)
+        .frame(width: layout.viewportWidth)
+        .frame(height: layout.edge + 116)
         .contentShape(Rectangle())
     }
 
@@ -336,9 +338,10 @@ struct PlayerView: View {
         availableHeight: CGFloat,
         heightPadding: CGFloat
     ) -> some View {
-        let viewportWidth = max(240, availableWidth - 44)
-        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
-        let sideInset = max(0, (viewportWidth - edge) / 2)
+        let layout = artworkLayout(
+            availableWidth: availableWidth,
+            availableHeight: availableHeight
+        )
         let pages = cachedArtworkPages.isEmpty ? artworkPages(fallback: item) : cachedArtworkPages
         let currentPageIndex = pages.firstIndex { $0.id == artworkPage }
             ?? pages.firstIndex { $0.id.queueEntryID == item.queueEntryID }
@@ -372,7 +375,7 @@ struct PlayerView: View {
                     let extractsPalette = abs(pageIndex - currentPageIndex) <= 1
                     ArtworkView(
                         coverArt: page.id.coverArtID,
-                        size: edge,
+                        size: layout.edge,
                         cornerRadius: 14,
                         cacheRevision: page.id.artworkRevision,
                         onPalette: extractsPalette
@@ -381,11 +384,12 @@ struct PlayerView: View {
                             }
                             : nil
                     )
-                    .frame(width: edge, height: edge)
+                    .frame(width: layout.edge, height: layout.edge)
                     .id(page.id)
                     .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                        // Keep the selected cover visually stable during a
+                        // tap or a small pager snap.
                         content
-                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.96)
                             .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.80)
                             .offset(y: phase.isIdentity || !animatesTransition ? 0 : 6)
                     }
@@ -394,18 +398,34 @@ struct PlayerView: View {
             .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
-        .contentMargins(.horizontal, sideInset, for: .scrollContent)
+        .contentMargins(.horizontal, layout.sideInset, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: pagerPosition, anchor: .center)
-    .simultaneousGesture(
-        DragGesture(minimumDistance: 5)
-            .onChanged { _ in
-                pagerSelectionGate.beginUserInteraction()
-            }
-    )
-        .frame(width: viewportWidth)
-        .frame(height: edge + heightPadding)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 5)
+                .onChanged { _ in
+                    pagerSelectionGate.beginUserInteraction()
+                }
+        )
+        .frame(width: layout.viewportWidth)
+        .frame(height: layout.edge + heightPadding)
         .contentShape(Rectangle())
+    }
+
+    private func artworkLayout(
+        availableWidth: CGFloat,
+        availableHeight: CGFloat
+    ) -> (viewportWidth: CGFloat, edge: CGFloat, sideInset: CGFloat) {
+        let viewportWidth = max(240, availableWidth - 44)
+        let preferredSideInset = min(18, max(12, viewportWidth * 0.045))
+        let maximumEdge = max(220, viewportWidth - (preferredSideInset * 2))
+        let heightDrivenEdge = max(264, availableHeight * 0.47)
+        let edge = max(220, min(maximumEdge, heightDrivenEdge))
+        return (
+            viewportWidth: viewportWidth,
+            edge: edge,
+            sideInset: max(0, (viewportWidth - edge) / 2)
+        )
     }
 
     private func refreshArtworkPages(
