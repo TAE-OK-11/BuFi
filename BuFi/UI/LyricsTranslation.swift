@@ -314,16 +314,13 @@ private struct SystemLyricsTranslationTaskHost: View {
         let linesByID = Dictionary(uniqueKeysWithValues: requestedLines.map {
             (String($0.id), $0)
         })
-        let requests = requestedLines.map {
-            TranslationSession.Request(
-                sourceText: $0.text,
-                clientIdentifier: String($0.id)
-            )
-        }
-        phase = .translating(completed: 0, total: requests.count)
+        phase = .translating(completed: 0, total: requestedLines.count)
 
         do {
-            let responses = try await session.translations(from: requests)
+            let responses = try await Self.performBatchTranslation(
+                using: session,
+                lines: requestedLines
+            )
             guard !Task.isCancelled,
                   songID == requestSongID,
                   accountScope == requestScope,
@@ -348,7 +345,7 @@ private struct SystemLyricsTranslationTaskHost: View {
             }
             phase = .translating(
                 completed: records.count,
-                total: requests.count
+                total: requestedLines.count
             )
             let saved = await AppDatabase.shared.saveLyricsTranslations(
                 records,
@@ -368,5 +365,19 @@ private struct SystemLyricsTranslationTaskHost: View {
             phase = translations.isEmpty ? .failed : .ready
             configuration = nil
         }
+    }
+
+    @concurrent
+    private static func performBatchTranslation(
+        using session: TranslationSession,
+        lines: [LyricLine]
+    ) async throws -> [TranslationSession.Response] {
+        let requests = lines.map {
+            TranslationSession.Request(
+                sourceText: $0.text,
+                clientIdentifier: String($0.id)
+            )
+        }
+        return try await session.translations(from: requests)
     }
 }
