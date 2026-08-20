@@ -249,7 +249,7 @@ struct SearchView: View {
             resultSection("곡") {
                 ForEach(
                     Array(result.songs.enumerated()),
-                    id: \.element.id
+                    id: \.offset
                 ) { index, song in
                     SongRow(
                         song: song,
@@ -388,7 +388,7 @@ struct SearchView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
+                    ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
                         SongRow(
                             song: song,
                             queue: songs,
@@ -540,7 +540,7 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
+                        ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
                             HStack(spacing: 10) {
                                 Text("\(index + 1)")
                                     .font(

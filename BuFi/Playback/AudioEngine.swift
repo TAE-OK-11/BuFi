@@ -1540,6 +1540,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lastPlaybackReportState: String?
     private let queueStorageKey = "native-play-queue"
     private var queueRestoreTask: Task<Void, Never>?
+    private var queueRestoreToken: UUID?
     private var queueSaveRevision: UInt64 = 0
     private var lastPersistedEntriesRevision: UInt64?
     private var allowsSpeculativeNetworkPrefetch = false
@@ -1651,6 +1652,7 @@ final class AudioEngine: NSObject, ObservableObject {
             pendingSeekPosition = nil
             UserDefaults.standard.removeObject(forKey: queueStorageKey)
             lastPersistedEntriesRevision = nil
+            queueRestoreToken = nil
             queueRestoreTask?.cancel()
             queueRestoreTask = nil
             if let previousAccountScope {
@@ -5367,8 +5369,16 @@ final class AudioEngine: NSObject, ObservableObject {
         expectedQueueRevision: UInt64
     ) {
         queueRestoreTask?.cancel()
+        let restoreToken = UUID()
+        queueRestoreToken = restoreToken
         queueRestoreTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.queueRestoreToken == restoreToken {
+                    self.queueRestoreToken = nil
+                    self.queueRestoreTask = nil
+                }
+            }
             let snapshot = await AppDatabase.shared.loadQueue(scope: accountScope)
             // The old UserDefaults queue has no account owner and must never
             // be adopted into an authenticated scope.
@@ -5389,7 +5399,6 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.queue.isEmpty,
                   self.currentSong == nil else { return }
             self.applyRestoredQueue(snapshot)
-            self.queueRestoreTask = nil
         }
     }
 

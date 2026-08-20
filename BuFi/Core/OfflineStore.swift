@@ -205,10 +205,7 @@ actor OfflineStore {
         guard activeScope != nil, let directory else { return nil }
         if var entry = entries[songID] {
             let url = directory.appendingPathComponent(entry.fileName)
-            guard expectedMediaRevision == nil
-                    || entry.mediaRevision == nil
-                    || entry.mediaRevision == expectedMediaRevision,
-                  Self.isValidOfflineFile(
+            guard Self.isValidOfflineFile(
                 at: url,
                 expectedByteCount: entry.byteCount
             ) else {
@@ -219,6 +216,14 @@ actor OfflineStore {
                 entries[songID] = nil
                 markDeleted(songID)
                 scheduleIndexPersistence()
+                return nil
+            }
+            guard expectedMediaRevision == nil
+                    || entry.mediaRevision == nil
+                    || entry.mediaRevision == expectedMediaRevision else {
+                // Keep the last known-good file until its replacement is
+                // completely downloaded. A failed refresh must not destroy
+                // offline playback that was already available.
                 return nil
             }
             var entryChanged = false
@@ -410,16 +415,27 @@ actor OfflineStore {
         }
 
         do {
+            let previous = entries[songID]
             if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
+                _ = try FileManager.default.replaceItemAt(
+                    destination,
+                    withItemAt: staging
+                )
+            } else {
+                try FileManager.default.moveItem(at: staging, to: destination)
             }
-            try FileManager.default.moveItem(at: staging, to: destination)
             try? FileManager.default.setAttributes(
                 [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                 ofItemAtPath: destination.path
             )
-            if let previous = entries[songID] {
+            if let previous {
                 indexedByteCount = max(0, indexedByteCount - previous.byteCount)
+                if previous.fileName != destination.lastPathComponent,
+                   let directory {
+                    try? FileManager.default.removeItem(
+                        at: directory.appendingPathComponent(previous.fileName)
+                    )
+                }
             }
             entries[songID] = Entry(
                 fileName: destination.lastPathComponent,

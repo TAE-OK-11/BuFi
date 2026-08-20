@@ -123,7 +123,7 @@ struct LibraryView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(
                             Array(snapshot.starredSongs.enumerated()),
-                            id: \.element.id
+                            id: \.offset
                         ) { index, song in
                             SongRow(
                                 song: song,

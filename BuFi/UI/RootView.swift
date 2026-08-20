@@ -255,17 +255,22 @@ struct RootView: View {
 
     @MainActor
     private func observePowerStateChanges() async {
+        let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let currentThermalState = ProcessInfo.processInfo.thermalState
+        lowPowerMode = currentLowPowerMode
+        thermalState = currentThermalState
+        applyEnergyConstraints(
+            lowPowerMode: currentLowPowerMode,
+            thermalState: currentThermalState
+        )
+
         for await _ in NotificationCenter.default.notifications(
             named: Notification.Name.NSProcessInfoPowerStateDidChange
         ) {
             guard !Task.isCancelled else { return }
             let currentLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
             lowPowerMode = currentLowPowerMode
-            model.handleEnergyConstraints(
-                lowPowerMode: currentLowPowerMode,
-                thermalState: thermalState
-            )
-            audio.handleEnergyConstraints(
+            applyEnergyConstraints(
                 lowPowerMode: currentLowPowerMode,
                 thermalState: thermalState
             )
@@ -280,15 +285,26 @@ struct RootView: View {
             guard !Task.isCancelled else { return }
             let currentThermalState = ProcessInfo.processInfo.thermalState
             thermalState = currentThermalState
-            model.handleEnergyConstraints(
-                lowPowerMode: lowPowerMode,
-                thermalState: currentThermalState
-            )
-            audio.handleEnergyConstraints(
+            applyEnergyConstraints(
                 lowPowerMode: lowPowerMode,
                 thermalState: currentThermalState
             )
         }
+    }
+
+    @MainActor
+    private func applyEnergyConstraints(
+        lowPowerMode: Bool,
+        thermalState: ProcessInfo.ThermalState
+    ) {
+        model.handleEnergyConstraints(
+            lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        )
+        audio.handleEnergyConstraints(
+            lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        )
     }
 
     @MainActor
@@ -329,6 +345,7 @@ private struct AutomaticSyncHost: View {
             isSceneActive: scenePhase == .active,
             syncInterval: syncInterval,
             lowPowerMode: lowPowerMode,
+            isPlaying: playbackActivity.isPlaying,
             thermalKey: thermalKey
         )
     }
@@ -403,5 +420,6 @@ private struct AutomaticSyncIdentity: Hashable, Sendable {
     let isSceneActive: Bool
     let syncInterval: TimeInterval
     let lowPowerMode: Bool
+    let isPlaying: Bool
     let thermalKey: String
 }

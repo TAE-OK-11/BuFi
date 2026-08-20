@@ -261,7 +261,7 @@ struct PersonalizedMixDetailView: View {
                 LazyVStack(spacing: 0) {
                     ForEach(
                         Array(mix.songs.enumerated()),
-                        id: \.element.id
+                        id: \.offset
                     ) { index, song in
                         HStack(spacing: mix.showsRanking ? 10 : 2) {
                             if mix.showsRanking {

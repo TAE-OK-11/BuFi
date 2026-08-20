@@ -958,6 +958,11 @@ final class AppModel: ObservableObject {
         let weights = RecommendationWeights.current()
         recommendationTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if requestGeneration == self.recommendationGeneration {
+                    self.recommendationTask = nil
+                }
+            }
             let behavior = await ListeningHistoryStore.shared
                 .recommendationSnapshot()
             guard !Task.isCancelled,
@@ -984,7 +989,6 @@ final class AppModel: ObservableObject {
                 || snapshot.daylistSongs != source.daylistSongs {
                 self.publishHome(snapshot)
             }
-            self.recommendationTask = nil
         }
     }
 
@@ -2321,6 +2325,11 @@ final class AppModel: ObservableObject {
         let sourceRevision = library.revision
         recommendationTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if requestGeneration == self.recommendationGeneration {
+                    self.recommendationTask = nil
+                }
+            }
             let enriched = await self.enrichingExternalRecommendations(
                 in: source
             )
@@ -2398,7 +2407,6 @@ final class AppModel: ObservableObject {
                         includesLastFM: nextIdentity.includesLastFM,
                         includesListenBrainz: nextIdentity.includesListenBrainz
                     )
-                self.recommendationTask = nil
             }
         }
     }
@@ -2723,11 +2731,14 @@ final class AppModel: ObservableObject {
         automaticRefreshToken = token
         automaticRefreshTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if token == self.automaticRefreshToken {
+                    self.automaticRefreshTask = nil
+                    self.automaticRefreshToken = nil
+                }
+            }
             guard generation == self.sessionGeneration else { return }
             await self.refresh(forceFull: true, silent: silent)
-            guard token == self.automaticRefreshToken else { return }
-            self.automaticRefreshTask = nil
-            self.automaticRefreshToken = nil
         }
     }
 
