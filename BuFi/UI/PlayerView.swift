@@ -44,6 +44,11 @@ private struct PlayerArtworkQueueCacheIdentity: Equatable {
     let accountScope: String?
 }
 
+private struct PlayerArtworkPagerAlignmentIdentity: Equatable {
+    let queueIdentity: PlayerArtworkQueueCacheIdentity
+    let pagesRevision: UInt64
+}
+
 private struct PlayerArtworkPage: Identifiable, Equatable {
     let id: PlayerArtworkPageID
     let song: Song
@@ -70,6 +75,7 @@ struct PlayerView: View {
     @State private var pagerSelectionGate = PlayerPagerSelectionGate()
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
     @State private var cachedArtworkPages: [PlayerArtworkPage] = []
+    @State private var artworkPagesRevision: UInt64 = 0
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -239,10 +245,8 @@ struct PlayerView: View {
         availableWidth: CGFloat,
         availableHeight: CGFloat
     ) -> some View {
-        let layout = artworkLayout(
-            availableWidth: availableWidth,
-            availableHeight: availableHeight
-        )
+        let viewportWidth = max(240, availableWidth - 44)
+        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
 
         return VStack(spacing: 0) {
             artworkPager(
@@ -252,11 +256,11 @@ struct PlayerView: View {
                 heightPadding: 42
             )
 
-            metadataContent(item, availableWidth: layout.viewportWidth)
+            metadataContent(item, availableWidth: viewportWidth)
                 .padding(.bottom, 18)
         }
-        .frame(width: layout.viewportWidth)
-        .frame(height: layout.edge + 116)
+        .frame(width: viewportWidth)
+        .frame(height: edge + 116)
         .contentShape(Rectangle())
     }
 
@@ -338,11 +342,14 @@ struct PlayerView: View {
         availableHeight: CGFloat,
         heightPadding: CGFloat
     ) -> some View {
-        let layout = artworkLayout(
-            availableWidth: availableWidth,
-            availableHeight: availableHeight
-        )
+        let viewportWidth = max(240, availableWidth - 44)
+        let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
+        let sideInset = max(0, (viewportWidth - edge) / 2)
         let pages = cachedArtworkPages.isEmpty ? artworkPages(fallback: item) : cachedArtworkPages
+        let alignmentIdentity = PlayerArtworkPagerAlignmentIdentity(
+            queueIdentity: artworkQueueCacheIdentity,
+            pagesRevision: artworkPagesRevision
+        )
         let currentPageIndex = pages.firstIndex { $0.id == artworkPage }
             ?? pages.firstIndex { $0.id.queueEntryID == item.queueEntryID }
             ?? 0
@@ -368,64 +375,70 @@ struct PlayerView: View {
             }
         )
 
-        return ScrollView(.horizontal) {
-            LazyHStack(spacing: 18) {
-                ForEach(pages) { page in
-                    let pageIndex = pages.firstIndex { $0.id == page.id } ?? 0
-                    let extractsPalette = abs(pageIndex - currentPageIndex) <= 1
-                    ArtworkView(
-                        coverArt: page.id.coverArtID,
-                        size: layout.edge,
-                        cornerRadius: 14,
-                        cacheRevision: page.id.artworkRevision,
-                        onPalette: extractsPalette
-                            ? { nextPalette in
-                                receivePalette(nextPalette, for: page.id)
-                            }
-                            : nil
-                    )
-                    .frame(width: layout.edge, height: layout.edge)
-                    .id(page.id)
-                    .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                        // Keep the selected cover visually stable during a
-                        // tap or a small pager snap.
-                        content
-                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.80)
-                            .offset(y: phase.isIdentity || !animatesTransition ? 0 : 6)
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 18) {
+                    ForEach(pages) { page in
+                        let pageIndex = pages.firstIndex { $0.id == page.id } ?? 0
+                        let extractsPalette = abs(pageIndex - currentPageIndex) <= 1
+                        ArtworkView(
+                            coverArt: page.id.coverArtID,
+                            size: edge,
+                            cornerRadius: 14,
+                            cacheRevision: page.id.artworkRevision,
+                            onPalette: extractsPalette
+                                ? { nextPalette in
+                                    receivePalette(nextPalette, for: page.id)
+                                }
+                                : nil
+                        )
+                        .frame(width: edge, height: edge)
+                        .id(page.id)
+                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                            content
+                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.96)
+                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.80)
+                                .offset(y: phase.isIdentity || !animatesTransition ? 0 : 6)
+                        }
                     }
                 }
+                .scrollTargetLayout()
             }
-            .scrollTargetLayout()
+            .scrollIndicators(.hidden)
+            .contentMargins(.horizontal, sideInset, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: pagerPosition, anchor: .center)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 5)
+                    .onChanged { _ in
+                        pagerSelectionGate.beginUserInteraction()
+                    }
+            )
+            .frame(width: viewportWidth)
+            .frame(height: edge + heightPadding)
+            .contentShape(Rectangle())
+            .task(id: alignmentIdentity) {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                alignArtworkPager(using: proxy)
+            }
         }
-        .scrollIndicators(.hidden)
-        .contentMargins(.horizontal, layout.sideInset, for: .scrollContent)
-        .scrollTargetBehavior(.viewAligned)
-        .scrollPosition(id: pagerPosition, anchor: .center)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 5)
-                .onChanged { _ in
-                    pagerSelectionGate.beginUserInteraction()
-                }
-        )
-        .frame(width: layout.viewportWidth)
-        .frame(height: layout.edge + heightPadding)
-        .contentShape(Rectangle())
     }
 
-    private func artworkLayout(
-        availableWidth: CGFloat,
-        availableHeight: CGFloat
-    ) -> (viewportWidth: CGFloat, edge: CGFloat, sideInset: CGFloat) {
-        let viewportWidth = max(240, availableWidth - 44)
-        let preferredSideInset = min(18, max(12, viewportWidth * 0.045))
-        let maximumEdge = max(220, viewportWidth - (preferredSideInset * 2))
-        let heightDrivenEdge = max(264, availableHeight * 0.47)
-        let edge = max(220, min(maximumEdge, heightDrivenEdge))
-        return (
-            viewportWidth: viewportWidth,
-            edge: edge,
-            sideInset: max(0, (viewportWidth - edge) / 2)
-        )
+    private func alignArtworkPager(using proxy: ScrollViewProxy) {
+        guard let currentPage = currentArtworkPageID(in: playback.snapshot),
+              cachedArtworkPages.isEmpty
+                || cachedArtworkPages.contains(where: { $0.id == currentPage }) else {
+            return
+        }
+        pagerSelectionGate.beginProgrammaticMove(to: currentPage)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            artworkPage = currentPage
+            proxy.scrollTo(currentPage, anchor: .center)
+        }
+        applyPalette(for: currentPage)
     }
 
     private func refreshArtworkPages(
@@ -445,6 +458,7 @@ struct PlayerView: View {
         }
         if cachedArtworkPages != pages {
             cachedArtworkPages = pages
+            artworkPagesRevision &+= 1
         }
     }
 
