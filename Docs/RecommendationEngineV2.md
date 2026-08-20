@@ -40,6 +40,13 @@ Sonic 대체 엔진이나 서버 임베딩을 추가할 때 점수·다양성 �
 병렬 요청한다. 증분 동기화와 저전력/고온 상태에서는 기존 캐시를 재사용해
 네트워크 및 배터리 비용을 제한한다.
 
+후보 풀은 서버 종합 순위, Sonic, 유사 아티스트, 장르, 상위 아티스트,
+Last.fm, ListenBrainz, 플레이리스트, 최신/인기/랜덤, 청취 기록, 좋아요 소스를
+균형 있게 샘플링한다. 각 소스의 최소 구간을 먼저 확보하고 남는 예산을
+round-robin으로 채우므로 큰 앞쪽 목록 하나가 외부 추천이나 좋아요 후보를
+밀어내지 않는다. 최종 출력 수의 6배와 소스 수의 10배 중 큰 값을 사용하되
+전체 점수 후보는 280개로 제한한다.
+
 ### 외부·로컬
 
 - Last.fm `track.getSimilar`
@@ -64,6 +71,9 @@ completion = clamp(playedSeconds / duration, 0, 1)
 0, 0.25, 0.5, 0.75, 1로 정규화한다. 반복 횟수는
 `log(1 + repeatCount)`로 완화한다. 한 번의 스킵은 강한 부정 프로필로
 사용하지 않고, 조기 스킵·연속 스킵·대기열 제거가 누적될 때 감점한다.
+명시적 좋아요/플레이리스트 추가가 있는 곡은 부정 신호만으로 제거하지 않고,
+최소 3회 조기 스킵 또는 5회 전체 스킵처럼 충분한 표본과 낮은 완료율이 함께
+확인될 때만 후보에서 제외한다.
 
 ## 프로필과 시간 감쇠
 
@@ -114,6 +124,9 @@ unknown song, hidden gem, new artist로 나눈 뒤 구성 비율을 결정한다
 모든 purpose에서 `0...1`을 그대로 사용한다. Discovery purpose도 최소값을
 강제하지 않으므로 0은 가능한 한 known song만, 1은 가능한 한 unknown song만
 선택하며, 한쪽 후보가 부족할 때만 반대쪽 후보로 제한 개수를 채운다.
+다만 발견 곡의 점수가 최고 known 후보의 55%보다 낮으면 비율을 채우기 위해
+강제로 승격하지 않는다. 전체 후보가 부족할 때의 최종 fallback에서만 사용해
+새로움이 기본 품질을 압도하지 않게 한다.
 
 ## 중복·다양성
 
@@ -125,6 +138,9 @@ canonical title은 괄호 또는 접미사의 live/remaster/deluxe/version/edit/
 세 번째 0.75, 네 번째부터 0.55다. 상위 후보에는 작은 결정적 jitter를
 적용한다. jitter seed는 아래 목적별 캐시 lifetime과
 같은 시간 bucket을 사용하므로 장기 캐시 목적이 30분마다 무효화되지 않는다.
+4~5곡마다 적용하는 아티스트 환기 간격도 같은 bucket에서 결정하며 난수를
+사용하지 않는다. 가까운 버전 후보만 남은 경우에는 최고 점수 버전을
+fallback으로 선택해 결과가 제한 수보다 일찍 끊기지 않게 한다.
 
 점수 합산은 enum에 선언된 고정 feature 순서로 수행한다. 행동 dictionary는
 song ID, 마지막 재생 시각 순으로 정렬한 뒤 프로필을 만들고, 정규화 map의
@@ -146,6 +162,11 @@ seed가 부동소수점 누적 순서와 최종 순위를 바꾸지 않는다. �
 bucket을 포함한다. 따라서 동일 ID의 title, favorite, cover art, play count,
 BPM, mood, genre, MBID/ISRC 등이 바뀌어도 오래된 `Song` 값이나 점수를
 재사용하지 않는다. 0.001보다 작은 가중치 변경도 별도 항목이다.
+키는 구분자 문자열이 아니라 필드별 `Hashable`/`Equatable` 값 타입으로
+저장하므로 opaque 서버 ID에 특정 문자가 포함되어도 다른 입력과 합쳐지지
+않는다. seed는 ID뿐 아니라 album/BPM/genre 등 전체 점수 metadata를 포함하고,
+autoplay가 현재 Home revision 위에 덧붙인 서버 큐도 별도 fingerprint로
+구분한다. 시스템 시계가 뒤로 이동하면 음수 age 캐시를 즉시 폐기한다.
 
 재생·스킵·좋아요·대기열 제거 등 행동이 기록되면 revision이 증가해 기존
 entry와 분리된다. revision이 잘못 재사용되더라도 전체 행동 fingerprint가
@@ -169,6 +190,12 @@ fingerprint 생성, rank map 생성, profile 집계, candidate scoring, discover
 partition, diversity reranking, personalized corpus/ordering의 긴 loop는 주기적으로
 `Task.isCancelled`를 확인한다. 취소를 관찰하면 부분 결과를 cache/publish하지
 않고 빈 결과로 종료한다.
+
+후보별 artist/album/genre/work key는 점수화 전에 한 번 계산해 seed affinity,
+앨범 완주율, 중복 제거, 다양성 재정렬에서 재사용한다. 앨범 ID가 비어 있는
+서버에서는 정규화 앨범 이름으로 fallback한다. 좋아요가 수천 곡인 계정의
+프로필은 행동 증거가 강한 절반과 전체 라이브러리의 균등 표본 절반으로 최대
+512곡만 집계해 편향과 시작 지연을 함께 제한한다.
 
 ## Swift 유지 결정
 

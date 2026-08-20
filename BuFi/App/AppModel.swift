@@ -793,6 +793,7 @@ final class AppModel: ObservableObject {
         )
         let ranked = await Self.recommendations(
             snapshot: snapshot,
+            snapshotRevision: library.revision,
             weights: .current(),
             purpose: .autoplay,
             behavior: behavior,
