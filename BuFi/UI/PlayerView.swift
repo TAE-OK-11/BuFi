@@ -1007,6 +1007,8 @@ private struct PlayerLyricsCard: View {
                             .font(.system(size: 15, weight: .bold))
                             .frame(width: 38, height: 38)
                             .background(.black.opacity(0.22), in: Circle())
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityLabel("가사 공유")
                     Button(action: onOpen) {
@@ -1014,6 +1016,8 @@ private struct PlayerLyricsCard: View {
                             .font(.system(size: 15, weight: .bold))
                             .frame(width: 38, height: 38)
                             .background(.black.opacity(0.22), in: Circle())
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("전체 화면 가사")
@@ -1026,6 +1030,8 @@ private struct PlayerLyricsCard: View {
                         .clipped()
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("전체 화면 가사 열기")
+                .accessibilityHint("현재 곡의 가사를 전체 화면으로 표시합니다.")
             }
             .padding(20)
             .foregroundStyle(primary)
@@ -1076,28 +1082,27 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(visibleMiniLyrics, id: \.line.id) { item in
                 let isActive = item.index == lyricsState.activeIndex
                 let isPast = item.index < lyricsState.activeIndex
                 Text(item.line.text)
                     .font(
                         .system(
-                            size: isActive ? 21 : 17,
+                            size: 21,
                             weight: isActive ? .bold : .semibold
                         )
                     )
                     .tracking(-0.12)
                     .lineSpacing(5)
                     .foregroundStyle(lyricColor(for: item.index))
-                    .scaleEffect(
-                        motionEnabled ? (isActive ? 1 : 0.985) : 1,
-                        anchor: .topLeading
-                    )
                     .lineLimit(isPast ? 1 : 3)
                     .fixedSize(horizontal: false, vertical: !isPast)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // The outgoing line remains in the hierarchy for a smooth
+                    // color transition, but must not leave an empty VStack gap.
+                    .padding(.bottom, isPast ? 0 : 13)
                     .opacity(isPast ? 0 : 1)
                     .frame(maxHeight: isPast ? 0 : nil, alignment: .top)
                     .clipped()
@@ -1336,10 +1341,6 @@ private struct FullLyricLine: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .multilineTextAlignment(.leading)
                 .foregroundStyle(foreground)
-                .scaleEffect(
-                    motionEnabled ? (isActive ? 1.02 : 0.994) : 1,
-                    anchor: .leading
-                )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
