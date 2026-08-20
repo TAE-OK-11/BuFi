@@ -28,6 +28,7 @@ private struct MusicDetailFavoriteButton: View {
 
 private struct MusicDetailFavoriteButtonContent: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @ObservedObject var overrideState: FavoriteOverrideValueState
     let originalState: Bool
     let action: @MainActor @Sendable () async -> Void
@@ -57,6 +58,10 @@ private struct MusicDetailFavoriteButtonContent: View {
                 .buFiGlass(cornerRadius: 21, interactive: true)
         }
         .buttonStyle(BuFiPressStyle())
+        .animation(
+            motionEnabled ? BuFiMotion.symbol : .none,
+            value: isFavorite
+        )
         .accessibilityLabel(
             isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가"
         )
@@ -99,7 +104,9 @@ struct MusicDetailView: View {
                     ProgressView("불러오는 중…")
                         .frame(maxWidth: .infinity)
                         .padding(.top, 60)
-                        .transition(.opacity)
+                        .transition(
+                            motionEnabled ? BuFiTransition.section : .opacity
+                        )
                 } else {
                     controls
                     if isArtist {
@@ -446,7 +453,7 @@ struct MusicDetailView: View {
                         NavigationLink(value: MusicRoute.album(album)) {
                             AlbumCard(album: album, width: 150)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(BuFiPressStyle())
                     }
                 }
                 .padding(.horizontal, 16)
@@ -745,7 +752,7 @@ struct MusicDetailView: View {
             model.errorMessage = error.localizedDescription
         }
         guard !Task.isCancelled, route == loadingRoute else { return }
-        withAnimation(allowsMotion ? BuFiMotion.fade : .none) {
+        withAnimation(allowsMotion ? BuFiMotion.reveal : .none) {
             isLoading = false
         }
         await prefetchDetailArtwork()
@@ -978,6 +985,6 @@ private struct SongActionsSheet: View {
                 .frame(height: 44)
                 .padding(.horizontal, 18)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BuFiPressStyle())
     }
 }

@@ -55,7 +55,9 @@ struct ArtistHeroArtwork: View {
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(
-                        .opacity.animation(motionEnabled ? BuFiMotion.fade : .none)
+                        BuFiTransition.artworkReveal.animation(
+                            motionEnabled ? BuFiMotion.reveal : .none
+                        )
                     )
             }
         }

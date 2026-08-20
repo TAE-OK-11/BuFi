@@ -206,6 +206,7 @@ struct PlayerView: View {
                     .font(.system(size: 24, weight: .semibold))
                     .frame(width: 44, height: 44)
             }
+            .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("플레이어 닫기")
 
             Spacer()
@@ -384,8 +385,9 @@ struct PlayerView: View {
                     .id(page.id)
                     .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                         content
-                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.97)
-                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.86)
+                            .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.96)
+                            .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.80)
+                            .offset(y: phase.isIdentity || !animatesTransition ? 0 : 6)
                     }
                 }
             }
@@ -486,7 +488,7 @@ struct PlayerView: View {
             artworkPage = currentPage
         }
         if animated && allowsMotion {
-            withAnimation(BuFiMotion.trackText) { update() }
+            withAnimation(BuFiMotion.trackPage) { update() }
         } else {
             update()
         }
@@ -626,7 +628,7 @@ struct PlayerView: View {
             }
             .accessibilityLabel("재생목록")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BuFiPressStyle())
         .foregroundStyle(playerPrimary)
         .padding(.vertical, compact ? 0 : 8)
     }
@@ -767,7 +769,7 @@ private struct PlayerTransportBar: View {
             }
         }
         .buttonStyle(BuFiPressStyle())
-        .animation(motionEnabled ? BuFiMotion.tap : .none, value: active)
+        .animation(motionEnabled ? BuFiMotion.symbol : .none, value: active)
         .accessibilityLabel(label)
     }
 }
@@ -905,7 +907,7 @@ private struct PlayerPlaybackButton: View {
         }
         .buttonStyle(BuFiPressStyle())
         .animation(
-            motionEnabled ? BuFiMotion.tap : .none,
+            motionEnabled ? BuFiMotion.symbol : .none,
             value: playbackControl.wantsPlayback
         )
         .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
@@ -967,16 +969,29 @@ private struct PlayerProgressView: View {
 }
 
 private struct PlayerElapsedLabels: View {
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     let elapsed: Double
     let remaining: Double
     let hasDuration: Bool
     let secondary: Color
 
     var body: some View {
+        let elapsedText = elapsed.playbackText
+        let remainingText = hasDuration ? "-\(remaining.playbackText)" : "--:--"
         HStack {
-            Text(elapsed.playbackText)
+            Text(elapsedText)
+                .contentTransition(.numericText(countsDown: false))
+                .animation(
+                    motionEnabled ? BuFiMotion.symbol : .none,
+                    value: elapsedText
+                )
             Spacer()
-            Text(hasDuration ? "-\(remaining.playbackText)" : "--:--")
+            Text(remainingText)
+                .contentTransition(.numericText(countsDown: true))
+                .animation(
+                    motionEnabled ? BuFiMotion.symbol : .none,
+                    value: remainingText
+                )
         }
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(secondary)
@@ -1010,6 +1025,7 @@ private struct PlayerLyricsCard: View {
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
+                    .buttonStyle(BuFiPressStyle())
                     .accessibilityLabel("가사 공유")
                     Button(action: onOpen) {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -1019,7 +1035,7 @@ private struct PlayerLyricsCard: View {
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                     .accessibilityLabel("전체 화면 가사")
                 }
 
@@ -1029,7 +1045,7 @@ private struct PlayerLyricsCard: View {
                         .frame(height: 186, alignment: .top)
                         .clipped()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BuFiPressStyle())
                 .accessibilityLabel("전체 화면 가사 열기")
                 .accessibilityHint("현재 곡의 가사를 전체 화면으로 표시합니다.")
             }
@@ -1073,7 +1089,7 @@ private struct PlayerLyricsCard: View {
                 Spacer()
                 Button("다시 시도", action: onRetry)
                     .fontWeight(.bold)
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                     .foregroundStyle(primary)
             }
         case .idle, .unavailable, .available:
@@ -1168,6 +1184,7 @@ private struct FullLyricsView: View {
                     .font(.system(size: 23, weight: .semibold))
                     .frame(width: 44, height: 44)
             }
+            .buttonStyle(BuFiPressStyle())
             Spacer()
             VStack(spacing: 3) {
                 OverflowMarqueeText(
@@ -1231,10 +1248,10 @@ private struct FullLyricsView: View {
     }
 
     private func closeLyrics() {
-        withAnimation(allowsMotion ? BuFiMotion.lyricsPanel : .none) {
-            dragOffset = 0
-            audio.showFullLyrics = false
-        }
+        // The root player owns the show/hide transition. Mutating the state in
+        // a second explicit animation would stack two springs on the same frame.
+        dragOffset = 0
+        audio.showFullLyrics = false
     }
 
     private var dragProgress: CGFloat { min(max(dragOffset / 420, 0), 1) }

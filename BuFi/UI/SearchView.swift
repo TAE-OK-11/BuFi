@@ -96,7 +96,7 @@ struct SearchView: View {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BuFiPressStyle())
                 .accessibilityLabel("검색 닫기")
             }
         }
@@ -126,10 +126,15 @@ struct SearchView: View {
         ForEach(visibleSurfaces, id: \.self) { surface in
             searchSurface(surface)
                 .frame(maxWidth: .infinity, alignment: .top)
+                .transition(motionEnabled ? BuFiTransition.section : .opacity)
                 .simultaneousGesture(
                     TapGesture().onEnded(resignSearchField)
                 )
         }
+        .animation(
+            motionEnabled ? BuFiMotion.content : .none,
+            value: visibleSurfaces
+        )
     }
 
     private var visibleSurfaces: [SearchSurface] {
@@ -223,7 +228,7 @@ struct SearchView: View {
                     NavigationLink(value: MusicRoute.artist(artist)) {
                         artistResultRow(artist)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                     .simultaneousGesture(TapGesture().onEnded(resignSearchField))
                     if artist.id != result.artists.last?.id {
                         rowSeparator
@@ -237,7 +242,7 @@ struct SearchView: View {
                     NavigationLink(value: MusicRoute.album(album)) {
                         albumResultRow(album)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                     .simultaneousGesture(TapGesture().onEnded(resignSearchField))
                     if album.id != result.albums.last?.id {
                         rowSeparator
@@ -369,6 +374,7 @@ struct SearchView: View {
                             .frame(width: 120)
                         }
                         .buttonStyle(BuFiPressStyle())
+                        .buFiHorizontalScrollMotion()
                         .simultaneousGesture(TapGesture().onEnded(resignSearchField))
                     }
                 }
@@ -450,7 +456,7 @@ struct SearchView: View {
                     .frame(width: 38, height: 38)
                     .buFiGlass(cornerRadius: 19, interactive: true)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("검색 둘러보기로 돌아가기")
             Text(LocalizedStringKey(title))
                 .font(.system(size: 27, weight: .bold))

@@ -47,7 +47,7 @@ struct RootView: View {
             switch session.phase {
             case .signedOut:
                 LoginView()
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                    .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
             case .connecting:
                 ZStack {
                     BuFiScreenBackground()
@@ -55,7 +55,7 @@ struct RootView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .tint(BuFiTheme.accent)
                 }
-                .transition(.opacity)
+                .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
             case .signingOut:
                 ZStack {
                     BuFiScreenBackground()
@@ -63,10 +63,10 @@ struct RootView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .tint(BuFiTheme.accent)
                 }
-                .transition(.opacity)
+                .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
             case .ready:
                 tabs
-                    .transition(.opacity)
+                    .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
             }
         }
         .animation(effectiveMotion ? BuFiMotion.fade : .none, value: session.phase)
@@ -228,6 +228,7 @@ struct RootView: View {
         return content
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
+            .offset(y: effectiveMotion ? CGFloat(1 - activeProgress) * 7 : 0)
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if currentPlayback.song != nil {
                     Color.clear
@@ -246,11 +247,7 @@ struct RootView: View {
         MiniPlayerView()
             .frame(height: 60)
             .padding(.horizontal, 8)
-            .transition(
-                effectiveMotion
-                    ? .move(edge: .bottom).combined(with: .opacity)
-                    : .opacity
-            )
+            .transition(effectiveMotion ? BuFiTransition.miniPlayer : .opacity)
     }
 
     @MainActor

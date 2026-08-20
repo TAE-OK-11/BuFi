@@ -208,7 +208,7 @@ struct SettingsView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
         }
         .padding(.horizontal, 16)
     }
@@ -362,7 +362,7 @@ extension SettingsView {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BuFiPressStyle())
             }
         }
         .padding(.horizontal, 16)
@@ -388,7 +388,7 @@ extension SettingsView {
                 .frame(minHeight: 50)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
             .disabled(isLoggingOut)
         }
         .padding(.horizontal, 16)
@@ -531,9 +531,13 @@ private struct SettingsActionButtonStyle: ButtonStyle {
                 isEnabled ? BuFiTheme.accent : Color.secondary.opacity(0.28),
                 in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
-            .scaleEffect(configuration.isPressed && motionEnabled ? 0.98 : 1)
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.985 : 1)
+            .brightness(configuration.isPressed ? -0.012 : 0)
+            .opacity(configuration.isPressed ? 0.96 : 1)
             .animation(
-                motionEnabled ? BuFiMotion.tap : .none,
+                motionEnabled
+                    ? BuFiMotion.press(isPressed: configuration.isPressed)
+                    : .none,
                 value: configuration.isPressed
             )
     }
@@ -895,7 +899,7 @@ private struct OpenSourceNoticesView: View {
                         }
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                 }
                 .padding(.horizontal, 16)
             }

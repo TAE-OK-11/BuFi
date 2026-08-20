@@ -216,9 +216,15 @@ struct BuFiPressStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed && motionEnabled ? 0.96 : 1)
-            .brightness(configuration.isPressed ? -0.016 : 0)
-            .animation(motionEnabled ? BuFiMotion.tap : .none, value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.972 : 1)
+            .brightness(configuration.isPressed ? -0.012 : 0)
+            .opacity(configuration.isPressed ? 0.96 : 1)
+            .animation(
+                motionEnabled
+                    ? BuFiMotion.press(isPressed: configuration.isPressed)
+                    : .none,
+                value: configuration.isPressed
+            )
     }
 }
 
@@ -247,6 +253,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                                 ? Color.primary
                                 : Color.secondary
                         )
+                        .scaleEffect(selection == item ? 1 : 0.985)
                         .frame(maxWidth: .infinity)
                         .frame(height: 40)
                         .background {
@@ -405,7 +412,9 @@ struct ArtworkView: View {
                     .resizable()
                     .scaledToFill()
                     .transition(
-                        .opacity.animation(motionEnabled ? BuFiMotion.fade : .none)
+                        BuFiTransition.artworkReveal.animation(
+                            motionEnabled ? BuFiMotion.reveal : .none
+                        )
                     )
             }
         }
@@ -491,17 +500,11 @@ struct AlbumCard: View {
     let album: Album
     var width: CGFloat = 166
     var usesHorizontalScrollTransition = true
-    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     @ViewBuilder
     var body: some View {
-        if motionEnabled && usesHorizontalScrollTransition {
-            card
-                .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                    content
-                        .scaleEffect(phase.isIdentity ? 1 : 0.985)
-                        .opacity(phase.isIdentity ? 1 : 0.94)
-                }
+        if usesHorizontalScrollTransition {
+            card.buFiHorizontalScrollMotion()
         } else {
             card
         }
@@ -557,6 +560,7 @@ struct SongFavoriteIconButton: View {
 }
 
 private struct SongFavoriteIconButtonContent: View {
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     let model: AppModel
     @ObservedObject var overrideState: FavoriteOverrideValueState
     let song: Song
@@ -581,6 +585,10 @@ private struct SongFavoriteIconButtonContent: View {
                 .frame(width: hitTarget, height: hitTarget)
         }
         .buttonStyle(BuFiPressStyle())
+        .animation(
+            motionEnabled ? BuFiMotion.symbol : .none,
+            value: isStarred
+        )
         .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
     }
 }
@@ -699,7 +707,7 @@ struct SongRow: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
 
             HStack(spacing: 16) {
                 SongFavoriteIconButton(song: song)
@@ -711,7 +719,7 @@ struct SongRow: View {
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                     .accessibilityLabel("\(song.title) 더 보기")
                 }
             }
@@ -756,7 +764,7 @@ struct SongRow: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BuFiPressStyle())
 
             HStack(spacing: 14) {
                 SongFavoriteIconButton(song: song)
@@ -767,7 +775,7 @@ struct SongRow: View {
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BuFiPressStyle())
                     .accessibilityLabel("\(song.title) 더 보기")
                 }
             }
@@ -788,6 +796,7 @@ struct SongRow: View {
 
 private struct PlayingSongTitle: View {
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     let songID: String
     let title: String
     var lineLimit = 1
@@ -803,11 +812,16 @@ private struct PlayingSongTitle: View {
             )
             .lineLimit(lineLimit)
             .fixedSize(horizontal: false, vertical: expandsVertically)
+            .animation(
+                motionEnabled ? BuFiMotion.symbol : .none,
+                value: currentPlayback.song?.id == songID
+            )
     }
 }
 
 private struct CompactTrackLeading: View {
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     let songID: String
     let trackNumber: Int
 
@@ -825,6 +839,10 @@ private struct CompactTrackLeading: View {
             }
         }
         .frame(width: 28, alignment: .trailing)
+        .animation(
+            motionEnabled ? BuFiMotion.symbol : .none,
+            value: currentPlayback.song?.id == songID
+        )
     }
 }
 
@@ -970,7 +988,11 @@ struct InteractiveSeekBar: View {
                         onEditingChanged(false)
                     }
             )
-            .animation(motionEnabled ? BuFiMotion.selection : .none, value: isEditing)
+            .animation(motionEnabled ? BuFiMotion.scrub : .none, value: isEditing)
+            .animation(
+                motionEnabled && !isEditing ? BuFiMotion.timeline : .none,
+                value: fraction
+            )
         }
         .frame(height: 28)
         .accessibilityElement()

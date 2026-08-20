@@ -33,7 +33,7 @@ struct ServerLatencyBadge: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BuFiPressStyle())
         .disabled(client == nil || isMeasuring)
         .accessibilityLabel("서버 Ping 측정")
         .accessibilityValue(accessibilityLatencyValue)

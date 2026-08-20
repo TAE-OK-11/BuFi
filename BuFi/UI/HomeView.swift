@@ -9,6 +9,7 @@ enum MusicRoute: Hashable, Sendable {
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var library: HomeLibraryState
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
     @State private var filter = HomeFilter.all
@@ -24,9 +25,15 @@ struct HomeView: View {
                     ForEach(visibleSections, id: \.self) { section in
                         homeSection(section)
                             .padding(.top, section == visibleSections.first ? 0 : 6)
-                            .transition(.opacity)
+                            .transition(
+                                motionEnabled ? BuFiTransition.section : .opacity
+                            )
                     }
                 }
+                .animation(
+                    motionEnabled ? BuFiMotion.content : .none,
+                    value: visibleSections
+                )
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance()
             }
@@ -199,6 +206,7 @@ struct HomeView: View {
                                 PersonalizedMixCard(mix: mix)
                             }
                             .buttonStyle(BuFiPressStyle())
+                            .buFiHorizontalScrollMotion()
                         }
                     }
                     .padding(.horizontal, 16)
@@ -241,6 +249,7 @@ struct HomeView: View {
                                 .frame(width: 166, alignment: .leading)
                             }
                             .buttonStyle(BuFiPressStyle())
+                            .buFiHorizontalScrollMotion()
                         }
                     }
                     .padding(.horizontal, 16)
@@ -291,6 +300,7 @@ struct HomeView: View {
                                 .frame(width: 132)
                             }
                             .buttonStyle(BuFiPressStyle())
+                            .buFiHorizontalScrollMotion()
                         }
                     }
                     .padding(.horizontal, 16)
@@ -333,6 +343,7 @@ struct HomeView: View {
                                 .frame(width: 166, alignment: .leading)
                             }
                             .buttonStyle(BuFiPressStyle())
+                            .buFiHorizontalScrollMotion()
                         }
                     }
                     .padding(.horizontal, 16)
@@ -575,21 +586,10 @@ struct HomePresentation: Sendable {
 private struct HomeAlbumCard: View {
     let album: Album
 
-    @Environment(\.buFiMotionEnabled) private var motionEnabled
     private let width: CGFloat = 166
 
-    @ViewBuilder
     var body: some View {
-        if motionEnabled {
-            card
-                .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                    content
-                        .scaleEffect(phase.isIdentity ? 1 : 0.985)
-                        .opacity(phase.isIdentity ? 1 : 0.94)
-                }
-        } else {
-            card
-        }
+        card.buFiHorizontalScrollMotion()
     }
 
     private var card: some View {

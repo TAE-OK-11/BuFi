@@ -32,26 +32,33 @@ struct MiniPlayerView: View {
 
                 VStack(spacing: 0) {
                     HStack(spacing: 9) {
-                        ArtworkView(
-                            coverArt: song.artworkID,
-                            size: 50,
-                            cornerRadius: 5,
-                            cacheRevision: artworkIdentity.artworkRevision,
-                            onPalette: { nextPalette in
-                                guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
-                                    return
+                        ZStack {
+                            ArtworkView(
+                                coverArt: song.artworkID,
+                                size: 50,
+                                cornerRadius: 5,
+                                cacheRevision: artworkIdentity.artworkRevision,
+                                onPalette: { nextPalette in
+                                    guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
+                                        return
+                                    }
+                                    if nextPalette == .fallback {
+                                        palette = nil
+                                        paletteArtworkIdentity = nil
+                                    } else {
+                                        palette = nextPalette
+                                        paletteArtworkIdentity = artworkIdentity
+                                    }
                                 }
-                                if nextPalette == .fallback {
-                                    palette = nil
-                                    paletteArtworkIdentity = nil
-                                } else {
-                                    palette = nextPalette
-                                    paletteArtworkIdentity = artworkIdentity
-                                }
-                            }
-                        )
+                            )
+                            .id(artworkIdentity)
+                            .transition(BuFiTransition.artworkReveal)
+                        }
                         .frame(width: 50, height: 50)
-                        .id(artworkIdentity)
+                        .animation(
+                            motionEnabled ? BuFiMotion.trackArtwork : .none,
+                            value: artworkIdentity
+                        )
 
                         ZStack(alignment: .leading) {
                             VStack(alignment: .leading, spacing: 3) {
@@ -164,6 +171,7 @@ struct MiniPlayerView: View {
 
 private struct MiniPlayerPlaybackButton: View {
     @EnvironmentObject private var playbackControl: PlaybackControlState
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
 
     let action: () -> Void
 
@@ -175,22 +183,35 @@ private struct MiniPlayerPlaybackButton: View {
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(BuFiPressStyle())
+        .animation(
+            motionEnabled ? BuFiMotion.symbol : .none,
+            value: playbackControl.wantsPlayback
+        )
         .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
 }
 
 private struct MiniPlayerProgressView: View {
+    @EnvironmentObject private var playbackControl: PlaybackControlState
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
     @ObservedObject var timeline: PlaybackTimeline
     let tint: Color
 
     var body: some View {
+        let resolvedProgress = progress
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
                 tint.opacity(0.18)
                 tint.opacity(0.94)
-                    .frame(width: proxy.size.width * progress)
+                    .frame(width: proxy.size.width * resolvedProgress)
             }
         }
+        .animation(
+            motionEnabled && playbackControl.wantsPlayback
+                ? BuFiMotion.miniTimeline
+                : .none,
+            value: resolvedProgress
+        )
     }
 
     private var progress: CGFloat {
