@@ -8,6 +8,13 @@ struct OfflineDatabaseEntry: Sendable, Equatable {
     var mediaRevision: String? = nil
 }
 
+struct LyricsTranslationRecord: Sendable, Equatable {
+    let lineID: Int
+    let sourceLanguage: String
+    let sourceText: String
+    let translatedText: String
+}
+
 struct LibraryCatalogRecord: Sendable {
     var songID: String
     var songData: Data
@@ -164,6 +171,89 @@ actor AppDatabase {
         poolTask = nil
         pool = openedPool
         return openedPool
+    }
+
+    func loadLyricsTranslations(
+        scope: String,
+        songID: String,
+        targetLanguage: String,
+        sourceLines: [Int: String]
+    ) async -> [Int: String] {
+        guard !sourceLines.isEmpty,
+              let pool = await databasePool() else { return [:] }
+        do {
+            return try await pool.read { db in
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                    SELECT line_id, source_text, translated_text
+                    FROM lyrics_translation_cache
+                    WHERE account_scope = ?
+                      AND song_id = ?
+                      AND target_language = ?
+                    """,
+                    arguments: [scope, songID, targetLanguage]
+                )
+                var translations = [Int: String](minimumCapacity: rows.count)
+                for row in rows {
+                    let lineID: Int = row["line_id"]
+                    let sourceText: String = row["source_text"]
+                    let translatedText: String = row["translated_text"]
+                    guard sourceLines[lineID] == sourceText,
+                          !translatedText.isEmpty else { continue }
+                    translations[lineID] = translatedText
+                }
+                return translations
+            }
+        } catch {
+            return [:]
+        }
+    }
+
+    @discardableResult
+    func saveLyricsTranslations(
+        _ records: [LyricsTranslationRecord],
+        scope: String,
+        songID: String,
+        targetLanguage: String
+    ) async -> Bool {
+        guard !records.isEmpty,
+              let pool = await databasePool() else { return false }
+        let updatedAt = currentDate().timeIntervalSince1970
+        do {
+            try await pool.write { db in
+                for record in records where !record.translatedText.isEmpty {
+                    try db.execute(
+                        sql: """
+                        INSERT INTO lyrics_translation_cache (
+                            account_scope, song_id, target_language, line_id,
+                            source_language, source_text, translated_text, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(
+                            account_scope, song_id, target_language, line_id
+                        ) DO UPDATE SET
+                            source_language = excluded.source_language,
+                            source_text = excluded.source_text,
+                            translated_text = excluded.translated_text,
+                            updated_at = excluded.updated_at
+                        """,
+                        arguments: [
+                            scope,
+                            songID,
+                            targetLanguage,
+                            record.lineID,
+                            record.sourceLanguage,
+                            record.sourceText,
+                            record.translatedText,
+                            updatedAt
+                        ]
+                    )
+                }
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     func loadListeningHistory(scope: String) async -> [String: SongBehavior] {
@@ -1753,6 +1843,25 @@ actor AppDatabase {
                 DROP INDEX IF EXISTS offline_entry_lru;
                 DROP INDEX IF EXISTS library_catalog_mbid;
                 DROP INDEX IF EXISTS library_catalog_identity;
+                """)
+        }
+        migrator.registerMigration("lyrics-translation-cache-v10") { db in
+            try db.execute(sql: """
+                CREATE TABLE lyrics_translation_cache (
+                    account_scope TEXT NOT NULL,
+                    song_id TEXT NOT NULL,
+                    target_language TEXT NOT NULL,
+                    line_id INTEGER NOT NULL,
+                    source_language TEXT NOT NULL,
+                    source_text TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    updated_at DOUBLE NOT NULL,
+                    PRIMARY KEY (
+                        account_scope, song_id, target_language, line_id
+                    )
+                ) WITHOUT ROWID;
+                CREATE INDEX lyrics_translation_cache_recent
+                    ON lyrics_translation_cache(account_scope, updated_at DESC);
                 """)
         }
         return migrator

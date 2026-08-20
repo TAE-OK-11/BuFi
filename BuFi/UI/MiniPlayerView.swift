@@ -6,6 +6,7 @@ struct MiniPlayerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
+    @State private var transitionDirection: CGFloat = 1
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
@@ -52,7 +53,7 @@ struct MiniPlayerView: View {
                                 }
                             )
                             .id(artworkIdentity)
-                            .transition(BuFiTransition.artworkReveal)
+                            .transition(trackArtworkTransition)
                         }
                         .frame(width: 50, height: 50)
                         .animation(
@@ -85,10 +86,12 @@ struct MiniPlayerView: View {
 
                         AirPlayButton(lightContent: !usesDarkForeground)
                             .frame(width: 36, height: 36)
+                            .zIndex(2)
 
                         MiniPlayerPlaybackButton {
                             audio.togglePlayback()
                         }
+                        .zIndex(2)
                     }
                     .padding(.horizontal, 6)
                     .frame(height: playerHeight - 2)
@@ -124,6 +127,9 @@ struct MiniPlayerView: View {
                 radius: colorScheme == .dark ? 12 : 9,
                 y: colorScheme == .dark ? 6 : 4
             )
+            .onChange(of: currentPlayback.index) { previous, next in
+                transitionDirection = next >= previous ? 1 : -1
+            }
         }
     }
 
@@ -163,8 +169,18 @@ struct MiniPlayerView: View {
     private var trackTextTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 6).combined(with: .opacity),
-            removal: .offset(y: -5).combined(with: .opacity)
+            insertion: .offset(x: 18 * transitionDirection).combined(with: .opacity),
+            removal: .offset(x: -14 * transitionDirection).combined(with: .opacity)
+        )
+    }
+
+    private var trackArtworkTransition: AnyTransition {
+        guard motionEnabled else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(x: 14 * transitionDirection)
+                .combined(with: .opacity),
+            removal: .offset(x: -12 * transitionDirection)
+                .combined(with: .opacity)
         )
     }
 }
@@ -172,21 +188,34 @@ struct MiniPlayerView: View {
 private struct MiniPlayerPlaybackButton: View {
     @EnvironmentObject private var playbackControl: PlaybackControlState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @AppStorage("haptics-enabled") private var hapticsEnabled = true
 
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
-                .font(.system(size: 21, weight: .semibold))
-                .frame(width: 40, height: 40)
-                .contentTransition(.symbolEffect(.replace))
+            ZStack {
+                if playbackControl.isBuffering {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
+                        .font(.system(size: 21, weight: .semibold))
+                        .contentTransition(.symbolEffect(.replace))
+                }
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
         }
         .buttonStyle(BuFiPressStyle())
         .animation(
             motionEnabled ? BuFiMotion.symbol : .none,
             value: playbackControl.wantsPlayback
         )
+        .sensoryFeedback(.selection, trigger: playbackControl.wantsPlayback) {
+            oldValue, newValue in
+            hapticsEnabled && motionEnabled && oldValue != newValue
+        }
         .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
 }

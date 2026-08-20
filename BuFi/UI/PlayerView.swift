@@ -60,6 +60,47 @@ private struct PlayerBackgroundAnimationIdentity: Equatable {
     let backgroundAppearance: PlayerBackgroundAppearance
 }
 
+private struct PlayerArtworkPressEffect: ViewModifier {
+    @GestureState private var isPressed = false
+
+    let enabled: Bool
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isPressed && enabled ? 1.012 : 1)
+            .brightness(isPressed && enabled ? 0.018 : 0)
+            .animation(
+                enabled ? BuFiMotion.artworkTouch : .none,
+                value: isPressed
+            )
+            .clipShape(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .contentShape(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.01, maximumDistance: 12)
+                    .updating($isPressed) { pressed, state, _ in
+                        state = pressed
+                    }
+            )
+    }
+}
+
+private extension View {
+    func playerArtworkPressEffect(
+        enabled: Bool,
+        cornerRadius: CGFloat
+    ) -> some View {
+        modifier(PlayerArtworkPressEffect(
+            enabled: enabled,
+            cornerRadius: cornerRadius
+        ))
+    }
+}
+
 struct PlayerView: View {
     @EnvironmentObject private var playback: PlaybackState
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
@@ -76,6 +117,7 @@ struct PlayerView: View {
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
     @State private var cachedArtworkPages: [PlayerArtworkPage] = []
     @State private var artworkPagesRevision: UInt64 = 0
+    @State private var showsLyricsTranslations = false
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -89,7 +131,6 @@ struct PlayerView: View {
                 background
 
                 if let item = currentPlayback.item {
-                    let song = item.song
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(item)
@@ -107,17 +148,19 @@ struct PlayerView: View {
                                 )
                                 progress
                                 transport
-                                utilityRow(song)
+                                utilityRow()
                             }
                             PlayerLyricsCard(
                                 lyricsState: audio.lyricsState,
-                                song: song,
                                 primary: playerPrimary,
                                 secondary: playerSecondary,
-                                onRetry: audio.retryLyrics
-                            ) {
-                                audio.showFullLyrics = true
-                            }
+                                onRetry: audio.retryLyrics,
+                                onTranslate: {
+                                    showsLyricsTranslations = true
+                                    audio.showFullLyrics = true
+                                },
+                                onOpen: { audio.showFullLyrics = true }
+                            )
                         }
                         .padding(.horizontal, 22)
                         .padding(.bottom, max(proxy.safeAreaInsets.bottom, 18) + 10)
@@ -134,7 +177,8 @@ struct PlayerView: View {
                         palette: palette,
                         seekBarAppearance: resolvedSeekBarAppearance,
                         backgroundAppearance: resolvedBackgroundAppearance,
-                        lyricsState: audio.lyricsState
+                        lyricsState: audio.lyricsState,
+                        showsTranslations: $showsLyricsTranslations
                     )
                         .environmentObject(audio)
                         .transition(lyricsPanelTransition)
@@ -299,7 +343,6 @@ struct PlayerView: View {
         availableWidth: CGFloat,
         availableHeight: CGFloat
     ) -> some View {
-        let song = item.song
         return VStack(spacing: 10) {
             artworkPager(
                 item,
@@ -317,7 +360,7 @@ struct PlayerView: View {
                 progress
                     .padding(.horizontal, 2)
                 dynamicTransport
-                utilityRow(song, includesAirPlay: false, compact: true)
+                utilityRow(includesAirPlay: false, compact: true)
             }
             .padding(.horizontal, 18)
             .padding(.top, 12)
@@ -393,6 +436,10 @@ struct PlayerView: View {
                                 : nil
                         )
                         .frame(width: edge, height: edge)
+                        .playerArtworkPressEffect(
+                            enabled: allowsMotion,
+                            cornerRadius: 14
+                        )
                         .id(page.id)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
@@ -633,12 +680,10 @@ struct PlayerView: View {
     }
 
     private func utilityRow(
-        _ song: Song,
         includesAirPlay: Bool = true,
         compact: Bool = false
     ) -> some View {
         let itemSize: CGFloat = compact ? 34 : 40
-        let shareSize: CGFloat = compact ? 20 : 22
         let queueSize: CGFloat = compact ? 21 : 23
 
         return HStack(spacing: compact ? 18 : 25) {
@@ -648,11 +693,6 @@ struct PlayerView: View {
                     .accessibilityLabel("AirPlay")
             }
             Spacer()
-            ShareLink(item: "\(song.title) — \(song.artist)") {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: shareSize, weight: .medium))
-                    .frame(width: itemSize, height: itemSize)
-            }
             Button {
                 showQueue = true
             } label: {
@@ -1037,10 +1077,10 @@ private struct PlayerLyricsCard: View {
     @ObservedObject var lyricsState: LyricsPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
 
-    let song: Song
     let primary: Color
     let secondary: Color
     let onRetry: () -> Void
+    let onTranslate: () -> Void
     let onOpen: () -> Void
 
     @ViewBuilder
@@ -1051,8 +1091,8 @@ private struct PlayerLyricsCard: View {
                     Text("가사")
                         .font(.system(size: 20, weight: .bold))
                     Spacer()
-                    ShareLink(item: "\(song.title) — \(song.artist)") {
-                        Image(systemName: "square.and.arrow.up")
+                    Button(action: onTranslate) {
+                        Image(systemName: "translate")
                             .font(.system(size: 15, weight: .bold))
                             .frame(width: 38, height: 38)
                             .background(.black.opacity(0.22), in: Circle())
@@ -1060,7 +1100,8 @@ private struct PlayerLyricsCard: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(BuFiPressStyle())
-                    .accessibilityLabel("가사 공유")
+                    .accessibilityLabel("가사 번역")
+                    .accessibilityHint("전체 화면 가사를 열고 번역을 표시합니다.")
                     Button(action: onOpen) {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.system(size: 15, weight: .bold))
@@ -1132,31 +1173,28 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(visibleMiniLyrics, id: \.line.id) { item in
-                let isActive = item.index == lyricsState.activeIndex
-                let isPast = item.index < lyricsState.activeIndex
-                Text(item.line.text)
-                    .font(
-                        .system(
-                            size: 21,
-                            weight: isActive ? .bold : .semibold
+        ZStack(alignment: .topLeading) {
+            VStack(alignment: .leading, spacing: 13) {
+                ForEach(visibleMiniLyrics, id: \.line.id) { item in
+                    let isActive = item.index == lyricsState.activeIndex
+                    Text(item.line.text)
+                        .font(
+                            .system(
+                                size: 21,
+                                weight: isActive ? .bold : .semibold
+                            )
                         )
-                    )
-                    .tracking(-0.12)
-                    .lineSpacing(5)
-                    .foregroundStyle(lyricColor(for: item.index))
-                    .lineLimit(isPast ? 1 : 3)
-                    .fixedSize(horizontal: false, vertical: !isPast)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    // The outgoing line remains in the hierarchy for a smooth
-                    // color transition, but must not leave an empty VStack gap.
-                    .padding(.bottom, isPast ? 0 : 13)
-                    .opacity(isPast ? 0 : 1)
-                    .frame(maxHeight: isPast ? 0 : nil, alignment: .top)
-                    .clipped()
+                        .tracking(-0.12)
+                        .lineSpacing(5)
+                        .foregroundStyle(lyricColor(for: item.index))
+                        .lineLimit(isActive ? 3 : 2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+            .id(miniLyricsAnchorID)
+            .transition(miniLyricsTransition)
         }
         .padding(.top, 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1172,11 +1210,22 @@ private struct PlayerLyricsCard: View {
         let lines = lyricsState.document.lines
         guard !lines.isEmpty else { return [] }
         let active = lyricsState.activeIndex
-        let start = active >= 0 ? max(lines.startIndex, active - 1) : lines.startIndex
-        let focus = max(active, start)
-        let end = min(lines.endIndex, focus + 4)
+        let start = active >= 0 ? max(lines.startIndex, active) : lines.startIndex
+        let end = min(lines.endIndex, start + 4)
         guard start < end else { return [] }
         return (start..<end).map { (index: $0, line: lines[$0]) }
+    }
+
+    private var miniLyricsAnchorID: Int {
+        max(lyricsState.activeIndex, 0)
+    }
+
+    private var miniLyricsTransition: AnyTransition {
+        guard motionEnabled else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(y: 13).combined(with: .opacity),
+            removal: .offset(y: -11).combined(with: .opacity)
+        )
     }
 
     private func lyricColor(for index: Int) -> Color {
@@ -1196,15 +1245,35 @@ private struct FullLyricsView: View {
     let seekBarAppearance: PlayerSeekBarAppearance
     let backgroundAppearance: PlayerBackgroundAppearance
     let lyricsState: LyricsPlaybackState
+    @Binding var showsTranslations: Bool
 
     @State private var dragOffset: CGFloat = 0
+    @State private var translations = [Int: String]()
+    @State private var translationPhase = LyricsTranslationPhase.idle
     private let audio = AudioEngine.shared
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            lyrics
-            footer
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                header
+                lyrics
+                footer
+            }
+
+            if let item = currentPlayback.item {
+                LyricsTranslationTaskHost(
+                    accountScope: item.accountScope,
+                    songID: item.song.id,
+                    lines: lyricsState.document.lines,
+                    isEnabled: showsTranslations,
+                    translations: $translations,
+                    phase: $translationPhase
+                )
+                .frame(width: 1, height: 1)
+                .opacity(0.001)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
         }
         .offset(y: max(0, dragOffset))
         .scaleEffect(dragScale, anchor: .bottom)
@@ -1245,7 +1314,8 @@ private struct FullLyricsView: View {
     private var lyrics: some View {
         FullLyricsList(
             lyricsState: lyricsState,
-            primary: lyricsPrimary
+            primary: lyricsPrimary,
+            translations: showsTranslations ? translations : [:]
         ) { start in
             audio.seek(to: start)
         }
@@ -1257,7 +1327,9 @@ private struct FullLyricsView: View {
             seekBarAppearance: seekBarAppearance,
             primary: lyricsPrimary,
             secondary: lyricsSecondary,
-            playButtonForeground: playButtonForeground
+            playButtonForeground: playButtonForeground,
+            showsTranslations: $showsTranslations,
+            translationPhase: translationPhase
         )
         .environmentObject(audio)
     }
@@ -1313,6 +1385,7 @@ private struct FullLyricsList: View {
     @AppStorage("lyrics-auto-scroll") private var autoScroll = true
 
     let primary: Color
+    let translations: [Int: String]
     let onSeek: (TimeInterval) -> Void
 
     var body: some View {
@@ -1329,7 +1402,8 @@ private struct FullLyricsList: View {
                             isActive: index == lyricsState.activeIndex,
                             isPast: index < lyricsState.activeIndex,
                             primary: primary,
-                            motionEnabled: motionEnabled
+                            motionEnabled: motionEnabled,
+                            translation: translations[line.id]
                         ) {
                             if lyricsState.document.synced {
                                 onSeek(line.start)
@@ -1381,23 +1455,41 @@ private struct FullLyricLine: View {
     let isPast: Bool
     let primary: Color
     let motionEnabled: Bool
+    let translation: String?
     let onSeek: () -> Void
 
     var body: some View {
         Button(action: onSeek) {
-            Text(line.text)
-                .font(.system(size: 29, weight: .bold))
-                .tracking(-0.95)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
-                .multilineTextAlignment(.leading)
-                .foregroundStyle(foreground)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 5) {
+                Text(line.text)
+                    .font(.system(size: 29, weight: .bold))
+                    .tracking(-0.95)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .foregroundStyle(foreground)
+
+                if let translation,
+                   !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   translation != line.text {
+                    Text(translation)
+                        .font(.system(size: 17, weight: .medium))
+                        .tracking(-0.28)
+                        .lineSpacing(2)
+                        .foregroundStyle(translationForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .transition(
+                            .opacity.combined(with: .offset(y: 5))
+                        )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .id(line.id)
         .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: isActive)
+        .animation(motionEnabled ? BuFiMotion.fade : .none, value: translation)
     }
 
     private var foreground: Color {
@@ -1405,20 +1497,31 @@ private struct FullLyricLine: View {
         if isPast { return primary.opacity(0.30) }
         return primary.opacity(0.54)
     }
+
+    private var translationForeground: Color {
+        if isActive { return primary.opacity(0.78) }
+        if isPast { return primary.opacity(0.24) }
+        return primary.opacity(0.44)
+    }
 }
 
 private struct FullLyricsFooter: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @ObservedObject var timeline: PlaybackTimeline
 
     let seekBarAppearance: PlayerSeekBarAppearance
     let primary: Color
     let secondary: Color
     let playButtonForeground: Color
+    @Binding var showsTranslations: Bool
+    let translationPhase: LyricsTranslationPhase
     private let audio = AudioEngine.shared
 
     var body: some View {
         VStack(spacing: 7) {
+            translationControls
+
             PlayerProgressView(
                 timeline: timeline,
                 appearance: seekBarAppearance,
@@ -1443,6 +1546,53 @@ private struct FullLyricsFooter: View {
         .buFiGlass(cornerRadius: 28)
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
+    }
+
+    private var translationControls: some View {
+        HStack(spacing: 9) {
+            Button {
+                showsTranslations.toggle()
+            } label: {
+                ZStack {
+                    Image(systemName: "translate")
+                        .font(.system(size: 19, weight: .semibold))
+                        .opacity(translationPhase.isWorking ? 0 : 1)
+                    if translationPhase.isWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(primary)
+                    }
+                }
+                .frame(width: 42, height: 42)
+                .background(
+                    primary.opacity(showsTranslations ? 0.16 : 0.07),
+                    in: Circle()
+                )
+                .contentShape(Circle())
+            }
+            .buttonStyle(BuFiPressStyle())
+            .sensoryFeedback(.selection, trigger: showsTranslations) {
+                oldValue, newValue in
+                hapticsEnabled && motionEnabled && oldValue != newValue
+            }
+            .accessibilityLabel(
+                showsTranslations ? "가사 번역 숨기기" : "가사 번역 보기"
+            )
+
+            if showsTranslations,
+               let statusText = translationPhase.statusText {
+                Text(statusText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(secondary)
+                    .transition(.opacity)
+            }
+            Spacer()
+        }
+        .frame(height: 42)
+        .animation(
+            motionEnabled ? BuFiMotion.fade : .none,
+            value: translationPhase
+        )
     }
 }
 

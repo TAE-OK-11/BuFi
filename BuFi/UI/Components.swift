@@ -561,6 +561,7 @@ struct SongFavoriteIconButton: View {
 
 private struct SongFavoriteIconButtonContent: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @AppStorage("haptics-enabled") private var hapticsEnabled = true
     let model: AppModel
     @ObservedObject var overrideState: FavoriteOverrideValueState
     let song: Song
@@ -582,6 +583,7 @@ private struct SongFavoriteIconButtonContent: View {
                     isStarred ? BuFiTheme.accent : inactiveForeground
                 )
                 .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, value: isStarred)
                 .frame(width: hitTarget, height: hitTarget)
         }
         .buttonStyle(BuFiPressStyle())
@@ -589,6 +591,9 @@ private struct SongFavoriteIconButtonContent: View {
             motionEnabled ? BuFiMotion.symbol : .none,
             value: isStarred
         )
+        .sensoryFeedback(.success, trigger: isStarred) { oldValue, newValue in
+            hapticsEnabled && motionEnabled && oldValue != newValue
+        }
         .accessibilityLabel(isStarred ? "좋아요 취소" : "좋아요 표시")
     }
 }
