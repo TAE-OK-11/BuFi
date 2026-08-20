@@ -2785,11 +2785,11 @@ final class AppModel: ObservableObject {
         guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
         switch ProcessInfo.processInfo.thermalState {
         case .nominal, .fair:
-            true
+            return true
         case .serious, .critical:
-            false
+            return false
         @unknown default:
-            false
+            return false
         }
     }
 
