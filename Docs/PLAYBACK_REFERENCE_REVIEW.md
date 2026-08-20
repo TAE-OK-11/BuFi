@@ -35,17 +35,18 @@ references; no source was copied into BuFi.
   identity `(song ID, coverArt ID)`. A transient queue/current-item publication
   mismatch therefore renders the current song directly instead of exposing the
   previous queue entry's cover.
-- Every AVPlayer waiting transition starts one bounded watchdog. The watchdog
-  is armed only for startup freeze (elapsed under 1.5s) or a genuine stall.
-  A healthy playing clock cancels it. HTTP 4xx stream failures fail closed
-  instead of cycling codecs. Transport retries use 400/900ms backoff. The
-  watchdog still forces an immediate-rate retry, performs one exact near-zero
-  seek nudge for a stream that never leaves `0:00`, reloads the active format
-  at most twice, then tries a bandwidth-bounded compatibility format.
+- AVPlayer's automatic stall minimization owns normal waiting transitions. BuFi
+  uses `play()` and the system default forward buffer, so it does not discard
+  accumulated ALAC bytes with an immediate-rate retry, near-zero seek, or item
+  reload during `.toMinimizeStalls`/`.evaluatingBufferingRate`. Waiting states
+  update UI only; there is no timer-driven playback watchdog. HTTP 4xx stream
+  failures still fail closed instead of cycling codecs, while explicit transport
+  failures retain bounded jittered retry and lower-bandwidth compatibility
+  fallback.
 - Network-path loss pauses speculative work and leaves playback intent intact;
-  path restoration immediately resumes AVPlayer and re-arms the watchdog. A
-  confirmed playing state cancels recovery and resets its budget only after an
-  eight-second stability window.
+  path restoration asks AVPlayer to resume without forcing immediate playback.
+  A confirmed playing state cancels recovery and resets its budget only after
+  an eight-second stability window.
 
 ## Energy pass
 
@@ -64,6 +65,9 @@ references; no source was copied into BuFi.
   limit connection concurrency.
 - A paused player deactivates its audio session after a short resume window;
   an idle player entering the background deactivates immediately.
+- Active background playback relies on AVAudioSession's `.playback` category
+  and AVPlayer state, without a separate UIApplication background task or
+  timer-driven recovery wakeup.
 - Release builds use explicit modules, whole-module Swift optimization, and
   monolithic LTO. CI skips redundant clean passes and Homebrew auto-update work.
 

@@ -24,18 +24,16 @@ struct NowPlayingArtworkProvider: Sendable {
     }
 }
 
-/// Serializes the two delayed/network tasks that must not escape an account
+/// Serializes delayed/network tasks that must not escape an account
 /// session. A synchronous `configure` can invalidate work immediately while
 /// the drain task provides an awaitable barrier for shutdown and any work
 /// scheduled by the replacement session.
 @MainActor
 final class PlayerTaskLifecycle {
     private(set) var scrobbleTask: Task<Void, Never>?
-    private(set) var backgroundRecoveryTask: Task<Void, Never>?
     private(set) var sessionTransitionTask: Task<Void, Never>?
 
     private var scrobbleToken: UUID?
-    private var backgroundRecoveryToken: UUID?
     private var sessionTransitionToken: UUID?
 
     func scheduleScrobble(
@@ -58,54 +56,19 @@ final class PlayerTaskLifecycle {
         }
     }
 
-    func scheduleBackgroundRecovery(
-        after delay: Duration,
-        _ operation: @escaping @MainActor @Sendable () async -> Void
-    ) {
-        let previousTask = backgroundRecoveryTask
-        previousTask?.cancel()
-
-        let token = UUID()
-        backgroundRecoveryToken = token
-        backgroundRecoveryTask = Task { [weak self] in
-            _ = await previousTask?.value
-            do {
-                try await Task.sleep(for: delay)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            await operation()
-            guard let self, self.backgroundRecoveryToken == token else { return }
-            self.backgroundRecoveryTask = nil
-            self.backgroundRecoveryToken = nil
-        }
-    }
-
-    func cancelBackgroundRecovery() {
-        backgroundRecoveryToken = nil
-        backgroundRecoveryTask?.cancel()
-        backgroundRecoveryTask = nil
-    }
-
     /// Cancels session-bound work and returns one task that completes only
     /// after every task owned by the old session has exited.
     @discardableResult
     func beginSessionTransition() -> Task<Void, Never>? {
         let previousTransition = sessionTransitionTask
         let pendingScrobble = scrobbleTask
-        let pendingBackgroundRecovery = backgroundRecoveryTask
 
         scrobbleToken = nil
-        backgroundRecoveryToken = nil
         pendingScrobble?.cancel()
-        pendingBackgroundRecovery?.cancel()
         scrobbleTask = nil
-        backgroundRecoveryTask = nil
 
         guard previousTransition != nil
-                || pendingScrobble != nil
-                || pendingBackgroundRecovery != nil else {
+                || pendingScrobble != nil else {
             sessionTransitionTask = nil
             sessionTransitionToken = nil
             return nil
@@ -116,7 +79,6 @@ final class PlayerTaskLifecycle {
         let transition = Task { [weak self] in
             _ = await previousTransition?.value
             _ = await pendingScrobble?.value
-            _ = await pendingBackgroundRecovery?.value
             guard let self, self.sessionTransitionToken == token else { return }
             self.sessionTransitionTask = nil
             self.sessionTransitionToken = nil
@@ -803,48 +765,8 @@ enum PlaybackFailureClassifier {
     }
 }
 
-/// TIDAL-style PE states, adapted to BuFi: the watchdog is only armed for
-/// startup freeze or a genuine stall — never for a healthy playing clock.
-enum PlaybackWatchdogMode: Equatable, Sendable {
-    case startup
-    case stall
-}
-
-enum PlaybackWatchdogDecision: Equatable, Sendable {
-    case ignore
-    case cancelWatchdog
-    case arm(PlaybackWatchdogMode)
-}
-
-enum PlaybackWatchdogPolicy {
-    static let startupArmWindow: TimeInterval = 1.5
-    static let stallGrace: Duration = .milliseconds(5_000)
+enum PlaybackTransportRetryPolicy {
     static let maximumTransportRetries = 2
-
-    static func decision(
-        wantsPlayback: Bool,
-        timeControlStatus: AVPlayer.TimeControlStatus,
-        waitingReason: AVPlayer.WaitingReason?,
-        elapsed: TimeInterval,
-        hasCurrentItem: Bool
-    ) -> PlaybackWatchdogDecision {
-        guard wantsPlayback, hasCurrentItem else { return .cancelWatchdog }
-        let inStartupWindow = elapsed.isFinite && elapsed < startupArmWindow
-        switch timeControlStatus {
-        case .playing:
-            return .cancelWatchdog
-        case .waitingToPlayAtSpecifiedRate:
-            // Managed buffering is normal, but it still needs a bounded
-            // watchdog. The recovery task gives AVPlayer its own grace period
-            // before nudging/reloading, preventing lossless streams from
-            // remaining in waitingToPlayAtSpecifiedRate indefinitely.
-            return .arm(inStartupWindow ? .startup : .stall)
-        case .paused:
-            return .arm(inStartupWindow ? .startup : .stall)
-        @unknown default:
-            return .arm(inStartupWindow ? .startup : .stall)
-        }
-    }
 
     static func transportBackoff(
         afterFailedAttempt attempt: Int,
@@ -860,60 +782,14 @@ enum PlaybackWatchdogPolicy {
     }
 }
 
-/// Pure decisions used by the bounded playback watchdog. Keeping these
-/// decisions outside AVPlayer makes the zero-position and format-fallback
-/// behavior deterministic and regression-testable.
+/// Pure decisions used only after AVPlayer reports an actual item/transport
+/// failure. Normal buffering and waiting never enter this path.
 enum PlaybackRecoveryPolicy {
-    static let initialRecoveryDelay: Duration = .milliseconds(900)
-    static let progressObservationDelay: Duration = .milliseconds(1_600)
-    static let managedBufferingGrace: Duration = .milliseconds(1_200)
-
-    static func startupNudgeTarget(
-        elapsed: TimeInterval,
-        duration: TimeInterval,
-        alreadyAttempted: Bool
-    ) -> TimeInterval? {
-        guard !alreadyAttempted,
-              elapsed.isFinite,
-              elapsed <= 0.1 else {
-            return nil
-        }
-        guard duration.isFinite, duration > 0 else { return nil }
-        let preferredTarget = max(0.05, min(0.25, duration * 0.001))
-        let latestValidTarget = max(0, duration - 0.01)
-        let target = min(
-            max(preferredTarget, elapsed + 0.05),
-            latestValidTarget
-        )
-        return target > elapsed ? target : nil
-    }
-
     static func hasMeaningfulProgress(
         from start: TimeInterval,
         to end: TimeInterval
     ) -> Bool {
         start.isFinite && end.isFinite && end >= start + 0.1
-    }
-
-    static func isManagedBufferingWait(
-        timeControlStatus: AVPlayer.TimeControlStatus,
-        waitingReason: AVPlayer.WaitingReason?
-    ) -> Bool {
-        guard timeControlStatus == .waitingToPlayAtSpecifiedRate else {
-            return false
-        }
-        return waitingReason == .toMinimizeStalls
-            || waitingReason == .evaluatingBufferingRate
-    }
-
-    static func shouldForceImmediatePlayback(
-        timeControlStatus: AVPlayer.TimeControlStatus,
-        waitingReason: AVPlayer.WaitingReason?
-    ) -> Bool {
-        !isManagedBufferingWait(
-            timeControlStatus: timeControlStatus,
-            waitingReason: waitingReason
-        )
     }
 
     static func nextCompatibilityIndex(
@@ -1039,69 +915,12 @@ enum PlaybackAudioProfile: Equatable, Sendable {
     }
 }
 
-/// Keep startup latency small while bounding steady-state memory and bandwidth.
-/// Lossless streams get enough runway for jitter without buffering the same
-/// number of seconds as a much cheaper AAC/Opus stream.
+/// Leave forward buffering to AVPlayer. A duration of zero is AVFoundation's
+/// system-managed policy, which can adapt to route, throughput, and codec cost
+/// instead of relying on one fixed window for every server and ALAC file.
 enum PlaybackBufferPolicy {
-    enum Phase: Equatable, Sendable {
-        case startup
-        case settled
-        case constrained
-        case successor
-    }
-
-    static let stallConfirmDelay: Duration = .milliseconds(2_000)
-
-    static func forwardBufferDuration(
-        isLocalFile: Bool,
-        profile: PlaybackAudioProfile,
-        phase: Phase = .settled
-    ) -> TimeInterval {
-        if isLocalFile {
-            return phase == .startup ? 0.25 : 2
-        }
-        switch phase {
-        case .startup:
-            return switch profile {
-            case .aac: 0.75
-            case .compressed: 0.9
-            case .unknown: 1.0
-            case .lossless: 1.25
-            }
-        case .settled:
-            return switch profile {
-            case .aac: 20
-            case .compressed: 18
-            case .unknown: 14
-            case .lossless: 12
-            }
-        case .constrained:
-            return switch profile {
-            case .aac: 10
-            case .compressed: 9
-            case .unknown, .lossless: 8
-            }
-        case .successor:
-            return switch profile {
-            case .aac: 6
-            case .compressed: 5
-            case .unknown: 4.5
-            case .lossless: 4
-            }
-        }
-    }
-
-    static func configure(
-        _ item: AVPlayerItem,
-        isLocalFile: Bool,
-        profile: PlaybackAudioProfile,
-        phase: Phase = .startup
-    ) {
-        item.preferredForwardBufferDuration = forwardBufferDuration(
-            isLocalFile: isLocalFile,
-            profile: profile,
-            phase: phase
-        )
+    static func configure(_ item: AVPlayerItem) {
+        item.preferredForwardBufferDuration = 0
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
     }
 }
@@ -1505,7 +1324,6 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingArtworkRequestKey: NowPlayingVisualIdentity?
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
-    private var recoveryTask: Task<Void, Never>?
     private var recoveryStabilityTask: Task<Void, Never>?
     private var audioSessionActivationTask: Task<Void, Never>?
     private var audioSessionActivationToken: UUID?
@@ -1513,10 +1331,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var audioSessionCommandEpoch: UInt64 = 0
     private var nowPlayingActivationTask: Task<Void, Never>?
     private let audioSessionController = AudioSessionController()
-    private var stallConfirmTask: Task<Void, Never>?
-    private var recoveryToken: UUID?
     private weak var handledFailedItem: AVPlayerItem?
-    private weak var startupNudgedItem: AVPlayerItem?
     private var recoveryAttempt = 0
     private var itemLoadGeneration: UInt64 = 0
     private var lyricsLoadGeneration: UInt64 = 0
@@ -1531,7 +1346,6 @@ final class AudioEngine: NSObject, ObservableObject {
     private var recentShuffleIDs: [String] = []
     private var shuffleSessionPlayedEntryIDs: Set<UUID> = []
     private var pendingSeekPosition: TimeInterval?
-    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var lastQueueSaveRequest = Date.distantPast
     private var lastServerQueueSaveRequest = Date.distantPast
     private var lastMaintenanceSecond = -1
@@ -1637,7 +1451,6 @@ final class AudioEngine: NSObject, ObservableObject {
             queueSaveTask?.cancel()
             queueSaveTask = nil
             suspendSpeculativePrefetch()
-            cancelPlaybackRecovery()
             itemLoadTask?.cancel()
             itemLoadTask = nil
             lyricsTask?.cancel()
@@ -1829,7 +1642,6 @@ final class AudioEngine: NSObject, ObservableObject {
         // An explicit selection supersedes a pending server queue restore,
         // including the interval before AVPlayer reaches the playing state.
         serverQueueTask?.cancel()
-        cancelPlaybackRecovery()
         let previousSongID = currentSong?.id
         finalizeCurrentPlayback(reason: transitionReason)
         var normalizedEntries = sourceEntries.isEmpty
@@ -1915,12 +1727,11 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    private func playLatencyOptimized() {
-        // Keep AVPlayer's stall-management enabled globally, but do not pay its
-        // startup buffering tax for explicit starts, resumes, seeks, or a
-        // ready-to-play item. Mid-stream recovery still gets a bounded managed
-        // buffering grace before this fast path is used.
-        player.playImmediately(atRate: 1)
+    private func requestPlayback() {
+        // `play()` cooperates with automaticallyWaitsToMinimizeStalling. Using
+        // playImmediately here repeatedly forced a high-bitrate stream to run
+        // before AVPlayer considered its buffer safe.
+        player.play()
     }
 
     func resumePlayback() {
@@ -1948,7 +1759,7 @@ final class AudioEngine: NSObject, ObservableObject {
         player.volume = 1
         activateNowPlayingSession()
         if !needsReload {
-            playLatencyOptimized()
+            requestPlayback()
         }
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
@@ -1972,15 +1783,6 @@ final class AudioEngine: NSObject, ObservableObject {
             Task { await client.trimTransientNetworkCaches() }
         }
         recentShuffleIDs = Array(recentShuffleIDs.suffix(8))
-        if let item = player.currentItem {
-            let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
-            PlaybackBufferPolicy.configure(
-                item,
-                isLocalFile: isLocal,
-                profile: currentPlaybackAudioProfile(),
-                phase: .constrained
-            )
-        }
     }
 
     func handleEnergyConstraints(
@@ -2001,12 +1803,10 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func pausePlayback(persistsQueue: Bool) {
         wantsPlayback = false
-        cancelPlaybackRecovery()
         player.pause()
         suspendSpeculativePrefetch()
         isPlaying = false
         isBuffering = false
-        endBackgroundBridge()
         refreshIdleTimerPreference()
         updateNowPlaying()
         scheduleAudioSessionDeactivation()
@@ -2062,11 +1862,9 @@ final class AudioEngine: NSObject, ObservableObject {
                     if finished {
                         self.isBuffering = false
                         self.configureAudioSession()
-                        self.playLatencyOptimized()
-                        self.schedulePlaybackRecovery()
+                        self.requestPlayback()
                     } else {
                         self.isBuffering = true
-                        self.schedulePlaybackRecovery()
                     }
                 }
                 if persistsQueue, finished {
@@ -2401,7 +2199,6 @@ final class AudioEngine: NSObject, ObservableObject {
             queueMutationGeneration &+= 1
             pause()
             itemLoadTask?.cancel()
-            cancelPlaybackRecovery()
             lyricsTask?.cancel()
             songMetadataTask?.cancel()
             songMetadataTask = nil
@@ -2696,6 +2493,17 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
+    private var isRemoteLosslessPlayback: Bool {
+        guard currentPlaybackAudioProfile() == .lossless else { return false }
+        let item = player.currentItem ?? logicalCurrentItem
+        guard let url = (item?.asset as? AVURLAsset)?.url else {
+            // Treat an unresolved lossless source as remote until the item is
+            // installed so speculative work cannot race initial ALAC startup.
+            return true
+        }
+        return !url.isFileURL
+    }
+
     private static func initialCompatibilityFormat(
         for quality: StreamQuality,
         song: Song
@@ -2798,7 +2606,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
                 guard connectivityChanged else { return }
                 if !isSatisfied {
-                    self.cancelPlaybackRecovery()
                     if self.wantsPlayback {
                         self.isBuffering = true
                     }
@@ -2817,8 +2624,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else {
                     guard self.player.timeControlStatus != .playing else { return }
                     self.configureAudioSession()
-                    self.playLatencyOptimized()
-                    self.schedulePlaybackRecovery()
+                    self.requestPlayback()
                 }
             }
         }
@@ -2951,6 +2757,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private func scheduleGaplessSuccessor() {
         let activelyPlaying = player.timeControlStatus == .playing
         guard wantsPlayback,
+              !isRemoteLosslessPlayback,
               stagedSuccessorItem == nil,
               PlaybackGaplessPreparationPolicy.shouldPrepare(
                 elapsed: currentPlayerPosition(),
@@ -2973,6 +2780,7 @@ final class AudioEngine: NSObject, ObservableObject {
         _ prepared: PreparedPlaybackAsset
     ) {
         guard stagedSuccessorItem == nil,
+              !isRemoteLosslessPlayback,
               !isShuffleEnabled,
               repeatMode != .one,
               wantsPlayback,
@@ -3003,15 +2811,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         let item = AVPlayerItem(asset: prepared.asset)
-        PlaybackBufferPolicy.configure(
-            item,
-            isLocalFile: prepared.asset.url.isFileURL,
-            profile: PlaybackAudioProfile.resolve(
-                song: successor,
-                compatibilityFormat: prepared.compatibilityFormat
-            ),
-            phase: .successor
-        )
+        PlaybackBufferPolicy.configure(item)
         guard player.canInsert(item, after: currentItem) else { return }
         player.insert(item, after: currentItem)
         stagedSuccessorItem = item
@@ -3207,9 +3007,11 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleNetworkPrefetch() {
-        let metadataPrefetchCount = currentPlaybackAudioProfile() == .lossless
-            ? 1
-            : UpcomingArtworkPrefetchPolicy.upcomingCount
+        guard !isRemoteLosslessPlayback else {
+            cancelNetworkPrefetch(resetKey: true)
+            return
+        }
+        let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
@@ -3286,6 +3088,10 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleOfflinePrefetch() {
+        guard !isRemoteLosslessPlayback else {
+            cancelOfflinePrefetch(resetKey: true)
+            return
+        }
         let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
         let defaultCount =
             UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
@@ -3299,13 +3105,10 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         let cappedCount = min(max(defaultCount, 0), 3)
-        let mediaAwareCount = currentPlaybackAudioProfile() == .lossless
-            ? min(cappedCount, 1)
-            : cappedCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
-                maximumUpcoming: mediaAwareCount
+                maximumUpcoming: cappedCount
               ) else {
             cancelOfflinePrefetch(resetKey: true)
             return
@@ -3335,7 +3138,6 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func restartPlaybackPlan(resumeFrom: TimeInterval) {
         guard let song = currentSong else { return }
-        cancelPlaybackRecovery()
         recoveryStabilityTask?.cancel()
         recoveryStabilityTask = nil
         recoveryAttempt = 0
@@ -3431,16 +3233,10 @@ final class AudioEngine: NSObject, ObservableObject {
         asset: AVURLAsset,
         resumePosition: TimeInterval
     ) {
-        cancelPlaybackRecovery()
         removeCurrentItemObservers()
         invalidateStagedSuccessor(removeFromPlayer: true)
         let item = AVPlayerItem(asset: asset)
-        PlaybackBufferPolicy.configure(
-            item,
-            isLocalFile: asset.url.isFileURL,
-            profile: currentPlaybackAudioProfile(),
-            phase: .startup
-        )
+        PlaybackBufferPolicy.configure(item)
         observeActiveItem(item, resumePosition: resumePosition)
         player.replaceCurrentItem(with: item)
         handledFailedItem = nil
@@ -3452,9 +3248,6 @@ final class AudioEngine: NSObject, ObservableObject {
         _ item: AVPlayerItem,
         resumePosition: TimeInterval
     ) {
-        if startupNudgedItem !== item {
-            startupNudgedItem = nil
-        }
         logicalCurrentItem = item
         installItemObservers(for: item)
         installBufferObservers(for: item)
@@ -3498,8 +3291,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         self.player.isMuted = false
                         self.player.volume = 1
                         self.activateNowPlayingSession()
-                        self.playLatencyOptimized()
-                        self.schedulePlaybackRecovery()
+                        self.requestPlayback()
                     }
                 case .failed:
                     self.isBuffering = false
@@ -3638,7 +3430,8 @@ final class AudioEngine: NSObject, ObservableObject {
                         Self.logger.warning(
                             "Playback stalled; waiting for AVPlayer to refill"
                         )
-                        self.confirmPossibleStall()
+                        self.isBuffering = self.wantsPlayback
+                        self.suspendSpeculativePrefetch()
                     }
                 },
                 center.addObserver(
@@ -3697,36 +3490,12 @@ final class AudioEngine: NSObject, ObservableObject {
                     return
                 }
                 if item.isPlaybackBufferEmpty, self.wantsPlayback {
-                    self.confirmPossibleStall()
+                    self.isBuffering = true
+                    self.suspendSpeculativePrefetch()
                 }
             }
         }
-        let likelyToKeepUp = item.observe(
-            \.isPlaybackLikelyToKeepUp,
-            options: [.new]
-        ) { @Sendable [weak self] _, _ in
-            Task { @MainActor in
-                guard let self,
-                      self.itemObserverGeneration == generation,
-                      let item = self.logicalCurrentItem,
-                      self.player.currentItem === item else {
-                    return
-                }
-                guard item.isPlaybackLikelyToKeepUp,
-                      !self.isSeekInFlight,
-                      self.pendingSeekPosition == nil else { return }
-                if self.wantsPlayback, self.player.timeControlStatus == .playing {
-                    self.expandSettledForwardBufferIfNeeded()
-                    self.cancelStallConfirmation()
-                } else if self.wantsPlayback, self.player.timeControlStatus != .playing {
-                    self.configureAudioSession()
-                    self.playLatencyOptimized()
-                    self.recomputeTimelineFromPlayer()
-                    self.installNextLyricBoundary(after: self.elapsed)
-                }
-            }
-        }
-        itemBufferObservations = [empty, likelyToKeepUp]
+        itemBufferObservations = [empty]
     }
 
     private func handlePlaybackFailure(
@@ -3741,7 +3510,6 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             handledFailedItem = failedItem
         }
-        cancelPlaybackRecovery()
         let resolvedError = error ?? failedItem?.error
         guard networkPathIsSatisfied else {
             // Keep playback intent and the current retry budget intact. The
@@ -3760,7 +3528,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         if disposition == .retryTransport {
             recoveryAttempt += 1
-            if recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries {
+            if recoveryAttempt <= PlaybackTransportRetryPolicy.maximumTransportRetries {
                 Self.logger.warning(
                     "Playback transport failed; retrying the active format"
                 )
@@ -3776,7 +3544,10 @@ final class AudioEngine: NSObject, ObservableObject {
                 )
                 recoveryAttempt = 0
                 activeCompatibilityFormat = format
-                loadCurrentItem(compatibilityFormat: format, resumeFrom: elapsed)
+                loadCurrentItem(
+                    compatibilityFormat: format,
+                    resumeFrom: currentPlayerPosition()
+                )
                 return
             }
             finishPlaybackFailure(
@@ -3812,7 +3583,7 @@ final class AudioEngine: NSObject, ObservableObject {
         compatibilityFormat: String?
     ) {
         let generation = itemLoadGeneration
-        let delay = PlaybackWatchdogPolicy.transportBackoff(
+        let delay = PlaybackTransportRetryPolicy.transportBackoff(
             afterFailedAttempt: attempt,
             jitter: Double.random(in: 0.8...1.2)
         )
@@ -3830,7 +3601,7 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             self.loadCurrentItem(
                 compatibilityFormat: compatibilityFormat,
-                resumeFrom: self.elapsed
+                resumeFrom: self.currentPlayerPosition()
             )
         }
     }
@@ -3852,71 +3623,10 @@ final class AudioEngine: NSObject, ObservableObject {
         isPlaying = false
         isBuffering = false
         player.pause()
-        endBackgroundBridge()
         refreshIdleTimerPreference()
         updateNowPlaying()
         scheduleQueueSave(immediate: true)
         playbackError = message
-    }
-
-    private func expandSettledForwardBufferIfNeeded() {
-        guard let item = player.currentItem ?? logicalCurrentItem else { return }
-        let isLocal = (item.asset as? AVURLAsset)?.url.isFileURL == true
-        let profile = currentPlaybackAudioProfile()
-        let settled = PlaybackBufferPolicy.forwardBufferDuration(
-            isLocalFile: isLocal,
-            profile: profile,
-            phase: .settled
-        )
-        guard item.preferredForwardBufferDuration + 0.01 < settled else { return }
-        PlaybackBufferPolicy.configure(
-            item,
-            isLocalFile: isLocal,
-            profile: profile,
-            phase: .settled
-        )
-    }
-
-    private func cancelStallConfirmation() {
-        stallConfirmTask?.cancel()
-        stallConfirmTask = nil
-    }
-
-    private func confirmPossibleStall() {
-        guard wantsPlayback, stallConfirmTask == nil else { return }
-        if player.timeControlStatus != .playing {
-            isBuffering = true
-        }
-        stallConfirmTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: PlaybackBufferPolicy.stallConfirmDelay)
-            } catch {
-                return
-            }
-            guard let self,
-                  !Task.isCancelled,
-                  self.wantsPlayback,
-                  self.player.timeControlStatus != .playing else {
-                self?.stallConfirmTask = nil
-                return
-            }
-            self.stallConfirmTask = nil
-            self.invalidateStagedSuccessor(removeFromPlayer: true)
-            self.suspendSpeculativePrefetch()
-            let mode: PlaybackWatchdogMode =
-                self.currentPlayerPosition() < PlaybackWatchdogPolicy.startupArmWindow
-                    ? .startup
-                    : .stall
-            self.schedulePlaybackRecovery(mode: mode)
-        }
-    }
-
-    private func cancelPlaybackRecovery() {
-        cancelStallConfirmation()
-        playerTaskLifecycle.cancelBackgroundRecovery()
-        recoveryToken = nil
-        recoveryTask?.cancel()
-        recoveryTask = nil
     }
 
     private func scheduleRecoveryAttemptReset(for item: AVPlayerItem?) {
@@ -3944,150 +3654,6 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             self.recoveryAttempt = 0
             self.recoveryStabilityTask = nil
-        }
-    }
-
-    private func schedulePlaybackRecovery(mode: PlaybackWatchdogMode = .startup) {
-        guard wantsPlayback,
-              currentSong != nil,
-              recoveryTask == nil,
-              !isSeekInFlight,
-              pendingSeekPosition == nil else { return }
-        if player.timeControlStatus != .playing {
-            isBuffering = true
-        }
-        guard networkPathIsSatisfied else { return }
-        let recoveryStartPosition = currentPlayerPosition()
-        let token = UUID()
-        recoveryToken = token
-        recoveryTask = Task { [weak self] in
-            do {
-                try await Task.sleep(
-                    for: PlaybackRecoveryPolicy.initialRecoveryDelay
-                )
-            } catch {
-                return
-            }
-            guard let self else { return }
-            defer {
-                if self.recoveryToken == token {
-                    self.recoveryToken = nil
-                    self.recoveryTask = nil
-                }
-            }
-            guard !Task.isCancelled, self.wantsPlayback,
-                  !self.isSeekInFlight,
-                  self.pendingSeekPosition == nil,
-                  let item = self.player.currentItem else { return }
-            var progressBaseline = recoveryStartPosition
-            let positionBeforeAttempt = self.currentPlayerPosition()
-            if self.player.timeControlStatus == .playing,
-               PlaybackRecoveryPolicy.hasMeaningfulProgress(
-                    from: recoveryStartPosition,
-                    to: positionBeforeAttempt
-               ) {
-                return
-            }
-
-            let wasManagedBuffering = PlaybackRecoveryPolicy.isManagedBufferingWait(
-                timeControlStatus: self.player.timeControlStatus,
-                waitingReason: self.player.reasonForWaitingToPlay
-            )
-            if wasManagedBuffering || mode == .stall {
-                // Managed buffering and mid-stream stalls get a short chance
-                // to refill. Startup freeze still uses the tighter grace.
-                do {
-                    try await Task.sleep(
-                        for: mode == .stall
-                            ? PlaybackWatchdogPolicy.stallGrace
-                            : PlaybackRecoveryPolicy.managedBufferingGrace
-                    )
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled, self.wantsPlayback,
-                      self.networkPathIsSatisfied,
-                      !self.isSeekInFlight,
-                      self.pendingSeekPosition == nil,
-                      self.player.currentItem === item else { return }
-                if self.player.timeControlStatus == .playing,
-                   PlaybackRecoveryPolicy.hasMeaningfulProgress(
-                        from: progressBaseline,
-                        to: self.currentPlayerPosition()
-                   ) {
-                    return
-                }
-            }
-
-            self.configureAudioSession()
-            self.playLatencyOptimized()
-            self.recomputeTimelineFromPlayer()
-            self.installNextLyricBoundary(after: self.elapsed)
-
-            if mode == .startup,
-               item.status == .readyToPlay,
-               self.currentSong?.externalStreamURL == nil,
-               !self.isSeekInFlight,
-               self.pendingSeekPosition == nil,
-               let target = PlaybackRecoveryPolicy.startupNudgeTarget(
-                    elapsed: positionBeforeAttempt,
-                    duration: self.duration,
-                    alreadyAttempted: self.startupNudgedItem === item
-               ),
-               self.canSeek(item, to: target) {
-                self.startupNudgedItem = item
-                progressBaseline = target
-                self.seekPlayer(
-                    to: target,
-                    persistsQueue: false,
-                    resumesPlayback: true,
-                    exactly: true
-                )
-            }
-
-            do {
-                try await Task.sleep(
-                    for: PlaybackRecoveryPolicy.progressObservationDelay
-                )
-            } catch {
-                return
-            }
-            guard !Task.isCancelled, self.wantsPlayback,
-                  self.networkPathIsSatisfied,
-                  !self.isSeekInFlight,
-                  self.pendingSeekPosition == nil,
-                  self.player.currentItem === item else { return }
-            if self.player.timeControlStatus == .playing,
-               PlaybackRecoveryPolicy.hasMeaningfulProgress(
-                    from: progressBaseline,
-                    to: self.currentPlayerPosition()
-               ) {
-                return
-            }
-
-            self.recoveryAttempt += 1
-            if self.recoveryAttempt <= PlaybackWatchdogPolicy.maximumTransportRetries {
-                self.reloadCurrentItemAfterBackoff(
-                    attempt: self.recoveryAttempt,
-                    compatibilityFormat: self.activeCompatibilityFormat
-                )
-            } else if let format = self.takeNextCompatibilityFormat(allowsRaw: false) {
-                Self.logger.warning(
-                    "Playback watchdog exhausted transport retries; trying \(format, privacy: .public)"
-                )
-                self.recoveryAttempt = 0
-                self.activeCompatibilityFormat = format
-                self.loadCurrentItem(
-                    compatibilityFormat: format,
-                    resumeFrom: self.elapsed
-                )
-            } else {
-                self.finishPlaybackFailure(
-                    message: String(
-                        localized: "네트워크 연결이 불안정해 재생을 계속할 수 없습니다. 연결 상태를 확인한 뒤 다시 시도해 주세요."
-                    )
-                )
-            }
         }
     }
 
@@ -4193,30 +3759,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 let player = self.player
                 let isPlaying = player.timeControlStatus == .playing
                 self.isPlaying = isPlaying
-                self.isBuffering =
-                    self.wantsPlayback
-                    && !isPlaying
-                    && (
-                        player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-                        || player.currentItem?.status != .readyToPlay
-                    )
+                self.isBuffering = self.wantsPlayback && !isPlaying
                 if player.timeControlStatus == .playing {
-                    self.expandSettledForwardBufferIfNeeded()
-                    self.cancelStallConfirmation()
-                    switch PlaybackWatchdogPolicy.decision(
-                        wantsPlayback: self.wantsPlayback,
-                        timeControlStatus: player.timeControlStatus,
-                        waitingReason: player.reasonForWaitingToPlay,
-                        elapsed: self.currentPlayerPosition(),
-                        hasCurrentItem: player.currentItem != nil
-                    ) {
-                    case .arm(let mode):
-                        self.schedulePlaybackRecovery(mode: mode)
-                    case .cancelWatchdog, .ignore:
-                        self.cancelPlaybackRecovery()
-                    }
                     self.scheduleRecoveryAttemptReset(for: player.currentItem)
-                    self.endBackgroundBridge()
                     self.reportPlaybackState("playing")
                     self.scheduleGaplessSuccessor()
                     self.scheduleNetworkPrefetch()
@@ -4224,26 +3769,15 @@ final class AudioEngine: NSObject, ObservableObject {
                 } else if !self.wantsPlayback {
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
-                    self.cancelPlaybackRecovery()
                     self.reportPlaybackState("paused")
                     self.suspendSpeculativePrefetch()
                 } else {
+                    // Waiting and buffering are AVPlayer-owned states. BuFi
+                    // updates presentation only and does not seek, reload, or
+                    // force the item back to an immediate playback rate.
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
-                    switch PlaybackWatchdogPolicy.decision(
-                        wantsPlayback: true,
-                        timeControlStatus: player.timeControlStatus,
-                        waitingReason: player.reasonForWaitingToPlay,
-                        elapsed: self.currentPlayerPosition(),
-                        hasCurrentItem: player.currentItem != nil
-                    ) {
-                    case .arm(let mode):
-                        self.schedulePlaybackRecovery(mode: mode)
-                    case .cancelWatchdog:
-                        self.cancelPlaybackRecovery()
-                    case .ignore:
-                        self.confirmPossibleStall()
-                    }
+                    self.suspendSpeculativePrefetch()
                 }
                 self.refreshIdleTimerPreference()
                 self.updateRemoteCommands()
@@ -4660,38 +4194,12 @@ final class AudioEngine: NSObject, ObservableObject {
     private func handleDidEnterBackground() {
         scheduleQueueSave(immediate: true)
         guard wantsPlayback else {
-            playerTaskLifecycle.cancelBackgroundRecovery()
             scheduleAudioSessionDeactivation(immediate: true)
             return
         }
-        beginBackgroundBridge()
+        // Background audio is owned by the active `.playback` audio session;
+        // no additional UIApplication task or recovery timer is required.
         preserveActivePlayback()
-        guard let playbackItem = currentPlaybackItem else {
-            playerTaskLifecycle.cancelBackgroundRecovery()
-            endBackgroundBridge()
-            return
-        }
-        let sessionGeneration = playbackSessionGeneration
-        let accountScope = currentAccountScope
-        let playbackGenerationID = playbackItem.id
-        let queueEntryID = playbackItem.queueEntryID
-        playerTaskLifecycle.scheduleBackgroundRecovery(
-            after: .seconds(4)
-        ) { [weak self] in
-            guard let self,
-                  sessionGeneration == self.playbackSessionGeneration,
-                  accountScope == self.currentAccountScope,
-                  self.currentPlaybackItem?.id == playbackGenerationID,
-                  self.currentPlaybackItem?.queueEntryID == queueEntryID,
-                  self.wantsPlayback else {
-                return
-            }
-            guard self.player.timeControlStatus != .playing else {
-                self.endBackgroundBridge()
-                return
-            }
-            self.schedulePlaybackRecovery()
-        }
     }
 
     private func preserveActivePlayback() {
@@ -4704,25 +4212,9 @@ final class AudioEngine: NSObject, ObservableObject {
         configureAudioSession()
         player.isMuted = false
         player.volume = 1
-        playLatencyOptimized()
         recomputeTimelineFromPlayer()
         installNextLyricBoundary(after: elapsed)
         updateNowPlaying()
-    }
-
-    private func beginBackgroundBridge() {
-        endBackgroundBridge()
-        backgroundTaskID = UIApplication.shared.beginBackgroundTask(
-            withName: "BuFiPlaybackTransition"
-        ) { @Sendable [weak self] in
-            Task { @MainActor in self?.endBackgroundBridge() }
-        }
-    }
-
-    private func endBackgroundBridge() {
-        guard backgroundTaskID != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(backgroundTaskID)
-        backgroundTaskID = .invalid
     }
 
     private func handleAudioInterruption(
@@ -4737,10 +4229,8 @@ final class AudioEngine: NSObject, ObservableObject {
         case .began:
             resumeAfterInterruption = isPlaying || wantsPlayback
             wantsPlayback = false
-            cancelPlaybackRecovery()
             markAudioSessionInactive()
             player.pause()
-            endBackgroundBridge()
             scheduleQueueSave(immediate: true)
         case .ended:
             let rawOptions = optionsRawValue ?? 0

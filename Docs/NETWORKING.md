@@ -33,16 +33,19 @@ radio scheduling, and background behavior integrated with iOS.
   `identity` content coding and use background network service priority. Audio is
   already compressed, and byte identity keeps range/seek offsets deterministic.
 - Active AVPlayer streams use byte-identical compressed audio. AVPlayer owns its
-  transport connection, while BuFi owns startup/stall policy: the startup forward
-  buffer is explicitly bounded, a managed buffering wait has a finite watchdog,
-  same-format transport recovery is bounded, and only then may a compatible
-  transcoded format be tried.
-- High-bitrate lossless playback no longer opens the next track after only a few
-  seconds of current playback. Audio successor preparation now exists only in the
-  final gapless window; artwork/lyrics prefetch never opens the next media stream.
-  Buffer windows are codec/bitrate aware, so ALAC/high-bitrate M4A uses a smaller
-  bounded steady-state/successor window while AAC (whether encoded by Apple or
-  FDK-AAC) uses the same native Apple decode path with a cheaper lookahead budget.
+  transport connection and forward-buffer duration. BuFi uses AVPlayer's default
+  system-managed buffer (`preferredForwardBufferDuration == 0`), starts with
+  `play()` while automatic stall minimization is enabled, and never reloads or
+  seeks an item during AVFoundation's buffering-rate/stall-minimization waits.
+  BuFi observes those states only for UI and prefetch cancellation. Explicit
+  item/transport failures retain bounded same-format recovery before a compatible
+  transcoded format may be tried.
+- Remote high-bitrate lossless playback does not overlap the active stream with
+  successor warmup, upcoming artwork/lyrics prefetch, or offline downloads. This
+  preserves bandwidth and decoder headroom for ALAC and reduces radio/CPU work.
+  Local lossless files retain the gapless preparation path because they do not
+  compete for the network. AAC (whether encoded by Apple or FDK-AAC) continues
+  through the same native Apple decode path.
   OpenSubsonic bitrate/depth/rate/size metadata is retained; M4A codec parameters
   such as `codecs=alac`/`codecs=mp4a` are honored before bitrate inference, and
   bitrate can be inferred from byte size and duration when the server omits it. For the
@@ -50,9 +53,7 @@ radio scheduling, and background behavior integrated with iOS.
   instead of AAC→AAC transcoding; this preserves Apple AAC/FDK-AAC output and
   removes avoidable server CPU, generation loss, and startup latency. Codec hints
   are deliberately excluded from AVURLAsset resource identity so late canonical
-  metadata enrichment does not throw away a warmed stream. Lossless playback also
-  reduces metadata/offline speculative prefetch breadth to keep the active stream
-  ahead of background transfers.
+  metadata enrichment does not throw away a warmed stream.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's scoped caches
   remain in control. Generated cover-art URLs are also bounded in memory rather
