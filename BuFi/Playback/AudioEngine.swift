@@ -1347,6 +1347,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var seekGeneration: UInt64 = 0
     private var itemObserverGeneration: UInt64 = 0
     private var timelineObserverGeneration: UInt64 = 0
+    private var timelineRefreshInterval: TimeInterval?
     private var lyricBoundaryGeneration: UInt64 = 0
     private var autoplayGeneration: UInt64 = 0
     private var isSeekInFlight = false
@@ -2465,10 +2466,13 @@ final class AudioEngine: NSObject, ObservableObject {
     func refreshIdleTimerPreference() {
         let keepAwake =
             UserDefaults.standard.object(forKey: "keep-screen-awake") as? Bool ?? false
-        UIApplication.shared.isIdleTimerDisabled =
+        let shouldDisableIdleTimer =
             keepAwake
             && isPlaying
             && !ProcessInfo.processInfo.isLowPowerModeEnabled
+        guard UIApplication.shared.isIdleTimerDisabled
+                != shouldDisableIdleTimer else { return }
+        UIApplication.shared.isIdleTimerDisabled = shouldDisableIdleTimer
     }
 
     func toggleCurrentStar() async {
@@ -3839,8 +3843,6 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func installPlaybackTimeObserver() {
-        timelineObserverGeneration &+= 1
-        let generation = timelineObserverGeneration
         let processInfo = ProcessInfo.processInfo
         let thermalState = processInfo.thermalState
         let refreshInterval = PlaybackTimelineRefreshPolicy.interval(
@@ -3849,6 +3851,10 @@ final class AudioEngine: NSObject, ObservableObject {
             lowPowerModeEnabled: processInfo.isLowPowerModeEnabled,
             thermallyConstrained: thermalState == .serious || thermalState == .critical
         )
+        guard timelineRefreshInterval != refreshInterval else { return }
+        timelineRefreshInterval = refreshInterval
+        timelineObserverGeneration &+= 1
+        let generation = timelineObserverGeneration
         playbackObservers.replacePeriodicTimeObserver(
             interval: CMTime(
                 seconds: refreshInterval,

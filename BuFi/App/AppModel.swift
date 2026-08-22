@@ -480,6 +480,11 @@ final class AppModel: ObservableObject {
             await deactivateStores(leases)
             return
         }
+        await LocalLibraryCatalog.shared.persistNow()
+        guard sessionGeneration == logoutGeneration else {
+            await deactivateStores(leases)
+            return
+        }
 
         if let existing = client {
             await existing.shutdown()

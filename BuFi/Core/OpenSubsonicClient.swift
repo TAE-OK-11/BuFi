@@ -1032,7 +1032,10 @@ actor OpenSubsonicClient {
             let request = try formRequest(endpoint, queryItems: queryItems)
             let response = try await responseData(
                 from: request,
-                allowsRetry: false
+                // savePlayQueue replaces one complete server-side snapshot;
+                // replaying the exact POST after a transient transport failure
+                // is idempotent. Other form mutations remain single-attempt.
+                allowsRetry: Self.allowsIdempotentMutationRetry(endpoint)
             )
             let payload: Payload = try await decodeResponse(response)
             finishMutation(impact)
@@ -2157,7 +2160,9 @@ actor OpenSubsonicClient {
     }
 
     private static func allowsIdempotentMutationRetry(_ endpoint: String) -> Bool {
-        endpoint == "star" || endpoint == "unstar"
+        endpoint == "star"
+            || endpoint == "unstar"
+            || endpoint == "savePlayQueue"
     }
 
     func home(

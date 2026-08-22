@@ -87,6 +87,7 @@ struct RootView: View {
             guard scenePhase != .active else { return }
             await OfflineStore.shared.flushPendingWrites()
             await ListeningHistoryStore.shared.flushPendingWrites()
+            await LocalLibraryCatalog.shared.persistNow()
         }
         .task {
             await observePowerStateChanges()

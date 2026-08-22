@@ -247,14 +247,21 @@ actor ListeningHistoryStore {
     private var revision: UInt64 = 0
     private var lastStartedSongID: String?
     private var persistenceTask: Task<Void, Never>?
+    private var persistenceRetryCount = 0
     private var dirtySongIDs: Set<String> = []
     private var deletedSongIDs: Set<String> = []
+    private static let maximumPersistenceRetryCount = 3
 
     private init() {}
 
     func activate(accountScope: String) async -> AccountSessionToken? {
         if activeScope == accountScope {
+            persistenceTask?.cancel()
+            persistenceTask = nil
             scopeGeneration &+= 1
+            if hasPendingPersistence {
+                schedulePersistence()
+            }
             return AccountSessionToken(
                 accountScope: accountScope,
                 generation: scopeGeneration
@@ -263,13 +270,14 @@ actor ListeningHistoryStore {
         let previousScope = activeScope
         persistenceTask?.cancel()
         persistenceTask = nil
+        persistenceRetryCount = 0
         scopeGeneration &+= 1
         let generation = scopeGeneration
         activeScope = nil
         lastStartedSongID = nil
 
         if let previousScope {
-            await persist(
+            _ = await persist(
                 scope: previousScope,
                 generation: generation,
                 permitsInactiveScope: true
@@ -311,10 +319,11 @@ actor ListeningHistoryStore {
         ) else { return false }
         persistenceTask?.cancel()
         persistenceTask = nil
+        persistenceRetryCount = 0
         scopeGeneration &+= 1
         let generation = scopeGeneration
         activeScope = nil
-        await persist(
+        _ = await persist(
             scope: session.accountScope,
             generation: generation,
             permitsInactiveScope: true
@@ -589,6 +598,7 @@ actor ListeningHistoryStore {
         guard let scope = activeScope else { return }
         persistenceTask?.cancel()
         persistenceTask = nil
+        persistenceRetryCount = 0
         entries.removeAll(keepingCapacity: false)
         lastStartedSongID = nil
         dirtySongIDs.removeAll(keepingCapacity: true)
@@ -622,7 +632,15 @@ actor ListeningHistoryStore {
             let beforeDirty = dirtySongIDs
             let beforeDeleted = deletedSongIDs
             let beforeRevision = revision
-            await persist(scope: scope, generation: generation)
+            let saved = await persist(scope: scope, generation: generation)
+            guard saved else {
+                schedulePersistenceRetry(
+                    scope: scope,
+                    generation: generation
+                )
+                break
+            }
+            persistenceRetryCount = 0
             guard dirtySongIDs != beforeDirty
                     || deletedSongIDs != beforeDeleted
                     || revision != beforeRevision else {
@@ -652,28 +670,75 @@ actor ListeningHistoryStore {
         }
     }
 
-    private func schedulePersistence() {
+    private var hasPendingPersistence: Bool {
+        !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty
+    }
+
+    private func schedulePersistence(
+        retryDelay: Duration? = nil,
+        resetRetry: Bool = true
+    ) {
+        if resetRetry { persistenceRetryCount = 0 }
         persistenceTask?.cancel()
         let scope = activeScope
+        let generation = scopeGeneration
+        let delay = retryDelay ?? .milliseconds(600)
         persistenceTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
             guard !Task.isCancelled else { return }
-            await self?.flushScheduledPersistence(scope: scope)
+            await self?.flushScheduledPersistence(
+                scope: scope,
+                generation: generation
+            )
         }
     }
 
-    private func flushScheduledPersistence(scope: String?) async {
-        guard activeScope == scope else { return }
+    private func flushScheduledPersistence(
+        scope: String?,
+        generation: UInt64
+    ) async {
+        guard activeScope == scope,
+              scopeGeneration == generation else { return }
         persistenceTask = nil
         guard let scope else { return }
-        await persist(scope: scope, generation: scopeGeneration)
+        let saved = await persist(scope: scope, generation: generation)
+        guard activeScope == scope,
+              scopeGeneration == generation else { return }
+        if saved {
+            persistenceRetryCount = 0
+        } else {
+            schedulePersistenceRetry(scope: scope, generation: generation)
+        }
+    }
+
+    private func schedulePersistenceRetry(
+        scope: String,
+        generation: UInt64
+    ) {
+        guard activeScope == scope,
+              scopeGeneration == generation,
+              hasPendingPersistence else { return }
+        persistenceRetryCount += 1
+        guard persistenceRetryCount <= Self.maximumPersistenceRetryCount else {
+            return
+        }
+        let delay: Duration = switch persistenceRetryCount {
+        case 1: .seconds(1)
+        case 2: .seconds(2)
+        default: .seconds(4)
+        }
+        schedulePersistence(retryDelay: delay, resetRetry: false)
     }
 
     private func persist(
         scope: String,
         generation: UInt64,
         permitsInactiveScope: Bool = false
-    ) async {
+    ) async -> Bool {
         let token = AccountSessionToken(
             accountScope: scope,
             generation: generation
@@ -684,7 +749,7 @@ actor ListeningHistoryStore {
                     accountScope: activeScope,
                     generation: scopeGeneration
                 )),
-              !dirtySongIDs.isEmpty || !deletedSongIDs.isEmpty else { return }
+              hasPendingPersistence else { return true }
         let batch = PersistenceBatch(
             scope: scope,
             generation: generation,
@@ -699,23 +764,24 @@ actor ListeningHistoryStore {
             batch.dirty,
             deletedIDs: batch.deleted,
             scope: batch.scope
-        ) else { return }
+        ) else { return false }
         guard permitsInactiveScope
                 ? activeScope == nil && scopeGeneration == generation
                 : token.matches(
                     accountScope: activeScope,
                     generation: scopeGeneration
-                ) else { return }
+                ) else { return true }
         // The actor can accept a newer playback event while the database write
         // is suspended. Only acknowledge the exact values that were written;
         // otherwise the newer mutation must remain dirty for the next flush.
-        guard batch.generation == generation else { return }
+        guard batch.generation == generation else { return true }
         for (id, savedValue) in batch.dirty where entries[id] == savedValue {
             dirtySongIDs.remove(id)
         }
         for id in batch.deleted where entries[id] == nil {
             deletedSongIDs.remove(id)
         }
+        return true
     }
 
     private func markDirty(_ songID: String) {

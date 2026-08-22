@@ -40,8 +40,10 @@ actor LocalLibraryCatalog {
     private var songsByISRC: [String: String] = [:]
     private var songsByIdentity: [String: String] = [:]
     private var persistTask: Task<Void, Never>?
+    private var persistenceRetryCount = 0
     private var dirtySongIDs: Set<String> = []
     private var deletedSongIDs: Set<String> = []
+    private static let maximumPersistenceRetryCount = 3
 
     private init() {}
 
@@ -61,12 +63,13 @@ actor LocalLibraryCatalog {
         }
         persistTask?.cancel()
         persistTask = nil
+        persistenceRetryCount = 0
         scopeGeneration &+= 1
         let generation = scopeGeneration
         let previousScope = activeScope
         activeScope = nil
         if let previousScope {
-            await persist(
+            _ = await persist(
                 scope: previousScope,
                 generation: generation,
                 permitsInactiveScope: true
@@ -109,10 +112,11 @@ actor LocalLibraryCatalog {
         ) else { return false }
         persistTask?.cancel()
         persistTask = nil
+        persistenceRetryCount = 0
         scopeGeneration &+= 1
         let generation = scopeGeneration
         activeScope = nil
-        await persist(
+        _ = await persist(
             scope: session.accountScope,
             generation: generation,
             permitsInactiveScope: true
@@ -150,7 +154,13 @@ actor LocalLibraryCatalog {
         persistTask?.cancel()
         persistTask = nil
         guard let scope = activeScope else { return }
-        await persist(scope: scope, generation: scopeGeneration)
+        let generation = scopeGeneration
+        let saved = await persist(scope: scope, generation: generation)
+        guard !saved else {
+            persistenceRetryCount = 0
+            return
+        }
+        schedulePersistenceRetry(scope: scope, generation: generation)
     }
 
     func cachedMatches(
@@ -305,12 +315,21 @@ actor LocalLibraryCatalog {
         )
     }
 
-    private func schedulePersist() {
+    private func schedulePersist(
+        retryDelay: Duration? = nil,
+        resetRetry: Bool = true
+    ) {
+        if resetRetry { persistenceRetryCount = 0 }
         persistTask?.cancel()
         guard let scope = activeScope else { return }
         let generation = scopeGeneration
+        let delay = retryDelay ?? .seconds(2)
         persistTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
             guard !Task.isCancelled, let self else { return }
             await self.flushScheduledPersistence(
                 scope: scope,
@@ -334,14 +353,46 @@ actor LocalLibraryCatalog {
             return
         }
         persistTask = nil
-        await persist(scope: scope, generation: generation)
+        let saved = await persist(scope: scope, generation: generation)
+        guard AccountSessionToken(
+            accountScope: scope,
+            generation: generation
+        ).matches(accountScope: activeScope, generation: scopeGeneration) else {
+            return
+        }
+        if saved {
+            persistenceRetryCount = 0
+        } else {
+            schedulePersistenceRetry(scope: scope, generation: generation)
+        }
+    }
+
+    private func schedulePersistenceRetry(
+        scope: String,
+        generation: UInt64
+    ) {
+        guard AccountSessionToken(
+            accountScope: scope,
+            generation: generation
+        ).matches(accountScope: activeScope, generation: scopeGeneration),
+              hasPendingPersistence else { return }
+        persistenceRetryCount += 1
+        guard persistenceRetryCount <= Self.maximumPersistenceRetryCount else {
+            return
+        }
+        let delay: Duration = switch persistenceRetryCount {
+        case 1: .seconds(1)
+        case 2: .seconds(2)
+        default: .seconds(4)
+        }
+        schedulePersist(retryDelay: delay, resetRetry: false)
     }
 
     private func persist(
         scope: String,
         generation: UInt64,
         permitsInactiveScope: Bool = false
-    ) async {
+    ) async -> Bool {
         let token = AccountSessionToken(
             accountScope: scope,
             generation: generation
@@ -352,7 +403,7 @@ actor LocalLibraryCatalog {
                 accountScope: activeScope,
                 generation: scopeGeneration
             )
-        guard ownsGeneration, hasPendingPersistence else { return }
+        guard ownsGeneration, hasPendingPersistence else { return true }
 
         let batch = PersistenceBatch(
             scope: scope,
@@ -368,13 +419,13 @@ actor LocalLibraryCatalog {
         do {
             records = try await Self.encodeRecordsConcurrently(batch.dirty)
         } catch {
-            return
+            return false
         }
         guard await AppDatabase.shared.applyLibraryCatalog(
             records,
             deletedIDs: batch.deleted,
             scope: batch.scope
-        ) else { return }
+        ) else { return false }
 
         let stillOwnsGeneration = permitsInactiveScope
             ? activeScope == nil && scopeGeneration == generation
@@ -382,13 +433,16 @@ actor LocalLibraryCatalog {
                 accountScope: activeScope,
                 generation: scopeGeneration
             )
-        guard stillOwnsGeneration, batch.generation == generation else { return }
+        guard stillOwnsGeneration, batch.generation == generation else {
+            return true
+        }
         for (id, savedEntry) in batch.dirty where entries[id] == savedEntry {
             dirtySongIDs.remove(id)
         }
         for id in batch.deleted where entries[id] == nil {
             deletedSongIDs.remove(id)
         }
+        return true
     }
 
     @concurrent
