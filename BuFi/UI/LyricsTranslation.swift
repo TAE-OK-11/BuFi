@@ -183,11 +183,11 @@ struct LyricsTranslationTaskHost: View {
             return
         }
         phase = .loadingCache
-        let cached = await AppDatabase.shared.loadLyricsTranslations(
+        let cached = await LyricsTranslationCachePolicy.load(
             scope: accountScope,
             songID: songID,
-            targetLanguage: translationCacheLanguage,
-            sourceLines: Dictionary(uniqueKeysWithValues: lines.map { ($0.id, $0.text) })
+            targetLanguageCode: targetLanguageCode,
+            lines: lines
         )
         guard !Task.isCancelled else { return }
         translations = cached
@@ -228,16 +228,92 @@ private enum LyricsFoundationRuntimePolicy {
 }
 
 private enum LyricsTranslationCachePolicy {
-    // Context-free translations from the first implementation must not mask
-    // the improved stanza-aware result after an app update.
+    /// The write key must never depend on thermal state, Low Power Mode, model
+    /// availability, or OS minor version. Those are execution choices, not
+    /// content identity; varying this key caused completed translations to be
+    /// missed the next time the same lyrics were opened.
     static func languageKey(for targetLanguageCode: String) -> String {
-        if LyricsFoundationRuntimePolicy.allowsRefinement {
-            return "\(targetLanguageCode)#lyrics-foundation-refined-v5"
+        "\(baseLanguageCode(targetLanguageCode))#lyrics-natural-v6"
+    }
+
+    static func load(
+        scope: String,
+        songID: String,
+        targetLanguageCode: String,
+        lines: [LyricLine]
+    ) async -> [Int: String] {
+        let sourceLines = Dictionary(uniqueKeysWithValues: lines.map {
+            ($0.id, $0.text)
+        })
+        guard !sourceLines.isEmpty else { return [:] }
+        let canonicalKey = languageKey(for: targetLanguageCode)
+        let canonical = await AppDatabase.shared.loadLyricsTranslations(
+            scope: scope,
+            songID: songID,
+            targetLanguage: canonicalKey,
+            sourceLines: sourceLines
+        )
+        var merged = canonical
+        for legacyKey in legacyLanguageKeys(for: targetLanguageCode) {
+            guard merged.count < sourceLines.count else { break }
+            let legacy = await AppDatabase.shared.loadLyricsTranslations(
+                scope: scope,
+                songID: songID,
+                targetLanguage: legacyKey,
+                sourceLines: sourceLines
+            )
+            merged.merge(legacy) { current, _ in current }
         }
-        if #available(iOS 26.4, *) {
-            return "\(targetLanguageCode)#lyrics-attributed-context-v4"
+
+        // Migrate compatible old results once. Subsequent presentations need
+        // one indexed GRDB read regardless of the runtime used originally.
+        if merged.count > canonical.count {
+            let records = lines.compactMap { line -> LyricsTranslationRecord? in
+                guard let translatedText = merged[line.id],
+                      !translatedText.isEmpty else { return nil }
+                return LyricsTranslationRecord(
+                    lineID: line.id,
+                    sourceLanguage: "und",
+                    sourceText: line.text,
+                    translatedText: translatedText
+                )
+            }
+            _ = await AppDatabase.shared.saveLyricsTranslations(
+                records,
+                scope: scope,
+                songID: songID,
+                targetLanguage: canonicalKey
+            )
         }
-        return "\(targetLanguageCode)#lyrics-context-v2"
+        return merged
+    }
+
+    private static func legacyLanguageKeys(
+        for targetLanguageCode: String
+    ) -> [String] {
+        let raw = targetLanguageCode.lowercased()
+        let base = baseLanguageCode(targetLanguageCode)
+        var keys: [String] = []
+        var seen = Set<String>()
+        for language in [base, raw] {
+            for suffix in [
+                "lyrics-foundation-refined-v5",
+                "lyrics-attributed-context-v4",
+                "lyrics-context-v2"
+            ] {
+                let key = "\(language)#\(suffix)"
+                if seen.insert(key).inserted { keys.append(key) }
+            }
+        }
+        return keys
+    }
+
+    private static func baseLanguageCode(_ identifier: String) -> String {
+        identifier
+            .replacingOccurrences(of: "_", with: "-")
+            .split(separator: "-", maxSplits: 1)
+            .first
+            .map { String($0).lowercased() } ?? identifier.lowercased()
     }
 }
 
@@ -751,14 +827,11 @@ private struct SystemLyricsTranslationTaskHost: View {
         }
 
         phase = .loadingCache
-        let sourceLines = Dictionary(
-            uniqueKeysWithValues: lines.map { ($0.id, $0.text) }
-        )
-        let cached = await AppDatabase.shared.loadLyricsTranslations(
+        let cached = await LyricsTranslationCachePolicy.load(
             scope: accountScope,
             songID: songID,
-            targetLanguage: translationCacheLanguage,
-            sourceLines: sourceLines
+            targetLanguageCode: targetLanguageCode,
+            lines: lines
         )
         guard !Task.isCancelled else { return }
         translations = cached
@@ -867,6 +940,39 @@ private struct SystemLyricsTranslationTaskHost: View {
             var visibleDrafts = translations
             visibleDrafts.merge(translatedLines) { _, translated in translated }
             translations = visibleDrafts
+
+            // Persist Apple's completed draft before optional Foundation Models
+            // refinement. The draft is already visible and useful; if the user
+            // closes the lyrics screen during refinement, cancellation must not
+            // force the Translation framework to perform the same work again.
+            let draftRecords = translatedLines.compactMap {
+                lineID, rawTranslatedText -> LyricsTranslationRecord? in
+                guard let line = linesByID[lineID] else { return nil }
+                let translatedText = rawTranslatedText.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                guard !translatedText.isEmpty else { return nil }
+                return LyricsTranslationRecord(
+                    lineID: line.id,
+                    sourceLanguage: requestSourceLanguage,
+                    sourceText: line.text,
+                    translatedText: translatedText
+                )
+            }
+            if !draftRecords.isEmpty {
+                _ = await AppDatabase.shared.saveLyricsTranslations(
+                    draftRecords,
+                    scope: requestScope,
+                    songID: requestSongID,
+                    targetLanguage: requestCacheLanguage
+                )
+                guard !Task.isCancelled,
+                      songID == requestSongID,
+                      accountScope == requestScope,
+                      targetLanguageCode == requestTargetLanguage else {
+                    return
+                }
+            }
             var finalTranslations = translatedLines
             if #available(iOS 26.0, *),
                LyricsFoundationRuntimePolicy.allowsRefinement {

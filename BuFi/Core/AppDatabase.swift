@@ -401,13 +401,33 @@ actor AppDatabase {
                     arguments: [scope, songID, targetLanguage]
                 )
                 var translations = [Int: String](minimumCapacity: rows.count)
+                var translationsBySource = [String: String](
+                    minimumCapacity: rows.count
+                )
                 for row in rows {
                     let lineID: Int = row["line_id"]
                     let sourceText: String = row["source_text"]
                     let translatedText: String = row["translated_text"]
-                    guard sourceLines[lineID] == sourceText,
-                          !translatedText.isEmpty else { continue }
-                    translations[lineID] = translatedText
+                    guard !translatedText.isEmpty else { continue }
+                    let normalizedSource = Self.normalizedLyricSource(sourceText)
+                    guard !normalizedSource.isEmpty else { continue }
+                    if translationsBySource[normalizedSource] == nil {
+                        translationsBySource[normalizedSource] = translatedText
+                    }
+                    if let currentSource = sourceLines[lineID],
+                       Self.normalizedLyricSource(currentSource) == normalizedSource {
+                        translations[lineID] = translatedText
+                    }
+                }
+                // Servers can reindex the same lyrics when blank/timestamp-only
+                // lines change. Reuse an exact normalized source match for any
+                // missing ID instead of retranslating unchanged text.
+                for (lineID, sourceText) in sourceLines
+                    where translations[lineID] == nil {
+                    let normalizedSource = Self.normalizedLyricSource(sourceText)
+                    if let translatedText = translationsBySource[normalizedSource] {
+                        translations[lineID] = translatedText
+                    }
                 }
                 return translations
             }
@@ -1697,6 +1717,12 @@ actor AppDatabase {
         from data: Data
     ) throws -> Value {
         try PropertyListDecoder().decode(type, from: data)
+    }
+
+    private static func normalizedLyricSource(_ value: String) -> String {
+        value.precomposedStringWithCanonicalMapping
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
     }
 
     private func schedulePaletteTouch(_ touch: PaletteTouch) {
