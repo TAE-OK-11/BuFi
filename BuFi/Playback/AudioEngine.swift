@@ -2676,14 +2676,11 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private static func makePlayerItem(asset: AVURLAsset) -> AVPlayerItem {
-        // Match the transport shape used by TIDAL's AVQueuePlayer backend:
-        // duration can load alongside the media pipeline, while AVFoundation
-        // remains responsible for the actual forward-buffer decision and HLS
-        // variant startup. The latter settings are no-ops for direct files.
-        let item = AVPlayerItem(
-            asset: asset,
-            automaticallyLoadedAssetKeys: [#keyPath(AVAsset.duration)]
-        )
+        // Match the transport shape used by TIDAL's AVQueuePlayer backend
+        // while using Apple's modern asynchronous asset-loading path.
+        // AVFoundation remains responsible for the actual forward-buffer
+        // decision and HLS variant startup; these are no-ops for direct files.
+        let item = AVPlayerItem(asset: asset)
         item.variantPreferences = .scalabilityToLosslessAudio
         item.startsOnFirstEligibleVariant = true
         PlaybackBufferPolicy.configure(item)
