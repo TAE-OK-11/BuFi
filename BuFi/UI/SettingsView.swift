@@ -146,7 +146,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                settingsNote("Classic은 기존 디자인을 유지하고 Liquid Glass는 재생바만 Apple 스타일로 표시합니다. Dynamic은 잠금화면처럼 제어 요소를 유리 카드에 모읍니다.")
+                settingsNote("Classic은 기존 디자인을 유지하고 Liquid Glass는 재생바에 Apple 소재를 적용합니다. Apple Music은 큰 앨범 커버와 간결한 재생 제어를 사용합니다.")
 
                 SettingsDivider()
 

@@ -49,7 +49,7 @@ enum PlayerSeekBarAppearance {
 enum PlayerAppearance: String, CaseIterable, Identifiable {
     case classic
     case liquidGlass
-    case dynamic
+    case appleMusic = "dynamic"
 
     var id: String { rawValue }
 
@@ -57,7 +57,7 @@ enum PlayerAppearance: String, CaseIterable, Identifiable {
         switch self {
         case .classic: "클래식"
         case .liquidGlass: "Liquid Glass"
-        case .dynamic: "Dynamic"
+        case .appleMusic: "Apple Music"
         }
     }
 
@@ -548,6 +548,7 @@ struct SongFavoriteIconButton: View {
     var iconSize: CGFloat = 16
     var inactiveForeground: Color = .secondary
     var hitTarget: CGFloat = 32
+    var usesStarSymbol = false
 
     var body: some View {
         SongFavoriteIconButtonContent(
@@ -556,7 +557,8 @@ struct SongFavoriteIconButton: View {
             song: song,
             iconSize: iconSize,
             inactiveForeground: inactiveForeground,
-            hitTarget: hitTarget
+            hitTarget: hitTarget,
+            usesStarSymbol: usesStarSymbol
         )
     }
 }
@@ -570,6 +572,7 @@ private struct SongFavoriteIconButtonContent: View {
     let iconSize: CGFloat
     let inactiveForeground: Color
     let hitTarget: CGFloat
+    let usesStarSymbol: Bool
 
     private var isStarred: Bool {
         overrideState.value ?? song.isStarred
@@ -599,7 +602,11 @@ private struct SongFavoriteIconButtonContent: View {
 
     @ViewBuilder
     private var favoriteIcon: some View {
-        let image = Image(systemName: isStarred ? "heart.fill" : "heart")
+        let image = Image(
+            systemName: usesStarSymbol
+                ? (isStarred ? "star.fill" : "star")
+                : (isStarred ? "heart.fill" : "heart")
+        )
         if motionEnabled {
             image
                 .contentTransition(.symbolEffect(.replace))
