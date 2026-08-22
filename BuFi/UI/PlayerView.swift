@@ -445,22 +445,22 @@ struct PlayerView: View {
 
             progress
                 .frame(width: contentWidth)
-                .padding(.top, 28)
+                .padding(.top, 20)
 
             AppleMusicTransportBar(
                 primary: playerPrimary,
                 motionEnabled: allowsMotion
             )
             .frame(width: contentWidth)
-            .padding(.top, 14)
+            .padding(.top, 22)
 
             appleMusicVolume
                 .frame(width: contentWidth)
-                .padding(.top, 20)
+                .padding(.top, 29)
 
             appleMusicUtilityRow
                 .frame(width: contentWidth)
-                .padding(.top, 14)
+                .padding(.top, 8)
         }
         .padding(.bottom, 12)
     }
@@ -743,7 +743,7 @@ struct PlayerView: View {
         return HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(song.title)
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 21, weight: .semibold))
                     .tracking(-0.45)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -757,11 +757,15 @@ struct PlayerView: View {
             HStack(spacing: 18) {
                 PlayerFavoriteButton(
                     song: song,
-                    iconSize: 26,
+                    iconSize: 24,
                     foreground: playerPrimary,
                     usesStarSymbol: true
                 )
-                PlayerOverflowMenu(song: song, foreground: playerPrimary)
+                PlayerOverflowMenu(
+                    song: song,
+                    foreground: playerPrimary,
+                    iconSize: 20
+                )
             }
         }
     }
@@ -790,8 +794,8 @@ struct PlayerView: View {
             Image(systemName: "speaker.fill")
                 .font(.system(size: 13, weight: .semibold))
             AppleSystemVolumeSlider(
-                minimumTrack: playerPrimary.opacity(0.62),
-                maximumTrack: playerPrimary.opacity(0.22),
+                minimumTrack: playerPrimary.opacity(0.42),
+                maximumTrack: playerPrimary.opacity(0.24),
                 thumb: playerPrimary
             )
             .frame(height: 30)
@@ -818,7 +822,7 @@ struct PlayerView: View {
             .accessibilityLabel("가사")
 
             Spacer()
-            AirPlayButton(lightContent: true)
+            AirPlayButton(lightContent: true, contentOpacity: 0.60)
                 .frame(width: 44, height: 44)
                 .accessibilityLabel("AirPlay")
             Spacer()
@@ -833,7 +837,7 @@ struct PlayerView: View {
             .accessibilityLabel("재생목록")
         }
         .buttonStyle(BuFiPressStyle())
-        .foregroundStyle(playerPrimary.opacity(0.82))
+        .foregroundStyle(playerPrimary.opacity(0.58))
     }
 
     private func utilityRow(
@@ -926,7 +930,9 @@ struct PlayerView: View {
     }
 
     private var playerSecondary: Color {
-        playerPrimary.opacity(0.64)
+        playerPrimary.opacity(
+            resolvedPlayerAppearance == .appleMusic ? 0.56 : 0.64
+        )
     }
 
     private var playerButtonForeground: Color {
@@ -1022,6 +1028,7 @@ private struct PlayerOverflowMenu: View {
 
     let song: Song
     let foreground: Color
+    var iconSize: CGFloat = 22
 
     var body: some View {
         Menu {
@@ -1051,7 +1058,7 @@ private struct PlayerOverflowMenu: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: 22, weight: .semibold))
+                .font(.system(size: iconSize, weight: .semibold))
                 .foregroundStyle(foreground)
                 .frame(width: 44, height: 44)
         }
@@ -1119,7 +1126,7 @@ private struct AppleMusicTransportBar: View {
         HStack {
             transportButton(
                 "backward.fill",
-                size: 34,
+                size: 31,
                 label: "이전 곡",
                 action: audio.previous
             )
@@ -1151,12 +1158,12 @@ private struct AppleMusicTransportBar: View {
             Spacer()
             transportButton(
                 "forward.fill",
-                size: 34,
+                size: 31,
                 label: "다음 곡",
                 action: { audio.next() }
             )
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 36)
         .frame(height: 92)
         .animation(
             motionEnabled ? BuFiMotion.symbol : .none,
@@ -1946,12 +1953,14 @@ private struct PlayerPaletteBackground: View, Equatable {
         case restrained
         case vivid
         case bright
+        case appleMusic
 
         var baseWeight: Double {
             switch self {
             case .restrained: 1.55
             case .vivid: 0.88
             case .bright: 0.82
+            case .appleMusic: 0.72
             }
         }
 
@@ -1960,6 +1969,7 @@ private struct PlayerPaletteBackground: View, Equatable {
             case .restrained: 0.92
             case .vivid: 1.72
             case .bright: 1.88
+            case .appleMusic: 1.98
             }
         }
 
@@ -1968,6 +1978,7 @@ private struct PlayerPaletteBackground: View, Equatable {
             case .restrained: 0.40
             case .vivid: 0.76
             case .bright: 0.82
+            case .appleMusic: 0.86
             }
         }
     }
@@ -1981,13 +1992,13 @@ private struct PlayerPaletteBackground: View, Equatable {
     var body: some View {
         if playerAppearance == .appleMusic {
             ZStack {
-                artisticField(style: .vivid)
-                Color.black.opacity(colorScheme == .dark ? 0.30 : 0.20)
+                artisticField(style: .appleMusic)
+                Color.black.opacity(colorScheme == .dark ? 0.12 : 0.08)
                 LinearGradient(
                     colors: [
                         Color.black.opacity(0.04),
-                        Color.black.opacity(0.15),
-                        Color.black.opacity(0.34)
+                        Color.black.opacity(0.16),
+                        Color.black.opacity(0.35)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -2169,6 +2180,8 @@ private struct PlayerPaletteBackground: View, Equatable {
             )
         case .bright:
             brightenedColor(color, brightnessFloor: 0.70)
+        case .appleMusic:
+            Color(color)
         }
     }
 

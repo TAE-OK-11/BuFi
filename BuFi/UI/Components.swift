@@ -1077,16 +1077,22 @@ struct InteractiveSeekBar: View {
 
 struct AirPlayButton: UIViewRepresentable {
     var lightContent = false
+    var contentOpacity: CGFloat = 1
 
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.prioritizesVideoDevices = false
         picker.activeTintColor = UIColor(BuFiTheme.accent)
-        picker.tintColor = lightContent ? .white : .label
+        picker.tintColor = resolvedTint
         return picker
     }
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
-        uiView.tintColor = lightContent ? .white : .label
+        uiView.tintColor = resolvedTint
+    }
+
+    private var resolvedTint: UIColor {
+        (lightContent ? UIColor.white : UIColor.label)
+            .withAlphaComponent(contentOpacity)
     }
 }
