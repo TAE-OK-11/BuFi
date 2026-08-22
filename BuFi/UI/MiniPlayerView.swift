@@ -7,133 +7,147 @@ struct MiniPlayerView: View {
     @State private var palette: ArtworkPalette?
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
     @State private var transitionDirection: CGFloat = 1
+    // Stage the visible item so the direction is fixed before SwiftUI inserts
+    // the next artwork and metadata into the transition transaction.
+    @State private var presentedItem: PlaybackMediaItem?
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
     private let audio = AudioEngine.shared
 
     var body: some View {
-        if let item = currentPlayback.item {
-            let song = item.song
-            let artworkIdentity = item.artworkIdentity
-            ZStack {
-                Button {
-                    audio.showPlayer = true
-                } label: {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(Color.clear)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(
-                            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        )
-                }
-                .buttonStyle(
-                    MiniPlayerOpenButtonStyle(
-                        pressedTint: miniPlayerForeground,
-                        cornerRadius: cornerRadius
-                    )
-                )
-                .accessibilityLabel("\(song.title), \(song.artist)")
-                .accessibilityHint("전체 플레이어 열기")
-
-                VStack(spacing: 0) {
-                    HStack(spacing: 9) {
-                        ZStack {
-                            ArtworkView(
-                                coverArt: song.artworkID,
-                                size: 50,
-                                cornerRadius: 5,
-                                cacheRevision: artworkIdentity.artworkRevision,
-                                onPalette: { nextPalette in
-                                    guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
-                                        return
-                                    }
-                                    if nextPalette == .fallback {
-                                        palette = nil
-                                        paletteArtworkIdentity = nil
-                                    } else {
-                                        palette = nextPalette
-                                        paletteArtworkIdentity = artworkIdentity
-                                    }
-                                }
+        Group {
+            if let item = presentedItem ?? currentPlayback.item {
+                let song = item.song
+                let artworkIdentity = item.artworkIdentity
+                ZStack {
+                    Button {
+                        audio.showPlayer = true
+                    } label: {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(Color.clear)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(
+                                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             )
-                            .id(artworkIdentity)
-                            .transition(trackArtworkTransition)
-                        }
-                        .frame(width: 50, height: 50)
-                        .animation(
-                            motionEnabled ? BuFiMotion.trackArtwork : .none,
-                            value: artworkIdentity
-                        )
-
-                        ZStack(alignment: .leading) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                OverflowMarqueeText(
-                                    text: song.title,
-                                    font: .system(size: 15, weight: .semibold)
-                                )
-                                Text(song.artist)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(miniPlayerForeground.opacity(0.72))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.76)
-                            }
-                            .id(item.id)
-                            .transition(trackTextTransition)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .layoutPriority(1)
-                        .allowsHitTesting(false)
-                        .animation(
-                            motionEnabled ? BuFiMotion.trackText : .none,
-                            value: item.id
-                        )
-
-                        AirPlayButton(lightContent: !usesDarkForeground)
-                            .frame(width: 36, height: 36)
-                            .zIndex(2)
-
-                        MiniPlayerPlaybackButton {
-                            audio.togglePlayback()
-                        }
-                        .zIndex(2)
                     }
-                    .padding(.horizontal, 6)
-                    .frame(height: playerHeight - 2)
-
-                    MiniPlayerProgressView(
-                        timeline: audio.timeline,
-                        tint: miniPlayerForeground
+                    .buttonStyle(
+                        MiniPlayerOpenButtonStyle(
+                            pressedTint: miniPlayerForeground,
+                            cornerRadius: cornerRadius
+                        )
                     )
-                    .frame(height: 2)
-                    .allowsHitTesting(false)
+                    .accessibilityLabel("\(song.title), \(song.artist)")
+                    .accessibilityHint("전체 플레이어 열기")
+
+                    VStack(spacing: 0) {
+                        HStack(spacing: 9) {
+                            ZStack {
+                                ArtworkView(
+                                    coverArt: song.artworkID,
+                                    size: 50,
+                                    cornerRadius: 5,
+                                    cacheRevision: artworkIdentity.artworkRevision,
+                                    onPalette: { nextPalette in
+                                        guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
+                                            return
+                                        }
+                                        if nextPalette == .fallback {
+                                            palette = nil
+                                            paletteArtworkIdentity = nil
+                                        } else {
+                                            palette = nextPalette
+                                            paletteArtworkIdentity = artworkIdentity
+                                        }
+                                    }
+                                )
+                                .id(artworkIdentity)
+                                .transition(trackArtworkTransition)
+                            }
+                            .frame(width: 50, height: 50)
+
+                            ZStack(alignment: .leading) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    OverflowMarqueeText(
+                                        text: song.title,
+                                        font: .system(size: 15, weight: .semibold)
+                                    )
+                                    Text(song.artist)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(miniPlayerForeground.opacity(0.72))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.76)
+                                }
+                                .id(item.id)
+                                .transition(trackTextTransition)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .layoutPriority(1)
+                            .allowsHitTesting(false)
+
+                            AirPlayButton(lightContent: !usesDarkForeground)
+                                .frame(width: 36, height: 36)
+                                .zIndex(2)
+
+                            MiniPlayerPlaybackButton {
+                                audio.togglePlayback()
+                            }
+                            .zIndex(2)
+                        }
+                        .padding(.horizontal, 6)
+                        .frame(height: playerHeight - 2)
+
+                        MiniPlayerProgressView(
+                            timeline: audio.timeline,
+                            tint: miniPlayerForeground
+                        )
+                        .frame(height: 2)
+                        .allowsHitTesting(false)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: playerHeight)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: playerHeight)
+                .fixedSize(horizontal: false, vertical: true)
+                .clipped()
+                .foregroundStyle(miniPlayerForeground)
+                .background {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(miniPlayerBackground)
+                        .animation(
+                            motionEnabled ? BuFiMotion.color : .none,
+                            value: resolvedPalette
+                        )
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(miniPlayerForeground.opacity(0.16), lineWidth: 0.7)
+                        .animation(
+                            motionEnabled ? BuFiMotion.color : .none,
+                            value: resolvedPalette
+                        )
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .shadow(
+                    color: .black.opacity(colorScheme == .dark ? 0.20 : 0.09),
+                    radius: colorScheme == .dark ? 12 : 9,
+                    y: colorScheme == .dark ? 6 : 4
+                )
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: playerHeight)
-            .fixedSize(horizontal: false, vertical: true)
-            .clipped()
-            .foregroundStyle(miniPlayerForeground)
-            .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(miniPlayerBackground)
-                    .animation(motionEnabled ? BuFiMotion.color : .none, value: resolvedPalette)
+        }
+        .onAppear {
+            presentedItem = currentPlayback.item
+        }
+        .onChange(of: currentPlayback.snapshot) { previous, next in
+            let changesTrack = previous.item?.id != next.item?.id
+            if changesTrack {
+                transitionDirection = next.index >= previous.index ? 1 : -1
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(miniPlayerForeground.opacity(0.16), lineWidth: 0.7)
-                    .animation(motionEnabled ? BuFiMotion.color : .none, value: resolvedPalette)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .shadow(
-                color: .black.opacity(colorScheme == .dark ? 0.20 : 0.09),
-                radius: colorScheme == .dark ? 12 : 9,
-                y: colorScheme == .dark ? 6 : 4
-            )
-            .onChange(of: currentPlayback.index) { previous, next in
-                transitionDirection = next >= previous ? 1 : -1
+            withAnimation(
+                changesTrack && motionEnabled ? BuFiMotion.miniTrack : .none
+            ) {
+                presentedItem = next.item
             }
         }
     }
@@ -157,7 +171,7 @@ struct MiniPlayerView: View {
     }
 
     private var currentArtworkIdentity: PlayerArtworkIdentity? {
-        currentPlayback.item?.artworkIdentity
+        (presentedItem ?? currentPlayback.item)?.artworkIdentity
     }
 
     private func relativeLuminance(_ color: RGBAColor) -> Double {
@@ -174,17 +188,19 @@ struct MiniPlayerView: View {
     private var trackTextTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(x: 18 * transitionDirection).combined(with: .opacity),
-            removal: .offset(x: -14 * transitionDirection).combined(with: .opacity)
+            insertion: .offset(x: 12 * transitionDirection).combined(with: .opacity),
+            removal: .offset(x: -9 * transitionDirection).combined(with: .opacity)
         )
     }
 
     private var trackArtworkTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(x: 14 * transitionDirection)
+            insertion: .offset(x: 12 * transitionDirection)
+                .combined(with: .scale(scale: 0.985))
                 .combined(with: .opacity),
-            removal: .offset(x: -12 * transitionDirection)
+            removal: .offset(x: -9 * transitionDirection)
+                .combined(with: .scale(scale: 0.992))
                 .combined(with: .opacity)
         )
     }
@@ -230,10 +246,12 @@ private struct MiniPlayerPlaybackButton: View {
                 if playbackControl.isBuffering {
                     ProgressView()
                         .controlSize(.small)
+                        .transition(.opacity.combined(with: .scale(scale: 0.90)))
                 } else {
                     Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
                         .font(.system(size: 21, weight: .semibold))
                         .contentTransition(.symbolEffect(.replace))
+                        .transition(.opacity.combined(with: .scale(scale: 0.90)))
                 }
             }
             .frame(width: 44, height: 44)
@@ -243,6 +261,10 @@ private struct MiniPlayerPlaybackButton: View {
         .animation(
             motionEnabled ? BuFiMotion.symbol : .none,
             value: playbackControl.wantsPlayback
+        )
+        .animation(
+            motionEnabled ? BuFiMotion.symbol : .none,
+            value: playbackControl.isBuffering
         )
         .sensoryFeedback(.selection, trigger: playbackControl.wantsPlayback) {
             oldValue, newValue in

@@ -493,9 +493,9 @@ struct PlayerView: View {
                         .id(page.id)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
-                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.96)
-                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.80)
-                                .offset(y: phase.isIdentity || !animatesTransition ? 0 : 6)
+                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.972)
+                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.88)
+                                .offset(y: phase.isIdentity || !animatesTransition ? 0 : 4)
                         }
                     }
                 }
@@ -1035,12 +1035,14 @@ private struct PlayerPlaybackButton: View {
                 if playbackControl.isBuffering {
                     ProgressView()
                         .tint(buttonForeground)
+                        .transition(.opacity.combined(with: .scale(scale: 0.90)))
                 } else {
                     Image(systemName: playbackControl.wantsPlayback ? "pause.fill" : "play.fill")
                         .font(.system(size: iconSize, weight: .bold))
                         .foregroundStyle(buttonForeground)
                         .offset(x: playbackControl.wantsPlayback ? 0 : 2)
                         .contentTransition(.symbolEffect(.replace))
+                        .transition(.opacity.combined(with: .scale(scale: 0.90)))
                 }
             }
         }
@@ -1048,6 +1050,10 @@ private struct PlayerPlaybackButton: View {
         .animation(
             motionEnabled ? BuFiMotion.symbol : .none,
             value: playbackControl.wantsPlayback
+        )
+        .animation(
+            motionEnabled ? BuFiMotion.symbol : .none,
+            value: playbackControl.isBuffering
         )
         .accessibilityLabel(playbackControl.wantsPlayback ? "일시정지" : "재생")
     }
@@ -1271,10 +1277,10 @@ private struct PlayerLyricsCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentTransition(.interpolate)
+                        .transition(miniLyricLineTransition)
                 }
             }
-            .id(miniLyricsAnchorID)
-            .transition(miniLyricsTransition)
         }
         .padding(.top, 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1296,15 +1302,15 @@ private struct PlayerLyricsCard: View {
         return (start..<end).map { (index: $0, line: lines[$0]) }
     }
 
-    private var miniLyricsAnchorID: Int {
-        max(lyricsState.activeIndex, 0)
-    }
-
-    private var miniLyricsTransition: AnyTransition {
+    private var miniLyricLineTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(y: 13).combined(with: .opacity),
-            removal: .offset(y: -11).combined(with: .opacity)
+            insertion: .offset(y: 8)
+                .combined(with: .scale(scale: 0.99, anchor: .topLeading))
+                .combined(with: .opacity),
+            removal: .offset(y: -7)
+                .combined(with: .scale(scale: 0.995, anchor: .topLeading))
+                .combined(with: .opacity)
         )
     }
 
