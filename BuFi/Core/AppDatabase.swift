@@ -1592,6 +1592,14 @@ actor AppDatabase {
         await flushPaletteTouches()
     }
 
+    /// Commits coalesced cache-recency writes before iOS suspends the app.
+    /// The larger stores already expose their own flush points; keeping this
+    /// operation inside the database actor preserves write ordering without
+    /// making foreground reads wait for a lifecycle checkpoint.
+    func flushPendingWrites() async {
+        await flushPaletteTouches()
+    }
+
     private func flushPaletteTouches() async {
         guard !pendingPaletteTouches.isEmpty else { return }
         let touches = takePendingPaletteTouches()
@@ -1748,10 +1756,10 @@ actor AppDatabase {
         configuration.label = "BuFi.Database"
         configuration.maximumReaderCount = 3
         configuration.busyMode = .timeout(5)
+        configuration.journalMode = .wal
+        configuration.automaticMemoryManagement = true
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
-            try db.execute(sql: "PRAGMA busy_timeout = 5000")
-            try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA synchronous = NORMAL")
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
         }

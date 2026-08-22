@@ -1392,6 +1392,7 @@ final class AudioEngine: NSObject, ObservableObject {
         LaunchDiagnostics.mark("audio-runtime-starting")
         LaunchDiagnostics.mark("audio-player-creating")
         player.automaticallyWaitsToMinimizeStalling = true
+        player.actionAtItemEnd = .advance
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
             // iOS 27 beta devices have shown pre-framework and MediaPlayer
@@ -2674,6 +2675,21 @@ final class AudioEngine: NSObject, ObservableObject {
         return AVURLAsset(url: url, options: options)
     }
 
+    private static func makePlayerItem(asset: AVURLAsset) -> AVPlayerItem {
+        // Match the transport shape used by TIDAL's AVQueuePlayer backend:
+        // duration can load alongside the media pipeline, while AVFoundation
+        // remains responsible for the actual forward-buffer decision and HLS
+        // variant startup. The latter settings are no-ops for direct files.
+        let item = AVPlayerItem(
+            asset: asset,
+            automaticallyLoadedAssetKeys: [#keyPath(AVAsset.duration)]
+        )
+        item.variantPreferences = .scalabilityToLosslessAudio
+        item.startsOnFirstEligibleVariant = true
+        PlaybackBufferPolicy.configure(item)
+        return item
+    }
+
     private func preparePlaybackAsset(for entry: PlaybackQueueEntry) {
         let song = entry.song
         guard song.externalStreamURL == nil else { return }
@@ -2822,8 +2838,7 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
 
-        let item = AVPlayerItem(asset: prepared.asset)
-        PlaybackBufferPolicy.configure(item)
+        let item = Self.makePlayerItem(asset: prepared.asset)
         guard player.canInsert(item, after: currentItem) else { return }
         player.insert(item, after: currentItem)
         stagedSuccessorItem = item
@@ -3290,13 +3305,25 @@ final class AudioEngine: NSObject, ObservableObject {
     ) {
         removeCurrentItemObservers()
         invalidateStagedSuccessor(removeFromPlayer: true)
-        let item = AVPlayerItem(asset: asset)
-        PlaybackBufferPolicy.configure(item)
+        let item = Self.makePlayerItem(asset: asset)
         observeActiveItem(item, resumePosition: resumePosition)
         player.replaceCurrentItem(with: item)
         handledFailedItem = nil
         updateActiveLyric(at: elapsed)
         installNextLyricBoundary(after: elapsed)
+
+        let needsPositioning = (pendingSeekPosition ?? resumePosition) > 0.05
+        if wantsPlayback, !needsPositioning {
+            // Submit play intent as soon as the item enters AVQueuePlayer.
+            // AVFoundation can then open the stream and evaluate buffering in
+            // parallel instead of BuFi adding a separate readyToPlay gate.
+            // The ready observer repeats play for AirPlay routes, which may
+            // ignore an early request until their underlying item is ready.
+            player.isMuted = false
+            player.volume = 1
+            activateNowPlayingSession()
+            requestPlayback()
+        }
     }
 
     private func observeActiveItem(

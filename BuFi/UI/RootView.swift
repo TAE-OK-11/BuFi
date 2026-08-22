@@ -88,6 +88,7 @@ struct RootView: View {
             await OfflineStore.shared.flushPendingWrites()
             await ListeningHistoryStore.shared.flushPendingWrites()
             await LocalLibraryCatalog.shared.persistNow()
+            await AppDatabase.shared.flushPendingWrites()
         }
         .task {
             await observePowerStateChanges()
