@@ -899,11 +899,11 @@ struct PlayerView: View {
         }
         switch resolvedBackgroundAppearance {
         case .classic:
-            colorScheme == .light
+            return colorScheme == .light
         case .multicolor:
-            colorScheme == .light || palettePrefersDarkForeground(palette)
+            return colorScheme == .light || palettePrefersDarkForeground(palette)
         case .bright:
-            true
+            return true
         }
     }
 
@@ -1069,7 +1069,6 @@ private struct AppleSystemVolumeSlider: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MPVolumeView {
         let view = MPVolumeView(frame: .zero)
-        view.showsRouteButton = false
         view.showsVolumeSlider = true
         styleSlider(in: view)
         return view
@@ -1080,6 +1079,9 @@ private struct AppleSystemVolumeSlider: UIViewRepresentable {
     }
 
     private func styleSlider(in view: MPVolumeView) {
+        view.subviews
+            .filter { !($0 is UISlider) }
+            .forEach { $0.isHidden = true }
         guard let slider = view.subviews.first(where: { $0 is UISlider }) as? UISlider else {
             return
         }
