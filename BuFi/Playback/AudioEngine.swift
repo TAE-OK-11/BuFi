@@ -1361,6 +1361,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var behaviorStartRecordedForSongID: String?
     private var lastPlaybackReportSongID: String?
     private var lastPlaybackReportState: String?
+    private var playbackStartupRequestedAt: TimeInterval?
+    private var playbackItemInstalledAt: TimeInterval?
     private let queueStorageKey = "native-play-queue"
     private var queueRestoreTask: Task<Void, Never>?
     private var queueRestoreToken: UUID?
@@ -1394,6 +1396,7 @@ final class AudioEngine: NSObject, ObservableObject {
         player.automaticallyWaitsToMinimizeStalling = true
         player.actionAtItemEnd = .advance
         player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+        prepareAudioSessionConfiguration()
         if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 {
             // iOS 27 beta devices have shown pre-framework and MediaPlayer
             // launch instability. This app has one player, so the shared
@@ -1639,6 +1642,8 @@ final class AudioEngine: NSObject, ObservableObject {
         transitionReason: PlaybackEndReason = .replaced,
         reusesCurrentQueue: Bool = false
     ) {
+        playbackStartupRequestedAt = ProcessInfo.processInfo.systemUptime
+        playbackItemInstalledAt = nil
         activateRuntimeIfNeeded()
         reconcilePendingTransportTransition()
         // Every concrete track transition supersedes an in-flight autoplay
@@ -1752,6 +1757,15 @@ final class AudioEngine: NSObject, ObservableObject {
         player.play()
     }
 
+    private func requestLowLatencyStartup() {
+        // This is issued only once for a newly installed remote item. It lets
+        // AVPlayer begin with the first decodable media already available,
+        // without disabling automatic stall recovery for the rest of the song.
+        // readyToPlay repeats a regular play request for AirPlay and for an
+        // initially empty transport buffer.
+        player.playImmediately(atRate: 1)
+    }
+
     func resumePlayback() {
         guard currentSong != nil else { return }
         activateRuntimeIfNeeded()
@@ -1820,6 +1834,8 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func pausePlayback(persistsQueue: Bool) {
         wantsPlayback = false
+        playbackStartupRequestedAt = nil
+        playbackItemInstalledAt = nil
         player.pause()
         suspendSpeculativePrefetch()
         isPlaying = false
@@ -2669,9 +2685,12 @@ final class AudioEngine: NSObject, ObservableObject {
         // Some OpenSubsonic servers omit or generalize Content-Type. Preserve
         // the same out-of-band hint used by active playback while warming the
         // exact asset that will later be handed to AVPlayer.
-        let options: [String: Any] = mimeType.map {
-            ["AVURLAssetOutOfBandMIMETypeKey": $0]
-        } ?? [:]
+        var options: [String: Any] = [
+            AVURLAssetPreferPreciseDurationAndTimingKey: url.isFileURL
+        ]
+        if let mimeType {
+            options["AVURLAssetOutOfBandMIMETypeKey"] = mimeType
+        }
         return AVURLAsset(url: url, options: options)
     }
 
@@ -3305,6 +3324,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let item = Self.makePlayerItem(asset: asset)
         observeActiveItem(item, resumePosition: resumePosition)
         player.replaceCurrentItem(with: item)
+        playbackItemInstalledAt = ProcessInfo.processInfo.systemUptime
         handledFailedItem = nil
         updateActiveLyric(at: elapsed)
         installNextLyricBoundary(after: elapsed)
@@ -3319,7 +3339,11 @@ final class AudioEngine: NSObject, ObservableObject {
             player.isMuted = false
             player.volume = 1
             activateNowPlayingSession()
-            requestPlayback()
+            if asset.url.isFileURL {
+                requestPlayback()
+            } else {
+                requestLowLatencyStartup()
+            }
         }
     }
 
@@ -3840,6 +3864,18 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.isPlaying = isPlaying
                 self.isBuffering = self.wantsPlayback && !isPlaying
                 if player.timeControlStatus == .playing {
+                    if let requestedAt = self.playbackStartupRequestedAt {
+                        let now = ProcessInfo.processInfo.systemUptime
+                        let total = max(0, now - requestedAt)
+                        let itemDelay = self.playbackItemInstalledAt.map {
+                            max(0, $0 - requestedAt)
+                        } ?? total
+                        Self.logger.info(
+                            "Playback startup total=\(total, format: .fixed(precision: 3))s item=\(itemDelay, format: .fixed(precision: 3))s"
+                        )
+                        self.playbackStartupRequestedAt = nil
+                        self.playbackItemInstalledAt = nil
+                    }
                     self.scheduleRecoveryAttemptReset(for: player.currentItem)
                     self.reportPlaybackState("playing")
                     self.scheduleGaplessSuccessor()
@@ -4103,6 +4139,17 @@ final class AudioEngine: NSObject, ObservableObject {
             guard activated else { return }
             self.player.isMuted = false
             self.player.volume = 1
+        }
+    }
+
+    private func prepareAudioSessionConfiguration() {
+        // Category negotiation is invariant for the lifetime of the app. Do
+        // it after the first scene has mounted, before a user taps Play, while
+        // leaving the session inactive so other apps' audio is unaffected.
+        let controller = audioSessionController
+        let epoch = nextAudioSessionCommandEpoch()
+        Task(priority: .utility) {
+            await controller.prepare(epoch: epoch)
         }
     }
 
@@ -5069,20 +5116,17 @@ private actor AudioSessionController {
     private var isActive = false
     private var latestCommandEpoch: UInt64 = 0
 
+    func prepare(epoch: UInt64) {
+        guard accept(epoch: epoch) else { return }
+        _ = configureIfNeeded()
+    }
+
     func activate(epoch: UInt64) -> Bool {
         guard accept(epoch: epoch) else { return false }
         if isActive { return true }
+        guard configureIfNeeded() else { return false }
         do {
-            let session = AVAudioSession.sharedInstance()
-            if !isConfigured {
-                try session.setCategory(
-                    .playback,
-                    mode: .default,
-                    policy: .longFormAudio
-                )
-                isConfigured = true
-            }
-            try session.setActive(true)
+            try AVAudioSession.sharedInstance().setActive(true)
             isActive = true
             return true
         } catch {
@@ -5112,6 +5156,21 @@ private actor AudioSessionController {
         isConfigured = false
         isActive = false
         return activate(epoch: epoch)
+    }
+
+    private func configureIfNeeded() -> Bool {
+        if isConfigured { return true }
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .default,
+                policy: .longFormAudio
+            )
+            isConfigured = true
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func accept(epoch: UInt64) -> Bool {
