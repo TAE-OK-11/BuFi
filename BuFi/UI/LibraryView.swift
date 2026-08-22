@@ -9,13 +9,19 @@ struct LibraryView: View {
     @State private var artistPresentation = LibraryArtistPresentation.empty
 
     var body: some View {
+        let surfaces = visibleSurfaces
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     BuFiPageHeader(title: "내 라이브러리")
+                        .buFiEntranceMotion()
                     filters
-                    ForEach(visibleSurfaces, id: \.self) { surface in
+                        .buFiEntranceMotion(delay: 0.035)
+                    ForEach(Array(surfaces.enumerated()), id: \.element) { index, surface in
                         librarySurface(surface)
+                            .buFiVerticalSectionMotion(
+                                delay: min(Double(index) * 0.02, 0.08)
+                            )
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity
                             )
@@ -23,7 +29,7 @@ struct LibraryView: View {
                 }
                 .animation(
                     motionEnabled ? BuFiMotion.content : .none,
-                    value: visibleSurfaces
+                    value: surfaces
                 )
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance(idle: 56, playing: 154)
@@ -155,6 +161,7 @@ struct LibraryView: View {
                     LazyHStack(alignment: .top, spacing: 16) {
                         ForEach(artistPresentation.favorites) { artist in
                             favoriteArtistCard(artist)
+                                .buFiHorizontalScrollMotion()
                         }
                     }
                     .padding(.horizontal, 16)

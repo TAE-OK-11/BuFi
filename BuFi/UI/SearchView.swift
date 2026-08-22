@@ -22,7 +22,9 @@ struct SearchView: View {
                         BuFiPageHeader(title: "검색")
                             .id(SearchScrollAnchor.top)
                             .onTapGesture(perform: resignSearchField)
+                            .buFiEntranceMotion()
                         searchField
+                            .buFiEntranceMotion(delay: 0.035)
                         content
                             .frame(maxWidth: .infinity, alignment: .top)
                             .contentShape(Rectangle())
@@ -73,6 +75,7 @@ struct SearchView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 21, weight: .semibold))
                 .foregroundStyle(isSearchFieldFocused ? BuFiTheme.accentSoft : .secondary)
+                .scaleEffect(isSearchFieldFocused ? 1.055 : 1)
             TextField(
                 "",
                 text: $query,
@@ -97,6 +100,7 @@ struct SearchView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(BuFiPressStyle())
+                .transition(.scale(scale: 0.84).combined(with: .opacity))
                 .accessibilityLabel("검색 닫기")
             }
         }
@@ -118,14 +122,20 @@ struct SearchView: View {
         .onTapGesture {
             isSearchFieldFocused = true
         }
+        .scaleEffect(!motionEnabled || isSearchFieldFocused ? 1 : 0.998)
         .animation(motionEnabled ? BuFiMotion.fade : .none, value: isSearchFieldFocused)
+        .animation(motionEnabled ? BuFiMotion.symbol : .none, value: query.isEmpty)
     }
 
     @ViewBuilder
     private var content: some View {
-        ForEach(visibleSurfaces, id: \.self) { surface in
+        let surfaces = visibleSurfaces
+        ForEach(Array(surfaces.enumerated()), id: \.element) { index, surface in
             searchSurface(surface)
                 .frame(maxWidth: .infinity, alignment: .top)
+                .buFiVerticalSectionMotion(
+                    delay: min(Double(index) * 0.022, 0.08)
+                )
                 .transition(motionEnabled ? BuFiTransition.section : .opacity)
                 .simultaneousGesture(
                     TapGesture().onEnded(resignSearchField)
@@ -133,7 +143,7 @@ struct SearchView: View {
         }
         .animation(
             motionEnabled ? BuFiMotion.content : .none,
-            value: visibleSurfaces
+            value: surfaces
         )
     }
 

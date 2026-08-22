@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
+    @Environment(\.buFiMotionEnabled) private var effectiveMotionEnabled
     @State private var offlineBytes: Int64 = 0
     @State private var confirmOfflineRemoval = false
     @State private var confirmArtworkRemoval = false
@@ -25,14 +26,23 @@ struct SettingsView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     BuFiPageHeader(title: "설정")
+                        .buFiEntranceMotion()
                     serverCard
+                        .buFiVerticalSectionMotion(delay: 0.02)
                     appearanceSection
+                        .buFiVerticalSectionMotion(delay: 0.04)
                     syncSection
+                        .buFiVerticalSectionMotion(delay: 0.06)
                     recommendationSection
+                        .buFiVerticalSectionMotion(delay: 0.08)
                     PlaybackSettingsSection()
+                        .buFiVerticalSectionMotion(delay: 0.075)
                     offlineSection
+                        .buFiVerticalSectionMotion(delay: 0.08)
                     appSection
+                        .buFiVerticalSectionMotion(delay: 0.08)
                     logoutRow
+                        .buFiVerticalSectionMotion(delay: 0.08)
                 }
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance()
@@ -324,6 +334,11 @@ extension SettingsView {
                     Text(offlineStorageText)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(
+                            effectiveMotionEnabled ? BuFiMotion.content : .none,
+                            value: offlineStorageText
+                        )
                 }
 
                 SettingsDivider()
@@ -382,8 +397,13 @@ extension SettingsView {
                         ProgressView()
                             .controlSize(.small)
                             .tint(.secondary)
+                            .transition(.opacity.combined(with: .scale(scale: 0.88)))
                     }
                 }
+                .animation(
+                    effectiveMotionEnabled ? BuFiMotion.symbol : .none,
+                    value: isLoggingOut
+                )
                 .padding(.horizontal, 16)
                 .frame(minHeight: 50)
                 .contentShape(Rectangle())
@@ -577,6 +597,7 @@ private struct RecommendationSettingsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 BuFiPageHeader(title: "추천")
+                    .buFiEntranceMotion()
 
                 SettingsGroup(title: "추천에 쓰는 서비스") {
                     VStack(alignment: .leading, spacing: 16) {
@@ -607,6 +628,7 @@ private struct RecommendationSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.025)
 
                 SettingsGroup(title: "이런 음악을 더") {
                     VStack(spacing: 18) {
@@ -635,6 +657,7 @@ private struct RecommendationSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.05)
 
                 SettingsGroup(title: "Last.fm") {
                     VStack(alignment: .leading, spacing: 14) {
@@ -662,6 +685,7 @@ private struct RecommendationSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.075)
 
                 SettingsGroup(title: "ListenBrainz") {
                     VStack(alignment: .leading, spacing: 14) {
@@ -705,6 +729,7 @@ private struct RecommendationSettingsView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.10)
             }
             .padding(.top, 18)
             .buFiMiniPlayerContentClearance()
@@ -817,6 +842,7 @@ private struct OpenSourceNoticesView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 BuFiPageHeader(title: "오픈소스")
+                    .buFiEntranceMotion()
 
                 SettingsGroup(title: "BuFi") {
                     VStack(alignment: .leading, spacing: 7) {
@@ -832,6 +858,7 @@ private struct OpenSourceNoticesView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.025)
 
                 SettingsGroup(title: "연결된 런타임 구성요소") {
                     VStack(alignment: .leading, spacing: 16) {
@@ -867,6 +894,7 @@ private struct OpenSourceNoticesView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.05)
 
                 SettingsGroup(title: "적용한 GPL 소스") {
                     notice(
@@ -876,6 +904,7 @@ private struct OpenSourceNoticesView: View {
                     )
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.075)
 
                 SettingsGroup(title: "라이선스 전문") {
                     NavigationLink {
@@ -902,6 +931,7 @@ private struct OpenSourceNoticesView: View {
                     .buttonStyle(BuFiPressStyle())
                 }
                 .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.10)
             }
             .padding(.top, 18)
             .buFiMiniPlayerContentClearance()
@@ -956,6 +986,7 @@ private struct ThirdPartyLicensesView: View {
                 .textSelection(.enabled)
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
+                .buFiEntranceMotion()
                 .buFiMiniPlayerContentClearance()
         }
         .background(BuFiScreenBackground())

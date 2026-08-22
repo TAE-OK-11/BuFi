@@ -415,8 +415,11 @@ struct PersonalizedMixDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 hero
+                    .buFiEntranceMotion(offset: 10, initialScale: 0.994)
                 controls
+                    .buFiVerticalSectionMotion(delay: 0.025)
                 songs
+                    .buFiVerticalSectionMotion(delay: 0.05)
             }
             .padding(.top, 12)
             .buFiMiniPlayerContentClearance(idle: 56, playing: 148)

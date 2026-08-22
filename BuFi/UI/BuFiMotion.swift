@@ -42,6 +42,7 @@ enum BuFiMotion {
     static let homeEntrance = Animation.spring(duration: 0.46, bounce: 0.045)
     static let homeRefresh = Animation.smooth(duration: 0.40, extraBounce: 0)
     static let playerEntrance = Animation.spring(duration: 0.48, bounce: 0.04)
+    static let screenEntrance = Animation.spring(duration: 0.44, bounce: 0.035)
     static let trackText = Animation.smooth(duration: 0.38, extraBounce: 0)
     static let trackPage = Animation.spring(duration: 0.46, bounce: 0.06)
     static let miniTrack = Animation.smooth(duration: 0.42, extraBounce: 0)
@@ -126,8 +127,80 @@ private struct BuFiHorizontalScrollMotionModifier: ViewModifier {
     }
 }
 
+private struct BuFiEntranceMotionModifier: ViewModifier {
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @State private var hasAppeared = false
+
+    let delay: TimeInterval
+    let offset: CGFloat
+    let initialScale: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(hasAppeared || !motionEnabled ? 1 : 0)
+            .offset(y: hasAppeared || !motionEnabled ? 0 : offset)
+            .scaleEffect(
+                hasAppeared || !motionEnabled ? 1 : initialScale,
+                anchor: .top
+            )
+            .animation(
+                motionEnabled
+                    ? BuFiMotion.screenEntrance.delay(delay)
+                    : .none,
+                value: hasAppeared
+            )
+            .task {
+                guard !hasAppeared else { return }
+                if motionEnabled {
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                }
+                hasAppeared = true
+            }
+    }
+}
+
+private struct BuFiVerticalSectionMotionModifier: ViewModifier {
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+
+    let delay: TimeInterval
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(
+                BuFiEntranceMotionModifier(
+                    delay: delay,
+                    offset: 8,
+                    initialScale: 0.996
+                )
+            )
+            .scrollTransition(.interactive, axis: .vertical) { view, phase in
+                view
+                    .scaleEffect(phase.isIdentity || !motionEnabled ? 1 : 0.995)
+                    .opacity(phase.isIdentity || !motionEnabled ? 1 : 0.95)
+                    .offset(y: phase.isIdentity || !motionEnabled ? 0 : 4)
+            }
+    }
+}
+
 extension View {
     func buFiHorizontalScrollMotion() -> some View {
         modifier(BuFiHorizontalScrollMotionModifier())
+    }
+
+    func buFiEntranceMotion(
+        delay: TimeInterval = 0,
+        offset: CGFloat = 8,
+        initialScale: CGFloat = 0.996
+    ) -> some View {
+        modifier(BuFiEntranceMotionModifier(
+            delay: delay,
+            offset: offset,
+            initialScale: initialScale
+        ))
+    }
+
+    func buFiVerticalSectionMotion(delay: TimeInterval = 0) -> some View {
+        modifier(BuFiVerticalSectionMotionModifier(delay: delay))
     }
 }

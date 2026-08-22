@@ -97,27 +97,43 @@ struct MusicDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
+                    .buFiEntranceMotion(offset: 10, initialScale: 0.994)
                 if isArtist, !isLoading {
                     artistMixControl
+                        .buFiVerticalSectionMotion(delay: 0.025)
                 }
                 if isLoading {
                     ProgressView("불러오는 중…")
                         .frame(maxWidth: .infinity)
                         .padding(.top, 60)
+                        .buFiEntranceMotion(delay: 0.03)
                         .transition(
                             motionEnabled ? BuFiTransition.section : .opacity
                         )
                 } else {
                     controls
+                        .buFiVerticalSectionMotion()
                     if isArtist {
                         artistPopularSongs
-                        if !albums.isEmpty { artistDiscography }
+                            .buFiVerticalSectionMotion(delay: 0.03)
+                        if !albums.isEmpty {
+                            artistDiscography
+                                .buFiVerticalSectionMotion(delay: 0.055)
+                        }
                     } else {
                         songList
+                            .buFiVerticalSectionMotion(delay: 0.025)
                     }
-                    if isArtist, !artistBiography.isEmpty { artistAbout }
+                    if isArtist, !artistBiography.isEmpty {
+                        artistAbout
+                            .buFiVerticalSectionMotion(delay: 0.075)
+                    }
                 }
             }
+            .animation(
+                motionEnabled ? BuFiMotion.content : .none,
+                value: isLoading
+            )
             .buFiMiniPlayerContentClearance(idle: 56, playing: 148)
         }
         .background(background)
@@ -178,6 +194,11 @@ struct MusicDetailView: View {
                     .font(.system(size: 35, weight: .bold))
                     .tracking(-1.2)
                     .lineLimit(2)
+                    .contentTransition(.interpolate)
+                    .animation(
+                        motionEnabled ? BuFiMotion.content : .none,
+                        value: title
+                    )
                 Text(
                     String(
                         format: String(localized: "%d개 발매작 · %d개 인기곡"),
@@ -187,6 +208,11 @@ struct MusicDetailView: View {
                 )
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.82))
+                .contentTransition(.interpolate)
+                .animation(
+                    motionEnabled ? BuFiMotion.content : .none,
+                    value: artistAlbumCount
+                )
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 22)
@@ -224,13 +250,24 @@ struct MusicDetailView: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .foregroundStyle(collectionTitleColor)
+                    .contentTransition(.interpolate)
+                    .animation(
+                        motionEnabled ? BuFiMotion.content : .none,
+                        value: title
+                    )
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(collectionSubtitleColor)
                         .multilineTextAlignment(.center)
+                        .contentTransition(.interpolate)
+                        .transition(.opacity.combined(with: .offset(y: 4)))
                 }
             }
+            .animation(
+                motionEnabled ? BuFiMotion.content : .none,
+                value: subtitle
+            )
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
@@ -258,9 +295,11 @@ struct MusicDetailView: View {
                         Group {
                             if isDownloadingAll {
                                 ProgressView()
+                                    .transition(.opacity.combined(with: .scale(scale: 0.88)))
                             } else {
                                 Image(systemName: "arrow.down.circle")
                                     .font(.system(size: 19, weight: .semibold))
+                                    .transition(.opacity.combined(with: .scale(scale: 0.88)))
                             }
                         },
                         diameter: 42
@@ -268,6 +307,10 @@ struct MusicDetailView: View {
                 }
                 .buttonStyle(BuFiPressStyle())
                 .disabled(songs.isEmpty || isDownloadingAll)
+                .animation(
+                    motionEnabled ? BuFiMotion.symbol : .none,
+                    value: isDownloadingAll
+                )
                 .accessibilityLabel("모두 오프라인 저장")
 
                 Menu {
@@ -369,12 +412,17 @@ struct MusicDetailView: View {
         Button {
             addCurrentArtistMix()
         } label: {
-            Label(
-                hasCurrentArtistMix ? "Artist Mix Added" : "Create Artist Mix",
-                systemImage: hasCurrentArtistMix
-                    ? "checkmark.circle.fill"
-                    : "sparkles.rectangle.stack"
-            )
+            Label {
+                Text(hasCurrentArtistMix ? "Artist Mix Added" : "Create Artist Mix")
+                    .contentTransition(.interpolate)
+            } icon: {
+                Image(
+                    systemName: hasCurrentArtistMix
+                        ? "checkmark.circle.fill"
+                        : "sparkles.rectangle.stack"
+                )
+                .contentTransition(.symbolEffect(.replace))
+            }
             .font(.system(size: 14, weight: .bold))
             .foregroundStyle(
                 hasCurrentArtistMix ? Color.primary : BuFiTheme.accentSoft
@@ -384,6 +432,10 @@ struct MusicDetailView: View {
             .buFiSurface(cornerRadius: 21)
         }
         .buttonStyle(BuFiPressStyle())
+        .animation(
+            motionEnabled ? BuFiMotion.symbol : .none,
+            value: hasCurrentArtistMix
+        )
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
         .accessibilityLabel(
