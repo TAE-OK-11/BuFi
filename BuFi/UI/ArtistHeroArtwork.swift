@@ -87,7 +87,9 @@ struct ArtistHeroArtwork: View {
         // authenticated OpenSubsonic server.
         guard let sourceURL = await model.artworkURL(
                   id: normalizedCoverArt,
-                  size: Int(requestedPixelSize)
+                  size: ArtworkRequestSizing.serverRequestSize(
+                      for: requestedPixelSize
+                  )
               ),
               !Task.isCancelled,
               artworkRequestIdentity == requestID else {

@@ -831,7 +831,10 @@ struct MusicDetailView: View {
         var urls: [URL] = []
         for id in coverIDs.prefix(8) {
             guard !Task.isCancelled else { return }
-            if let url = await model.artworkURL(id: id, size: Int(pixelSize)) {
+            if let url = await model.artworkURL(
+                id: id,
+                size: ArtworkRequestSizing.serverRequestSize(for: pixelSize)
+            ) {
                 urls.append(ArtworkStore.cacheURL(for: url, revision: nil))
             }
         }

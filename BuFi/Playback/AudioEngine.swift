@@ -3170,7 +3170,9 @@ final class AudioEngine: NSObject, ObservableObject {
                       seenArtworkRevisions.insert("\(coverID)|\(revision)").inserted,
                       let sourceURL = try? client.coverURL(
                           id: coverID,
-                          size: Int(artworkPixelSize)
+                          size: ArtworkRequestSizing.serverRequestSize(
+                              for: artworkPixelSize
+                          )
                       ) else {
                     continue
                 }
@@ -4712,14 +4714,21 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.nowPlayingArtworkTask = nil
                 }
             }
-            guard let sourceURL = try? client.coverURL(id: coverID, size: 600) else {
+            let artworkPixelSize = ArtworkRequestSizing.pixelSize(
+                pointSize: UIScreen.main.bounds.width,
+                displayScale: UIScreen.main.scale
+            )
+            guard let sourceURL = try? client.coverURL(id: coverID) else {
                 return
             }
             let url = ArtworkStore.cacheURL(
                 for: sourceURL,
                 revision: playbackItem.artwork.revision
             )
-            guard let image = try? await ArtworkStore.shared.image(for: url, pixelSize: 600),
+            guard let image = try? await ArtworkStore.shared.image(
+                      for: url,
+                      pixelSize: artworkPixelSize
+                  ),
                   !Task.isCancelled,
                   self.currentPlaybackItem?.id == playbackItem.id,
                   self.currentSong?.id == song.id,

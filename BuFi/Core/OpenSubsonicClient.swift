@@ -3470,7 +3470,7 @@ actor OpenSubsonicClient {
         }
     }
 
-    nonisolated func coverURL(id: String, size: Int = 600) throws -> URL {
+    nonisolated func coverURL(id: String, size: Int? = nil) throws -> URL {
         guard let url = swiftSonic.coverArtURL(id: id, size: size),
               url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL

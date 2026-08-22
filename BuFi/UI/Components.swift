@@ -431,7 +431,9 @@ struct ArtworkView: View {
             }
             if let sourceURL = await model.artworkURL(
                 id: normalizedCoverArt,
-                size: Int(requestedPixelSize)
+                size: ArtworkRequestSizing.serverRequestSize(
+                    for: requestedPixelSize
+                )
             ) {
                 guard !Task.isCancelled else { return }
                 let coverURL = ArtworkStore.cacheURL(

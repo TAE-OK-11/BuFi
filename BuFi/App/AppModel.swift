@@ -1241,7 +1241,7 @@ final class AppModel: ObservableObject {
         return resolvedValue
     }
 
-    func artworkURL(id: String?, size: Int = 600) async -> URL? {
+    func artworkURL(id: String?, size: Int? = 600) async -> URL? {
         guard let id = id?.trimmingCharacters(in: .whitespacesAndNewlines),
               !id.isEmpty,
               let client else {

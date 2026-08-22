@@ -7,10 +7,21 @@ enum ArtworkRequestSizing {
     private static let pixelBuckets = [
         128, 192, 256, 384, 512, 768, 1_024, 1_200, 1_536
     ]
+    private static let originalSourceThreshold = 768
 
     static func pixelSize(pointSize: CGFloat, displayScale: CGFloat) -> CGFloat {
         let requested = max(96, Int(ceil(pointSize * max(displayScale, 1))))
         return CGFloat(pixelBuckets.first(where: { $0 >= requested }) ?? 1_536)
+    }
+
+    /// Large artwork should be downsampled once from the server original.
+    /// Asking the server for an already-resized JPEG and then resizing it again
+    /// locally makes compression artifacts visible in the player and detail
+    /// screens. Small list artwork keeps bounded server thumbnails to avoid
+    /// wasting bandwidth and decode energy.
+    static func serverRequestSize(for pixelSize: CGFloat) -> Int? {
+        let bounded = max(64, Int(ceil(pixelSize)))
+        return bounded >= originalSourceThreshold ? nil : bounded
     }
 }
 
@@ -235,7 +246,12 @@ actor ArtworkStore {
         ModernNetworkPolicy.prepareImageRequest(&urlRequest)
         let request = ImageRequest(
             urlRequest: urlRequest,
-            processors: [.resize(width: requestedPixelSize)]
+            processors: [
+                .resize(
+                    width: requestedPixelSize,
+                    unit: .pixels
+                )
+            ]
         )
         let scopedPipeline = pipeline
         let image: UIImage
