@@ -1303,7 +1303,6 @@ final class AudioEngine: NSObject, ObservableObject {
     private var itemLoadTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
     private var songMetadataTask: Task<Void, Never>?
-    private var deferredTrackWorkPlaybackID: UUID?
     private var serverQueueTask: Task<Void, Never>?
     private var serverQueueSaveTask: Task<Void, Never>?
     private var pendingServerQueueSave: ServerQueueSaveRequest?
@@ -1464,7 +1463,6 @@ final class AudioEngine: NSObject, ObservableObject {
             itemLoadTask = nil
             lyricsTask?.cancel()
             lyricsTask = nil
-            deferredTrackWorkPlaybackID = nil
             nowPlayingArtworkTask?.cancel()
             nowPlayingArtworkTask = nil
             nowPlayingArtworkRequestKey = nil
@@ -1721,17 +1719,15 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: activeCompatibilityFormat,
             resumeFrom: 0
         )
+        // Music, lyrics, canonical metadata, and current artwork each own an
+        // independent task. They are enqueued in the same MainActor turn so
+        // none waits for AVPlayer to reach the playing state before starting.
+        refreshCanonicalMetadata(for: selectedSong)
+        loadLyrics(for: selectedSong)
         // Starting the selected stream owns the critical network path. Any
         // previous speculative transfers are discarded now; the new queue is
         // warmed only after AVPlayer confirms that playback is established.
         suspendSpeculativePrefetch()
-        if autoplay {
-            deferTrackWorkUntilPlaybackStarts(for: selectedSong)
-        } else {
-            deferredTrackWorkPlaybackID = nil
-            refreshCanonicalMetadata(for: selectedSong)
-            loadLyrics(for: selectedSong)
-        }
         scheduleQueueSave()
         updateNowPlaying()
         scheduleAutoplayContinuationIfNeeded()
@@ -3794,40 +3790,6 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    /// These requests share the media server origin but aren't required for
-    /// the first audible frame. Bind them to the unique playback generation
-    /// and start them only after AVPlayer reports actual playback.
-    private func deferTrackWorkUntilPlaybackStarts(for song: Song) {
-        lyricsTask?.cancel()
-        lyricsTask = nil
-        lyricsLoadGeneration &+= 1
-        songMetadataTask?.cancel()
-        songMetadataTask = nil
-        songMetadataGeneration &+= 1
-        applyLyricsDocument(
-            .empty,
-            status: song.externalStreamURL == nil ? .loading : .unavailable
-        )
-        guard currentSong?.id == song.id,
-              let playbackID = currentPlaybackItem?.id else {
-            deferredTrackWorkPlaybackID = nil
-            return
-        }
-        deferredTrackWorkPlaybackID = playbackID
-    }
-
-    private func startDeferredTrackWorkIfNeeded() {
-        guard let playbackID = deferredTrackWorkPlaybackID else { return }
-        guard let playbackItem = currentPlaybackItem,
-              playbackItem.id == playbackID else {
-            deferredTrackWorkPlaybackID = nil
-            return
-        }
-        deferredTrackWorkPlaybackID = nil
-        refreshCanonicalMetadata(for: playbackItem.song)
-        loadLyrics(for: playbackItem.song)
-    }
-
     private func installPlayerObservers() {
         guard timeControlObservation == nil else { return }
         currentItemTransitionObservation = player.observe(
@@ -3852,7 +3814,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 if player.timeControlStatus == .playing {
                     self.scheduleRecoveryAttemptReset(for: player.currentItem)
                     self.reportPlaybackState("playing")
-                    self.startDeferredTrackWorkIfNeeded()
                     self.scheduleGaplessSuccessor()
                     self.scheduleSpeculativePrefetchAfterPlaybackStability()
                 } else if !self.wantsPlayback {
@@ -4608,13 +4569,6 @@ final class AudioEngine: NSObject, ObservableObject {
         activateNowPlayingSession()
         updateRemoteCommands()
 
-        // Title and transport state publish immediately, but artwork decoding
-        // can open another request to the same origin. During an active start
-        // let AVPlayer establish the audio stream first; the playing-state
-        // callback invokes this method again and fills the artwork then.
-        guard !wantsPlayback || player.timeControlStatus == .playing else {
-            return
-        }
         guard let coverID = song.artworkID,
               let client else {
             return
