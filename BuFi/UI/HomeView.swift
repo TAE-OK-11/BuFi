@@ -19,6 +19,8 @@ struct HomeView: View {
 
     var body: some View {
         let sections = visibleSections
+        let enablesMotion = motionEnabled
+
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
@@ -58,11 +60,11 @@ struct HomeView: View {
                             .scrollTransition(.interactive, axis: .vertical) { content, phase in
                                 content
                                     .scaleEffect(
-                                        phase.isIdentity || !motionEnabled ? 1 : 0.994,
+                                        phase.isIdentity || !enablesMotion ? 1 : 0.994,
                                         anchor: .center
                                     )
-                                    .opacity(phase.isIdentity || !motionEnabled ? 1 : 0.94)
-                                    .offset(y: phase.isIdentity || !motionEnabled ? 0 : 5)
+                                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.94)
+                                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 5)
                             }
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity

@@ -166,6 +166,8 @@ private struct BuFiVerticalSectionMotionModifier: ViewModifier {
     let delay: TimeInterval
 
     func body(content: Content) -> some View {
+        let enablesMotion = motionEnabled
+
         content
             .modifier(
                 BuFiEntranceMotionModifier(
@@ -176,9 +178,9 @@ private struct BuFiVerticalSectionMotionModifier: ViewModifier {
             )
             .scrollTransition(.interactive, axis: .vertical) { view, phase in
                 view
-                    .scaleEffect(phase.isIdentity || !motionEnabled ? 1 : 0.995)
-                    .opacity(phase.isIdentity || !motionEnabled ? 1 : 0.95)
-                    .offset(y: phase.isIdentity || !motionEnabled ? 0 : 4)
+                    .scaleEffect(phase.isIdentity || !enablesMotion ? 1 : 0.995)
+                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.95)
+                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 4)
             }
     }
 }

@@ -1159,9 +1159,14 @@ actor AppDatabase {
                     && (stored.currentSongID == nil
                         || selected.entry.song.id == stored.currentSongID))
             let entries = decodedItems.map { $0.entry }
+            let normalizedElapsed = stored.elapsed.isFinite
+                ? max(0, stored.elapsed)
+                : 0
+            let restoredElapsed = selectionWasPreserved ? normalizedElapsed : 0
             let stateNeedsRepair = stored.index != selectedIndex
                 || stored.currentSongID != selected.entry.song.id
                 || requestedOccurrenceID != selected.entry.id
+                || stored.elapsed != restoredElapsed
             let needsRepair = repairedItems || stateNeedsRepair
             let revision = needsRepair
                 ? Self.nextQueueRevision(after: storedRevision)
@@ -1171,7 +1176,7 @@ actor AppDatabase {
                 currentID: selected.entry.song.id,
                 currentQueueEntryID: selected.entry.id,
                 index: selectedIndex,
-                elapsed: selectionWasPreserved ? stored.elapsed : 0,
+                elapsed: restoredElapsed,
                 shuffle: stored.shuffle,
                 repeatMode: RepeatMode(rawValue: stored.repeatMode) ?? .off,
                 revision: revision
@@ -1311,7 +1316,10 @@ actor AppDatabase {
             arguments: [scope]
         ) ?? -1
         let requested = Int64(clamping: minimumRevision)
-        let nextRevision = max(requested, persistedRevision + 1)
+        let revisionAfterPersisted = persistedRevision < Int64.max
+            ? persistedRevision + 1
+            : Int64.max
+        let nextRevision = max(requested, revisionAfterPersisted)
         try db.execute(
             sql: """
                 INSERT INTO queue_state

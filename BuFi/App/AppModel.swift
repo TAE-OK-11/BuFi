@@ -419,6 +419,7 @@ final class AppModel: ObservableObject {
 
 
     func login(serverURL: String, username: String, password: String) async {
+        guard !loginInFlight else { return }
         loginInFlight = true
         defer { loginInFlight = false }
         let normalizedURL: URL
@@ -2526,6 +2527,7 @@ final class AppModel: ObservableObject {
             history: nil,
             catalog: nil
         )
+        var provisionalClient: OpenSubsonicClient?
         do {
             let client = try OpenSubsonicClient(
                 credentials: credentials,
@@ -2533,6 +2535,7 @@ final class AppModel: ObservableObject {
                 requestTimeout: persist ? 12 : 18,
                 resourceTimeout: persist ? 20 : 60
             )
+            provisionalClient = client
             let accountScope = AccountScope.identifier(for: client.credentials)
             async let statusRequest = Self.pingResult(client)
             async let cachedSnapshotRequest = HomeSnapshotStore.shared.load(
@@ -2559,6 +2562,8 @@ final class AppModel: ObservableObject {
             let ping = await statusRequest
             try Task.checkCancellation()
             guard generation == sessionGeneration else {
+                await client.shutdown()
+                provisionalClient = nil
                 await deactivateStores(
                     StoreActivationLeases(
                         offline: offlineSession,
@@ -2600,6 +2605,8 @@ final class AppModel: ObservableObject {
             if persist, status != nil {
                 try await secureStore.save(client.credentials)
                 guard generation == sessionGeneration else {
+                    await client.shutdown()
+                    provisionalClient = nil
                     await deactivateStores(activatedLeases)
                     return
                 }
@@ -2607,6 +2614,8 @@ final class AppModel: ObservableObject {
 
             try Task.checkCancellation()
             guard generation == sessionGeneration else {
+                await client.shutdown()
+                provisionalClient = nil
                 await deactivateStores(activatedLeases)
                 return
             }
@@ -2617,6 +2626,7 @@ final class AppModel: ObservableObject {
                 authoritative: false
             )
             self.client = client
+            provisionalClient = nil
             if let status {
                 await client.applyPingStatus(status)
             }
@@ -2675,9 +2685,15 @@ final class AppModel: ObservableObject {
                 )
             }
         } catch is CancellationError {
+            if let provisionalClient {
+                await provisionalClient.shutdown()
+            }
             await deactivateStores(activatedLeases)
             return
         } catch {
+            if let provisionalClient {
+                await provisionalClient.shutdown()
+            }
             await deactivateStores(activatedLeases)
             guard generation == sessionGeneration else { return }
             client = nil

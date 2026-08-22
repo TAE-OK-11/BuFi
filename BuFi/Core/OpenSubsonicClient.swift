@@ -3540,7 +3540,7 @@ actor OpenSubsonicClient {
         guard extensionNames.contains("playbackReport") else { return }
         let allowedStates = ["starting", "playing", "paused", "stopped"]
         guard allowedStates.contains(state) else { return }
-        let positionMs = Int(max(0, position) * 1_000)
+        let positionMs = Self.boundedMilliseconds(from: position)
         let _: EmptyPayload = try await mutationRequest(
             "reportPlayback",
             parameters: [
@@ -3568,11 +3568,23 @@ actor OpenSubsonicClient {
         var queryItems = songIDs.map { URLQueryItem(name: "id", value: $0) }
         queryItems += [
             URLQueryItem(name: "current", value: current),
-            URLQueryItem(name: "position", value: String(Int(position * 1_000)))
+            URLQueryItem(
+                name: "position",
+                value: String(Self.boundedMilliseconds(from: position))
+            )
         ]
         let _: EmptyPayload = try await formMutationRequest(
             "savePlayQueue",
             queryItems: queryItems
         )
+    }
+
+    private nonisolated static func boundedMilliseconds(
+        from position: TimeInterval
+    ) -> Int {
+        guard position.isFinite, position > 0 else { return 0 }
+        let maximumSeconds = Double(Int.max) / 1_000
+        guard position < maximumSeconds else { return Int.max }
+        return Int(position * 1_000)
     }
 }
