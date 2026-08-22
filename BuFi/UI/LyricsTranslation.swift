@@ -129,6 +129,10 @@ struct LyricsTranslationTaskHost: View {
         LyricsTranslationEligibility.targetLanguageCode
     }
 
+    private var translationCacheLanguage: String {
+        LyricsTranslationCachePolicy.languageKey(for: targetLanguageCode)
+    }
+
     @ViewBuilder
     var body: some View {
         if #available(iOS 18.0, *) {
@@ -178,7 +182,7 @@ struct LyricsTranslationTaskHost: View {
         let cached = await AppDatabase.shared.loadLyricsTranslations(
             scope: accountScope,
             songID: songID,
-            targetLanguage: targetLanguageCode,
+            targetLanguage: translationCacheLanguage,
             sourceLines: Dictionary(uniqueKeysWithValues: lines.map { ($0.id, $0.text) })
         )
         guard !Task.isCancelled else { return }
@@ -190,7 +194,7 @@ struct LyricsTranslationTaskHost: View {
         LyricsTranslationCacheIdentity(
             accountScope: accountScope,
             songID: songID,
-            targetLanguageCode: targetLanguageCode
+            targetLanguageCode: translationCacheLanguage
         )
     }
 }
@@ -199,6 +203,17 @@ private struct LyricsTranslationCacheIdentity: Equatable {
     let accountScope: String?
     let songID: String
     let targetLanguageCode: String
+}
+
+private enum LyricsTranslationCachePolicy {
+    // Context-free translations from the first implementation must not mask
+    // the improved stanza-aware result after an app update.
+    static func languageKey(for targetLanguageCode: String) -> String {
+        if #available(iOS 26.4, *) {
+            return "\(targetLanguageCode)#lyrics-high-fidelity-context-v3"
+        }
+        return "\(targetLanguageCode)#lyrics-context-v2"
+    }
 }
 
 private struct LyricsTranslationContentIdentity: Equatable {
@@ -212,6 +227,83 @@ private struct LyricsTranslationContentIdentity: Equatable {
 private struct LyricsTranslationPlan: Sendable {
     let sourceLanguageCode: String
     let lines: [LyricLine]
+}
+
+private struct LyricsTranslationChunk: Sendable {
+    let identifier: String
+    let lines: [LyricLine]
+
+    var sourceText: String {
+        lines.map(\.text).joined(separator: "\n")
+    }
+}
+
+private enum LyricsTranslationChunker {
+    private static let maximumLines = 7
+    private static let maximumCharacters = 640
+    private static let stanzaGap: TimeInterval = 9
+
+    static func makeChunks(from lines: [LyricLine]) -> [LyricsTranslationChunk] {
+        var chunks = [LyricsTranslationChunk]()
+        var currentLines = [LyricLine]()
+        var currentCharacterCount = 0
+
+        func commitCurrentChunk() {
+            guard !currentLines.isEmpty else { return }
+            chunks.append(LyricsTranslationChunk(
+                identifier: "context-\(chunks.count)",
+                lines: currentLines
+            ))
+            currentLines.removeAll(keepingCapacity: true)
+            currentCharacterCount = 0
+        }
+
+        for line in lines {
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let previousLine = currentLines.last
+            let startsNewStanza = previousLine.map {
+                line.id != $0.id + 1
+                    || (line.start > 0
+                        && $0.start > 0
+                        && line.start - $0.start >= stanzaGap)
+            } ?? false
+            let exceedsBudget = !currentLines.isEmpty
+                && (currentLines.count >= maximumLines
+                    || currentCharacterCount + text.count > maximumCharacters)
+            if startsNewStanza || exceedsBudget {
+                commitCurrentChunk()
+            }
+            currentLines.append(line)
+            currentCharacterCount += text.count
+        }
+        commitCurrentChunk()
+        return chunks
+    }
+
+    static func mapTranslatedText(
+        _ translatedText: String,
+        to lines: [LyricLine]
+    ) -> [Int: String]? {
+        var translatedLines = translatedText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        while translatedLines.first?.isEmpty == true {
+            translatedLines.removeFirst()
+        }
+        while translatedLines.last?.isEmpty == true {
+            translatedLines.removeLast()
+        }
+        guard translatedLines.count == lines.count,
+              translatedLines.allSatisfy({ !$0.isEmpty }) else {
+            return nil
+        }
+        return Dictionary(uniqueKeysWithValues: zip(lines, translatedLines).map {
+            ($0.0.id, $0.1)
+        })
+    }
 }
 
 private enum LyricsTranslationPlanner {
@@ -250,7 +342,17 @@ private enum LyricsTranslationPlanner {
 
         let sourceLines = candidates.filter { line in
             guard let code = recognized[line.id] else { return true }
-            return baseLanguageCode(code) == sourceLanguageCode
+            let detectedBase = baseLanguageCode(code)
+            if detectedBase == sourceLanguageCode { return true }
+            if detectedBase == targetBase { return false }
+            // Language identification is deliberately conservative for short
+            // lyric fragments such as "oh", "I do", names, and ad-libs. They
+            // inherit the song's dominant source language instead of being
+            // dropped after a low-confidence one-line classification.
+            let letterCount = line.text.unicodeScalars.lazy.filter {
+                CharacterSet.letters.contains($0)
+            }.count
+            return letterCount <= 24
         }
         guard !sourceLines.isEmpty else { return nil }
         return LyricsTranslationPlan(
@@ -283,6 +385,10 @@ private struct SystemLyricsTranslationTaskHost: View {
     @State private var pendingLines: [LyricLine] = []
     @State private var sourceLanguageCode = ""
     @State private var loadedCacheIdentity: LyricsTranslationCacheIdentity?
+
+    private var translationCacheLanguage: String {
+        LyricsTranslationCachePolicy.languageKey(for: targetLanguageCode)
+    }
 
     var body: some View {
         Color.clear
@@ -330,7 +436,7 @@ private struct SystemLyricsTranslationTaskHost: View {
         let cached = await AppDatabase.shared.loadLyricsTranslations(
             scope: accountScope,
             songID: songID,
-            targetLanguage: targetLanguageCode,
+            targetLanguage: translationCacheLanguage,
             sourceLines: sourceLines
         )
         guard !Task.isCancelled else { return }
@@ -347,7 +453,14 @@ private struct SystemLyricsTranslationTaskHost: View {
         phase = .preparing
         let sourceLanguage = Locale.Language(identifier: plan.sourceLanguageCode)
         let targetLanguage = Locale.Language(identifier: targetLanguageCode)
-        let availability = LanguageAvailability()
+        let availability: LanguageAvailability
+        if #available(iOS 26.4, *) {
+            availability = LanguageAvailability(
+                preferredStrategy: .highFidelity
+            )
+        } else {
+            availability = LanguageAvailability()
+        }
         let status = await availability.status(
             from: sourceLanguage,
             to: targetLanguage
@@ -357,10 +470,18 @@ private struct SystemLyricsTranslationTaskHost: View {
         case .installed, .supported:
             sourceLanguageCode = plan.sourceLanguageCode
             pendingLines = plan.lines
-            configuration = TranslationSession.Configuration(
-                source: sourceLanguage,
-                target: targetLanguage
-            )
+            if #available(iOS 26.4, *) {
+                configuration = TranslationSession.Configuration(
+                    source: sourceLanguage,
+                    target: targetLanguage,
+                    preferredStrategy: .highFidelity
+                )
+            } else {
+                configuration = TranslationSession.Configuration(
+                    source: sourceLanguage,
+                    target: targetLanguage
+                )
+            }
         case .unsupported:
             phase = cached.isEmpty ? .unsupported : .ready
         @unknown default:
@@ -372,7 +493,7 @@ private struct SystemLyricsTranslationTaskHost: View {
         LyricsTranslationCacheIdentity(
             accountScope: accountScope,
             songID: songID,
-            targetLanguageCode: targetLanguageCode
+            targetLanguageCode: translationCacheLanguage
         )
     }
 
@@ -381,6 +502,7 @@ private struct SystemLyricsTranslationTaskHost: View {
         let requestSongID = songID
         let requestScope = accountScope
         let requestTargetLanguage = targetLanguageCode
+        let requestCacheLanguage = translationCacheLanguage
         let requestSourceLanguage = sourceLanguageCode
         let requestedLines = pendingLines
         guard let requestScope,
@@ -388,12 +510,12 @@ private struct SystemLyricsTranslationTaskHost: View {
               !requestedLines.isEmpty else { return }
 
         let linesByID = Dictionary(uniqueKeysWithValues: requestedLines.map {
-            (String($0.id), $0)
+            ($0.id, $0)
         })
         phase = .translating(completed: 0, total: requestedLines.count)
 
         do {
-            let responses = try await Self.performBatchTranslation(
+            let translatedLines = try await Self.performContextualTranslation(
                 using: session,
                 lines: requestedLines
             )
@@ -403,11 +525,10 @@ private struct SystemLyricsTranslationTaskHost: View {
                   targetLanguageCode == requestTargetLanguage else { return }
             var nextTranslations = translations
             var records = [LyricsTranslationRecord]()
-            records.reserveCapacity(responses.count)
-            for response in responses {
-                guard let clientIdentifier = response.clientIdentifier,
-                      let line = linesByID[clientIdentifier] else { continue }
-                let translatedText = response.targetText.trimmingCharacters(
+            records.reserveCapacity(translatedLines.count)
+            for (lineID, rawTranslatedText) in translatedLines {
+                guard let line = linesByID[lineID] else { continue }
+                let translatedText = rawTranslatedText.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 )
                 guard !translatedText.isEmpty else { continue }
@@ -427,7 +548,7 @@ private struct SystemLyricsTranslationTaskHost: View {
                 records,
                 scope: requestScope,
                 songID: requestSongID,
-                targetLanguage: requestTargetLanguage
+                targetLanguage: requestCacheLanguage
             )
             guard !Task.isCancelled,
                   songID == requestSongID,
@@ -444,16 +565,63 @@ private struct SystemLyricsTranslationTaskHost: View {
     }
 
     @concurrent
-    private static func performBatchTranslation(
+    private static func performContextualTranslation(
         using session: TranslationSession,
         lines: [LyricLine]
-    ) async throws -> [TranslationSession.Response] {
-        let requests = lines.map {
+    ) async throws -> [Int: String] {
+        let chunks = LyricsTranslationChunker.makeChunks(from: lines)
+        let chunksByID = Dictionary(uniqueKeysWithValues: chunks.map {
+            ($0.identifier, $0)
+        })
+        let contextualRequests = chunks.map {
+            TranslationSession.Request(
+                sourceText: $0.sourceText,
+                clientIdentifier: $0.identifier
+            )
+        }
+        let contextualResponses = try await session.translations(
+            from: contextualRequests
+        )
+
+        var translatedLines = [Int: String](minimumCapacity: lines.count)
+        var unresolvedLineIDs = Set(lines.map(\.id))
+        for response in contextualResponses {
+            guard let identifier = response.clientIdentifier,
+                  let chunk = chunksByID[identifier],
+                  let mapped = LyricsTranslationChunker.mapTranslatedText(
+                    response.targetText,
+                    to: chunk.lines
+                  ) else {
+                continue
+            }
+            translatedLines.merge(mapped) { current, _ in current }
+            unresolvedLineIDs.subtract(mapped.keys)
+        }
+
+        // Translation models occasionally merge poetic line breaks. Preserve
+        // correctness by retrying only those ambiguous chunks one line at a
+        // time instead of displaying a translation under the wrong lyric.
+        let fallbackLines = lines.filter { unresolvedLineIDs.contains($0.id) }
+        guard !fallbackLines.isEmpty else { return translatedLines }
+        let fallbackRequests = fallbackLines.map {
             TranslationSession.Request(
                 sourceText: $0.text,
                 clientIdentifier: String($0.id)
             )
         }
-        return try await session.translations(from: requests)
+        let fallbackResponses = try await session.translations(
+            from: fallbackRequests
+        )
+        for response in fallbackResponses {
+            guard let identifier = response.clientIdentifier,
+                  let lineID = Int(identifier) else { continue }
+            let text = response.targetText.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            if !text.isEmpty {
+                translatedLines[lineID] = text
+            }
+        }
+        return translatedLines
     }
 }
