@@ -44,13 +44,11 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 enum PlayerSeekBarAppearance {
     case classic
     case liquidGlass
-    case appleMusic
 }
 
 enum PlayerAppearance: String, CaseIterable, Identifiable {
     case classic
     case liquidGlass
-    case appleMusic = "dynamic"
 
     var id: String { rawValue }
 
@@ -58,7 +56,6 @@ enum PlayerAppearance: String, CaseIterable, Identifiable {
         switch self {
         case .classic: "클래식"
         case .liquidGlass: "Liquid Glass"
-        case .appleMusic: "Apple Music"
         }
     }
 
@@ -67,14 +64,7 @@ enum PlayerAppearance: String, CaseIterable, Identifiable {
     }
 
     var seekBarAppearance: PlayerSeekBarAppearance {
-        switch self {
-        case .classic:
-            .classic
-        case .liquidGlass:
-            .liquidGlass
-        case .appleMusic:
-            .appleMusic
-        }
+        self == .classic ? .classic : .liquidGlass
     }
 }
 
@@ -562,7 +552,6 @@ struct SongFavoriteIconButton: View {
     var iconSize: CGFloat = 16
     var inactiveForeground: Color = .secondary
     var hitTarget: CGFloat = 32
-    var usesStarSymbol = false
 
     var body: some View {
         SongFavoriteIconButtonContent(
@@ -571,8 +560,7 @@ struct SongFavoriteIconButton: View {
             song: song,
             iconSize: iconSize,
             inactiveForeground: inactiveForeground,
-            hitTarget: hitTarget,
-            usesStarSymbol: usesStarSymbol
+            hitTarget: hitTarget
         )
     }
 }
@@ -586,7 +574,6 @@ private struct SongFavoriteIconButtonContent: View {
     let iconSize: CGFloat
     let inactiveForeground: Color
     let hitTarget: CGFloat
-    let usesStarSymbol: Bool
 
     private var isStarred: Bool {
         overrideState.value ?? song.isStarred
@@ -616,11 +603,7 @@ private struct SongFavoriteIconButtonContent: View {
 
     @ViewBuilder
     private var favoriteIcon: some View {
-        let image = Image(
-            systemName: usesStarSymbol
-                ? (isStarred ? "star.fill" : "star")
-                : (isStarred ? "heart.fill" : "heart")
-        )
+        let image = Image(systemName: isStarred ? "heart.fill" : "heart")
         if motionEnabled {
             image
                 .contentTransition(.symbolEffect(.replace))
@@ -904,8 +887,7 @@ struct PlayerSeekBar: View {
 
     @ViewBuilder
     var body: some View {
-        switch appearance {
-        case .liquidGlass:
+        if appearance == .liquidGlass {
             if #available(iOS 26.0, *) {
                 NativeLiquidGlassSeekBar(
                     value: $value,
@@ -916,15 +898,7 @@ struct PlayerSeekBar: View {
             } else {
                 fallback
             }
-        case .appleMusic:
-            InteractiveSeekBar(
-                value: $value,
-                range: range,
-                tint: tint,
-                showsIdleThumb: false,
-                onEditingChanged: onEditingChanged
-            )
-        case .classic:
+        } else {
             fallback
         }
     }
@@ -986,7 +960,6 @@ struct InteractiveSeekBar: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     var tint: Color = .white
-    var showsIdleThumb = true
     var onEditingChanged: (Bool) -> Void = { _ in }
 
     @Environment(\.buFiMotionEnabled) private var motionEnabled
@@ -1005,21 +978,19 @@ struct InteractiveSeekBar: View {
                     .fill(tint)
                     .frame(width: max(isEditing ? 7 : 4, width * fraction))
                     .frame(height: isEditing ? 7 : 4)
-                if showsIdleThumb || isEditing {
-                    Circle()
-                        .fill(tint)
-                        .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
-                        .frame(width: isEditing ? 19 : 14, height: isEditing ? 19 : 14)
-                        .offset(
-                            x: max(
-                                0,
-                                min(
-                                    width - (isEditing ? 19 : 14),
-                                    width * fraction - (isEditing ? 9.5 : 7)
-                                )
+                Circle()
+                    .fill(tint)
+                    .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
+                    .frame(width: isEditing ? 19 : 14, height: isEditing ? 19 : 14)
+                    .offset(
+                        x: max(
+                            0,
+                            min(
+                                width - (isEditing ? 19 : 14),
+                                width * fraction - (isEditing ? 9.5 : 7)
                             )
                         )
-                }
+                    )
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -1077,22 +1048,16 @@ struct InteractiveSeekBar: View {
 
 struct AirPlayButton: UIViewRepresentable {
     var lightContent = false
-    var contentOpacity: CGFloat = 1
 
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.prioritizesVideoDevices = false
         picker.activeTintColor = UIColor(BuFiTheme.accent)
-        picker.tintColor = resolvedTint
+        picker.tintColor = lightContent ? .white : .label
         return picker
     }
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
-        uiView.tintColor = resolvedTint
-    }
-
-    private var resolvedTint: UIColor {
-        (lightContent ? UIColor.white : UIColor.label)
-            .withAlphaComponent(contentOpacity)
+        uiView.tintColor = lightContent ? .white : .label
     }
 }

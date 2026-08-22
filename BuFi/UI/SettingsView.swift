@@ -51,6 +51,9 @@ struct SettingsView: View {
             .toolbar(.hidden, for: .navigationBar)
             .tint(BuFiTheme.accent)
             .task {
+                if PlayerAppearance(rawValue: playerAppearance) == nil {
+                    playerAppearance = PlayerAppearance.liquidGlass.rawValue
+                }
                 offlineBytes = await OfflineStore.shared.totalBytes()
             }
             .confirmationDialog(
@@ -146,7 +149,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                settingsNote("Classic은 기존 디자인을 유지하고 Liquid Glass는 재생바에 Apple 소재를 적용합니다. Apple Music은 큰 앨범 커버와 간결한 재생 제어를 사용합니다.")
+                settingsNote("Classic은 기존 디자인을 유지하고 Liquid Glass는 재생바에 Apple 소재를 적용합니다.")
 
                 SettingsDivider()
 

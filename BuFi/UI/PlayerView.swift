@@ -1,4 +1,3 @@
-import MediaPlayer
 import SwiftUI
 import UIKit
 
@@ -73,11 +72,6 @@ private struct PlayerBackgroundAnimationIdentity: Equatable {
     let backgroundAppearance: PlayerBackgroundAppearance
 }
 
-private enum PlayerDismissDragAxis {
-    case horizontal
-    case vertical
-}
-
 private struct PlayerArtworkPressEffect: ViewModifier {
     @GestureState private var isPressed = false
 
@@ -138,10 +132,6 @@ struct PlayerView: View {
     @State private var artworkLayoutRevision: UInt64 = 0
     @State private var translationRequestedSongID: String?
     @State private var hasRevealedPlayerContent = false
-    @State private var dismissDragAxis: PlayerDismissDragAxis?
-    @State private var dismissDragTranslation: CGFloat = 0
-    @State private var dismissThresholdArmed = false
-    @State private var isCompletingInteractiveDismiss = false
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -157,38 +147,29 @@ struct PlayerView: View {
                 if let item = currentPlayback.item {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
-                            if resolvedPlayerAppearance == .appleMusic {
-                                appleMusicHeader
-                                appleMusicPlayer(
-                                    item,
-                                    availableWidth: proxy.size.width,
-                                    availableHeight: proxy.size.height
-                                )
-                            } else {
-                                header(item)
-                                nowPlayingContent(
-                                    item,
-                                    availableWidth: proxy.size.width,
-                                    availableHeight: proxy.size.height
-                                )
-                                progress
-                                transport
-                                utilityRow()
-                                PlayerLyricsCard(
-                                    lyricsState: audio.lyricsState,
-                                    primary: playerPrimary,
-                                    secondary: playerSecondary,
-                                    onRetry: audio.retryLyrics,
-                                    onTranslate: {
-                                        translationRequestedSongID = item.song.id
-                                        audio.showFullLyrics = true
-                                    },
-                                    onOpen: {
-                                        translationRequestedSongID = nil
-                                        audio.showFullLyrics = true
-                                    }
-                                )
-                            }
+                            header(item)
+                            nowPlayingContent(
+                                item,
+                                availableWidth: proxy.size.width,
+                                availableHeight: proxy.size.height
+                            )
+                            progress
+                            transport
+                            utilityRow()
+                            PlayerLyricsCard(
+                                lyricsState: audio.lyricsState,
+                                primary: playerPrimary,
+                                secondary: playerSecondary,
+                                onRetry: audio.retryLyrics,
+                                onTranslate: {
+                                    translationRequestedSongID = item.song.id
+                                    audio.showFullLyrics = true
+                                },
+                                onOpen: {
+                                    translationRequestedSongID = nil
+                                    audio.showFullLyrics = true
+                                }
+                            )
                         }
                         .padding(.horizontal, 22)
                         .padding(.bottom, max(proxy.safeAreaInsets.bottom, 18) + 10)
@@ -206,11 +187,6 @@ struct PlayerView: View {
                     .animation(
                         allowsMotion ? BuFiMotion.playerEntrance : .none,
                         value: hasRevealedPlayerContent
-                    )
-                    .scrollDisabled(
-                        resolvedPlayerAppearance == .appleMusic
-                            && (dismissDragAxis == .vertical
-                                || isCompletingInteractiveDismiss)
                     )
                     .allowsHitTesting(!playerPresentation.showFullLyrics)
                     .accessibilityHidden(playerPresentation.showFullLyrics)
@@ -232,36 +208,6 @@ struct PlayerView: View {
                 }
             }
             .animation(allowsMotion ? BuFiMotion.lyricsPanel : .none, value: playerPresentation.showFullLyrics)
-            .scaleEffect(
-                appleMusicDismissScale(availableHeight: proxy.size.height),
-                anchor: .center
-            )
-            .offset(y: appleMusicDismissOffset)
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: appleMusicDismissCornerRadius(
-                        availableHeight: proxy.size.height
-                    ),
-                    style: .continuous
-                )
-            )
-            .shadow(
-                color: .black.opacity(appleMusicDismissShadowOpacity),
-                radius: 26,
-                y: 14
-            )
-            .simultaneousGesture(
-                appleMusicDismissGesture(availableHeight: proxy.size.height),
-                including: resolvedPlayerAppearance == .appleMusic
-                    && !playerPresentation.showFullLyrics
-                    ? .all
-                    : .none
-            )
-            .sensoryFeedback(.impact(weight: .light), trigger: dismissThresholdArmed) {
-                oldValue, newValue in
-                allowsMotion && !oldValue && newValue
-            }
-            .allowsHitTesting(!isCompletingInteractiveDismiss)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQueue) {
@@ -286,6 +232,9 @@ struct PlayerView: View {
             }
         }
         .onAppear {
+            if PlayerAppearance(rawValue: playerAppearance) == nil {
+                playerAppearance = PlayerAppearance.liquidGlass.rawValue
+            }
             // Full-screen covers may preserve the horizontal scroll view's
             // internal geometry across presentations. Force a fresh layout
             // pass for this presentation before aligning the active item.
@@ -302,136 +251,6 @@ struct PlayerView: View {
                 guard !Task.isCancelled else { return }
             }
             hasRevealedPlayerContent = true
-        }
-    }
-
-    private func appleMusicDismissGesture(
-        availableHeight: CGFloat
-    ) -> some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .global)
-            .onChanged { value in
-                guard resolvedPlayerAppearance == .appleMusic,
-                      !isCompletingInteractiveDismiss else { return }
-                let horizontal = abs(value.translation.width)
-                let vertical = abs(value.translation.height)
-                if dismissDragAxis == nil {
-                    guard max(horizontal, vertical) >= 8 else { return }
-                    if value.translation.height > 0,
-                       vertical > horizontal * 1.12 {
-                        dismissDragAxis = .vertical
-                    } else if horizontal > vertical * 1.06
-                                || value.translation.height <= 0 {
-                        dismissDragAxis = .horizontal
-                    } else {
-                        return
-                    }
-                }
-                guard dismissDragAxis == .vertical else { return }
-                let maximum = max(160, availableHeight * 0.56)
-                dismissDragTranslation = min(
-                    max(0, value.translation.height),
-                    maximum
-                )
-                dismissThresholdArmed = dismissDragTranslation
-                    >= interactiveDismissThreshold(availableHeight: availableHeight)
-            }
-            .onEnded { value in
-                let wasVertical = dismissDragAxis == .vertical
-                dismissDragAxis = nil
-                guard wasVertical else {
-                    resetInteractiveDismiss()
-                    return
-                }
-                let threshold = interactiveDismissThreshold(
-                    availableHeight: availableHeight
-                )
-                let predicted = max(
-                    value.translation.height,
-                    value.predictedEndTranslation.height
-                )
-                if dismissDragTranslation >= threshold
-                    || predicted >= threshold * 1.72 {
-                    completeInteractiveDismiss(availableHeight: availableHeight)
-                } else {
-                    resetInteractiveDismiss()
-                }
-            }
-    }
-
-    private func interactiveDismissThreshold(
-        availableHeight: CGFloat
-    ) -> CGFloat {
-        min(max(96, availableHeight * 0.13), 126)
-    }
-
-    private var appleMusicDismissOffset: CGFloat {
-        guard resolvedPlayerAppearance == .appleMusic else { return 0 }
-        return dismissDragTranslation
-    }
-
-    private func appleMusicDismissProgress(
-        availableHeight: CGFloat
-    ) -> CGFloat {
-        guard resolvedPlayerAppearance == .appleMusic else { return 0 }
-        let distance = max(220, availableHeight * 0.34)
-        return min(max(dismissDragTranslation / distance, 0), 1)
-    }
-
-    private func appleMusicDismissScale(
-        availableHeight: CGFloat
-    ) -> CGFloat {
-        guard allowsMotion else { return 1 }
-        let progress = appleMusicDismissProgress(availableHeight: availableHeight)
-        return 1 - (progress * 0.064)
-    }
-
-    private func appleMusicDismissCornerRadius(
-        availableHeight: CGFloat
-    ) -> CGFloat {
-        guard allowsMotion else { return 0 }
-        return appleMusicDismissProgress(availableHeight: availableHeight) * 30
-    }
-
-    private var appleMusicDismissShadowOpacity: Double {
-        guard resolvedPlayerAppearance == .appleMusic,
-              dismissDragTranslation > 0 else { return 0 }
-        return 0.24
-    }
-
-    private func resetInteractiveDismiss() {
-        dismissThresholdArmed = false
-        withAnimation(
-            allowsMotion
-                ? .spring(duration: 0.38, bounce: 0.08)
-                : .none
-        ) {
-            dismissDragTranslation = 0
-        }
-    }
-
-    private func completeInteractiveDismiss(
-        availableHeight: CGFloat
-    ) {
-        guard !isCompletingInteractiveDismiss else { return }
-        isCompletingInteractiveDismiss = true
-        dismissThresholdArmed = false
-        withAnimation(
-            allowsMotion
-                ? .smooth(duration: 0.20, extraBounce: 0)
-                : .none
-        ) {
-            dismissDragTranslation = max(
-                dismissDragTranslation,
-                availableHeight * 0.34
-            )
-        }
-        Task { @MainActor in
-            if allowsMotion {
-                try? await Task.sleep(for: .milliseconds(150))
-            }
-            guard isCompletingInteractiveDismiss else { return }
-            audio.showPlayer = false
-            dismiss()
         }
     }
 
@@ -523,24 +342,6 @@ struct PlayerView: View {
         .frame(height: 58)
     }
 
-    private var appleMusicHeader: some View {
-        Button {
-            audio.showPlayer = false
-            dismiss()
-        } label: {
-            Capsule()
-                .fill(playerPrimary.opacity(0.46))
-                .frame(width: 58, height: 5)
-                .frame(maxWidth: .infinity)
-                .frame(height: 43)
-                .contentShape(Rectangle())
-        }
-        .padding(.top, -12)
-        .buttonStyle(BuFiPressStyle())
-        .accessibilityLabel("플레이어 닫기")
-        .accessibilityHint("아래로 내려 플레이어를 닫습니다.")
-    }
-
     private func nowPlayingContent(
         _ item: PlaybackMediaItem,
         availableWidth: CGFloat,
@@ -595,61 +396,13 @@ struct PlayerView: View {
         .frame(width: availableWidth)
     }
 
-    private func appleMusicPlayer(
-        _ item: PlaybackMediaItem,
-        availableWidth: CGFloat,
-        availableHeight: CGFloat
-    ) -> some View {
-        let contentWidth = max(240, availableWidth - 62)
-        return VStack(spacing: 0) {
-            artworkPager(
-                item,
-                availableWidth: availableWidth,
-                availableHeight: availableHeight,
-                heightPadding: 5,
-                viewportInset: 48,
-                cornerRadius: 12,
-                minimumPixelSize: 1_536,
-                addsShadow: true
-            )
-
-            appleMusicMetadataContent(item)
-                .frame(width: contentWidth)
-                .padding(.top, 39)
-
-            progress
-                .frame(width: contentWidth)
-                .padding(.top, 20)
-
-            AppleMusicTransportBar(
-                primary: playerPrimary,
-                motionEnabled: allowsMotion
-            )
-            .frame(width: contentWidth)
-            .padding(.top, 22)
-
-            appleMusicVolume
-                .frame(width: contentWidth)
-                .padding(.top, 29)
-
-            appleMusicUtilityRow
-                .frame(width: contentWidth)
-                .padding(.top, 8)
-        }
-        .padding(.bottom, 12)
-    }
-
     private func artworkPager(
         _ item: PlaybackMediaItem,
         availableWidth: CGFloat,
         availableHeight: CGFloat,
-        heightPadding: CGFloat,
-        viewportInset: CGFloat = 44,
-        cornerRadius: CGFloat = 14,
-        minimumPixelSize: CGFloat = 0,
-        addsShadow: Bool = false
+        heightPadding: CGFloat
     ) -> some View {
-        let viewportWidth = max(240, availableWidth - viewportInset)
+        let viewportWidth = max(240, availableWidth - 44)
         let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
         let sideInset = max(0, (viewportWidth - edge) / 2)
         let pages = cachedArtworkPages.isEmpty ? artworkPages(fallback: item) : cachedArtworkPages
@@ -700,8 +453,8 @@ struct PlayerView: View {
                         ArtworkView(
                             coverArt: page.id.coverArtID,
                             size: edge,
-                            cornerRadius: cornerRadius,
-                            minimumPixelSize: minimumPixelSize,
+                            cornerRadius: 14,
+                            minimumPixelSize: 1_536,
                             cacheRevision: page.id.artworkRevision,
                             onPalette: extractsPalette
                                 ? { nextPalette in
@@ -712,12 +465,7 @@ struct PlayerView: View {
                         .frame(width: edge, height: edge)
                         .playerArtworkPressEffect(
                             enabled: allowsMotion,
-                            cornerRadius: cornerRadius
-                        )
-                        .shadow(
-                            color: addsShadow ? .black.opacity(0.24) : .clear,
-                            radius: addsShadow ? 18 : 0,
-                            y: addsShadow ? 10 : 0
+                            cornerRadius: 14
                         )
                         .id(page.id)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
@@ -910,40 +658,6 @@ struct PlayerView: View {
         }
     }
 
-    private func appleMusicMetadataContent(
-        _ item: PlaybackMediaItem
-    ) -> some View {
-        let song = item.song
-        return HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(song.title)
-                    .font(.system(size: 21, weight: .semibold))
-                    .tracking(-0.45)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                PlayerArtistLink(song: song, foreground: playerSecondary)
-            }
-            .id(item.id)
-            .transition(trackTextTransition)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
-
-            HStack(spacing: 18) {
-                PlayerFavoriteButton(
-                    song: song,
-                    iconSize: 24,
-                    foreground: playerPrimary,
-                    usesStarSymbol: true
-                )
-                PlayerOverflowMenu(
-                    song: song,
-                    foreground: playerPrimary,
-                    iconSize: 20
-                )
-            }
-        }
-    }
-
     private var progress: some View {
         PlayerProgressView(
             timeline: audio.timeline,
@@ -961,57 +675,6 @@ struct PlayerView: View {
             buttonForeground: playerButtonForeground,
             motionEnabled: allowsMotion
         )
-    }
-
-    private var appleMusicVolume: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "speaker.fill")
-                .font(.system(size: 13, weight: .semibold))
-            AppleSystemVolumeSlider(
-                minimumTrack: playerPrimary.opacity(0.42),
-                maximumTrack: playerPrimary.opacity(0.24),
-                thumb: playerPrimary
-            )
-            .frame(height: 30)
-            Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: 15, weight: .semibold))
-        }
-        .foregroundStyle(playerSecondary)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var appleMusicUtilityRow: some View {
-        let hasLyrics = !audio.lyricsState.document.lines.isEmpty
-        return HStack {
-            Button {
-                translationRequestedSongID = nil
-                audio.showFullLyrics = true
-            } label: {
-                Image(systemName: "quote.bubble")
-                    .font(.system(size: 22, weight: .medium))
-                    .frame(width: 48, height: 48)
-            }
-            .disabled(!hasLyrics)
-            .opacity(hasLyrics ? 1 : 0.24)
-            .accessibilityLabel("가사")
-
-            Spacer()
-            AirPlayButton(lightContent: true, contentOpacity: 0.60)
-                .frame(width: 44, height: 44)
-                .accessibilityLabel("AirPlay")
-            Spacer()
-
-            Button {
-                showQueue = true
-            } label: {
-                Image(systemName: "list.bullet")
-                    .font(.system(size: 23, weight: .medium))
-                    .frame(width: 48, height: 48)
-            }
-            .accessibilityLabel("재생목록")
-        }
-        .buttonStyle(BuFiPressStyle())
-        .foregroundStyle(playerPrimary.opacity(0.58))
     }
 
     private func utilityRow(
@@ -1086,9 +749,6 @@ struct PlayerView: View {
     private var allowsMotion: Bool { motionEnabled }
 
     private var usesDarkForeground: Bool {
-        if resolvedPlayerAppearance == .appleMusic {
-            return false
-        }
         switch resolvedBackgroundAppearance {
         case .classic:
             return colorScheme == .light
@@ -1104,9 +764,7 @@ struct PlayerView: View {
     }
 
     private var playerSecondary: Color {
-        playerPrimary.opacity(
-            resolvedPlayerAppearance == .appleMusic ? 0.56 : 0.64
-        )
+        playerPrimary.opacity(0.64)
     }
 
     private var playerButtonForeground: Color {
@@ -1202,7 +860,6 @@ private struct PlayerOverflowMenu: View {
 
     let song: Song
     let foreground: Color
-    var iconSize: CGFloat = 22
 
     var body: some View {
         Menu {
@@ -1232,7 +889,7 @@ private struct PlayerOverflowMenu: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: iconSize, weight: .semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(foreground)
                 .frame(width: 44, height: 44)
         }
@@ -1244,125 +901,14 @@ private struct PlayerFavoriteButton: View {
     let song: Song
     let iconSize: CGFloat
     let foreground: Color
-    var usesStarSymbol = false
 
     var body: some View {
         SongFavoriteIconButton(
             song: song,
             iconSize: iconSize,
             inactiveForeground: foreground,
-            hitTarget: 44,
-            usesStarSymbol: usesStarSymbol
+            hitTarget: 44
         )
-    }
-}
-
-private struct AppleSystemVolumeSlider: UIViewRepresentable {
-    let minimumTrack: Color
-    let maximumTrack: Color
-    let thumb: Color
-
-    func makeUIView(context: Context) -> MPVolumeView {
-        let view = MPVolumeView(frame: .zero)
-        view.showsVolumeSlider = true
-        styleSlider(in: view)
-        return view
-    }
-
-    func updateUIView(_ uiView: MPVolumeView, context: Context) {
-        styleSlider(in: uiView)
-    }
-
-    private func styleSlider(in view: MPVolumeView) {
-        view.subviews
-            .filter { !($0 is UISlider) }
-            .forEach { $0.isHidden = true }
-        guard let slider = view.subviews.first(where: { $0 is UISlider }) as? UISlider else {
-            return
-        }
-        slider.minimumTrackTintColor = UIColor(minimumTrack)
-        slider.maximumTrackTintColor = UIColor(maximumTrack)
-        slider.thumbTintColor = UIColor(thumb)
-        let hiddenThumb = UIImage()
-        slider.setThumbImage(hiddenThumb, for: .normal)
-        slider.setThumbImage(hiddenThumb, for: .highlighted)
-    }
-}
-
-private struct AppleMusicTransportBar: View {
-    @EnvironmentObject private var audio: AudioEngine
-    @EnvironmentObject private var playbackControl: PlaybackControlState
-
-    let primary: Color
-    let motionEnabled: Bool
-
-    var body: some View {
-        HStack {
-            transportButton(
-                "backward.fill",
-                size: 31,
-                label: "이전 곡",
-                action: audio.previous
-            )
-            Spacer()
-            Button(action: audio.togglePlayback) {
-                ZStack {
-                    if playbackControl.isBuffering {
-                        ProgressView()
-                            .tint(primary)
-                            .frame(width: 52, height: 64)
-                    } else {
-                        Image(
-                            systemName: playbackControl.wantsPlayback
-                                ? "pause.fill"
-                                : "play.fill"
-                        )
-                        .font(.system(size: 42, weight: .bold))
-                        .foregroundStyle(primary)
-                        .frame(width: 58, height: 72)
-                        .offset(x: playbackControl.wantsPlayback ? 0 : 3)
-                        .contentTransition(.symbolEffect(.replace))
-                    }
-                }
-            }
-            .buttonStyle(BuFiPressStyle())
-            .accessibilityLabel(
-                playbackControl.wantsPlayback ? "일시정지" : "재생"
-            )
-            Spacer()
-            transportButton(
-                "forward.fill",
-                size: 31,
-                label: "다음 곡",
-                action: { audio.next() }
-            )
-        }
-        .padding(.horizontal, 36)
-        .frame(height: 92)
-        .animation(
-            motionEnabled ? BuFiMotion.symbol : .none,
-            value: playbackControl.wantsPlayback
-        )
-        .animation(
-            motionEnabled ? BuFiMotion.symbol : .none,
-            value: playbackControl.isBuffering
-        )
-    }
-
-    private func transportButton(
-        _ symbol: String,
-        size: CGFloat,
-        label: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(primary)
-                .frame(width: 58, height: 64)
-        }
-        .buttonStyle(BuFiPressStyle())
-        .accessibilityLabel(label)
     }
 }
 
@@ -2127,14 +1673,12 @@ private struct PlayerPaletteBackground: View, Equatable {
         case restrained
         case vivid
         case bright
-        case appleMusic
 
         var baseWeight: Double {
             switch self {
             case .restrained: 1.55
             case .vivid: 0.88
             case .bright: 0.82
-            case .appleMusic: 0.72
             }
         }
 
@@ -2143,7 +1687,6 @@ private struct PlayerPaletteBackground: View, Equatable {
             case .restrained: 0.92
             case .vivid: 1.72
             case .bright: 1.88
-            case .appleMusic: 1.98
             }
         }
 
@@ -2152,7 +1695,6 @@ private struct PlayerPaletteBackground: View, Equatable {
             case .restrained: 0.40
             case .vivid: 0.76
             case .bright: 0.82
-            case .appleMusic: 0.86
             }
         }
     }
@@ -2164,37 +1706,21 @@ private struct PlayerPaletteBackground: View, Equatable {
 
     @ViewBuilder
     var body: some View {
-        if playerAppearance == .appleMusic {
+        switch appearance {
+        case .classic:
             ZStack {
-                artisticField(style: .appleMusic)
-                Color.black.opacity(colorScheme == .dark ? 0.12 : 0.08)
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.04),
-                        Color.black.opacity(0.16),
-                        Color.black.opacity(0.35)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+                artisticField(style: .restrained)
+                restrainedReadabilityOverlay
             }
-        } else {
-            switch appearance {
-            case .classic:
-                ZStack {
-                    artisticField(style: .restrained)
-                    restrainedReadabilityOverlay
-                }
-            case .multicolor:
-                ZStack {
-                    artisticField(style: .vivid)
-                    readabilityOverlay
-                }
-            case .bright:
-                ZStack {
-                    artisticField(style: .bright)
-                    Color.white.opacity(0.04)
-                }
+        case .multicolor:
+            ZStack {
+                artisticField(style: .vivid)
+                readabilityOverlay
+            }
+        case .bright:
+            ZStack {
+                artisticField(style: .bright)
+                Color.white.opacity(0.04)
             }
         }
     }
@@ -2354,8 +1880,6 @@ private struct PlayerPaletteBackground: View, Equatable {
             )
         case .bright:
             brightenedColor(color, brightnessFloor: 0.70)
-        case .appleMusic:
-            Color(color)
         }
     }
 
