@@ -105,6 +105,7 @@ actor AppDatabase {
     private var poolTask: Task<DatabasePool?, Never>?
     private var pendingPaletteTouches = Set<PaletteTouch>()
     private var paletteTouchTask: Task<Void, Never>?
+    private var lyricsTranslationSaveCount: UInt = 0
 
     private static let externalRecommendationMaximumBytes = 512 * 1_024
     private static let externalRecommendationRetention: TimeInterval = 7 * 24 * 60 * 60
@@ -114,6 +115,9 @@ actor AppDatabase {
     private static let lyricsDocumentRetention: TimeInterval = 30 * 24 * 60 * 60
     private static let lyricsDocumentEntriesPerAccount = 256
     private static let lyricsDocumentTotalEntries = 1_024
+    private static let lyricsTranslationRetention: TimeInterval = 365 * 24 * 60 * 60
+    private static let lyricsTranslationSongsPerAccount = 384
+    private static let lyricsTranslationTotalSongs = 1_536
 
     private init() {
         currentDate = { Date() }
@@ -321,34 +325,75 @@ actor AppDatabase {
     ) async -> Bool {
         guard !records.isEmpty,
               let pool = await databasePool() else { return false }
+        lyricsTranslationSaveCount &+= 1
+        let prunesCapacity = lyricsTranslationSaveCount == 1
+            || lyricsTranslationSaveCount.isMultiple(of: 16)
         let updatedAt = currentDate().timeIntervalSince1970
+        let expirationCutoff = updatedAt - Self.lyricsTranslationRetention
         do {
             try await pool.write { db in
+                try db.execute(
+                    sql: """
+                    DELETE FROM lyrics_translation_cache
+                    WHERE account_scope = ? AND updated_at < ?
+                    """,
+                    arguments: [scope, expirationCutoff]
+                )
+                let upsert = try db.makeStatement(sql: """
+                    INSERT INTO lyrics_translation_cache (
+                        account_scope, song_id, target_language, line_id,
+                        source_language, source_text, translated_text, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(
+                        account_scope, song_id, target_language, line_id
+                    ) DO UPDATE SET
+                        source_language = excluded.source_language,
+                        source_text = excluded.source_text,
+                        translated_text = excluded.translated_text,
+                        updated_at = excluded.updated_at
+                    """)
                 for record in records where !record.translatedText.isEmpty {
+                    try upsert.execute(arguments: [
+                        scope,
+                        songID,
+                        targetLanguage,
+                        record.lineID,
+                        record.sourceLanguage,
+                        record.sourceText,
+                        record.translatedText,
+                        updatedAt
+                    ])
+                }
+                if prunesCapacity {
                     try db.execute(
                         sql: """
-                        INSERT INTO lyrics_translation_cache (
-                            account_scope, song_id, target_language, line_id,
-                            source_language, source_text, translated_text, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(
-                            account_scope, song_id, target_language, line_id
-                        ) DO UPDATE SET
-                            source_language = excluded.source_language,
-                            source_text = excluded.source_text,
-                            translated_text = excluded.translated_text,
-                            updated_at = excluded.updated_at
+                        DELETE FROM lyrics_translation_cache
+                        WHERE account_scope = ? AND song_id IN (
+                            SELECT song_id FROM lyrics_translation_cache
+                            WHERE account_scope = ?
+                            GROUP BY song_id
+                            ORDER BY MAX(updated_at) DESC, song_id ASC
+                            LIMIT -1 OFFSET ?
+                        )
                         """,
                         arguments: [
-                            scope,
-                            songID,
-                            targetLanguage,
-                            record.lineID,
-                            record.sourceLanguage,
-                            record.sourceText,
-                            record.translatedText,
-                            updatedAt
+                            scope, scope, Self.lyricsTranslationSongsPerAccount
                         ]
+                    )
+                    try db.execute(
+                        sql: """
+                        DELETE FROM lyrics_translation_cache
+                        WHERE (account_scope, song_id) IN (
+                            SELECT account_scope, song_id
+                            FROM lyrics_translation_cache
+                            GROUP BY account_scope, song_id
+                            ORDER BY MAX(updated_at) DESC,
+                                     account_scope ASC,
+                                     song_id ASC
+                            LIMIT -1 OFFSET ?
+                        )
+                        """,
+                        arguments: [Self.lyricsTranslationTotalSongs]
                     )
                 }
             }
