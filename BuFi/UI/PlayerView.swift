@@ -355,12 +355,13 @@ struct PlayerView: View {
             dismiss()
         } label: {
             Capsule()
-                .fill(playerPrimary.opacity(0.54))
-                .frame(width: 88, height: 5)
+                .fill(playerPrimary.opacity(0.46))
+                .frame(width: 58, height: 5)
                 .frame(maxWidth: .infinity)
-                .frame(height: 58)
+                .frame(height: 43)
                 .contentShape(Rectangle())
         }
+        .padding(.top, -12)
         .buttonStyle(BuFiPressStyle())
         .accessibilityLabel("플레이어 닫기")
         .accessibilityHint("아래로 내려 플레이어를 닫습니다.")
@@ -425,18 +426,22 @@ struct PlayerView: View {
         availableWidth: CGFloat,
         availableHeight: CGFloat
     ) -> some View {
-        let contentWidth = max(240, availableWidth - 72)
+        let contentWidth = max(240, availableWidth - 62)
         return VStack(spacing: 0) {
             artworkPager(
                 item,
                 availableWidth: availableWidth,
                 availableHeight: availableHeight,
-                heightPadding: 22
+                heightPadding: 5,
+                viewportInset: 48,
+                cornerRadius: 12,
+                minimumPixelSize: 1_536,
+                addsShadow: true
             )
 
             appleMusicMetadataContent(item)
                 .frame(width: contentWidth)
-                .padding(.top, 8)
+                .padding(.top, 39)
 
             progress
                 .frame(width: contentWidth)
@@ -464,9 +469,13 @@ struct PlayerView: View {
         _ item: PlaybackMediaItem,
         availableWidth: CGFloat,
         availableHeight: CGFloat,
-        heightPadding: CGFloat
+        heightPadding: CGFloat,
+        viewportInset: CGFloat = 44,
+        cornerRadius: CGFloat = 14,
+        minimumPixelSize: CGFloat = 0,
+        addsShadow: Bool = false
     ) -> some View {
-        let viewportWidth = max(240, availableWidth - 44)
+        let viewportWidth = max(240, availableWidth - viewportInset)
         let edge = max(220, min(viewportWidth, max(264, availableHeight * 0.47)))
         let sideInset = max(0, (viewportWidth - edge) / 2)
         let pages = cachedArtworkPages.isEmpty ? artworkPages(fallback: item) : cachedArtworkPages
@@ -517,7 +526,8 @@ struct PlayerView: View {
                         ArtworkView(
                             coverArt: page.id.coverArtID,
                             size: edge,
-                            cornerRadius: 14,
+                            cornerRadius: cornerRadius,
+                            minimumPixelSize: minimumPixelSize,
                             cacheRevision: page.id.artworkRevision,
                             onPalette: extractsPalette
                                 ? { nextPalette in
@@ -528,7 +538,12 @@ struct PlayerView: View {
                         .frame(width: edge, height: edge)
                         .playerArtworkPressEffect(
                             enabled: allowsMotion,
-                            cornerRadius: 14
+                            cornerRadius: cornerRadius
+                        )
+                        .shadow(
+                            color: addsShadow ? .black.opacity(0.24) : .clear,
+                            radius: addsShadow ? 18 : 0,
+                            y: addsShadow ? 10 : 0
                         )
                         .id(page.id)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
@@ -727,12 +742,11 @@ struct PlayerView: View {
         let song = item.song
         return HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                OverflowMarqueeText(
-                    text: song.title,
-                    font: .system(size: 22, weight: .semibold),
-                    tracking: -0.45,
-                    restingAlignment: .leading
-                )
+                Text(song.title)
+                    .font(.system(size: 22, weight: .semibold))
+                    .tracking(-0.45)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 PlayerArtistLink(song: song, foreground: playerSecondary)
             }
             .id(item.id)
@@ -740,7 +754,7 @@ struct PlayerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
 
-            HStack(spacing: 4) {
+            HStack(spacing: 18) {
                 PlayerFavoriteButton(
                     song: song,
                     iconSize: 26,
@@ -1088,6 +1102,9 @@ private struct AppleSystemVolumeSlider: UIViewRepresentable {
         slider.minimumTrackTintColor = UIColor(minimumTrack)
         slider.maximumTrackTintColor = UIColor(maximumTrack)
         slider.thumbTintColor = UIColor(thumb)
+        let hiddenThumb = UIImage()
+        slider.setThumbImage(hiddenThumb, for: .normal)
+        slider.setThumbImage(hiddenThumb, for: .highlighted)
     }
 }
 
@@ -1139,6 +1156,7 @@ private struct AppleMusicTransportBar: View {
                 action: { audio.next() }
             )
         }
+        .padding(.horizontal, 28)
         .frame(height: 92)
         .animation(
             motionEnabled ? BuFiMotion.symbol : .none,
@@ -1963,13 +1981,13 @@ private struct PlayerPaletteBackground: View, Equatable {
     var body: some View {
         if playerAppearance == .appleMusic {
             ZStack {
-                artisticField(style: .restrained)
-                Color.black.opacity(colorScheme == .dark ? 0.28 : 0.18)
+                artisticField(style: .vivid)
+                Color.black.opacity(colorScheme == .dark ? 0.30 : 0.20)
                 LinearGradient(
                     colors: [
                         Color.black.opacity(0.04),
-                        Color.black.opacity(0.18),
-                        Color.black.opacity(0.36)
+                        Color.black.opacity(0.15),
+                        Color.black.opacity(0.34)
                     ],
                     startPoint: .top,
                     endPoint: .bottom

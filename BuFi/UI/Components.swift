@@ -44,6 +44,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 enum PlayerSeekBarAppearance {
     case classic
     case liquidGlass
+    case appleMusic
 }
 
 enum PlayerAppearance: String, CaseIterable, Identifiable {
@@ -66,7 +67,14 @@ enum PlayerAppearance: String, CaseIterable, Identifiable {
     }
 
     var seekBarAppearance: PlayerSeekBarAppearance {
-        self == .classic ? .classic : .liquidGlass
+        switch self {
+        case .classic:
+            .classic
+        case .liquidGlass:
+            .liquidGlass
+        case .appleMusic:
+            .appleMusic
+        }
     }
 }
 
@@ -390,6 +398,7 @@ struct ArtworkView: View {
     let coverArt: String?
     let size: CGFloat
     let cornerRadius: CGFloat
+    var minimumPixelSize: CGFloat = 0
     var cacheRevision: String? = nil
     var onPalette: ((ArtworkPalette) -> Void)?
 
@@ -410,6 +419,8 @@ struct ArtworkView: View {
                loadedArtwork.requestIdentity == artworkRequestIdentity {
                 Image(uiImage: loadedArtwork.image)
                     .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
                     .scaledToFill()
                     .transition(
                         BuFiTransition.artworkReveal.animation(
@@ -482,9 +493,12 @@ struct ArtworkView: View {
     }
 
     private var requestedPixelSize: CGFloat {
-        ArtworkRequestSizing.pixelSize(
-            pointSize: size,
-            displayScale: displayScale
+        max(
+            minimumPixelSize,
+            ArtworkRequestSizing.pixelSize(
+                pointSize: size,
+                displayScale: displayScale
+            )
         )
     }
 
@@ -890,7 +904,8 @@ struct PlayerSeekBar: View {
 
     @ViewBuilder
     var body: some View {
-        if appearance == .liquidGlass {
+        switch appearance {
+        case .liquidGlass:
             if #available(iOS 26.0, *) {
                 NativeLiquidGlassSeekBar(
                     value: $value,
@@ -901,7 +916,15 @@ struct PlayerSeekBar: View {
             } else {
                 fallback
             }
-        } else {
+        case .appleMusic:
+            InteractiveSeekBar(
+                value: $value,
+                range: range,
+                tint: tint,
+                showsIdleThumb: false,
+                onEditingChanged: onEditingChanged
+            )
+        case .classic:
             fallback
         }
     }
@@ -963,6 +986,7 @@ struct InteractiveSeekBar: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     var tint: Color = .white
+    var showsIdleThumb = true
     var onEditingChanged: (Bool) -> Void = { _ in }
 
     @Environment(\.buFiMotionEnabled) private var motionEnabled
@@ -981,19 +1005,21 @@ struct InteractiveSeekBar: View {
                     .fill(tint)
                     .frame(width: max(isEditing ? 7 : 4, width * fraction))
                     .frame(height: isEditing ? 7 : 4)
-                Circle()
-                    .fill(tint)
-                    .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
-                    .frame(width: isEditing ? 19 : 14, height: isEditing ? 19 : 14)
-                    .offset(
-                        x: max(
-                            0,
-                            min(
-                                width - (isEditing ? 19 : 14),
-                                width * fraction - (isEditing ? 9.5 : 7)
+                if showsIdleThumb || isEditing {
+                    Circle()
+                        .fill(tint)
+                        .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
+                        .frame(width: isEditing ? 19 : 14, height: isEditing ? 19 : 14)
+                        .offset(
+                            x: max(
+                                0,
+                                min(
+                                    width - (isEditing ? 19 : 14),
+                                    width * fraction - (isEditing ? 9.5 : 7)
+                                )
                             )
                         )
-                    )
+                }
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
