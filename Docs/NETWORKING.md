@@ -43,6 +43,10 @@ radio scheduling, and background behavior integrated with iOS.
   BuFi observes those states only for UI and prefetch cancellation. Explicit
   item/transport failures retain bounded same-format recovery before a compatible
   transcoded format may be tried.
+- A new play command prepares AVAudioSession alongside URL/asset resolution.
+  Canonical metadata, lyrics, and lock-screen artwork wait until AVPlayer reports
+  actual playback, so they cannot race the first audio connection. Optional
+  next-track and offline work receives an additional stable-playback window.
 - Remote high-bitrate lossless playback does not overlap the active stream with
   successor warmup, upcoming artwork/lyrics prefetch, or offline downloads. This
   preserves bandwidth and decoder headroom for ALAC and reduces radio/CPU work.

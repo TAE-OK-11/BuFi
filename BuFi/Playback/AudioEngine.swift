@@ -1303,6 +1303,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var itemLoadTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
     private var songMetadataTask: Task<Void, Never>?
+    private var deferredTrackWorkPlaybackID: UUID?
     private var serverQueueTask: Task<Void, Never>?
     private var serverQueueSaveTask: Task<Void, Never>?
     private var pendingServerQueueSave: ServerQueueSaveRequest?
@@ -1310,6 +1311,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
     private var networkPrefetchTask: Task<Void, Never>?
+    private var speculativePrefetchStartTask: Task<Void, Never>?
+    private var speculativePrefetchStartToken: UUID?
     private var networkPrefetchToken: UUID?
     private var offlinePrefetchToken: UUID?
     private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
@@ -1461,6 +1464,7 @@ final class AudioEngine: NSObject, ObservableObject {
             itemLoadTask = nil
             lyricsTask?.cancel()
             lyricsTask = nil
+            deferredTrackWorkPlaybackID = nil
             nowPlayingArtworkTask?.cancel()
             nowPlayingArtworkTask = nil
             nowPlayingArtworkRequestKey = nil
@@ -1703,6 +1707,11 @@ final class AudioEngine: NSObject, ObservableObject {
         recoveryStabilityTask?.cancel()
         recoveryStabilityTask = nil
         wantsPlayback = autoplay
+        if autoplay {
+            // Negotiate the audio route in parallel with URL and AVAsset
+            // preparation instead of serially after the item becomes ready.
+            configureAudioSession()
+        }
         if !showPlayer {
             let automaticallyOpensPlayer =
                 UserDefaults.standard.object(forKey: "auto-open-player") as? Bool ?? false
@@ -1712,12 +1721,17 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: activeCompatibilityFormat,
             resumeFrom: 0
         )
-        refreshCanonicalMetadata(for: selectedSong)
         // Starting the selected stream owns the critical network path. Any
         // previous speculative transfers are discarded now; the new queue is
         // warmed only after AVPlayer confirms that playback is established.
         suspendSpeculativePrefetch()
-        loadLyrics(for: selectedSong)
+        if autoplay {
+            deferTrackWorkUntilPlaybackStarts(for: selectedSong)
+        } else {
+            deferredTrackWorkPlaybackID = nil
+            refreshCanonicalMetadata(for: selectedSong)
+            loadLyrics(for: selectedSong)
+        }
         scheduleQueueSave()
         updateNowPlaying()
         scheduleAutoplayContinuationIfNeeded()
@@ -1800,8 +1814,7 @@ final class AudioEngine: NSObject, ObservableObject {
         guard lowPowerMode
                 || thermalState == .serious
                 || thermalState == .critical else {
-            scheduleNetworkPrefetch()
-            scheduleOfflinePrefetch()
+            scheduleSpeculativePrefetchAfterPlaybackStability()
             return
         }
         suspendSpeculativePrefetch()
@@ -2004,8 +2017,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.replaceQueue(appendedEntries, index: self.queueIndex)
                 self.updateRemoteCommands()
                 self.updateNowPlaying()
-                self.scheduleNetworkPrefetch()
-                self.scheduleOfflinePrefetch()
+                self.scheduleSpeculativePrefetchAfterPlaybackStability()
                 self.scheduleQueueSave(immediate: true)
             }
             if shouldAdvance {
@@ -2030,8 +2042,7 @@ final class AudioEngine: NSObject, ObservableObject {
         replaceQueue(appendedEntries, index: queueIndex)
         updateRemoteCommands()
         updateNowPlaying()
-        scheduleNetworkPrefetch()
-        scheduleOfflinePrefetch()
+        scheduleSpeculativePrefetchAfterPlaybackStability()
         scheduleQueueSave(immediate: true)
         return true
     }
@@ -2364,8 +2375,7 @@ final class AudioEngine: NSObject, ObservableObject {
         invalidateStagedSuccessor(removeFromPlayer: true)
         updateRemoteCommands()
         updateNowPlaying()
-        scheduleNetworkPrefetch()
-        scheduleOfflinePrefetch()
+        scheduleSpeculativePrefetchAfterPlaybackStability()
         scheduleQueueSave(immediate: true)
     }
 
@@ -2602,8 +2612,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.networkPathIsSatisfied = isSatisfied
                 self.allowsSpeculativeNetworkPrefetch = allowsPrefetch
                 if prefetchChanged, allowsPrefetch {
-                    self.scheduleNetworkPrefetch()
-                    self.scheduleOfflinePrefetch()
+                    self.scheduleSpeculativePrefetchAfterPlaybackStability()
                 } else if prefetchChanged {
                     self.suspendSpeculativePrefetch()
                 }
@@ -2988,9 +2997,55 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func suspendSpeculativePrefetch() {
+        speculativePrefetchStartTask?.cancel()
+        speculativePrefetchStartTask = nil
+        speculativePrefetchStartToken = nil
         cancelNetworkPrefetch(resetKey: true)
         cancelOfflinePrefetch(resetKey: true)
         discardPreparedPlaybackAssets()
+    }
+
+    /// Give the active stream an uncontested opening window before optional
+    /// artwork, lyrics, and offline preparation begin. Resumes later in a song
+    /// skip the delay because AVPlayer already owns a stable connection.
+    private func scheduleSpeculativePrefetchAfterPlaybackStability() {
+        speculativePrefetchStartTask?.cancel()
+        speculativePrefetchStartTask = nil
+        speculativePrefetchStartToken = nil
+        guard wantsPlayback,
+              player.timeControlStatus == .playing else { return }
+
+        let remainingDelay = max(
+            0,
+            PlaybackGaplessPreparationPolicy.stablePlaybackWindow
+                - currentPlayerPosition()
+        )
+        if remainingDelay <= 0.05 {
+            scheduleNetworkPrefetch()
+            scheduleOfflinePrefetch()
+            return
+        }
+
+        let token = UUID()
+        speculativePrefetchStartToken = token
+        speculativePrefetchStartTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(remainingDelay))
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.speculativePrefetchStartToken == token,
+                  self.wantsPlayback,
+                  self.player.timeControlStatus == .playing else {
+                return
+            }
+            self.speculativePrefetchStartTask = nil
+            self.speculativePrefetchStartToken = nil
+            self.scheduleNetworkPrefetch()
+            self.scheduleOfflinePrefetch()
+        }
     }
 
     private func playbackPrefetchPlan(
@@ -3739,6 +3794,40 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
+    /// These requests share the media server origin but aren't required for
+    /// the first audible frame. Bind them to the unique playback generation
+    /// and start them only after AVPlayer reports actual playback.
+    private func deferTrackWorkUntilPlaybackStarts(for song: Song) {
+        lyricsTask?.cancel()
+        lyricsTask = nil
+        lyricsLoadGeneration &+= 1
+        songMetadataTask?.cancel()
+        songMetadataTask = nil
+        songMetadataGeneration &+= 1
+        applyLyricsDocument(
+            .empty,
+            status: song.externalStreamURL == nil ? .loading : .unavailable
+        )
+        guard currentSong?.id == song.id,
+              let playbackID = currentPlaybackItem?.id else {
+            deferredTrackWorkPlaybackID = nil
+            return
+        }
+        deferredTrackWorkPlaybackID = playbackID
+    }
+
+    private func startDeferredTrackWorkIfNeeded() {
+        guard let playbackID = deferredTrackWorkPlaybackID else { return }
+        guard let playbackItem = currentPlaybackItem,
+              playbackItem.id == playbackID else {
+            deferredTrackWorkPlaybackID = nil
+            return
+        }
+        deferredTrackWorkPlaybackID = nil
+        refreshCanonicalMetadata(for: playbackItem.song)
+        loadLyrics(for: playbackItem.song)
+    }
+
     private func installPlayerObservers() {
         guard timeControlObservation == nil else { return }
         currentItemTransitionObservation = player.observe(
@@ -3763,9 +3852,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 if player.timeControlStatus == .playing {
                     self.scheduleRecoveryAttemptReset(for: player.currentItem)
                     self.reportPlaybackState("playing")
+                    self.startDeferredTrackWorkIfNeeded()
                     self.scheduleGaplessSuccessor()
-                    self.scheduleNetworkPrefetch()
-                    self.scheduleOfflinePrefetch()
+                    self.scheduleSpeculativePrefetchAfterPlaybackStability()
                 } else if !self.wantsPlayback {
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
@@ -4006,7 +4095,10 @@ final class AudioEngine: NSObject, ObservableObject {
         // from ready/buffer/route observers into one operation.
         audioSessionDeactivationTask?.cancel()
         audioSessionDeactivationTask = nil
-        audioSessionActivationTask?.cancel()
+        // A ready callback commonly arrives while the activation started by
+        // the play command is still negotiating. Reuse that system operation
+        // instead of cancelling it at the finish line and starting over.
+        guard audioSessionActivationTask == nil else { return }
         let controller = audioSessionController
         let token = UUID()
         let epoch = nextAudioSessionCommandEpoch()
@@ -4516,6 +4608,13 @@ final class AudioEngine: NSObject, ObservableObject {
         activateNowPlayingSession()
         updateRemoteCommands()
 
+        // Title and transport state publish immediately, but artwork decoding
+        // can open another request to the same origin. During an active start
+        // let AVPlayer establish the audio stream first; the playing-state
+        // callback invokes this method again and fills the artwork then.
+        guard !wantsPlayback || player.timeControlStatus == .playing else {
+            return
+        }
         guard let coverID = song.artworkID,
               let client else {
             return

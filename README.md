@@ -13,6 +13,7 @@ It is designed around the iOS media stack rather than a web view.
 - Built-in speaker/route/interruption recovery and Subsonic MIME compatibility handling adapted from Amperfy
 - Synchronized OpenSubsonic lyrics with smoothly morphing compact/full-screen views and multiline lyric wrapping
 - Apple Music-led visual system with Spotify-style separated artwork paging, a subtle Deezer accent, and an optional native Liquid Glass seek bar on iOS 26+ while retaining Classic transport controls
+- Personalized smart-mix covers rendered as lightweight SwiftUI vector art with distinct day, mood, genre, artist, favorites, and ranking identities
 - Deterministic OKLab artwork clustering with neutral-cover support, spatial multicolor fields, and a versioned GRDB palette cache
 - Nuke-backed artwork request coalescing, caching, and downsampling
 - System-negotiated HTTP/3/HTTP/2 for API, artwork, and offline downloads; gzip, Brotli, and bounded Zstandard API decoding
