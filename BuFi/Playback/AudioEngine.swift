@@ -1335,6 +1335,7 @@ final class AudioEngine: NSObject, ObservableObject {
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryStabilityTask: Task<Void, Never>?
+    private var prolongedStallRecoveryTask: Task<Void, Never>?
     private var audioSessionActivationTask: Task<Void, Never>?
     private var audioSessionActivationToken: UUID?
     private var audioSessionDeactivationTask: Task<Void, Never>?
@@ -1372,6 +1373,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lastPersistedEntriesRevision: UInt64?
     private var allowsSpeculativeNetworkPrefetch = false
     private var networkPathIsSatisfied = true
+    private var networkPathIsExpensive = false
+    private var networkPathIsConstrained = false
+    private var networkLinkQualityIsMinimal = false
+    private var playbackStallCount = 0
     private var runtimeIsActive = false
     private var applicationIsActive = true
     private let trackChangeHapticGenerator = UIImpactFeedbackGenerator(style: .soft)
@@ -1471,6 +1476,9 @@ final class AudioEngine: NSObject, ObservableObject {
             suspendSpeculativePrefetch()
             itemLoadTask?.cancel()
             itemLoadTask = nil
+            prolongedStallRecoveryTask?.cancel()
+            prolongedStallRecoveryTask = nil
+            playbackStallCount = 0
             lyricsTask?.cancel()
             lyricsTask = nil
             nowPlayingArtworkTask?.cancel()
@@ -2595,6 +2603,66 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Automatic quality follows the user's current network policy without
+    /// replacing AVPlayer's throughput and buffering decisions. Explicit
+    /// quality selections are never changed behind the user's back.
+    private func preferredCompatibilityFormat(for song: Song) -> String {
+        let standardFormat = Self.initialCompatibilityFormat(
+            for: quality,
+            song: song
+        )
+        guard quality == .automatic,
+              song.externalStreamURL == nil else {
+            return standardFormat
+        }
+
+        let rawProfile = PlaybackAudioProfile.resolve(
+            song: song,
+            compatibilityFormat: "raw"
+        )
+        if networkPathIsConstrained || networkLinkQualityIsMinimal {
+            // Preserve an already efficient source. Re-encoding a modest AAC
+            // or MP3 would spend server CPU without materially reducing the
+            // transfer, while lossless and high-rate sources benefit from the
+            // stable 160 kbps ceiling used by the existing Opus mode.
+            if rawProfile == .aac || rawProfile == .compressed,
+               let bitRate = PlaybackAudioProfile.estimatedBitRateKbps(for: song),
+               bitRate <= 192 {
+                return "raw"
+            }
+            return "opus"
+        }
+        if networkPathIsExpensive, rawProfile == .lossless {
+            // Cellular and personal-hotspot paths should not start an ALAC or
+            // other lossless transfer in Automatic mode. AAC remains broadly
+            // hardware-decoded by Apple devices and avoids an aggressive
+            // quality reduction on an otherwise healthy metered connection.
+            return "aac"
+        }
+        return standardFormat
+    }
+
+    private func compatibilityFallbackFormats(
+        for song: Song,
+        startingWith initialFormat: String
+    ) -> [String] {
+        guard quality == .automatic,
+              song.externalStreamURL == nil else {
+            return Self.fallbackFormats(for: quality, song: song)
+        }
+        return switch initialFormat.lowercased() {
+        case "raw": networkPathIsConstrained
+            || networkPathIsExpensive
+            || networkLinkQualityIsMinimal
+            ? ["opus", "aac", "mp3"]
+            : ["aac", "opus", "mp3"]
+        case "aac": ["opus", "mp3", "raw"]
+        case "opus": ["aac", "mp3", "raw"]
+        case "mp3": ["opus", "aac", "raw"]
+        default: ["opus", "aac", "mp3", "raw"]
+        }
+    }
+
     private static func automaticCompatibilityFormat(for song: Song) -> String {
         if song.externalStreamURL != nil { return "raw" }
         let suffix = song.suffix?
@@ -2628,15 +2696,39 @@ final class AudioEngine: NSObject, ObservableObject {
     private func installNetworkPathMonitor() {
         networkPathMonitor.pathUpdateHandler = { @Sendable [weak self] path in
             let isSatisfied = path.status == .satisfied
+            let isExpensive = path.isExpensive
+            let isConstrained = path.isConstrained
+            let linkQualityIsMinimal: Bool
+            if #available(iOS 27.0, *) {
+                linkQualityIsMinimal = path.linkQuality == .minimal
+            } else {
+                linkQualityIsMinimal = false
+            }
             let allowsPrefetch = path.status == .satisfied
-                && !path.isExpensive
-                && !path.isConstrained
+                && !isExpensive
+                && !isConstrained
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let connectivityChanged = self.networkPathIsSatisfied != isSatisfied
                 let prefetchChanged = self.allowsSpeculativeNetworkPrefetch != allowsPrefetch
+                let pathPolicyChanged = self.networkPathIsExpensive != isExpensive
+                    || self.networkPathIsConstrained != isConstrained
+                    || self.networkLinkQualityIsMinimal != linkQualityIsMinimal
                 self.networkPathIsSatisfied = isSatisfied
+                self.networkPathIsExpensive = isExpensive
+                self.networkPathIsConstrained = isConstrained
+                self.networkLinkQualityIsMinimal = linkQualityIsMinimal
                 self.allowsSpeculativeNetworkPrefetch = allowsPrefetch
+                if pathPolicyChanged,
+                   self.quality == .automatic,
+                   let song = self.currentSong,
+                   let activeFormat = self.activeCompatibilityFormat {
+                    self.fallbackFormats = self.compatibilityFallbackFormats(
+                        for: song,
+                        startingWith: activeFormat
+                    )
+                    self.fallbackIndex = 0
+                }
                 if prefetchChanged, allowsPrefetch {
                     self.scheduleSpeculativePrefetchAfterPlaybackStability()
                 } else if prefetchChanged {
@@ -2644,6 +2736,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
                 guard connectivityChanged else { return }
                 if !isSatisfied {
+                    self.prolongedStallRecoveryTask?.cancel()
+                    self.prolongedStallRecoveryTask = nil
                     if self.wantsPlayback {
                         self.isBuffering = true
                     }
@@ -2655,8 +2749,22 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
                 if self.player.currentItem == nil
                     || self.player.currentItem?.status == .failed {
+                    let compatibilityFormat = self.quality == .automatic
+                        ? self.currentSong.map {
+                            self.preferredCompatibilityFormat(for: $0)
+                        }
+                        : self.activeCompatibilityFormat
+                    self.activeCompatibilityFormat = compatibilityFormat
+                    if let song = self.currentSong,
+                       let compatibilityFormat {
+                        self.fallbackFormats = self.compatibilityFallbackFormats(
+                            for: song,
+                            startingWith: compatibilityFormat
+                        )
+                        self.fallbackIndex = 0
+                    }
                     self.loadCurrentItem(
-                        compatibilityFormat: self.activeCompatibilityFormat,
+                        compatibilityFormat: compatibilityFormat,
                         resumeFrom: self.elapsed
                     )
                 } else {
@@ -2719,10 +2827,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let song = entry.song
         guard song.externalStreamURL == nil else { return }
         let preparedQuality = quality
-        let compatibilityFormat = Self.initialCompatibilityFormat(
-            for: preparedQuality,
-            song: song
-        )
+        let compatibilityFormat = preferredCompatibilityFormat(for: song)
         let key = Self.preparedPlaybackKey(
             accountScope: currentAccountScope,
             queueEntryID: entry.id,
@@ -3251,13 +3356,17 @@ final class AudioEngine: NSObject, ObservableObject {
         guard let song = currentSong else { return }
         recoveryStabilityTask?.cancel()
         recoveryStabilityTask = nil
+        prolongedStallRecoveryTask?.cancel()
+        prolongedStallRecoveryTask = nil
+        playbackStallCount = 0
         recoveryAttempt = 0
         fallbackIndex = 0
-        fallbackFormats = Self.fallbackFormats(for: quality, song: song)
-        activeCompatibilityFormat = Self.initialCompatibilityFormat(
-            for: quality,
-            song: song
+        let preferredFormat = preferredCompatibilityFormat(for: song)
+        fallbackFormats = compatibilityFallbackFormats(
+            for: song,
+            startingWith: preferredFormat
         )
+        activeCompatibilityFormat = preferredFormat
         loadCurrentItem(
             compatibilityFormat: activeCompatibilityFormat,
             resumeFrom: resumeFrom
@@ -3272,6 +3381,8 @@ final class AudioEngine: NSObject, ObservableObject {
         let song = playbackItem.song
         let playbackItemID = playbackItem.id
         let resumePosition = max(0, requestedPosition ?? elapsed)
+        prolongedStallRecoveryTask?.cancel()
+        prolongedStallRecoveryTask = nil
         itemLoadTask?.cancel()
         itemLoadGeneration &+= 1
         let generation = itemLoadGeneration
@@ -3516,11 +3627,15 @@ final class AudioEngine: NSObject, ObservableObject {
         isSeekInFlight = false
         applyLyricsDocument(.empty)
         fallbackIndex = 0
-        fallbackFormats = Self.fallbackFormats(for: quality, song: song)
-        activeCompatibilityFormat = Self.initialCompatibilityFormat(
-            for: quality,
-            song: song
+        let preferredFormat = preferredCompatibilityFormat(for: song)
+        fallbackFormats = compatibilityFallbackFormats(
+            for: song,
+            startingWith: preferredFormat
         )
+        activeCompatibilityFormat = preferredFormat
+        prolongedStallRecoveryTask?.cancel()
+        prolongedStallRecoveryTask = nil
+        playbackStallCount = 0
         recoveryAttempt = 0
         playbackError = nil
         scrobbled = false
@@ -3587,6 +3702,10 @@ final class AudioEngine: NSObject, ObservableObject {
                         )
                         self.isBuffering = self.wantsPlayback
                         self.suspendSpeculativePrefetch()
+                        self.scheduleProlongedStallRecovery(
+                            for: item,
+                            observerGeneration: generation
+                        )
                     }
                 },
                 center.addObserver(
@@ -3733,6 +3852,82 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
+    private func scheduleProlongedStallRecovery(
+        for item: AVPlayerItem,
+        observerGeneration: UInt64
+    ) {
+        guard quality == .automatic,
+              currentSong?.externalStreamURL == nil,
+              wantsPlayback,
+              networkPathIsSatisfied else {
+            return
+        }
+        playbackStallCount += 1
+        let pathNeedsConservativeRecovery = networkPathIsConstrained
+            || networkPathIsExpensive
+            || networkLinkQualityIsMinimal
+        guard pathNeedsConservativeRecovery || playbackStallCount >= 2,
+              let format = lowerBandwidthCompatibilityFormat() else {
+            return
+        }
+
+        prolongedStallRecoveryTask?.cancel()
+        let playbackItemID = currentPlaybackItem?.id
+        let recoveryDelay: Duration = pathNeedsConservativeRecovery
+            ? .seconds(3)
+            : .seconds(5)
+        prolongedStallRecoveryTask = Task { [weak self, weak item] in
+            do {
+                try await Task.sleep(for: recoveryDelay)
+            } catch {
+                return
+            }
+            guard let self,
+                  let item,
+                  self.itemObserverGeneration == observerGeneration,
+                  self.currentPlaybackItem?.id == playbackItemID,
+                  self.player.currentItem === item,
+                  self.player.timeControlStatus != .playing,
+                  self.wantsPlayback,
+                  self.networkPathIsSatisfied,
+                  self.quality == .automatic else {
+                return
+            }
+            Self.logger.warning(
+                "Playback remained stalled; resuming with lower-bandwidth format \(format, privacy: .public)"
+            )
+            let position = self.currentPlayerPosition()
+            self.prolongedStallRecoveryTask = nil
+            self.activeCompatibilityFormat = format
+            if let song = self.currentSong {
+                self.fallbackFormats = self.compatibilityFallbackFormats(
+                    for: song,
+                    startingWith: format
+                )
+            }
+            self.fallbackIndex = 0
+            self.recoveryAttempt = 0
+            self.loadCurrentItem(
+                compatibilityFormat: format,
+                resumeFrom: position
+            )
+        }
+    }
+
+    private func lowerBandwidthCompatibilityFormat() -> String? {
+        switch activeCompatibilityFormat?.lowercased() {
+        case "opus": return nil
+        case "raw":
+            return networkPathIsConstrained
+                || networkPathIsExpensive
+                || networkLinkQualityIsMinimal
+                ? "opus"
+                : "aac"
+        case "aac", "mp3", .none: return "opus"
+        default: return "opus"
+        }
+    }
+
     private func reloadCurrentItemAfterBackoff(
         attempt: Int,
         compatibilityFormat: String?
@@ -3808,6 +4003,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 return
             }
             self.recoveryAttempt = 0
+            self.playbackStallCount = 0
             self.recoveryStabilityTask = nil
         }
     }
@@ -3916,6 +4112,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.isPlaying = isPlaying
                 self.isBuffering = self.wantsPlayback && !isPlaying
                 if player.timeControlStatus == .playing {
+                    self.prolongedStallRecoveryTask?.cancel()
+                    self.prolongedStallRecoveryTask = nil
                     if let requestedAt = self.playbackStartupRequestedAt {
                         let now = ProcessInfo.processInfo.systemUptime
                         let total = max(0, now - requestedAt)
@@ -3933,6 +4131,8 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.scheduleGaplessSuccessor()
                     self.scheduleSpeculativePrefetchAfterPlaybackStability()
                 } else if !self.wantsPlayback {
+                    self.prolongedStallRecoveryTask?.cancel()
+                    self.prolongedStallRecoveryTask = nil
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
                     self.reportPlaybackState("paused")
@@ -4619,10 +4819,12 @@ final class AudioEngine: NSObject, ObservableObject {
             if self.duration <= 0 || self.duration == current.safeDuration {
                 self.duration = resolved.safeDuration
             }
-            self.fallbackFormats = Self.fallbackFormats(
-                for: self.quality,
-                song: resolved
+            self.fallbackFormats = self.compatibilityFallbackFormats(
+                for: resolved,
+                startingWith: self.activeCompatibilityFormat
+                    ?? self.preferredCompatibilityFormat(for: resolved)
             )
+            self.fallbackIndex = 0
             if previousStream != resolvedItem.stream,
                !self.isPlaying,
                self.currentPlayerPosition() < 1 {
