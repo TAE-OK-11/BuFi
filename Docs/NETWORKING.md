@@ -69,13 +69,20 @@ radio scheduling, and background behavior integrated with iOS.
 - Periodic library synchronization pauses while playback is requested and
   resumes after playback stops. Manual refresh remains available, but background
   API bursts cannot compete with the active media path.
+- A first-time home load publishes the core albums, favorites, playlists, and
+  local recommendations before launching the larger server-recommendation
+  fan-out. That optional pass is cancellable, runs at utility priority, and
+  merges only derived sections when the source snapshot is still current.
+  Incremental refresh also preserves the previous most-played tracks instead
+  of blocking on four extra album-detail calls; the next full enrichment pass
+  refreshes that derived section.
 - Cookies, ambient credential storage, and URLSession response caches are
   disabled for authenticated API and download sessions. BuFi's scoped caches
   remain in control. Generated cover-art URLs are also bounded in memory rather
   than growing for the entire account session.
 - Identical OpenSubsonic reads share both one in-flight transfer and one JSON
   decode. A 16 MiB bounded body cache absorbs overlapping view/recommendation
-  bursts, while decoded values use a separate 32-entry/8 MiB response-cost
+  bursts, while decoded values use a separate 64-entry/8 MiB response-cost
   budget so convenience caching cannot grow without a memory bound. Raw and
   decoded entries retain the same original timestamp, preventing a late decode
   from extending TTL. After TTL, ETag/Last-Modified responses are conditionally

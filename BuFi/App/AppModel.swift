@@ -343,6 +343,8 @@ final class AppModel: ObservableObject {
     private var automaticRefreshToken: UUID?
     private var cachedHomePreparationTask: Task<Void, Never>?
     private var cachedHomePreparationToken: UUID?
+    private var serverHomeEnrichmentTask: Task<Void, Never>?
+    private var serverHomeEnrichmentToken: UUID?
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogRefreshToken: UUID?
     private var recommendationGeneration: UInt64 = 0
@@ -541,6 +543,7 @@ final class AppModel: ObservableObject {
             enqueuePendingRefresh(forceFull: forceFull, silent: silent)
             return
         }
+        cancelServerHomeEnrichment()
         let generation = sessionGeneration
         let revision = homeRevision
         let previousHome = home
@@ -559,11 +562,13 @@ final class AppModel: ObservableObject {
                     $0.duration(to: refreshNow) >= .seconds(300)
                 } ?? true
                 || isHomeEmpty
+            let loadsCoreHomeFirst = needsFullRefresh && previousHome == .empty
             let loadResult: HomeLoadResult
             if needsFullRefresh {
                 loadResult = try await client.home(
                     from: isHomeEmpty ? nil : previousHome,
-                    refreshStableCatalog: forceFull || isHomeEmpty
+                    refreshStableCatalog: forceFull || isHomeEmpty,
+                    enrichesServerRecommendations: !loadsCoreHomeFirst
                 )
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
@@ -598,10 +603,18 @@ final class AppModel: ObservableObject {
             }
             scheduleLibraryCatalogRefresh(snapshot: resolvedSnapshot)
             if needsFullRefresh {
-                scheduleExternalRecommendationRefresh(
-                    client: client,
-                    generation: generation
-                )
+                if loadsCoreHomeFirst {
+                    scheduleServerHomeEnrichment(
+                        from: resolvedSnapshot,
+                        client: client,
+                        generation: generation
+                    )
+                } else {
+                    scheduleExternalRecommendationRefresh(
+                        client: client,
+                        generation: generation
+                    )
+                }
             }
         } catch is CancellationError {
             return
@@ -668,11 +681,17 @@ final class AppModel: ObservableObject {
             previousResults: searchContent.results,
             nextQuery: query
         )
+        let local = applyingFavoriteOverrides(
+            to: LocalLibrarySearch.results(for: query, in: home)
+        )
+        let provisionalResults = local.isEmpty ? retained : local
+        let provisionalIsLocal = !local.isEmpty
+            || (searchContent.isLocalFallback && !retained.isEmpty)
         searchContent.publish(
             query: query,
-            results: retained,
+            results: provisionalResults,
             isSearching: true,
-            isLocalFallback: searchContent.isLocalFallback && !retained.isEmpty
+            isLocalFallback: provisionalIsLocal
         )
 
         let task = Task { [weak self] in
@@ -2782,6 +2801,96 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Publishes the first usable home snapshot before starting the expensive
+    /// recommendation fan-out. The second pass merges only derived server
+    /// sections into the still-current snapshot, so a late response can never
+    /// roll back a favorite, playlist, or album update.
+    private func scheduleServerHomeEnrichment(
+        from source: HomeSnapshot,
+        client: OpenSubsonicClient,
+        generation: Int
+    ) {
+        cancelServerHomeEnrichment()
+        guard allowsBackgroundPreparation else { return }
+
+        let token = UUID()
+        let sourceRevision = library.revision
+        serverHomeEnrichmentToken = token
+        serverHomeEnrichmentTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.serverHomeEnrichmentToken == token {
+                    self.serverHomeEnrichmentTask = nil
+                    self.serverHomeEnrichmentToken = nil
+                }
+            }
+            do {
+                let result = try await client.home(
+                    from: source,
+                    refreshStableCatalog: false,
+                    enrichesServerRecommendations: true,
+                    forcesServerEnrichment: true
+                )
+                guard !Task.isCancelled,
+                      generation == self.sessionGeneration,
+                      self.client === client,
+                      sourceRevision == self.library.revision else {
+                    return
+                }
+
+                var enriched = self.home
+                enriched.adoptServerEnrichment(from: result.snapshot)
+                enriched = await self.preparedHomeSnapshot(enriched)
+                guard !Task.isCancelled,
+                      generation == self.sessionGeneration,
+                      self.client === client,
+                      sourceRevision == self.library.revision else {
+                    return
+                }
+                self.reconcileFavoriteStates(
+                    in: enriched,
+                    authoritative: false
+                )
+                enriched = self.applyingFavoriteOverrides(to: enriched)
+                let snapshotChanged = self.publishHome(enriched)
+                if snapshotChanged {
+                    let accountScope = AccountScope.identifier(
+                        for: client.credentials
+                    )
+                    await HomeSnapshotStore.shared.save(
+                        enriched,
+                        accountScope: accountScope
+                    )
+                }
+                guard !Task.isCancelled,
+                      generation == self.sessionGeneration,
+                      self.client === client else { return }
+                if snapshotChanged {
+                    self.lastHomeSnapshotSave = self.runtimeClock.now
+                    self.scheduleLibraryCatalogRefresh(snapshot: enriched)
+                }
+                self.scheduleExternalRecommendationRefresh(
+                    client: client,
+                    generation: generation
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == self.sessionGeneration,
+                      self.client === client else { return }
+                // A failed optional pass should be eligible for retry on the
+                // next automatic refresh instead of looking fully complete.
+                self.lastFullRefresh = nil
+            }
+        }
+    }
+
+    private func cancelServerHomeEnrichment() {
+        serverHomeEnrichmentTask?.cancel()
+        serverHomeEnrichmentTask = nil
+        serverHomeEnrichmentToken = nil
+    }
+
     private func scheduleAutomaticRefresh(silent: Bool, generation: Int) {
         cancelAutomaticRefresh()
         let token = UUID()
@@ -2806,6 +2915,7 @@ final class AppModel: ObservableObject {
     }
 
     private func cancelBackgroundPreparation() {
+        cancelServerHomeEnrichment()
         cachedHomePreparationTask?.cancel()
         cachedHomePreparationTask = nil
         cachedHomePreparationToken = nil

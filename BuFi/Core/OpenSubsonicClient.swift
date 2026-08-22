@@ -2183,7 +2183,9 @@ actor OpenSubsonicClient {
 
     func home(
         from previous: HomeSnapshot? = nil,
-        refreshStableCatalog: Bool = true
+        refreshStableCatalog: Bool = true,
+        enrichesServerRecommendations: Bool = true,
+        forcesServerEnrichment: Bool = false
     ) async throws -> HomeLoadResult {
         let fallback = previous ?? .empty
         let shouldRefreshStableCatalog = refreshStableCatalog
@@ -2290,6 +2292,7 @@ actor OpenSubsonicClient {
             genres: preferredGenres
         )
         let canReuseEnrichment = previous != nil
+            && !forcesServerEnrichment
             && enrichmentIdentity == HomeEnrichmentIdentity(snapshot: fallback)
 
         var snapshot = HomeSnapshot(
@@ -2316,7 +2319,7 @@ actor OpenSubsonicClient {
             } ?? fallback.radioStations
         )
 
-        if canReuseEnrichment {
+        if !enrichesServerRecommendations || canReuseEnrichment {
             snapshot.adoptServerEnrichment(from: fallback)
         } else {
             async let popularAlbumsRequest: AlbumListPayload? = albumList(
@@ -2472,18 +2475,11 @@ actor OpenSubsonicClient {
         if let frequent = values.2 {
             let frequentAlbums = frequent.albums
             snapshot.frequentAlbums = frequentAlbums
-            let previousIDs = previous.frequentAlbums
-                .prefix(OpenSubsonicRequestPolicy.homeMostPlayedAlbumLimit)
-                .map(\.id)
-            let nextIDs = frequentAlbums
-                .prefix(OpenSubsonicRequestPolicy.homeMostPlayedAlbumLimit)
-                .map(\.id)
-            if previous.mostPlayedSongs.isEmpty || previousIDs != nextIDs {
-                snapshot.mostPlayedSongs = await mostPlayedSongs(
-                    from: frequentAlbums,
-                    fallback: previous.mostPlayedSongs
-                )
-            }
+            // Keep incremental refresh to one fan-out. Deriving tracks from
+            // the top four albums adds up to four getAlbum calls and makes the
+            // whole refresh wait for the slowest response. The five-minute
+            // full enrichment pass refreshes this derived section instead.
+            snapshot.mostPlayedSongs = previous.mostPlayedSongs
         }
         if let starred = values.3?.container {
             snapshot.starredAlbums = starred.album ?? []
