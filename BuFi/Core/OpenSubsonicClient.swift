@@ -717,11 +717,13 @@ actor OpenSubsonicClient {
     let credentials: ServerCredentials
     let accountScope: String
     private let session: URLSession
-    private let swiftSonic: SwiftSonicClient
+    private nonisolated let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
     private let authenticationQueryItems: [URLQueryItem]
     private var supportedExtensions: Set<String>?
     private var apiFamily: SubsonicAPIFamily = .openSubsonic
+    private var allowsZstandardResponses = true
+    private var preferredFallbackEndpoints: [String: String] = [:]
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
     private var cacheRevisionState = OpenSubsonicCacheRevisionState()
 
@@ -789,7 +791,6 @@ actor OpenSubsonicClient {
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
     private static let decodedResponseCacheLimit = 64
     private static let decodedResponseCacheByteLimit = 8 * 1_024 * 1_024
-    private static let coverURLCacheLimit = 512
     private static let persistedLyricsMaximumAge: TimeInterval = 7 * 24 * 60 * 60
     private var responseCache = ResponseBodyCache(
         countLimit: OpenSubsonicClient.responseCacheLimit,
@@ -803,9 +804,6 @@ actor OpenSubsonicClient {
         DecodedResponseRequestKey: InFlightDecodedResponse
     ] = [:]
     private var lyricsCache = LyricsDocumentCache(countLimit: 96)
-    private var coverURLCache: [String: URL] = [:]
-    private var coverURLCacheAccess: [String: UInt64] = [:]
-    private var coverURLCacheClock: UInt64 = 0
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -883,9 +881,6 @@ actor OpenSubsonicClient {
         decodedResponseCache.removeAll(keepingCapacity: false)
         decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
-        coverURLCache.removeAll(keepingCapacity: false)
-        coverURLCacheAccess.removeAll(keepingCapacity: false)
-        coverURLCacheClock = 0
         session.invalidateAndCancel()
     }
 
@@ -1377,9 +1372,13 @@ actor OpenSubsonicClient {
     }
 
     func applyPingStatus(_ status: StatusBody) {
+        let previousFamily = apiFamily
         apiFamily = SubsonicCompatibilityPolicy.family(from: status)
         if status.advertisesOpenSubsonic {
             apiFamily = .openSubsonic
+        }
+        if apiFamily != previousFamily {
+            preferredFallbackEndpoints.removeAll(keepingCapacity: true)
         }
     }
 
@@ -1388,14 +1387,25 @@ actor OpenSubsonicClient {
         parameters: [String: String] = [:],
         allowsCachedResponse: Bool = true
     ) async throws -> Payload {
+        let fallbackKey = endpoints.joined(separator: "\u{1F}")
+        var orderedEndpoints = endpoints
+        if let preferredEndpoint = preferredFallbackEndpoints[fallbackKey],
+           let preferredIndex = orderedEndpoints.firstIndex(of: preferredEndpoint),
+           preferredIndex != orderedEndpoints.startIndex {
+            orderedEndpoints.remove(at: preferredIndex)
+            orderedEndpoints.insert(preferredEndpoint, at: orderedEndpoints.startIndex)
+        }
+
         var lastError: Error = OpenSubsonicError.invalidResponse
-        for endpoint in endpoints {
+        for endpoint in orderedEndpoints {
             do {
-                return try await readRequest(
+                let payload: Payload = try await readRequest(
                     endpoint,
                     parameters: parameters,
                     allowsCachedResponse: allowsCachedResponse
                 )
+                preferredFallbackEndpoints[fallbackKey] = endpoint
+                return payload
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1654,7 +1664,7 @@ actor OpenSubsonicClient {
     ) async throws -> HTTPResponseData {
         // Mutations avoid the zstd negotiation fallback because reissuing a
         // state-changing endpoint would itself be an unsafe retry.
-        var acceptsZstandard = allowsRetry
+        var acceptsZstandard = allowsRetry && allowsZstandardResponses
         var retryCount = 0
 
         while true {
@@ -1693,6 +1703,7 @@ actor OpenSubsonicClient {
                     // Content negotiation fallback is not a retry. It existed
                     // before the bounded transient-failure policy and does not
                     // consume its budget.
+                    allowsZstandardResponses = false
                     acceptsZstandard = false
                     continue
                 }
@@ -3350,7 +3361,7 @@ actor OpenSubsonicClient {
         lyricsCache.removeAll(keepingCapacity: true)
     }
 
-    func streamURL(
+    nonisolated func streamURL(
         songID: String,
         quality: StreamQuality,
         compatibilityFormat: String? = nil
@@ -3459,31 +3470,15 @@ actor OpenSubsonicClient {
         }
     }
 
-    func coverURL(id: String, size: Int = 600) throws -> URL {
-        let cacheKey = "\(id)|\(size)"
-        if let cached = coverURLCache[cacheKey] {
-            coverURLCacheClock &+= 1
-            coverURLCacheAccess[cacheKey] = coverURLCacheClock
-            return cached
-        }
+    nonisolated func coverURL(id: String, size: Int = 600) throws -> URL {
         guard let url = swiftSonic.coverArtURL(id: id, size: size),
               url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
-        if coverURLCache.count >= Self.coverURLCacheLimit,
-           let leastRecentlyUsed = coverURLCacheAccess.min(by: {
-               $0.value < $1.value
-           })?.key {
-            coverURLCache[leastRecentlyUsed] = nil
-            coverURLCacheAccess[leastRecentlyUsed] = nil
-        }
-        coverURLCacheClock &+= 1
-        coverURLCache[cacheKey] = url
-        coverURLCacheAccess[cacheKey] = coverURLCacheClock
         return url
     }
 
-    func downloadURL(songID: String) throws -> URL {
+    nonisolated func downloadURL(songID: String) throws -> URL {
         guard let url = swiftSonic.downloadURL(id: songID),
               url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL

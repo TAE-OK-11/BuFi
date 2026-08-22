@@ -3074,8 +3074,8 @@ actor ExternalRecommendationClient {
 
     private let publicSession: URLSession
     private let privateSession: URLSession
-    private let decoder = JSONDecoder()
     private let retryPolicy = ReadRequestRetryPolicy()
+    private var zstandardIncompatibleHosts: Set<String> = []
 
     private init() {
         let configuration = ModernNetworkPolicy.makeCachedConfiguration(
@@ -3293,28 +3293,37 @@ actor ExternalRecommendationClient {
         }
     }
 
-    private func decode<Value: Decodable>(
+    private func decode<Value: Decodable & Sendable>(
         url: URL,
         token: String? = nil,
         allowsCaching: Bool = true
     ) async -> Value? {
+        let host = url.host?.lowercased()
+        let acceptsZstandard = host.map {
+            !zstandardIncompatibleHosts.contains($0)
+        } ?? true
         do {
             let data = try await responseData(
                 url: url,
                 token: token,
                 allowsCaching: allowsCaching,
-                acceptsZstandard: true
+                acceptsZstandard: acceptsZstandard
             )
-            return try decoder.decode(Value.self, from: data)
-        } catch let error as URLError where error.code == .cannotDecodeContentData {
+            return try await Self.decodePayload(Value.self, from: data)
+        } catch let error as URLError
+            where acceptsZstandard && error.code == .cannotDecodeContentData {
+            if let host {
+                zstandardIncompatibleHosts.insert(host)
+            }
             do {
                 let data = try await responseData(
                     url: url,
                     token: token,
                     allowsCaching: false,
-                    acceptsZstandard: false
+                    acceptsZstandard: false,
+                    bypassesCacheForNegotiationRetry: true
                 )
-                return try decoder.decode(Value.self, from: data)
+                return try await Self.decodePayload(Value.self, from: data)
             } catch {
                 return nil
             }
@@ -3323,11 +3332,21 @@ actor ExternalRecommendationClient {
         }
     }
 
+    @concurrent
+    private static func decodePayload<Value: Decodable & Sendable>(
+        _ type: Value.Type,
+        from data: Data
+    ) async throws -> Value {
+        try Task.checkCancellation()
+        return try JSONDecoder().decode(type, from: data)
+    }
+
     private func responseData(
         url: URL,
         token: String?,
         allowsCaching: Bool,
-        acceptsZstandard: Bool
+        acceptsZstandard: Bool,
+        bypassesCacheForNegotiationRetry: Bool = false
     ) async throws -> Data {
         var request = URLRequest(url: url)
         ModernNetworkPolicy.prepareExternalAPIRequest(
@@ -3335,7 +3354,7 @@ actor ExternalRecommendationClient {
             acceptsZstandard: acceptsZstandard,
             allowsCaching: allowsCaching
         )
-        if !acceptsZstandard {
+        if bypassesCacheForNegotiationRetry {
             // Do not let a malformed zstd response cached by an intermediary
             // satisfy the compatibility retry with the same bytes.
             request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -3422,57 +3441,57 @@ actor ExternalRecommendationClient {
     }
 }
 
-private struct LastFMResponse: Decodable {
+private struct LastFMResponse: Decodable, Sendable {
     let similartracks: LastFMSimilarTracks?
 }
 
-private struct LastFMSimilarTracks: Decodable {
+private struct LastFMSimilarTracks: Decodable, Sendable {
     let track: [LastFMTrack]
 }
 
-private struct LastFMTrack: Decodable {
+private struct LastFMTrack: Decodable, Sendable {
     let name: String
     let match: String
     let artist: LastFMArtist
 }
 
-private struct LastFMArtist: Decodable {
+private struct LastFMArtist: Decodable, Sendable {
     let name: String
 }
 
-private struct LastFMArtistInfoResponse: Decodable {
+private struct LastFMArtistInfoResponse: Decodable, Sendable {
     let artist: LastFMArtistInfo?
 }
 
-private struct LastFMArtistInfo: Decodable {
+private struct LastFMArtistInfo: Decodable, Sendable {
     let name: String?
     let tags: LastFMTagList?
     let toptags: LastFMTagList?
 }
 
-private struct LastFMTagList: Decodable {
+private struct LastFMTagList: Decodable, Sendable {
     let tag: [LastFMNamedTag]
 }
 
-private struct LastFMNamedTag: Decodable {
+private struct LastFMNamedTag: Decodable, Sendable {
     let name: String
 }
 
-private struct ListenBrainzRecommendationResponse: Decodable {
+private struct ListenBrainzRecommendationResponse: Decodable, Sendable {
     let payload: ListenBrainzRecommendationPayload
 }
 
-private struct ListenBrainzRecommendationPayload: Decodable {
+private struct ListenBrainzRecommendationPayload: Decodable, Sendable {
     let mbids: [ListenBrainzRecommendation]
 }
 
-private struct ListenBrainzRecommendation: Decodable {
+private struct ListenBrainzRecommendation: Decodable, Sendable {
     let recording_mbid: String
     let score: Double
 }
 
-private struct ListenBrainzMetadata: Decodable {
-    struct NamedValue: Decodable {
+private struct ListenBrainzMetadata: Decodable, Sendable {
+    struct NamedValue: Decodable, Sendable {
         let name: String?
         let type: String?
         let gender: String?

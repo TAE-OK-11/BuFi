@@ -1044,7 +1044,7 @@ enum PlaybackResourceResolver {
             )
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let url = try await client.streamURL(
+        let url = try client.streamURL(
             songID: song.id,
             quality: request.quality,
             compatibilityFormat: request.compatibilityFormat
@@ -3168,7 +3168,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 let revision = song.artworkRevision
                 guard let coverID = song.artworkID,
                       seenArtworkRevisions.insert("\(coverID)|\(revision)").inserted,
-                      let sourceURL = try? await client.coverURL(
+                      let sourceURL = try? client.coverURL(
                           id: coverID,
                           size: Int(artworkPixelSize)
                       ) else {
@@ -4712,7 +4712,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.nowPlayingArtworkTask = nil
                 }
             }
-            guard let sourceURL = try? await client.coverURL(id: coverID, size: 600) else {
+            guard let sourceURL = try? client.coverURL(id: coverID, size: 600) else {
                 return
             }
             let url = ArtworkStore.cacheURL(

@@ -1248,7 +1248,7 @@ final class AppModel: ObservableObject {
             return nil
         }
         let generation = sessionGeneration
-        let url = try? await client.coverURL(id: id, size: size)
+        let url = try? client.coverURL(id: id, size: size)
         guard generation == sessionGeneration, self.client === client else {
             return nil
         }

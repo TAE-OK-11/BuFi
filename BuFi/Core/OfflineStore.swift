@@ -301,7 +301,7 @@ actor OfflineStore {
         let token = UUID()
         let waiter = UUID()
         let task = Task<URL, Error>(priority: .utility) { [weak self] in
-            let remote = try await client.downloadURL(songID: song.id)
+            let remote = try client.downloadURL(songID: song.id)
             try Task.checkCancellation()
             guard remote.scheme?.lowercased() == "https" else {
                 throw OpenSubsonicError.insecureServerURL
