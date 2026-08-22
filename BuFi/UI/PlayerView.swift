@@ -73,6 +73,11 @@ private struct PlayerBackgroundAnimationIdentity: Equatable {
     let backgroundAppearance: PlayerBackgroundAppearance
 }
 
+private enum PlayerDismissDragAxis {
+    case horizontal
+    case vertical
+}
+
 private struct PlayerArtworkPressEffect: ViewModifier {
     @GestureState private var isPressed = false
 
@@ -133,6 +138,10 @@ struct PlayerView: View {
     @State private var artworkLayoutRevision: UInt64 = 0
     @State private var translationRequestedSongID: String?
     @State private var hasRevealedPlayerContent = false
+    @State private var dismissDragAxis: PlayerDismissDragAxis?
+    @State private var dismissDragTranslation: CGFloat = 0
+    @State private var dismissThresholdArmed = false
+    @State private var isCompletingInteractiveDismiss = false
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -198,6 +207,11 @@ struct PlayerView: View {
                         allowsMotion ? BuFiMotion.playerEntrance : .none,
                         value: hasRevealedPlayerContent
                     )
+                    .scrollDisabled(
+                        resolvedPlayerAppearance == .appleMusic
+                            && (dismissDragAxis == .vertical
+                                || isCompletingInteractiveDismiss)
+                    )
                     .allowsHitTesting(!playerPresentation.showFullLyrics)
                     .accessibilityHidden(playerPresentation.showFullLyrics)
                 } else {
@@ -218,6 +232,36 @@ struct PlayerView: View {
                 }
             }
             .animation(allowsMotion ? BuFiMotion.lyricsPanel : .none, value: playerPresentation.showFullLyrics)
+            .scaleEffect(
+                appleMusicDismissScale(availableHeight: proxy.size.height),
+                anchor: .center
+            )
+            .offset(y: appleMusicDismissOffset)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: appleMusicDismissCornerRadius(
+                        availableHeight: proxy.size.height
+                    ),
+                    style: .continuous
+                )
+            )
+            .shadow(
+                color: .black.opacity(appleMusicDismissShadowOpacity),
+                radius: 26,
+                y: 14
+            )
+            .simultaneousGesture(
+                appleMusicDismissGesture(availableHeight: proxy.size.height),
+                including: resolvedPlayerAppearance == .appleMusic
+                    && !playerPresentation.showFullLyrics
+                    ? .all
+                    : .none
+            )
+            .sensoryFeedback(.impact(weight: .light), trigger: dismissThresholdArmed) {
+                oldValue, newValue in
+                allowsMotion && !oldValue && newValue
+            }
+            .allowsHitTesting(!isCompletingInteractiveDismiss)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQueue) {
@@ -258,6 +302,136 @@ struct PlayerView: View {
                 guard !Task.isCancelled else { return }
             }
             hasRevealedPlayerContent = true
+        }
+    }
+
+    private func appleMusicDismissGesture(
+        availableHeight: CGFloat
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+            .onChanged { value in
+                guard resolvedPlayerAppearance == .appleMusic,
+                      !isCompletingInteractiveDismiss else { return }
+                let horizontal = abs(value.translation.width)
+                let vertical = abs(value.translation.height)
+                if dismissDragAxis == nil {
+                    guard max(horizontal, vertical) >= 8 else { return }
+                    if value.translation.height > 0,
+                       vertical > horizontal * 1.12 {
+                        dismissDragAxis = .vertical
+                    } else if horizontal > vertical * 1.06
+                                || value.translation.height <= 0 {
+                        dismissDragAxis = .horizontal
+                    } else {
+                        return
+                    }
+                }
+                guard dismissDragAxis == .vertical else { return }
+                let maximum = max(160, availableHeight * 0.56)
+                dismissDragTranslation = min(
+                    max(0, value.translation.height),
+                    maximum
+                )
+                dismissThresholdArmed = dismissDragTranslation
+                    >= interactiveDismissThreshold(availableHeight: availableHeight)
+            }
+            .onEnded { value in
+                let wasVertical = dismissDragAxis == .vertical
+                dismissDragAxis = nil
+                guard wasVertical else {
+                    resetInteractiveDismiss()
+                    return
+                }
+                let threshold = interactiveDismissThreshold(
+                    availableHeight: availableHeight
+                )
+                let predicted = max(
+                    value.translation.height,
+                    value.predictedEndTranslation.height
+                )
+                if dismissDragTranslation >= threshold
+                    || predicted >= threshold * 1.72 {
+                    completeInteractiveDismiss(availableHeight: availableHeight)
+                } else {
+                    resetInteractiveDismiss()
+                }
+            }
+    }
+
+    private func interactiveDismissThreshold(
+        availableHeight: CGFloat
+    ) -> CGFloat {
+        min(max(96, availableHeight * 0.13), 126)
+    }
+
+    private var appleMusicDismissOffset: CGFloat {
+        guard resolvedPlayerAppearance == .appleMusic else { return 0 }
+        return dismissDragTranslation
+    }
+
+    private func appleMusicDismissProgress(
+        availableHeight: CGFloat
+    ) -> CGFloat {
+        guard resolvedPlayerAppearance == .appleMusic else { return 0 }
+        let distance = max(220, availableHeight * 0.34)
+        return min(max(dismissDragTranslation / distance, 0), 1)
+    }
+
+    private func appleMusicDismissScale(
+        availableHeight: CGFloat
+    ) -> CGFloat {
+        guard allowsMotion else { return 1 }
+        let progress = appleMusicDismissProgress(availableHeight: availableHeight)
+        return 1 - (progress * 0.064)
+    }
+
+    private func appleMusicDismissCornerRadius(
+        availableHeight: CGFloat
+    ) -> CGFloat {
+        guard allowsMotion else { return 0 }
+        return appleMusicDismissProgress(availableHeight: availableHeight) * 30
+    }
+
+    private var appleMusicDismissShadowOpacity: Double {
+        guard resolvedPlayerAppearance == .appleMusic,
+              dismissDragTranslation > 0 else { return 0 }
+        return 0.24
+    }
+
+    private func resetInteractiveDismiss() {
+        dismissThresholdArmed = false
+        withAnimation(
+            allowsMotion
+                ? .spring(duration: 0.38, bounce: 0.08)
+                : .none
+        ) {
+            dismissDragTranslation = 0
+        }
+    }
+
+    private func completeInteractiveDismiss(
+        availableHeight: CGFloat
+    ) {
+        guard !isCompletingInteractiveDismiss else { return }
+        isCompletingInteractiveDismiss = true
+        dismissThresholdArmed = false
+        withAnimation(
+            allowsMotion
+                ? .smooth(duration: 0.20, extraBounce: 0)
+                : .none
+        ) {
+            dismissDragTranslation = max(
+                dismissDragTranslation,
+                availableHeight * 0.34
+            )
+        }
+        Task { @MainActor in
+            if allowsMotion {
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            guard isCompletingInteractiveDismiss else { return }
+            audio.showPlayer = false
+            dismiss()
         }
     }
 
