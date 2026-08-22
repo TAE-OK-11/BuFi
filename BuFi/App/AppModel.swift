@@ -243,6 +243,7 @@ final class AppModel: ObservableObject {
         let value: Value
         let expiresAt: ContinuousClock.Instant
         let staleUntil: ContinuousClock.Instant
+        var lastAccessedAt: ContinuousClock.Instant
     }
 
     private struct DetailRequest<Value: Sendable> {
@@ -1949,10 +1950,15 @@ final class AppModel: ObservableObject {
         id: String,
         cache: inout [String: CachedValue<Value>]
     ) -> Value? {
-        guard let cached = cache[id] else { return nil }
-        guard cached.expiresAt > ContinuousClock().now else {
+        let now = ContinuousClock().now
+        guard var cached = cache[id] else { return nil }
+        guard cached.staleUntil > now else {
+            cache[id] = nil
             return nil
         }
+        guard cached.expiresAt > now else { return nil }
+        cached.lastAccessedAt = now
+        cache[id] = cached
         return cached.value
     }
 
@@ -1960,11 +1966,14 @@ final class AppModel: ObservableObject {
         id: String,
         cache: inout [String: CachedValue<Value>]
     ) -> Value? {
-        guard let cached = cache[id] else { return nil }
-        guard cached.staleUntil > ContinuousClock().now else {
+        let now = ContinuousClock().now
+        guard var cached = cache[id] else { return nil }
+        guard cached.staleUntil > now else {
             cache[id] = nil
             return nil
         }
+        cached.lastAccessedAt = now
+        cache[id] = cached
         return cached.value
     }
 
@@ -1981,7 +1990,8 @@ final class AppModel: ObservableObject {
         cache[id] = CachedValue(
             value: value,
             expiresAt: now.advanced(by: .seconds(lifetime)),
-            staleUntil: now.advanced(by: .seconds(lifetime + max(0, staleGrace)))
+            staleUntil: now.advanced(by: .seconds(lifetime + max(0, staleGrace))),
+            lastAccessedAt: now
         )
         guard limit > 0 else {
             cache.removeAll(keepingCapacity: false)
@@ -1990,14 +2000,14 @@ final class AppModel: ObservableObject {
         guard cache.count > limit else { return }
 
         let expiredKeys = cache.compactMap { key, cached in
-            cached.expiresAt <= now ? key : nil
+            cached.staleUntil <= now ? key : nil
         }
         for key in expiredKeys {
             cache[key] = nil
         }
         while cache.count > limit,
               let oldest = cache.min(by: {
-                  $0.value.expiresAt < $1.value.expiresAt
+                  $0.value.lastAccessedAt < $1.value.lastAccessedAt
               }) {
             cache[oldest.key] = nil
         }

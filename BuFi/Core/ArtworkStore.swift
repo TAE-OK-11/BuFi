@@ -274,10 +274,22 @@ actor ArtworkStore {
     func prefetch(urls: [URL], pixelSize: CGFloat) async {
         guard activeScope != nil else { return }
         var seen = Set<URL>()
-        for url in urls.prefix(8) where seen.insert(url).inserted {
+        let uniqueURLs = urls.prefix(8).filter { seen.insert($0).inserted }
+        // Keep speculative work below the foreground transport limit. Four
+        // concurrent requests fill HTTP/2/3 streams quickly without letting
+        // prefetch monopolize all six artwork connections.
+        for start in stride(from: 0, to: uniqueURLs.count, by: 4) {
             guard !Task.isCancelled else { return }
-            _ = try? await image(for: url, pixelSize: pixelSize)
-            await Task.yield()
+            let end = min(start + 4, uniqueURLs.count)
+            await withTaskGroup(of: Void.self) { group in
+                for url in uniqueURLs[start..<end] {
+                    group.addTask { [self] in
+                        guard !Task.isCancelled else { return }
+                        _ = try? await image(for: url, pixelSize: pixelSize)
+                    }
+                }
+                await group.waitForAll()
+            }
         }
     }
 

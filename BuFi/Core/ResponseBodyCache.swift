@@ -40,6 +40,7 @@ struct ResponseBodyCache: Sendable {
         let storedAt: ContinuousClock.Instant
         let validators: Validators
         let identity: UUID
+        let dependencies: Set<OpenSubsonicCacheDependency>
         var accessOrdinal: UInt64
 
         var value: Value {
@@ -115,6 +116,7 @@ struct ResponseBodyCache: Sendable {
         for key: String,
         validators: Validators = .none,
         identity: UUID = UUID(),
+        dependencies: Set<OpenSubsonicCacheDependency> = [],
         now: ContinuousClock.Instant = ContinuousClock().now
     ) {
         // A response that cannot be cached must still invalidate an older body
@@ -132,6 +134,7 @@ struct ResponseBodyCache: Sendable {
             storedAt: now,
             validators: validators,
             identity: identity,
+            dependencies: dependencies,
             accessOrdinal: nextAccessOrdinal()
         )
         byteCount += data.count
@@ -142,6 +145,18 @@ struct ResponseBodyCache: Sendable {
         entries.removeAll(keepingCapacity: keepingCapacity)
         byteCount = 0
         accessClock = 0
+    }
+
+    mutating func removeAll(
+        affecting dependencies: Set<OpenSubsonicCacheDependency>
+    ) {
+        guard !dependencies.isEmpty else { return }
+        let invalidKeys = entries.compactMap { key, entry in
+            entry.dependencies.isDisjoint(with: dependencies) ? nil : key
+        }
+        for key in invalidKeys {
+            removeValue(for: key)
+        }
     }
 
     private mutating func removeValue(for key: String) {

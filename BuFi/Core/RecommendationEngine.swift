@@ -544,13 +544,13 @@ private struct RecommendationMixCacheKey: Hashable {
 private final class RecommendationMixCache: @unchecked Sendable {
     struct Value {
         let createdAt: Date
-        let insertionOrdinal: UInt64
+        var accessOrdinal: UInt64
         let songs: [Song]
     }
 
     private let lock = NSLock()
     private var values: [RecommendationMixCacheKey: Value] = [:]
-    private var nextInsertionOrdinal: UInt64 = 0
+    private var nextAccessOrdinal: UInt64 = 0
 
     func value(
         for key: RecommendationMixCacheKey,
@@ -560,12 +560,15 @@ private final class RecommendationMixCache: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let maximumAge = max(0, lifetime)
-        guard let value = values[key] else { return nil }
+        guard var value = values[key] else { return nil }
         let age = now.timeIntervalSince(value.createdAt)
         guard age >= 0, age < maximumAge else {
             values[key] = nil
             return nil
         }
+        nextAccessOrdinal &+= 1
+        value.accessOrdinal = nextAccessOrdinal
+        values[key] = value
         return value.songs
     }
 
@@ -575,18 +578,15 @@ private final class RecommendationMixCache: @unchecked Sendable {
         now: Date
     ) {
         lock.lock()
-        nextInsertionOrdinal &+= 1
+        nextAccessOrdinal &+= 1
         values[key] = Value(
             createdAt: now,
-            insertionOrdinal: nextInsertionOrdinal,
+            accessOrdinal: nextAccessOrdinal,
             songs: songs
         )
         if values.count > 48 {
             let retained = values.sorted {
-                if $0.value.createdAt == $1.value.createdAt {
-                    return $0.value.insertionOrdinal > $1.value.insertionOrdinal
-                }
-                return $0.value.createdAt > $1.value.createdAt
+                return $0.value.accessOrdinal > $1.value.accessOrdinal
             }
             values = Dictionary(
                 uniqueKeysWithValues: retained.prefix(32).map {
@@ -600,7 +600,7 @@ private final class RecommendationMixCache: @unchecked Sendable {
     func removeAll() {
         lock.lock()
         values.removeAll(keepingCapacity: false)
-        nextInsertionOrdinal = 0
+        nextAccessOrdinal = 0
         lock.unlock()
     }
 }

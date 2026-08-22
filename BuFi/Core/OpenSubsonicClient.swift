@@ -764,6 +764,7 @@ actor OpenSubsonicClient {
         let payload: any Sendable
         let storedAt: ContinuousClock.Instant
         let byteCost: Int
+        let dependencies: Set<OpenSubsonicCacheDependency>
         var accessOrdinal: UInt64
     }
 
@@ -798,6 +799,8 @@ actor OpenSubsonicClient {
     ] = [:]
     private var lyricsCache = LyricsDocumentCache(countLimit: 96)
     private var coverURLCache: [String: URL] = [:]
+    private var coverURLCacheAccess: [String: UInt64] = [:]
+    private var coverURLCacheClock: UInt64 = 0
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -876,6 +879,8 @@ actor OpenSubsonicClient {
         decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
         coverURLCache.removeAll(keepingCapacity: false)
+        coverURLCacheAccess.removeAll(keepingCapacity: false)
+        coverURLCacheClock = 0
         session.invalidateAndCancel()
     }
 
@@ -1022,7 +1027,7 @@ actor OpenSubsonicClient {
             for: endpoint,
             queryItems: queryItems
         )
-        cacheRevisionState.begin(impact)
+        beginMutation(impact)
         do {
             let request = try formRequest(endpoint, queryItems: queryItems)
             let response = try await responseData(
@@ -1086,7 +1091,7 @@ actor OpenSubsonicClient {
                     allowsCachedResponse: allowsCachedResponse
                 )
             case .mutation(let impact):
-                cacheRevisionState.begin(impact)
+                beginMutation(impact)
                 let url = try endpointURL(endpoint, queryItems: queryItems)
                 response = try await responseData(
                     from: url,
@@ -1116,13 +1121,18 @@ actor OpenSubsonicClient {
                     case .network, .revalidatedCache:
                         // Store only a body that decoded into the endpoint's
                         // expected payload, never an HTTP/schema error body.
-                        storeResponse(response, for: cacheKey)
+                        storeResponse(
+                            response,
+                            for: cacheKey,
+                            dependencies: cachePolicy.dependencies
+                        )
                         if response.data.count <= Self.maximumCachedResponseBytes {
                             storeDecodedPayload(
                                 payload,
                                 for: cacheKey,
                                 byteCost: response.data.count,
-                                storedAt: ContinuousClock().now
+                                storedAt: ContinuousClock().now,
+                                dependencies: cachePolicy.dependencies
                             )
                         }
                     case .freshCache(let storedAt):
@@ -1131,7 +1141,8 @@ actor OpenSubsonicClient {
                                 payload,
                                 for: cacheKey,
                                 byteCost: response.data.count,
-                                storedAt: storedAt
+                                storedAt: storedAt,
+                                dependencies: cachePolicy.dependencies
                             )
                         }
                     case .staleFallback:
@@ -1606,6 +1617,19 @@ actor OpenSubsonicClient {
         }
     }
 
+    private func beginMutation(_ impact: OpenSubsonicMutationImpact) {
+        cacheRevisionState.begin(impact)
+        let dependencies = impact.invalidatedDependencies
+        guard !dependencies.isEmpty else { return }
+        responseCache.removeAll(affecting: dependencies)
+        let invalidDecodedKeys = decodedResponseCache.compactMap { key, entry in
+            entry.dependencies.isDisjoint(with: dependencies) ? nil : key
+        }
+        for key in invalidDecodedKeys {
+            removeDecodedResponse(for: key)
+        }
+    }
+
     private func responseData(
         from url: URL,
         allowsRetry: Bool
@@ -1966,12 +1990,17 @@ actor OpenSubsonicClient {
         return value
     }
 
-    private func storeResponse(_ response: HTTPResponseData, for key: String) {
+    private func storeResponse(
+        _ response: HTTPResponseData,
+        for key: String,
+        dependencies: Set<OpenSubsonicCacheDependency>
+    ) {
         responseCache.insert(
             response.data,
             for: key,
             validators: response.validators,
-            identity: response.decodeIdentity
+            identity: response.decodeIdentity,
+            dependencies: dependencies
         )
     }
 
@@ -2006,7 +2035,8 @@ actor OpenSubsonicClient {
         _ payload: Payload,
         for key: String,
         byteCost: Int,
-        storedAt: ContinuousClock.Instant
+        storedAt: ContinuousClock.Instant,
+        dependencies: Set<OpenSubsonicCacheDependency>
     ) {
         let key = Self.decodedResponseKey(
             responseKey: key,
@@ -2023,6 +2053,7 @@ actor OpenSubsonicClient {
             payload: payload,
             storedAt: storedAt,
             byteCost: byteCost,
+            dependencies: dependencies,
             accessOrdinal: decodedResponseAccessClock
         )
         decodedResponseCacheByteCount += byteCost
@@ -3253,9 +3284,17 @@ actor OpenSubsonicClient {
 
     func prefetchLyrics(songIDs: [String]) async {
         var seen = Set<String>()
-        for songID in songIDs.prefix(2) where seen.insert(songID).inserted {
-            guard !Task.isCancelled else { return }
-            _ = try? await lyrics(songID: songID)
+        let uniqueSongIDs = songIDs.prefix(2).filter {
+            seen.insert($0).inserted
+        }
+        await withTaskGroup(of: Void.self) { group in
+            for songID in uniqueSongIDs {
+                group.addTask { [self] in
+                    guard !Task.isCancelled else { return }
+                    _ = try? await lyrics(songID: songID)
+                }
+            }
+            await group.waitForAll()
         }
     }
 
@@ -3379,16 +3418,24 @@ actor OpenSubsonicClient {
     func coverURL(id: String, size: Int = 600) throws -> URL {
         let cacheKey = "\(id)|\(size)"
         if let cached = coverURLCache[cacheKey] {
+            coverURLCacheClock &+= 1
+            coverURLCacheAccess[cacheKey] = coverURLCacheClock
             return cached
         }
         guard let url = swiftSonic.coverArtURL(id: id, size: size),
               url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
-        if coverURLCache.count >= Self.coverURLCacheLimit {
-            coverURLCache.removeAll(keepingCapacity: true)
+        if coverURLCache.count >= Self.coverURLCacheLimit,
+           let leastRecentlyUsed = coverURLCacheAccess.min(by: {
+               $0.value < $1.value
+           })?.key {
+            coverURLCache[leastRecentlyUsed] = nil
+            coverURLCacheAccess[leastRecentlyUsed] = nil
         }
+        coverURLCacheClock &+= 1
         coverURLCache[cacheKey] = url
+        coverURLCacheAccess[cacheKey] = coverURLCacheClock
         return url
     }
 
