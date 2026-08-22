@@ -210,7 +210,7 @@ private enum LyricsTranslationCachePolicy {
     // the improved stanza-aware result after an app update.
     static func languageKey(for targetLanguageCode: String) -> String {
         if #available(iOS 26.4, *) {
-            return "\(targetLanguageCode)#lyrics-high-fidelity-context-v3"
+            return "\(targetLanguageCode)#lyrics-attributed-context-v4"
         }
         return "\(targetLanguageCode)#lyrics-context-v2"
     }
@@ -239,9 +239,10 @@ private struct LyricsTranslationChunk: Sendable {
 }
 
 private enum LyricsTranslationChunker {
-    private static let maximumLines = 7
-    private static let maximumCharacters = 640
+    private static let maximumLines = 12
+    private static let maximumCharacters = 1_200
     private static let stanzaGap: TimeInterval = 9
+    private static let lineLinkScheme = "bufi-lyric"
 
     static func makeChunks(from lines: [LyricLine]) -> [LyricsTranslationChunk] {
         var chunks = [LyricsTranslationChunk]()
@@ -303,6 +304,50 @@ private enum LyricsTranslationChunker {
         return Dictionary(uniqueKeysWithValues: zip(lines, translatedLines).map {
             ($0.0.id, $0.1)
         })
+    }
+
+    @available(iOS 26.4, *)
+    static func attributedSourceText(for lines: [LyricLine]) -> AttributedString {
+        var result = AttributedString()
+        for (index, line) in lines.enumerated() {
+            var segment = AttributedString(line.text)
+            segment.link = URL(
+                string: "\(lineLinkScheme)://line/\(line.id)"
+            )
+            result.append(segment)
+            if index < lines.count - 1 {
+                result.append(AttributedString("\n"))
+            }
+        }
+        return result
+    }
+
+    @available(iOS 26.4, *)
+    static func mapAttributedText(
+        _ translatedText: AttributedString,
+        expectedLines: [LyricLine]
+    ) -> [Int: String]? {
+        let expectedLineIDs = Set(expectedLines.map(\.id))
+        var fragments = [Int: String]()
+        for run in translatedText.runs {
+            guard let link = run.link,
+                  link.scheme == lineLinkScheme,
+                  link.host == "line",
+                  let lineID = Int(link.lastPathComponent),
+                  expectedLineIDs.contains(lineID) else {
+                continue
+            }
+            let fragment = String(translatedText[run.range].characters)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !fragment.isEmpty else { continue }
+            if let existing = fragments[lineID], !existing.isEmpty {
+                fragments[lineID] = "\(existing) \(fragment)"
+            } else {
+                fragments[lineID] = fragment
+            }
+        }
+        guard fragments.count == expectedLineIDs.count else { return nil }
+        return fragments
     }
 }
 
@@ -573,23 +618,38 @@ private struct SystemLyricsTranslationTaskHost: View {
         let chunksByID = Dictionary(uniqueKeysWithValues: chunks.map {
             ($0.identifier, $0)
         })
-        let contextualRequests = chunks.map {
-            TranslationSession.Request(
-                sourceText: $0.sourceText,
-                clientIdentifier: $0.identifier
+        let contextualResponses: [TranslationSession.Response]
+        if #available(iOS 26.4, *) {
+            let contextualRequests = chunks.map {
+                TranslationSession.Request(
+                    sourceText: LyricsTranslationChunker.attributedSourceText(
+                        for: $0.lines
+                    ),
+                    clientIdentifier: $0.identifier
+                )
+            }
+            contextualResponses = try await session.translations(
+                from: contextualRequests
+            )
+        } else {
+            let contextualRequests = chunks.map {
+                TranslationSession.Request(
+                    sourceText: $0.sourceText,
+                    clientIdentifier: $0.identifier
+                )
+            }
+            contextualResponses = try await session.translations(
+                from: contextualRequests
             )
         }
-        let contextualResponses = try await session.translations(
-            from: contextualRequests
-        )
 
         var translatedLines = [Int: String](minimumCapacity: lines.count)
         var unresolvedLineIDs = Set(lines.map(\.id))
         for response in contextualResponses {
             guard let identifier = response.clientIdentifier,
                   let chunk = chunksByID[identifier],
-                  let mapped = LyricsTranslationChunker.mapTranslatedText(
-                    response.targetText,
+                  let mapped = mappedContextualResponse(
+                    response,
                     to: chunk.lines
                   ) else {
                 continue
@@ -623,5 +683,23 @@ private struct SystemLyricsTranslationTaskHost: View {
             }
         }
         return translatedLines
+    }
+
+    nonisolated private static func mappedContextualResponse(
+        _ response: TranslationSession.Response,
+        to lines: [LyricLine]
+    ) -> [Int: String]? {
+        if #available(iOS 26.4, *),
+           let attributedTargetText = response.attributedTargetText,
+           let mapped = LyricsTranslationChunker.mapAttributedText(
+                attributedTargetText,
+                expectedLines: lines
+           ) {
+            return mapped
+        }
+        return LyricsTranslationChunker.mapTranslatedText(
+            response.targetText,
+            to: lines
+        )
     }
 }
