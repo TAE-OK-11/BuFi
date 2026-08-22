@@ -1,0 +1,30 @@
+name: Icon Composer Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: xcode-27
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Inspect Apple icon toolchain
+        run: |
+          set -eu
+          echo "Xcode:"
+          xcodebuild -version
+          echo "Icon Composer applications:"
+          find /Applications/Xcode.app -type d \
+            \( -name 'Icon Composer.app' -o -name 'IconComposer.app' \) \
+            -print
+          echo "Asset compiler:"
+          xcrun --find actool
+          xcrun actool --help 2>&1 | grep -i -C 2 'app.icon\|app-icon\|icon' | head -120 || true
+          echo "Icon Composer resources:"
+          find /Applications/Xcode.app -type f \
+            \( -name '*.icon' -o -name '*.iconcomposer' -o -name '*IconComposer*' \) \
+            -print | head -120

@@ -68,6 +68,11 @@ struct PersonalizedMixArtwork: View {
                 .foregroundStyle(.white.opacity(0.68))
                 .padding(.top, max(4, size * 0.022))
         }
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity,
+            alignment: .leading
+        )
         .foregroundStyle(.white)
         .padding(max(13, size * 0.075))
         .shadow(color: .black.opacity(0.24), radius: 8, y: 3)
