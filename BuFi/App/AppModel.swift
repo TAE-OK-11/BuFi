@@ -19,8 +19,11 @@ enum FavoriteOverrideApplicationPolicy {
 final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var phase: AppModel.SessionState = .signedOut
     @Published fileprivate(set) var connectedServerAddress = ""
+    @Published fileprivate(set) var connectedUsername = ""
     @Published fileprivate(set) var subsonicAPIFamily: SubsonicAPIFamily?
     @Published fileprivate(set) var subsonicAPIVersion = ""
+    @Published fileprivate(set) var isSyncing = false
+    @Published fileprivate(set) var lastSuccessfulSyncDate: Date?
     @Published fileprivate(set) var hasLastFMAPIKey = false
     @Published fileprivate(set) var hasListenBrainzToken = false
     @Published fileprivate(set) var listenBrainzUsername = ""
@@ -41,9 +44,24 @@ final class AppSessionState: ObservableObject {
         connectedServerAddress = value
     }
 
+    fileprivate func setConnectedUsername(_ value: String) {
+        guard connectedUsername != value else { return }
+        connectedUsername = value
+    }
+
     fileprivate func setSubsonicAPIVersion(_ value: String) {
         guard subsonicAPIVersion != value else { return }
         subsonicAPIVersion = value
+    }
+
+    fileprivate func setIsSyncing(_ value: Bool) {
+        guard isSyncing != value else { return }
+        isSyncing = value
+    }
+
+    fileprivate func setLastSuccessfulSyncDate(_ value: Date?) {
+        guard lastSuccessfulSyncDate != value else { return }
+        lastSuccessfulSyncDate = value
     }
 
     fileprivate func setHasLastFMAPIKey(_ value: Bool) {
@@ -301,9 +319,24 @@ final class AppModel: ObservableObject {
         set { session.setConnectedServerAddress(newValue) }
     }
 
+    private(set) var connectedUsername: String {
+        get { session.connectedUsername }
+        set { session.setConnectedUsername(newValue) }
+    }
+
     private(set) var subsonicAPIVersion: String {
         get { session.subsonicAPIVersion }
         set { session.setSubsonicAPIVersion(newValue) }
+    }
+
+    private(set) var isSyncing: Bool {
+        get { session.isSyncing }
+        set { session.setIsSyncing(newValue) }
+    }
+
+    private(set) var lastSuccessfulSyncDate: Date? {
+        get { session.lastSuccessfulSyncDate }
+        set { session.setLastSuccessfulSyncDate(newValue) }
     }
 
     private(set) var hasLastFMAPIKey: Bool {
@@ -374,9 +407,9 @@ final class AppModel: ObservableObject {
     private var confirmedStarStates: [String: Bool] = [:]
     private var awaitingStarConfirmations: [String: Bool] = [:]
     private static let starDateFormatter = ISO8601DateFormatter()
-    private static let albumDetailCacheLimit = 48
-    private static let playlistDetailCacheLimit = 24
-    private static let artistDetailCacheLimit = 32
+    private static let albumDetailCacheLimit = 64
+    private static let playlistDetailCacheLimit = 32
+    private static let artistDetailCacheLimit = 48
     private static let lastFMKeyAccount = "lastfm-api-key"
     private static let listenBrainzTokenAccount = "listenbrainz-token"
     private static let listenBrainzUsernameKey = "listenbrainz-username"
@@ -508,8 +541,11 @@ final class AppModel: ObservableObject {
         lastHomeSnapshotSave = nil
         lastExternalRecommendationIdentity = nil
         connectedServerAddress = ""
+        connectedUsername = ""
         subsonicAPIFamily = nil
         subsonicAPIVersion = ""
+        isSyncing = false
+        lastSuccessfulSyncDate = nil
 
         if let artworkSession = leases.artwork {
             await ArtworkStore.shared.clearAll(session: artworkSession)
@@ -548,9 +584,11 @@ final class AppModel: ObservableObject {
         let revision = homeRevision
         let previousHome = home
         refreshInFlight = true
+        isSyncing = true
         defer {
             if generation == sessionGeneration {
                 refreshInFlight = false
+                isSyncing = false
                 flushPendingRefresh()
             }
         }
@@ -602,6 +640,7 @@ final class AppModel: ObservableObject {
                 lastHomeSnapshotSave = saveNow
             }
             scheduleLibraryCatalogRefresh(snapshot: resolvedSnapshot)
+            lastSuccessfulSyncDate = Date()
             if needsFullRefresh {
                 if loadsCoreHomeFirst {
                     scheduleServerHomeEnrichment(
@@ -1110,9 +1149,10 @@ final class AppModel: ObservableObject {
             Self.storeDetail(
                 resolvedValue,
                 id: id,
-                lifetime: 5 * 60,
+                lifetime: 15 * 60,
                 limit: Self.albumDetailCacheLimit,
-                cache: &albumDetailCache
+                cache: &albumDetailCache,
+                staleGrace: 60 * 60
             )
         } else if let cached = albumDetailCache[id] {
             resolvedValue = cached.value
@@ -1175,9 +1215,10 @@ final class AppModel: ObservableObject {
             Self.storeDetail(
                 resolvedValue,
                 id: id,
-                lifetime: 2 * 60,
+                lifetime: 5 * 60,
                 limit: Self.playlistDetailCacheLimit,
-                cache: &playlistDetailCache
+                cache: &playlistDetailCache,
+                staleGrace: 30 * 60
             )
         } else if let cached = playlistDetailCache[id] {
             resolvedValue = cached.value
@@ -1248,9 +1289,10 @@ final class AppModel: ObservableObject {
             Self.storeDetail(
                 resolvedValue,
                 id: id,
-                lifetime: 5 * 60,
+                lifetime: 15 * 60,
                 limit: Self.artistDetailCacheLimit,
-                cache: &artistDetailCache
+                cache: &artistDetailCache,
+                staleGrace: 60 * 60
             )
         } else if let cached = artistDetailCache[id] {
             resolvedValue = cached.value
@@ -2528,8 +2570,11 @@ final class AppModel: ObservableObject {
         publishHome(.empty)
         searchResults = .empty
         connectedServerAddress = ""
+        connectedUsername = ""
         subsonicAPIFamily = nil
         subsonicAPIVersion = ""
+        isSyncing = false
+        lastSuccessfulSyncDate = nil
         refreshInFlight = false
         pendingRefresh = false
         pendingRefreshForceFull = false
@@ -2660,10 +2705,12 @@ final class AppModel: ObservableObject {
             self.connectedServerAddress = Self.serverDisplayAddress(
                 from: client.credentials.serverURL
             )
+            self.connectedUsername = client.credentials.username
             self.subsonicAPIFamily = status.map {
                 SubsonicCompatibilityPolicy.family(from: $0)
             }
             self.subsonicAPIVersion = Self.sanitizedVersion(status?.version)
+            self.lastSuccessfulSyncDate = status == nil ? nil : Date()
             self.sessionState = .ready
             activatedLeases = StoreActivationLeases(
                 offline: nil,
@@ -2722,9 +2769,12 @@ final class AppModel: ObservableObject {
             publishHome(.empty)
             searchResults = .empty
             connectedServerAddress = ""
+            connectedUsername = ""
             subsonicAPIFamily = nil
             subsonicAPIVersion = ""
             refreshInFlight = false
+            isSyncing = false
+            lastSuccessfulSyncDate = nil
             lastHomeSnapshotSave = nil
             isSearching = false
             sessionState = .signedOut

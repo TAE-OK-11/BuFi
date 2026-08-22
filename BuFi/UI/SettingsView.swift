@@ -104,27 +104,40 @@ struct SettingsView: View {
 
     private var serverCard: some View {
         BuFiGroupedSurface {
-            HStack(spacing: 14) {
-                Circle()
-                    .fill(BuFiTheme.accent.opacity(0.14))
-                    .frame(width: 52, height: 52)
-                    .overlay {
-                        Image(systemName: "music.note")
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundStyle(BuFiTheme.accent)
+            NavigationLink {
+                ServerManagementView()
+                    .environmentObject(model)
+                    .environmentObject(session)
+            } label: {
+                HStack(spacing: 14) {
+                    Circle()
+                        .fill(BuFiTheme.accent.opacity(0.14))
+                        .frame(width: 52, height: 52)
+                        .overlay {
+                            Image(systemName: "music.note")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundStyle(BuFiTheme.accent)
+                        }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: serverTitle)
+                            .font(.system(size: 18, weight: .bold))
+                            .lineLimit(2)
+                        Text(serverDescription)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
                     }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(verbatim: serverTitle)
-                        .font(.system(size: 18, weight: .bold))
-                        .lineLimit(2)
-                    Text(serverDescription)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(BuFiTheme.accent)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.tertiary)
                 }
-                Spacer(minLength: 0)
-                ServerLatencyBadge(client: model.client)
+                .padding(16)
+                .contentShape(Rectangle())
             }
-            .padding(16)
+            .buttonStyle(BuFiPressStyle())
         }
         .padding(.horizontal, 16)
     }
@@ -160,7 +173,7 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                settingsNote("기본은 대표색을 중심으로 은은하게 섞고, 다중 컬러는 앨범 속 세 가지 예술색의 위치를 더 선명하게 반영합니다. 밝게는 같은 색 구성을 화사하게 표시합니다.")
+                settingsNote("기본은 대표색을 중심으로 은은하게 섞고, 다중 컬러는 앨범에서 찾은 최대 네 가지 예술색의 위치를 더 선명하게 반영합니다. 밝게는 같은 색 구성을 화사하게 표시합니다.")
 
                 SettingsDivider()
 
@@ -430,12 +443,7 @@ extension SettingsView {
         let familyName = family == .openSubsonic
             ? "OpenSubsonic"
             : "Subsonic"
-        let subsonicAPIVersion = session.subsonicAPIVersion
-
-        guard !subsonicAPIVersion.isEmpty else {
-            return "\(familyName) API"
-        }
-        return "\(familyName) API \(subsonicAPIVersion)"
+        return "\(familyName) API"
     }
 
     private var offlineStorageText: String {
@@ -453,6 +461,212 @@ extension SettingsView {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
             ?? "1"
         return "\(version) (\(build))"
+    }
+}
+
+private struct ServerManagementView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSessionState
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                BuFiPageHeader(title: "서버 관리")
+                    .buFiEntranceMotion()
+
+                SettingsGroup(title: "연결된 서버") {
+                    HStack(spacing: 13) {
+                        Circle()
+                            .fill(BuFiTheme.accent.opacity(0.13))
+                            .frame(width: 44, height: 44)
+                            .overlay {
+                                Image(systemName: "server.rack")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundStyle(BuFiTheme.accent)
+                            }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(verbatim: serverName)
+                                .font(.system(size: 16, weight: .bold))
+                                .lineLimit(2)
+                            Text(verbatim: session.connectedUsername)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(BuFiTheme.accent)
+                            .accessibilityLabel("현재 서버")
+                    }
+                }
+                .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.025)
+
+                SettingsGroup(title: "현재 서버") {
+                    VStack(spacing: 0) {
+                        detailRow("주소", value: serverName)
+                        SettingsDivider()
+                        detailRow("사용자 이름", value: session.connectedUsername)
+                        SettingsDivider()
+                        detailRow("연결 규격", value: apiName)
+                        SettingsDivider()
+                        HStack {
+                            Text("응답 속도")
+                                .font(.system(size: 16, weight: .medium))
+                            Spacer(minLength: 12)
+                            ServerLatencyBadge(client: model.client)
+                        }
+                        .frame(minHeight: 48)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.05)
+
+                SettingsGroup(title: "동기화 상태") {
+                    VStack(alignment: .leading, spacing: 0) {
+                        detailRow(
+                            "상태",
+                            value: syncStatus,
+                            valueColor: syncStatusColor
+                        )
+                        SettingsDivider()
+                        detailRow("마지막 동기화", value: lastSyncText)
+                        SettingsDivider()
+                        Button {
+                            Task { await model.refresh(forceFull: true) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Text("서버와 다시 동기화")
+                                    .font(.system(size: 16, weight: .semibold))
+                                Spacer()
+                                if session.isSyncing {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .transition(.opacity.combined(with: .scale))
+                                } else {
+                                    Image(systemName: "arrow.clockwise.circle.fill")
+                                        .font(.system(size: 20, weight: .semibold))
+                                        .foregroundStyle(BuFiTheme.accent)
+                                }
+                            }
+                            .frame(minHeight: 48)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(BuFiPressStyle())
+                        .disabled(session.isSyncing)
+                        .animation(
+                            motionEnabled ? BuFiMotion.symbol : .none,
+                            value: session.isSyncing
+                        )
+                    }
+                }
+                .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.075)
+
+                SettingsGroup(title: "빠른 재생 캐시") {
+                    VStack(alignment: .leading, spacing: 14) {
+                        cacheCapability(
+                            icon: "photo.stack.fill",
+                            title: "다음 3곡 고화질 커버",
+                            detail: "플레이어 크기로 미리 디코딩해 곡 전환 즉시 표시합니다."
+                        )
+                        SettingsDivider()
+                        cacheCapability(
+                            icon: "internaldrive.fill",
+                            title: "곡 메타데이터",
+                            detail: "처음 받은 재생 정보를 계정별 GRDB 캐시에 안전하게 보관합니다."
+                        )
+                        SettingsDivider()
+                        cacheCapability(
+                            icon: "bolt.horizontal.circle.fill",
+                            title: "API 응답 재사용",
+                            detail: "앨범, 아티스트와 재생목록 응답을 변경 시 자동 무효화하며 재사용합니다."
+                        )
+                    }
+                }
+                .padding(.horizontal, 16)
+                .buFiVerticalSectionMotion(delay: 0.10)
+            }
+            .padding(.top, 18)
+            .buFiMiniPlayerContentClearance()
+        }
+        .background(BuFiScreenBackground())
+        .toolbar(.visible, for: .navigationBar)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .tint(BuFiTheme.accent)
+    }
+
+    private var serverName: String {
+        session.connectedServerAddress.isEmpty
+            ? String(localized: "연결된 서버")
+            : session.connectedServerAddress
+    }
+
+    private var apiName: String {
+        guard let family = session.subsonicAPIFamily else {
+            return String(localized: "확인 불가")
+        }
+        return family == .openSubsonic ? "OpenSubsonic" : "Subsonic"
+    }
+
+    private var syncStatus: String {
+        if session.isSyncing { return String(localized: "동기화 중") }
+        if session.lastSuccessfulSyncDate != nil {
+            return String(localized: "동기화됨")
+        }
+        return String(localized: "저장된 데이터 사용 중")
+    }
+
+    private var syncStatusColor: Color {
+        session.lastSuccessfulSyncDate != nil || session.isSyncing
+            ? BuFiTheme.accent
+            : .secondary
+    }
+
+    private var lastSyncText: String {
+        guard let date = session.lastSuccessfulSyncDate else {
+            return String(localized: "이번 연결에서 아직 없음")
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func detailRow(
+        _ title: LocalizedStringKey,
+        value: String,
+        valueColor: Color = .secondary
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(title)
+                .font(.system(size: 16, weight: .medium))
+            Spacer(minLength: 12)
+            Text(verbatim: value.isEmpty ? "—" : value)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(valueColor)
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+        }
+        .frame(minHeight: 48)
+    }
+
+    private func cacheCapability(
+        icon: String,
+        title: LocalizedStringKey,
+        detail: LocalizedStringKey
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            settingIcon(icon)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 15.5, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }
 

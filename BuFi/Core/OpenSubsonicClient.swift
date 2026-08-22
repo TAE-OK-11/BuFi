@@ -216,9 +216,13 @@ enum OpenSubsonicRequestPolicy {
             // documents use a separate positive-only cache below.
             return OpenSubsonicResponseCachePolicy(lifetime: 0)
         case "getGenres", "getInternetRadioStations":
-            return OpenSubsonicResponseCachePolicy(lifetime: 30 * 60)
+            return OpenSubsonicResponseCachePolicy(lifetime: 2 * 60 * 60)
         case "getArtistInfo2":
-            return OpenSubsonicResponseCachePolicy(lifetime: 15 * 60)
+            return OpenSubsonicResponseCachePolicy(
+                lifetime: 60 * 60,
+                staleGrace: 6 * 60 * 60,
+                dependencies: [.artistDetails]
+            )
         case "getPlaylists":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 5 * 60,
@@ -247,20 +251,20 @@ enum OpenSubsonicRequestPolicy {
             )
         case "getAlbum":
             return OpenSubsonicResponseCachePolicy(
-                lifetime: 5 * 60,
-                staleGrace: 15 * 60,
+                lifetime: 15 * 60,
+                staleGrace: 60 * 60,
                 dependencies: [.albumDetails]
             )
         case "getArtist":
             return OpenSubsonicResponseCachePolicy(
-                lifetime: 5 * 60,
-                staleGrace: 15 * 60,
+                lifetime: 15 * 60,
+                staleGrace: 60 * 60,
                 dependencies: [.artistDetails]
             )
         case "getPlaylist":
             return OpenSubsonicResponseCachePolicy(
-                lifetime: 2 * 60,
-                staleGrace: 15 * 60,
+                lifetime: 5 * 60,
+                staleGrace: 30 * 60,
                 dependencies: [.libraryLists]
             )
         case "getPlayQueue":
@@ -786,12 +790,15 @@ actor OpenSubsonicClient {
         let task: Task<any Sendable, Error>
     }
 
-    private static let responseCacheLimit = 192
-    private static let responseCacheByteLimit = 16 * 1_024 * 1_024
+    private static let responseCacheLimit = 256
+    private static let responseCacheByteLimit = 24 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
-    private static let decodedResponseCacheLimit = 64
-    private static let decodedResponseCacheByteLimit = 8 * 1_024 * 1_024
+    private static let decodedResponseCacheLimit = 96
+    private static let decodedResponseCacheByteLimit = 12 * 1_024 * 1_024
     private static let persistedLyricsMaximumAge: TimeInterval = 7 * 24 * 60 * 60
+    private static let persistedPlaybackMetadataMaximumAge: TimeInterval =
+        7 * 24 * 60 * 60
+    private static let playbackMetadataMemoryLimit = 256
     private var responseCache = ResponseBodyCache(
         countLimit: OpenSubsonicClient.responseCacheLimit,
         byteLimit: OpenSubsonicClient.responseCacheByteLimit,
@@ -804,6 +811,7 @@ actor OpenSubsonicClient {
         DecodedResponseRequestKey: InFlightDecodedResponse
     ] = [:]
     private var lyricsCache = LyricsDocumentCache(countLimit: 96)
+    private var playbackMetadataCache: [String: Song] = [:]
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -881,6 +889,7 @@ actor OpenSubsonicClient {
         decodedResponseCache.removeAll(keepingCapacity: false)
         decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
+        playbackMetadataCache.removeAll(keepingCapacity: false)
         session.invalidateAndCancel()
     }
 
@@ -3086,6 +3095,18 @@ actor OpenSubsonicClient {
     /// selected item through getSong gives playback one authoritative source
     /// for song ID, cover-art ID, duration, and media format.
     func song(id: String, forceRefresh: Bool = false) async throws -> Song {
+        if forceRefresh {
+            playbackMetadataCache[id] = nil
+        } else if let cached = playbackMetadataCache[id] {
+            return cached
+        } else if let persisted = await AppDatabase.shared.loadPlaybackMetadata(
+            scope: accountScope,
+            songID: id,
+            maximumAge: Self.persistedPlaybackMetadataMaximumAge
+        ) {
+            cachePlaybackMetadata(persisted)
+            return persisted
+        }
         let payload: SongPayload = try await readRequest(
             "getSong",
             parameters: ["id": id],
@@ -3094,7 +3115,21 @@ actor OpenSubsonicClient {
         guard let song = payload.song, song.id == id else {
             throw OpenSubsonicError.invalidResponse
         }
+        cachePlaybackMetadata(song)
+        _ = await AppDatabase.shared.savePlaybackMetadata(
+            song,
+            scope: accountScope
+        )
         return song
+    }
+
+    private func cachePlaybackMetadata(_ song: Song) {
+        playbackMetadataCache[song.id] = song
+        guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit,
+              let victim = playbackMetadataCache.keys.first(where: {
+                  $0 != song.id
+              }) else { return }
+        playbackMetadataCache[victim] = nil
     }
 
     /// Canonical API boundary for an active playback occurrence. The caller's

@@ -1312,11 +1312,14 @@ final class AudioEngine: NSObject, ObservableObject {
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
     private var networkPrefetchTask: Task<Void, Never>?
+    private var visualPrefetchTask: Task<Void, Never>?
     private var speculativePrefetchStartTask: Task<Void, Never>?
     private var speculativePrefetchStartToken: UUID?
     private var networkPrefetchToken: UUID?
+    private var visualPrefetchToken: UUID?
     private var offlinePrefetchToken: UUID?
     private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
+    private var lastVisualPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastOfflinePrefetchKey: PlaybackPrefetchPlan.Key?
     private var preparedPlaybackAssets: [PreparedPlaybackKey: PreparedPlaybackAsset] = [:]
     private var preparedPlaybackAssetOrder: [PreparedPlaybackKey] = []
@@ -1752,6 +1755,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // previous speculative transfers are discarded now; the new queue is
         // warmed only after AVPlayer confirms that playback is established.
         suspendSpeculativePrefetch()
+        scheduleUpcomingVisualPrefetch()
         scheduleQueueSave()
         updateNowPlaying()
         scheduleAutoplayContinuationIfNeeded()
@@ -1844,6 +1848,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 || thermalState == .serious
                 || thermalState == .critical else {
             scheduleSpeculativePrefetchAfterPlaybackStability()
+            scheduleUpcomingVisualPrefetch()
             return
         }
         suspendSpeculativePrefetch()
@@ -2049,6 +2054,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.updateRemoteCommands()
                 self.updateNowPlaying()
                 self.scheduleSpeculativePrefetchAfterPlaybackStability()
+                self.scheduleUpcomingVisualPrefetch()
                 self.scheduleQueueSave(immediate: true)
             }
             if shouldAdvance {
@@ -2074,6 +2080,7 @@ final class AudioEngine: NSObject, ObservableObject {
         updateRemoteCommands()
         updateNowPlaying()
         scheduleSpeculativePrefetchAfterPlaybackStability()
+        scheduleUpcomingVisualPrefetch()
         scheduleQueueSave(immediate: true)
         return true
     }
@@ -2407,6 +2414,7 @@ final class AudioEngine: NSObject, ObservableObject {
         updateRemoteCommands()
         updateNowPlaying()
         scheduleSpeculativePrefetchAfterPlaybackStability()
+        scheduleUpcomingVisualPrefetch()
         scheduleQueueSave(immediate: true)
     }
 
@@ -2733,6 +2741,9 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.scheduleSpeculativePrefetchAfterPlaybackStability()
                 } else if prefetchChanged {
                     self.suspendSpeculativePrefetch()
+                }
+                if isSatisfied {
+                    self.scheduleUpcomingVisualPrefetch()
                 }
                 guard connectivityChanged else { return }
                 if !isSatisfied {
@@ -3134,6 +3145,13 @@ final class AudioEngine: NSObject, ObservableObject {
         if resetKey { lastNetworkPrefetchKey = nil }
     }
 
+    private func cancelVisualPrefetch(resetKey: Bool) {
+        visualPrefetchTask?.cancel()
+        visualPrefetchTask = nil
+        visualPrefetchToken = nil
+        if resetKey { lastVisualPrefetchKey = nil }
+    }
+
     private func cancelOfflinePrefetch(resetKey: Bool) {
         offlinePrefetchTask?.cancel()
         offlinePrefetchTask = nil
@@ -3145,6 +3163,7 @@ final class AudioEngine: NSObject, ObservableObject {
         speculativePrefetchStartTask?.cancel()
         speculativePrefetchStartTask = nil
         speculativePrefetchStartToken = nil
+        cancelVisualPrefetch(resetKey: true)
         cancelNetworkPrefetch(resetKey: true)
         cancelOfflinePrefetch(resetKey: true)
         discardPreparedPlaybackAssets()
@@ -3194,7 +3213,8 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func playbackPrefetchPlan(
-        maximumUpcoming: Int
+        maximumUpcoming: Int,
+        permitsPendingPlayback: Bool = false
     ) -> PlaybackPrefetchPlan? {
         PlaybackPrefetchPlan.make(
             currentSong: currentSong,
@@ -3203,18 +3223,107 @@ final class AudioEngine: NSObject, ObservableObject {
             quality: quality,
             maximumUpcoming: maximumUpcoming,
             isActivelyPlaying:
-                wantsPlayback && player.timeControlStatus == .playing
+                wantsPlayback && (
+                    permitsPendingPlayback
+                        || player.timeControlStatus == .playing
+                )
         )
+    }
+
+    /// Cover art and canonical metadata are presentation-critical even when a
+    /// user skips several tracks before the two-second audio stability window.
+    /// Warm exactly the full-player decode size for the next three entries.
+    /// The request remains background-class traffic, and constrained links run
+    /// one cover at a time so AVFoundation keeps transport priority.
+    private func scheduleUpcomingVisualPrefetch() {
+        guard networkPathIsSatisfied,
+              wantsPlayback,
+              let client,
+              let plan = playbackPrefetchPlan(
+                  maximumUpcoming: UpcomingArtworkPrefetchPolicy.upcomingCount,
+                  permitsPendingPlayback: true
+              ) else {
+            cancelVisualPrefetch(resetKey: true)
+            return
+        }
+        let processInfo = ProcessInfo.processInfo
+        guard !processInfo.isLowPowerModeEnabled,
+              processInfo.thermalState != .serious,
+              processInfo.thermalState != .critical else {
+            cancelVisualPrefetch(resetKey: true)
+            return
+        }
+        guard lastVisualPrefetchKey != plan.key else { return }
+        cancelVisualPrefetch(resetKey: false)
+        lastVisualPrefetchKey = plan.key
+
+        let token = UUID()
+        let sessionGeneration = playbackSessionGeneration
+        let accountScope = currentAccountScope
+        let isConstrained = networkPathIsExpensive
+            || networkPathIsConstrained
+            || networkLinkQualityIsMinimal
+        visualPrefetchToken = token
+        visualPrefetchTask = Task(priority: .utility) { [weak self] in
+            do {
+                // Submit the active stream first, then let background artwork
+                // share the established connection without extending the old
+                // two-second placeholder window.
+                try await Task.sleep(for: .milliseconds(180))
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.visualPrefetchToken == token,
+                  self.playbackSessionGeneration == sessionGeneration,
+                  self.currentAccountScope == accountScope,
+                  self.wantsPlayback else { return }
+
+            let songs = await client.prefetchPlaybackMetadata(
+                songs: plan.upcomingSongs
+            )
+            guard !Task.isCancelled,
+                  self.visualPrefetchToken == token else { return }
+
+            var coverURLs: [URL] = []
+            var seenArtwork = Set<String>()
+            for song in songs {
+                let revision = song.artworkRevision
+                guard let coverID = song.artworkID,
+                      seenArtwork.insert("\(coverID)|\(revision)").inserted,
+                      let sourceURL = try? client.coverURL(
+                          id: coverID,
+                          size: nil
+                      ) else { continue }
+                coverURLs.append(ArtworkStore.cacheURL(
+                    for: sourceURL,
+                    revision: revision
+                ))
+            }
+            await ArtworkStore.shared.prefetch(
+                urls: coverURLs,
+                pixelSize: ArtworkRequestSizing.fullPlayerPixelSize,
+                concurrencyLimit: isConstrained ? 1 : 3
+            )
+            guard !Task.isCancelled,
+                  self.visualPrefetchToken == token else { return }
+
+            // Reuse the now-cached source bytes for background colors too, so
+            // a rapid transition never flashes the fallback gradient.
+            for url in coverURLs {
+                guard !Task.isCancelled else { return }
+                _ = await ArtworkStore.shared.palette(for: url)
+            }
+        }
     }
 
     private func scheduleNetworkPrefetch() {
         // Metadata, lyrics, and artwork are tiny compared with media bytes.
-        // A remote lossless stream still gets an uncontested opening window,
-        // then warms only one upcoming context instead of disabling every
-        // non-audio cache and paying those requests at the track boundary.
-        let metadataPrefetchCount = isRemoteLosslessPlayback
-            ? 1
-            : UpcomingArtworkPrefetchPolicy.upcomingCount
+        // This second pass starts only after the stream's uncontested opening
+        // window; the presentation-critical first pass has already warmed the
+        // next three covers at background network priority.
+        let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
@@ -3262,9 +3371,12 @@ final class AudioEngine: NSObject, ObservableObject {
                     max(264, screenSize.height * 0.47)
                 )
             )
-            let artworkPixelSize = ArtworkRequestSizing.pixelSize(
-                pointSize: artworkEdge,
-                displayScale: UIScreen.main.scale
+            let artworkPixelSize = max(
+                ArtworkRequestSizing.fullPlayerPixelSize,
+                ArtworkRequestSizing.pixelSize(
+                    pointSize: artworkEdge,
+                    displayScale: UIScreen.main.scale
+                )
             )
             var coverURLs: [URL] = []
             var seenArtworkRevisions = Set<String>()
@@ -3288,7 +3400,8 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             await ArtworkStore.shared.prefetch(
                 urls: coverURLs,
-                pixelSize: artworkPixelSize
+                pixelSize: artworkPixelSize,
+                concurrencyLimit: 3
             )
             await lyricsPrefetch
             guard !Task.isCancelled else { return }
@@ -4130,6 +4243,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.reportPlaybackState("playing")
                     self.scheduleGaplessSuccessor()
                     self.scheduleSpeculativePrefetchAfterPlaybackStability()
+                    self.scheduleUpcomingVisualPrefetch()
                 } else if !self.wantsPlayback {
                     self.prolongedStallRecoveryTask?.cancel()
                     self.prolongedStallRecoveryTask = nil

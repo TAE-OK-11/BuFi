@@ -118,6 +118,10 @@ actor AppDatabase {
     private static let lyricsTranslationRetention: TimeInterval = 365 * 24 * 60 * 60
     private static let lyricsTranslationSongsPerAccount = 384
     private static let lyricsTranslationTotalSongs = 1_536
+    private static let playbackMetadataMaximumBytes = 64 * 1_024
+    private static let playbackMetadataRetention: TimeInterval = 30 * 24 * 60 * 60
+    private static let playbackMetadataEntriesPerAccount = 768
+    private static let playbackMetadataTotalEntries = 2_048
 
     private init() {
         currentDate = { Date() }
@@ -271,6 +275,102 @@ actor AppDatabase {
                     )
                     """,
                     arguments: [Self.lyricsDocumentTotalEntries]
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func loadPlaybackMetadata(
+        scope: String,
+        songID: String,
+        maximumAge: TimeInterval
+    ) async -> Song? {
+        guard !scope.isEmpty, scope.utf8.count <= 512,
+              !songID.isEmpty, songID.utf8.count <= 4_096,
+              let pool = await databasePool() else { return nil }
+        let cutoff = currentDate()
+            .addingTimeInterval(-max(0, maximumAge))
+            .timeIntervalSince1970
+        do {
+            guard let data = try await pool.read({ db -> Data? in
+                guard let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT song_data FROM playback_metadata_cache
+                    WHERE account_scope = ? AND song_id = ? AND updated_at >= ?
+                    """,
+                    arguments: [scope, songID, cutoff]
+                ) else { return nil }
+                let value: Data = row["song_data"]
+                return value
+            }), data.count <= Self.playbackMetadataMaximumBytes,
+              let song = try? Self.decode(Song.self, from: data),
+              song.id == songID else {
+                return nil
+            }
+            return song
+        } catch {
+            return nil
+        }
+    }
+
+    @discardableResult
+    func savePlaybackMetadata(
+        _ song: Song,
+        scope: String
+    ) async -> Bool {
+        guard !scope.isEmpty, scope.utf8.count <= 512,
+              !song.id.isEmpty, song.id.utf8.count <= 4_096,
+              let data = try? Self.encode(song),
+              data.count <= Self.playbackMetadataMaximumBytes,
+              let pool = await databasePool() else { return false }
+        let updatedAt = currentDate().timeIntervalSince1970
+        let expirationCutoff = updatedAt - Self.playbackMetadataRetention
+        do {
+            try await pool.write { db in
+                try db.execute(
+                    sql: "DELETE FROM playback_metadata_cache WHERE updated_at < ?",
+                    arguments: [expirationCutoff]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO playback_metadata_cache (
+                        account_scope, song_id, updated_at, song_data
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(account_scope, song_id) DO UPDATE SET
+                        updated_at = excluded.updated_at,
+                        song_data = excluded.song_data
+                    """,
+                    arguments: [scope, song.id, updatedAt, data]
+                )
+                try db.execute(
+                    sql: """
+                    DELETE FROM playback_metadata_cache
+                    WHERE account_scope = ? AND song_id IN (
+                        SELECT song_id FROM playback_metadata_cache
+                        WHERE account_scope = ?
+                        ORDER BY updated_at DESC, song_id ASC
+                        LIMIT -1 OFFSET ?
+                    )
+                    """,
+                    arguments: [
+                        scope, scope, Self.playbackMetadataEntriesPerAccount
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                    DELETE FROM playback_metadata_cache
+                    WHERE (account_scope, song_id) IN (
+                        SELECT account_scope, song_id
+                        FROM playback_metadata_cache
+                        ORDER BY updated_at DESC, account_scope ASC, song_id ASC
+                        LIMIT -1 OFFSET ?
+                    )
+                    """,
+                    arguments: [Self.playbackMetadataTotalEntries]
                 )
             }
             return true
@@ -2059,6 +2159,19 @@ actor AppDatabase {
                 ) WITHOUT ROWID;
                 CREATE INDEX lyrics_document_cache_recent
                     ON lyrics_document_cache(account_scope, saved_at DESC);
+                """)
+        }
+        migrator.registerMigration("playback-metadata-cache-v12") { db in
+            try db.execute(sql: """
+                CREATE TABLE playback_metadata_cache (
+                    account_scope TEXT NOT NULL,
+                    song_id TEXT NOT NULL,
+                    updated_at DOUBLE NOT NULL,
+                    song_data BLOB NOT NULL,
+                    PRIMARY KEY (account_scope, song_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX playback_metadata_cache_recent
+                    ON playback_metadata_cache(account_scope, updated_at DESC);
                 """)
         }
         return migrator

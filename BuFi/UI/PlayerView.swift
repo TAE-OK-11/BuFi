@@ -454,7 +454,7 @@ struct PlayerView: View {
                             coverArt: page.id.coverArtID,
                             size: edge,
                             cornerRadius: 14,
-                            minimumPixelSize: 1_536,
+                            minimumPixelSize: ArtworkRequestSizing.fullPlayerPixelSize,
                             cacheRevision: page.id.artworkRevision,
                             onPalette: extractsPalette
                                 ? { nextPalette in

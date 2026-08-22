@@ -8,6 +8,7 @@ enum ArtworkRequestSizing {
         128, 192, 256, 384, 512, 768, 1_024, 1_200, 1_536
     ]
     private static let originalSourceThreshold = 768
+    static let fullPlayerPixelSize: CGFloat = 1_536
 
     static func pixelSize(pointSize: CGFloat, displayScale: CGFloat) -> CGFloat {
         let requested = max(96, Int(ceil(pointSize * max(displayScale, 1))))
@@ -239,7 +240,11 @@ actor ArtworkStore {
         return true
     }
 
-    func image(for url: URL, pixelSize: CGFloat) async throws -> ArtworkImage {
+    func image(
+        for url: URL,
+        pixelSize: CGFloat,
+        isPrefetch: Bool = false
+    ) async throws -> ArtworkImage {
         guard let scope = activeScope else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -250,6 +255,12 @@ actor ArtworkStore {
         let requestedPixelSize = min(max(pixelSize, 64), 1_536)
         var urlRequest = URLRequest(url: url)
         ModernNetworkPolicy.prepareImageRequest(&urlRequest)
+        if isPrefetch {
+            // Keep speculative covers below AVFoundation's streaming traffic.
+            // Nuke's memory/data cache identity is unchanged, so the visible
+            // request still becomes an immediate cache hit.
+            urlRequest.networkServiceType = .background
+        }
         let request = ImageRequest(
             urlRequest: urlRequest,
             processors: [
@@ -293,21 +304,30 @@ actor ArtworkStore {
         return result
     }
 
-    func prefetch(urls: [URL], pixelSize: CGFloat) async {
+    func prefetch(
+        urls: [URL],
+        pixelSize: CGFloat,
+        concurrencyLimit: Int = 4
+    ) async {
         guard activeScope != nil else { return }
         var seen = Set<URL>()
         let uniqueURLs = urls.prefix(8).filter { seen.insert($0).inserted }
-        // Keep speculative work below the foreground transport limit. Four
-        // concurrent requests fill HTTP/2/3 streams quickly without letting
-        // prefetch monopolize all six artwork connections.
-        for start in stride(from: 0, to: uniqueURLs.count, by: 4) {
+        // Wi-Fi can fill three HTTP/2/3 streams together. Expensive or
+        // constrained paths pass one here so cover warming never crowds the
+        // active AVFoundation byte-range request.
+        let batchSize = min(max(concurrencyLimit, 1), 4)
+        for start in stride(from: 0, to: uniqueURLs.count, by: batchSize) {
             guard !Task.isCancelled else { return }
-            let end = min(start + 4, uniqueURLs.count)
+            let end = min(start + batchSize, uniqueURLs.count)
             await withTaskGroup(of: Void.self) { group in
                 for url in uniqueURLs[start..<end] {
                     group.addTask { [self] in
                         guard !Task.isCancelled else { return }
-                        _ = try? await image(for: url, pixelSize: pixelSize)
+                        _ = try? await image(
+                            for: url,
+                            pixelSize: pixelSize,
+                            isPrefetch: true
+                        )
                     }
                 }
                 await group.waitForAll()
