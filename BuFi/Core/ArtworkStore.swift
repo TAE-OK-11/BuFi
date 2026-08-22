@@ -54,9 +54,11 @@ struct ArtworkPalette: Codable, Equatable, Sendable {
     let accent: RGBAColor
     let secondary: RGBAColor
     let highlight: RGBAColor
+    let tertiary: RGBAColor?
     let accentPosition: PalettePosition
     let secondaryPosition: PalettePosition
     let highlightPosition: PalettePosition
+    let tertiaryPosition: PalettePosition?
 
     init(
         top: RGBAColor,
@@ -64,18 +66,22 @@ struct ArtworkPalette: Codable, Equatable, Sendable {
         accent: RGBAColor? = nil,
         secondary: RGBAColor? = nil,
         highlight: RGBAColor? = nil,
+        tertiary: RGBAColor? = nil,
         accentPosition: PalettePosition = .bottomLeading,
         secondaryPosition: PalettePosition = .topTrailing,
-        highlightPosition: PalettePosition = .topLeading
+        highlightPosition: PalettePosition = .topLeading,
+        tertiaryPosition: PalettePosition? = nil
     ) {
         self.top = top
         self.bottom = bottom
         self.accent = accent ?? top
         self.secondary = secondary ?? bottom
         self.highlight = highlight ?? secondary ?? accent ?? top
+        self.tertiary = tertiary
         self.accentPosition = accentPosition
         self.secondaryPosition = secondaryPosition
         self.highlightPosition = highlightPosition
+        self.tertiaryPosition = tertiaryPosition
     }
 
     static let fallback = ArtworkPalette(
@@ -121,8 +127,8 @@ actor ArtworkStore {
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
     private static let cacheSchemaRevision = "media-v2"
     private static let artworkFreshnessInterval: TimeInterval = 12 * 60 * 60
-    private static let paletteEngineVersion = 8
-    private static let sampleSide = 64
+    private static let paletteEngineVersion = 9
+    private static let sampleSide = 72
     private static let acceleratedSamplePixelLimit = 512 * 512
     private static let neutralChromaLimit = 0.035
     private static let darkLightnessLimit = 0.12
@@ -650,7 +656,7 @@ actor ArtworkStore {
         )
     }
 
-    // MARK: - Palette Engine V8
+    // MARK: - Palette Engine V9
 
     private struct OKLab {
         var lightness: Double
@@ -667,6 +673,14 @@ actor ArtworkStore {
         let y: Double
         let alpha: Double
         let visibility: Double
+        let clusteringWeight: Double
+        let localDetail: Double
+    }
+
+    private struct RasterPixel {
+        let lab: OKLab
+        let alpha: Double
+        let visibility: Double
     }
 
     private struct ClusterAccumulator {
@@ -676,7 +690,11 @@ actor ArtworkStore {
         var x = 0.0
         var y = 0.0
         var alpha = 0.0
-        var weight = 0.0
+        var detail = 0.0
+        var xSquared = 0.0
+        var ySquared = 0.0
+        var clusteringWeight = 0.0
+        var populationWeight = 0.0
         var sampleCount = 0
     }
 
@@ -685,6 +703,8 @@ actor ArtworkStore {
         let position: PalettePosition
         let population: Double
         let averageAlpha: Double
+        let averageDetail: Double
+        let spatialSpread: Double
         let score: Double
     }
 
@@ -774,42 +794,55 @@ actor ArtworkStore {
             let secondary = artisticCompanion(
                 in: swatches,
                 anchors: [primary],
-                minimumDistance: 0.075
+                minimumDistance: 0.075,
+                prioritizesHueDiversity: false
             ) ?? artisticCompanion(
                 in: swatches,
                 anchors: [primary],
-                minimumDistance: 0.000_001
+                minimumDistance: 0.000_001,
+                prioritizesHueDiversity: false
             )
             return neutralPalette(primary: primary, secondary: secondary)
         }
 
         // Population still defines the cover's overall mood, while the
-        // highest-value colorful swatch drives the first ambient light. Two
-        // further companions are selected for both perceptual and spatial
-        // separation, allowing pastel covers to retain pink, blue, and gold
-        // instead of collapsing them into a single average hue.
+        // highest-value colorful swatch drives the first ambient light. Up to
+        // three further companions are selected for both perceptual and spatial
+        // separation, allowing pastel covers to retain pink, blue, gold, and a
+        // subtle fourth hue instead of collapsing them into one average.
         let accent = swatches.first ?? primary
         let secondary = artisticCompanion(
             in: swatches,
             anchors: [accent],
-            minimumDistance: 0.055
+            minimumDistance: 0.045,
+            prioritizesHueDiversity: true
         ) ?? artisticCompanion(
             in: swatches,
             anchors: [accent],
-            minimumDistance: 0.035
+            minimumDistance: 0.030,
+            prioritizesHueDiversity: true
         )
         let highlightAnchors = [accent] + (secondary.map { [$0] } ?? [])
         let highlight = artisticCompanion(
             in: swatches,
             anchors: highlightAnchors,
-            minimumDistance: 0.042
+            minimumDistance: 0.037,
+            prioritizesHueDiversity: true
+        )
+        let tertiaryAnchors = highlightAnchors + (highlight.map { [$0] } ?? [])
+        let tertiary = artisticCompanion(
+            in: swatches,
+            anchors: tertiaryAnchors,
+            minimumDistance: 0.032,
+            prioritizesHueDiversity: true
         )
 
         return colorfulPalette(
             primary: primary,
             accent: accent,
             secondary: secondary,
-            highlight: highlight
+            highlight: highlight,
+            tertiary: tertiary
         )
     }
 
@@ -935,21 +968,19 @@ actor ArtworkStore {
 
     private static func makeSamples(from bytes: [UInt8]) -> [Sample] {
         let side = sampleSide
-        var samples: [Sample] = []
-        samples.reserveCapacity(side * side)
-        for offset in stride(from: 0, to: bytes.count, by: 4) {
-            if offset.isMultiple(of: side * 4 * 8), Task.isCancelled {
-                return []
-            }
+        let pixelCount = min(bytes.count / 4, side * side)
+        var raster = [RasterPixel?](repeating: nil, count: pixelCount)
+
+        // Decode into perceptual color once. A second bounded pass can then
+        // measure local structure without repeating the relatively expensive
+        // sRGB -> OKLab conversion for every neighbour comparison.
+        for pixel in 0..<pixelCount {
+            if pixel.isMultiple(of: side * 8), Task.isCancelled { return [] }
+            let offset = pixel * 4
             let alphaByte = bytes[offset + 3]
             let alpha = Double(alphaByte) / 255
             guard alpha >= 0.01 else { continue }
 
-            // The bitmap is premultiplied. Recover the source color before the
-            // perceptual conversion and use alpha only as visibility evidence.
-            // Album covers are overwhelmingly opaque. The lookup-table fast
-            // path removes three fractional pow operations from every such
-            // pixel while the translucent path preserves exact unpremultiplying.
             let lab: OKLab
             let visibility: Double
             if alphaByte == 255 {
@@ -967,14 +998,61 @@ actor ArtworkStore {
                 lab = oklab(red: red, green: green, blue: blue)
                 visibility = alpha * sqrt(alpha)
             }
-            let pixel = offset / 4
-            samples.append(Sample(
+            raster[pixel] = RasterPixel(
                 lab: lab,
-                chroma: hypot(lab.a, lab.b),
-                x: Double(pixel % side) / Double(side - 1),
-                y: Double(pixel / side) / Double(side - 1),
                 alpha: alpha,
                 visibility: visibility
+            )
+        }
+
+        var samples: [Sample] = []
+        samples.reserveCapacity(pixelCount)
+        for pixel in 0..<pixelCount {
+            if pixel.isMultiple(of: side * 8), Task.isCancelled { return [] }
+            guard let value = raster[pixel] else { continue }
+            let column = pixel % side
+            let row = pixel / side
+            var contrast = 0.0
+            var neighbourWeight = 0.0
+
+            func accumulateContrast(from neighbourIndex: Int) {
+                guard let neighbour = raster[neighbourIndex] else { return }
+                let weight = min(value.visibility, neighbour.visibility)
+                contrast += sqrt(squaredDistance(value.lab, neighbour.lab)) * weight
+                neighbourWeight += weight
+            }
+
+            if column > 0 { accumulateContrast(from: pixel - 1) }
+            if column + 1 < side, pixel + 1 < pixelCount {
+                accumulateContrast(from: pixel + 1)
+            }
+            if row > 0 { accumulateContrast(from: pixel - side) }
+            if pixel + side < pixelCount {
+                accumulateContrast(from: pixel + side)
+            }
+
+            let meanContrast = neighbourWeight > 0 ? contrast / neighbourWeight : 0
+            // Downsampling already removes single-pixel noise. This small,
+            // capped detail bonus lets a meaningful subject or pastel boundary
+            // survive clustering without allowing cover text to outweigh the
+            // actual area occupied by the artwork color.
+            let localDetail = clamp((meanContrast - 0.006) / 0.105, 0, 1)
+            let x = Double(column) / Double(side - 1)
+            let y = Double(row) / Double(side - 1)
+            let distanceFromCenter = min(hypot(x - 0.5, y - 0.5) / 0.707_107, 1)
+            let spatialConfidence = 1.02 - distanceFromCenter * 0.06
+            let clusteringWeight = value.visibility
+                * spatialConfidence
+                * (0.90 + localDetail * 0.20)
+            samples.append(Sample(
+                lab: value.lab,
+                chroma: value.lab.chroma,
+                x: x,
+                y: y,
+                alpha: value.alpha,
+                visibility: value.visibility,
+                clusteringWeight: clusteringWeight,
+                localDetail: localDetail
             ))
         }
         return samples
@@ -984,7 +1062,7 @@ actor ArtworkStore {
         _ samples: [Sample],
         neutralFamily: Bool
     ) -> [Swatch] {
-        let clusterLimit = min(8, samples.count)
+        let clusterLimit = min(10, samples.count)
         let totalWeight = samples.reduce(0) { $0 + $1.visibility }
         guard clusterLimit > 0, totalWeight > 0 else { return [] }
 
@@ -1009,7 +1087,7 @@ actor ArtworkStore {
                 } else {
                     colorPriority = 0.16
                 }
-                let merit = nearest * sample.visibility * colorPriority
+                let merit = nearest * sample.clusteringWeight * colorPriority
                 if merit > bestMerit + 1e-15 {
                     bestMerit = merit
                     bestIndex = index
@@ -1027,16 +1105,16 @@ actor ArtworkStore {
             )
             for sample in samples {
                 let index = nearestCenter(to: sample.lab, centers: centers)
-                let weight = sample.visibility
+                let weight = sample.clusteringWeight
                 accumulators[index].lightness += sample.lab.lightness * weight
                 accumulators[index].a += sample.lab.a * weight
                 accumulators[index].b += sample.lab.b * weight
-                accumulators[index].weight += weight
+                accumulators[index].clusteringWeight += weight
             }
             var didMove = false
-            for index in centers.indices where accumulators[index].weight > 0 {
+            for index in centers.indices where accumulators[index].clusteringWeight > 0 {
                 let accumulator = accumulators[index]
-                let inverseWeight = 1 / accumulator.weight
+                let inverseWeight = 1 / accumulator.clusteringWeight
                 let next = OKLab(
                     lightness: accumulator.lightness * inverseWeight,
                     a: accumulator.a * inverseWeight,
@@ -1057,30 +1135,49 @@ actor ArtworkStore {
         )
         for sample in samples {
             let index = nearestCenter(to: sample.lab, centers: centers)
-            let weight = sample.visibility
-            accumulators[index].lightness += sample.lab.lightness * weight
-            accumulators[index].a += sample.lab.a * weight
-            accumulators[index].b += sample.lab.b * weight
-            accumulators[index].x += sample.x * weight
-            accumulators[index].y += sample.y * weight
-            accumulators[index].alpha += sample.alpha * weight
-            accumulators[index].weight += weight
+            let clusteringWeight = sample.clusteringWeight
+            let populationWeight = sample.visibility
+            accumulators[index].lightness += sample.lab.lightness * clusteringWeight
+            accumulators[index].a += sample.lab.a * clusteringWeight
+            accumulators[index].b += sample.lab.b * clusteringWeight
+            accumulators[index].x += sample.x * populationWeight
+            accumulators[index].y += sample.y * populationWeight
+            accumulators[index].xSquared += sample.x * sample.x * populationWeight
+            accumulators[index].ySquared += sample.y * sample.y * populationWeight
+            accumulators[index].alpha += sample.alpha * populationWeight
+            accumulators[index].detail += sample.localDetail * populationWeight
+            accumulators[index].clusteringWeight += clusteringWeight
+            accumulators[index].populationWeight += populationWeight
             accumulators[index].sampleCount += 1
         }
 
         var swatches: [Swatch] = []
         for accumulator in accumulators {
-            let population = accumulator.weight / totalWeight
-            guard accumulator.sampleCount >= 2, population >= 0.004 else { continue }
-            let inverseWeight = 1 / accumulator.weight
+            let population = accumulator.populationWeight / totalWeight
+            guard accumulator.sampleCount >= 3,
+                  accumulator.clusteringWeight > 0,
+                  accumulator.populationWeight > 0,
+                  population >= 0.003 else { continue }
+            let inverseClusteringWeight = 1 / accumulator.clusteringWeight
+            let inversePopulationWeight = 1 / accumulator.populationWeight
             let lab = OKLab(
-                lightness: accumulator.lightness * inverseWeight,
-                a: accumulator.a * inverseWeight,
-                b: accumulator.b * inverseWeight
+                lightness: accumulator.lightness * inverseClusteringWeight,
+                a: accumulator.a * inverseClusteringWeight,
+                b: accumulator.b * inverseClusteringWeight
             )
-            let averageAlpha = accumulator.alpha * inverseWeight
-            let x = accumulator.x * inverseWeight
-            let y = accumulator.y * inverseWeight
+            let averageAlpha = accumulator.alpha * inversePopulationWeight
+            let averageDetail = accumulator.detail * inversePopulationWeight
+            let x = accumulator.x * inversePopulationWeight
+            let y = accumulator.y * inversePopulationWeight
+            let xVariance = max(
+                accumulator.xSquared * inversePopulationWeight - x * x,
+                0
+            )
+            let yVariance = max(
+                accumulator.ySquared * inversePopulationWeight - y * y,
+                0
+            )
+            let spatialSpread = sqrt(xVariance + yVariance)
             let lightnessUtility: Double
             let chromaUtility: Double
             if neutralFamily {
@@ -1101,16 +1198,22 @@ actor ArtworkStore {
             let opacityUtility = 0.58 + 0.42 * averageAlpha
             let spatialDistance = min(hypot(x - 0.5, y - 0.5), 0.5)
             let spatialUtility = 0.95 + spatialDistance * 0.10
+            let detailUtility = 0.96 + averageDetail * 0.12
+            let coverageUtility = 0.94 + min(spatialSpread / 0.34, 1) * 0.12
             let score = pow(population, 0.64)
                 * chromaUtility
                 * lightnessUtility
                 * opacityUtility
                 * spatialUtility
+                * detailUtility
+                * coverageUtility
             swatches.append(Swatch(
                 lab: lab,
                 position: aestheticPosition(x: x, y: y),
                 population: population,
                 averageAlpha: averageAlpha,
+                averageDetail: averageDetail,
+                spatialSpread: spatialSpread,
                 score: score
             ))
         }
@@ -1149,7 +1252,8 @@ actor ArtworkStore {
         primary: Swatch,
         accent: Swatch,
         secondary: Swatch?,
-        highlight: Swatch?
+        highlight: Swatch?,
+        tertiary: Swatch?
     ) -> ArtworkPalette {
         let accentDistance = sqrt(squaredDistance(primary.lab, accent.lab))
         let accentBlend = accentDistance < 0.025
@@ -1193,15 +1297,24 @@ actor ArtworkStore {
             ),
             chromaScale: 0.84
         )
+        let tertiaryColor = tertiary.map {
+            adjusted(
+                $0.lab,
+                lightness: clamp(0.10 + 0.80 * $0.lab.lightness, 0.40, 0.78),
+                chromaScale: 0.88
+            )
+        }
         return ArtworkPalette(
             top: rgba(from: top),
             bottom: rgba(from: bottom),
             accent: rgba(from: accentColor),
             secondary: rgba(from: secondaryColor),
             highlight: rgba(from: highlightColor),
+            tertiary: tertiaryColor.map { rgba(from: $0) },
             accentPosition: accent.position,
             secondaryPosition: secondarySwatch.position,
-            highlightPosition: highlightSwatch.position
+            highlightPosition: highlightSwatch.position,
+            tertiaryPosition: tertiary?.position
         )
     }
 
@@ -1280,14 +1393,19 @@ actor ArtworkStore {
     private static func artisticCompanion(
         in swatches: [Swatch],
         anchors: [Swatch],
-        minimumDistance: Double
+        minimumDistance: Double,
+        prioritizesHueDiversity: Bool
     ) -> Swatch? {
         guard !anchors.isEmpty else { return swatches.first }
         var best: Swatch?
         var bestValue = -Double.infinity
         for candidate in swatches where candidate.population >= 0.006 {
             let colorDistance = anchors
-                .map { sqrt(squaredDistance(candidate.lab, $0.lab)) }
+                .map {
+                    prioritizesHueDiversity
+                        ? paletteDiversityDistance(candidate.lab, $0.lab)
+                        : sqrt(squaredDistance(candidate.lab, $0.lab))
+                }
                 .min() ?? 0
             guard colorDistance >= minimumDistance else { continue }
             let spatialDistance = anchors
@@ -1298,15 +1416,48 @@ actor ArtworkStore {
                     )
                 }
                 .min() ?? 0
-            let separation = 0.78 + min(colorDistance / 0.14, 1.30)
+            let distanceScale = prioritizesHueDiversity ? 0.11 : 0.14
+            let separation = 0.78 + min(colorDistance / distanceScale, 1.30)
             let placement = 0.92 + min(spatialDistance, 0.60) * 0.28
-            let value = candidate.score * separation * placement
+            let extent = 0.96 + min(candidate.spatialSpread / 0.32, 1) * 0.08
+            let detail = 0.98 + candidate.averageDetail * 0.06
+            let value = candidate.score * separation * placement * extent * detail
             if value > bestValue + 1e-15 {
                 best = candidate
                 bestValue = value
             }
         }
         return best
+    }
+
+    /// Multi-color slots should represent genuinely different hues, not four
+    /// lightness variants of the same color family. OKLab's a/b plane is
+    /// perceptual, so the hue chord is the primary distance while chroma and
+    /// lightness differences contribute only enough to preserve nuanced
+    /// pastel covers.
+    private static func paletteDiversityDistance(
+        _ lhs: OKLab,
+        _ rhs: OKLab
+    ) -> Double {
+        let lhsChroma = lhs.chroma
+        let rhsChroma = rhs.chroma
+        guard lhsChroma > 1e-9, rhsChroma > 1e-9 else {
+            return sqrt(squaredDistance(lhs, rhs))
+        }
+        let cosine = clamp(
+            (lhs.a * rhs.a + lhs.b * rhs.b) / (lhsChroma * rhsChroma),
+            -1,
+            1
+        )
+        let hueChord = 2 * min(lhsChroma, rhsChroma)
+            * sqrt(max((1 - cosine) / 2, 0))
+        let chromaDifference = abs(lhsChroma - rhsChroma) * 0.25
+        let lightnessDifference = abs(lhs.lightness - rhs.lightness) * 0.20
+        return sqrt(
+            hueChord * hueChord
+                + chromaDifference * chromaDifference
+                + lightnessDifference * lightnessDifference
+        )
     }
 
     private static func blended(
@@ -1329,10 +1480,10 @@ actor ArtworkStore {
         var b = 0.0
         var weight = 0.0
         for sample in samples {
-            lightness += sample.lab.lightness * sample.visibility
-            a += sample.lab.a * sample.visibility
-            b += sample.lab.b * sample.visibility
-            weight += sample.visibility
+            lightness += sample.lab.lightness * sample.clusteringWeight
+            a += sample.lab.a * sample.clusteringWeight
+            b += sample.lab.b * sample.clusteringWeight
+            weight += sample.clusteringWeight
         }
         guard weight > 0 else { return OKLab(lightness: 0, a: 0, b: 0) }
         return OKLab(lightness: lightness / weight, a: a / weight, b: b / weight)

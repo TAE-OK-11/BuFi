@@ -1782,6 +1782,21 @@ private struct PlayerPaletteBackground: View, Equatable {
                 startRadius: 0,
                 endRadius: 560
             )
+            if let tertiary = palette.tertiary,
+               let tertiaryPosition = palette.tertiaryPosition {
+                RadialGradient(
+                    colors: [
+                        fieldColor(tertiary, style: style).opacity(opacity * 0.76),
+                        .clear
+                    ],
+                    center: UnitPoint(
+                        x: CGFloat(tertiaryPosition.x),
+                        y: CGFloat(tertiaryPosition.y)
+                    ),
+                    startRadius: 0,
+                    endRadius: 520
+                )
+            }
         }
     }
 
@@ -1820,11 +1835,15 @@ private struct PlayerPaletteBackground: View, Equatable {
         var green = base.green * style.baseWeight
         var blue = base.blue * style.baseWeight
         var weight = style.baseWeight
-        let positionedColors: [(RGBAColor, PalettePosition, Double)] = [
+        var positionedColors: [(RGBAColor, PalettePosition, Double)] = [
             (palette.accent, palette.accentPosition, 1.0),
             (palette.secondary, palette.secondaryPosition, 0.96),
             (palette.highlight, palette.highlightPosition, 0.82)
         ]
+        if let tertiary = palette.tertiary,
+           let tertiaryPosition = palette.tertiaryPosition {
+            positionedColors.append((tertiary, tertiaryPosition, 0.76))
+        }
 
         for (color, position, roleStrength) in positionedColors {
             let distance = hypot(x - position.x, y - position.y)
@@ -2029,11 +2048,21 @@ private func palettePrefersDarkForeground(_ palette: ArtworkPalette) -> Bool {
             + 0.7152 * linear(color.green)
             + 0.0722 * linear(color.blue)
     }
-    let fieldLuminance = 0.24 * luminance(palette.top)
-        + 0.22 * luminance(palette.accent)
-        + 0.20 * luminance(palette.secondary)
-        + 0.18 * luminance(palette.highlight)
-        + 0.16 * luminance(palette.bottom)
+    let fieldLuminance: Double
+    if let tertiary = palette.tertiary {
+        fieldLuminance = 0.20 * luminance(palette.top)
+            + 0.18 * luminance(palette.accent)
+            + 0.17 * luminance(palette.secondary)
+            + 0.16 * luminance(palette.highlight)
+            + 0.14 * luminance(tertiary)
+            + 0.15 * luminance(palette.bottom)
+    } else {
+        fieldLuminance = 0.24 * luminance(palette.top)
+            + 0.22 * luminance(palette.accent)
+            + 0.20 * luminance(palette.secondary)
+            + 0.18 * luminance(palette.highlight)
+            + 0.16 * luminance(palette.bottom)
+    }
     return fieldLuminance >= 0.46
 }
 
