@@ -38,6 +38,16 @@ jobs:
             executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
             echo "Executable: $app/Contents/MacOS/$executable"
             file "$app/Contents/MacOS/$executable"
+            echo "Scripting dictionary:"
+            sdef "$app" 2>&1 | head -200 || true
+            echo "Potential command-line interfaces:"
+            strings "$app/Contents/MacOS/$executable" \
+              | grep -i -E 'command.?line|--export|--output|usage:|new.?document' \
+              | head -160 || true
+            echo "Bundled document templates and schemas:"
+            find "$app/Contents/Resources" -maxdepth 4 -type f \
+              \( -name '*.icon' -o -name '*.json' -o -name '*.plist' -o -name '*.momd' \) \
+              -print | head -160
           done < <(find "$XCODE_APP" -type d \
             \( -name 'Icon Composer.app' -o -name 'IconComposer.app' \) \
             -print)
