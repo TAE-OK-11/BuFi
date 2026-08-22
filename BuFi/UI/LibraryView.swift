@@ -432,7 +432,6 @@ struct LibraryArtistPresentation: Sendable {
         }
         let artists = values.values.sorted(by: artistSort)
         let favorites = artists.filter { favoriteIDs.contains($0.id) }
-            .sorted(by: artistSort)
         let sections = makeArtistSections(
             artists.filter { !favoriteIDs.contains($0.id) }
         )
@@ -448,7 +447,9 @@ struct LibraryArtistPresentation: Sendable {
             ArtistSectioning.title(for: $0.name)
         }
         return grouped.keys.sorted(by: ArtistSectioning.sectionSort).map {
-            ArtistSection(title: $0, artists: grouped[$0, default: []].sorted(by: artistSort))
+            // Dictionary(grouping:) preserves the source order within each
+            // value array, and `artists` was already globally sorted above.
+            ArtistSection(title: $0, artists: grouped[$0, default: []])
         }
     }
 

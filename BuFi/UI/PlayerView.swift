@@ -63,6 +63,7 @@ private struct PlayerArtworkPagerLayoutIdentity: Hashable {
 private struct PlayerArtworkPage: Identifiable, Equatable {
     let id: PlayerArtworkPageID
     let song: Song
+    let queueIndex: Int
 }
 
 private struct PlayerBackgroundAnimationIdentity: Equatable {
@@ -443,8 +444,8 @@ struct PlayerView: View {
             viewportWidth: Int(viewportWidth.rounded()),
             artworkEdge: Int(edge.rounded())
         )
-        let currentPageIndex = pages.firstIndex { $0.id == artworkPage }
-            ?? pages.firstIndex { $0.id.queueEntryID == item.queueEntryID }
+        let currentPageIndex = pages.first { $0.id == artworkPage }?.queueIndex
+            ?? pages.first { $0.id.queueEntryID == item.queueEntryID }?.queueIndex
             ?? 0
         let animatesTransition = allowsMotion
         let pagerPosition = Binding<PlayerArtworkPageID?>(
@@ -472,8 +473,7 @@ struct PlayerView: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 18) {
                     ForEach(pages) { page in
-                        let pageIndex = pages.firstIndex { $0.id == page.id } ?? 0
-                        let extractsPalette = abs(pageIndex - currentPageIndex) <= 1
+                        let extractsPalette = abs(page.queueIndex - currentPageIndex) <= 1
                         ArtworkView(
                             coverArt: page.id.coverArtID,
                             size: edge,
@@ -545,12 +545,17 @@ struct PlayerView: View {
     ) {
         let pages: [PlayerArtworkPage]
         if snapshot.entries.isEmpty, let item {
-            pages = [PlayerArtworkPage(id: pageID(for: item), song: item.song)]
+            pages = [PlayerArtworkPage(
+                id: pageID(for: item),
+                song: item.song,
+                queueIndex: 0
+            )]
         } else {
-            pages = snapshot.entries.map { entry in
+            pages = snapshot.entries.enumerated().map { index, entry in
                 PlayerArtworkPage(
                     id: pageID(for: entry, accountScope: snapshot.accountScope),
-                    song: entry.song
+                    song: entry.song,
+                    queueIndex: index
                 )
             }
         }
@@ -562,7 +567,11 @@ struct PlayerView: View {
 
     private func artworkPages(fallback item: PlaybackMediaItem) -> [PlayerArtworkPage] {
         if cachedArtworkPages.isEmpty {
-            return [PlayerArtworkPage(id: pageID(for: item), song: item.song)]
+            return [PlayerArtworkPage(
+                id: pageID(for: item),
+                song: item.song,
+                queueIndex: 0
+            )]
         }
         return cachedArtworkPages
     }
@@ -603,7 +612,12 @@ struct PlayerView: View {
     }
 
     private func indexForArtworkPage(_ page: PlayerArtworkPageID) -> Int? {
-        playback.entries.firstIndex { $0.id == page.queueEntryID }
+        if let cachedPage = cachedArtworkPages.first(where: { $0.id == page }),
+           playback.entries.indices.contains(cachedPage.queueIndex),
+           playback.entries[cachedPage.queueIndex].id == page.queueEntryID {
+            return cachedPage.queueIndex
+        }
+        return playback.entries.firstIndex { $0.id == page.queueEntryID }
     }
 
     private func syncArtworkPage(to snapshot: PlaybackSnapshot, animated: Bool) {

@@ -479,25 +479,46 @@ struct HomePresentation: Sendable {
             favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),
             mostPlayedSongsMix: PersonalizedMixBuilder.mostPlayedSongs(snapshot.mostPlayedSongs),
             recommendedAlbums: makeRecommendedAlbums(snapshot: snapshot),
-            primaryArtists: snapshot.starredArtists.isEmpty
-                ? Array(snapshot.artists.prefix(12))
-                : snapshot.starredArtists,
+            primaryArtists: Array(
+                (snapshot.starredArtists.isEmpty
+                    ? snapshot.artists
+                    : snapshot.starredArtists)
+                    .prefix(12)
+            ),
             featuredArtists: makeFeaturedArtists(snapshot: snapshot)
         )
     }
 
     private static func makeFeaturedArtists(snapshot: HomeSnapshot) -> [Artist] {
-        let songSources = snapshot.starredSongs + snapshot.mostPlayedSongs
-            + snapshot.recommendedSongs + snapshot.randomSongs
-        let artistSources = snapshot.recommendedArtists + snapshot.starredArtists
-            + snapshot.artists
+        let maximumCount = 12
+        let artistSources = [
+            snapshot.recommendedArtists,
+            snapshot.starredArtists,
+            snapshot.artists
+        ]
+        let songSources = [
+            snapshot.starredSongs,
+            snapshot.mostPlayedSongs,
+            snapshot.recommendedSongs,
+            snapshot.randomSongs
+        ]
+        let albumSources = [
+            snapshot.starredAlbums,
+            snapshot.randomAlbums,
+            snapshot.recentAlbums
+        ]
 
-        var taylor = artistSources.first {
-            normalizedArtistName($0.name) == "taylor swift"
-        }
+        var taylor = firstValue(
+            named: "taylor swift",
+            in: artistSources,
+            name: \.name
+        )
         if taylor == nil,
-           let album = (snapshot.starredAlbums + snapshot.randomAlbums + snapshot.recentAlbums)
-            .first(where: { normalizedArtistName($0.artist) == "taylor swift" }),
+           let album = firstValue(
+               named: "taylor swift",
+               in: albumSources,
+               name: \.artist
+           ),
            let artistID = album.artistId,
            !artistID.isEmpty {
             taylor = Artist(
@@ -509,9 +530,11 @@ struct HomePresentation: Sendable {
             )
         }
         if taylor == nil,
-           let song = songSources.first(where: {
-               normalizedArtistName($0.artist) == "taylor swift"
-           }),
+           let song = firstValue(
+               named: "taylor swift",
+               in: songSources,
+               name: \.artist
+           ),
            let artistID = song.artistId,
            !artistID.isEmpty {
             taylor = Artist(
@@ -526,16 +549,40 @@ struct HomePresentation: Sendable {
         var values: [Artist] = []
         var seen = Set<String>()
         func append(_ artist: Artist?) {
-            guard let artist else { return }
+            guard values.count < maximumCount, let artist else { return }
             let key = normalizedArtistName(artist.name)
             guard !key.isEmpty, seen.insert(key).inserted else { return }
             values.append(artist)
         }
         append(taylor)
-        snapshot.starredArtists.forEach { append($0) }
-        snapshot.recommendedArtists.forEach { append($0) }
-        snapshot.artists.forEach { append($0) }
-        return Array(values.prefix(12))
+        for source in [
+            snapshot.starredArtists,
+            snapshot.recommendedArtists,
+            snapshot.artists
+        ] {
+            for artist in source {
+                append(artist)
+                if values.count == maximumCount { break }
+            }
+            if values.count == maximumCount { break }
+        }
+        return values
+    }
+
+    private static func firstValue<Value>(
+        named normalizedName: String,
+        in sources: [[Value]],
+        name: KeyPath<Value, String>
+    ) -> Value? {
+        for source in sources {
+            for value in source {
+                if Task.isCancelled { return nil }
+                if normalizedArtistName(value[keyPath: name]) == normalizedName {
+                    return value
+                }
+            }
+        }
+        return nil
     }
 
     private static func normalizedArtistName(_ value: String) -> String {
