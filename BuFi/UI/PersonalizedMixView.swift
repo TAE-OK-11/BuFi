@@ -25,10 +25,7 @@ struct PersonalizedMixArtwork: View {
                     endPoint: .bottom
                 )
             } else {
-                SmartMixCoverBackground(
-                    theme: coverTheme,
-                    size: size
-                )
+                SmartMixCoverBackground(theme: coverTheme)
             }
 
             coverTypography
@@ -45,24 +42,10 @@ struct PersonalizedMixArtwork: View {
 
     private var coverTypography: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: max(4, size * 0.025)) {
-                Image(systemName: "waveform")
-                    .font(.system(size: max(8, size * 0.045), weight: .bold))
-                Text("BUFI SMART")
-                    .font(.system(size: max(8, size * 0.043), weight: .black))
-                    .tracking(size * 0.004)
-                Spacer(minLength: 4)
-                Text(String(format: "%02d", min(mix.songs.count, 99)))
-                    .font(
-                        .system(
-                            size: max(8, size * 0.043),
-                            weight: .bold,
-                            design: .rounded
-                        )
-                    )
-                    .monospacedDigit()
-            }
-            .foregroundStyle(.white.opacity(0.88))
+            Text("BUFI SMART")
+                .font(.custom("Unbounded-Black", fixedSize: max(8, size * 0.043)))
+                .tracking(size * 0.004)
+                .foregroundStyle(.white.opacity(0.88))
 
             Spacer(minLength: 0)
 
@@ -130,8 +113,6 @@ struct PersonalizedMixArtwork: View {
                         Color(red: 0.10, green: 0.18, blue: 0.54),
                         Color(red: 0.28, green: 0.23, blue: 0.60)
                     ],
-                    accent: Color(red: 0.48, green: 0.88, blue: 0.94),
-                    symbol: "moon.stars.fill",
                     signature: "AFTER DARK"
                 )
             }
@@ -142,8 +123,6 @@ struct PersonalizedMixArtwork: View {
                         Color(red: 0.92, green: 0.20, blue: 0.32),
                         Color(red: 1.0, green: 0.58, blue: 0.27)
                     ],
-                    accent: Color(red: 1.0, green: 0.88, blue: 0.48),
-                    symbol: "sun.horizon.fill",
                     signature: "GOLDEN HOUR"
                 )
             }
@@ -153,8 +132,6 @@ struct PersonalizedMixArtwork: View {
                     Color(red: 0.42, green: 0.20, blue: 0.95),
                     Color(red: 0.92, green: 0.48, blue: 0.82)
                 ],
-                accent: Color(red: 1.0, green: 0.87, blue: 0.42),
-                symbol: "sun.max.fill",
                 signature: "RIGHT NOW"
             )
         case .repeatListening:
@@ -164,8 +141,6 @@ struct PersonalizedMixArtwork: View {
                     Color(red: 0.02, green: 0.34, blue: 0.88),
                     Color(red: 0.08, green: 0.66, blue: 0.72)
                 ],
-                accent: Color(red: 0.78, green: 1.0, blue: 0.70),
-                symbol: "repeat",
                 signature: "ON ROTATION"
             )
         case .listenAgain:
@@ -175,8 +150,6 @@ struct PersonalizedMixArtwork: View {
                     Color(red: 0.82, green: 0.27, blue: 0.04),
                     Color(red: 0.98, green: 0.62, blue: 0.20)
                 ],
-                accent: Color(red: 1.0, green: 0.91, blue: 0.66),
-                symbol: "clock.arrow.circlepath",
                 signature: "BACK IN TIME"
             )
         case .genre:
@@ -186,15 +159,11 @@ struct PersonalizedMixArtwork: View {
                     Color(red: 0.16, green: 0.47, blue: 0.16),
                     Color(red: 0.50, green: 0.70, blue: 0.06)
                 ],
-                accent: Color(red: 0.88, green: 1.0, blue: 0.34),
-                symbol: "waveform",
                 signature: "DEEP CUTS"
             )
         case .artist:
             return .init(
                 colors: [.black, Color(red: 0.56, green: 0.12, blue: 0.36)],
-                accent: Color(red: 1.0, green: 0.50, blue: 0.72),
-                symbol: "music.mic",
                 signature: "ARTIST RADIO"
             )
         case .mood:
@@ -205,8 +174,6 @@ struct PersonalizedMixArtwork: View {
                         Color(red: 0.98, green: 0.46, blue: 0.02),
                         Color(red: 1.0, green: 0.76, blue: 0.16)
                     ],
-                    accent: Color(red: 1.0, green: 0.96, blue: 0.68),
-                    symbol: "sparkles",
                     signature: "PURE JOY"
                 )
             }
@@ -217,8 +184,6 @@ struct PersonalizedMixArtwork: View {
                         Color(red: 0.94, green: 0.05, blue: 0.28),
                         Color(red: 0.98, green: 0.34, blue: 0.12)
                     ],
-                    accent: Color(red: 1.0, green: 0.86, blue: 0.30),
-                    symbol: "bolt.fill",
                     signature: "HIGH ENERGY"
                 )
             }
@@ -229,8 +194,6 @@ struct PersonalizedMixArtwork: View {
                         Color(red: 0.02, green: 0.40, blue: 0.48),
                         Color(red: 0.25, green: 0.66, blue: 0.66)
                     ],
-                    accent: Color(red: 0.84, green: 1.0, blue: 0.94),
-                    symbol: "water.waves",
                     signature: "SLOW FLOW"
                 )
             }
@@ -240,8 +203,6 @@ struct PersonalizedMixArtwork: View {
                     Color(red: 0.48, green: 0.13, blue: 0.58),
                     Color(red: 0.88, green: 0.35, blue: 0.62)
                 ],
-                accent: Color(red: 0.94, green: 0.76, blue: 1.0),
-                symbol: "heart.circle.fill",
                 signature: "FEEL IT"
             )
         case .favorites:
@@ -251,8 +212,6 @@ struct PersonalizedMixArtwork: View {
                     Color(red: 0.46, green: 0.08, blue: 0.72),
                     Color(red: 0.92, green: 0.18, blue: 0.56)
                 ],
-                accent: Color(red: 0.52, green: 1.0, blue: 0.82),
-                symbol: "heart.fill",
                 signature: "ALL YOURS"
             )
         case .ranking:
@@ -262,8 +221,6 @@ struct PersonalizedMixArtwork: View {
                     Color(red: 0.08, green: 0.24, blue: 0.78),
                     Color(red: 0.30, green: 0.20, blue: 0.92)
                 ],
-                accent: Color(red: 0.48, green: 0.96, blue: 0.88),
-                symbol: "chart.bar.fill",
                 signature: "YOUR CHART"
             )
         }
@@ -272,108 +229,18 @@ struct PersonalizedMixArtwork: View {
 
 private struct SmartMixCoverTheme {
     let colors: [Color]
-    let accent: Color
-    let symbol: String
     let signature: String
 }
 
 private struct SmartMixCoverBackground: View {
     let theme: SmartMixCoverTheme
-    let size: CGFloat
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: theme.colors,
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            Canvas { context, canvas in
-                let unit = min(canvas.width, canvas.height) / 512
-                let center = CGPoint(
-                    x: canvas.width * 0.70,
-                    y: canvas.height * 0.42
-                )
-
-                for index in 0..<4 {
-                    let diameter = CGFloat(150 + (index * 58)) * unit
-                    let rect = CGRect(
-                        x: center.x - diameter / 2,
-                        y: center.y - diameter / 2,
-                        width: diameter,
-                        height: diameter
-                    )
-                    context.stroke(
-                        Path(ellipseIn: rect),
-                        with: .color(
-                            theme.accent.opacity(0.27 - Double(index) * 0.045)
-                        ),
-                        lineWidth: max(1, 3.2 * unit)
-                    )
-                }
-
-                var wave = Path()
-                let baseY = canvas.height * 0.71
-                for step in 0...24 {
-                    let progress = CGFloat(step) / 24
-                    let x = progress * canvas.width
-                    let y = baseY
-                        + sin(progress * .pi * 4.2) * 15 * unit
-                        + cos(progress * .pi * 1.7) * 7 * unit
-                    if step == 0 {
-                        wave.move(to: CGPoint(x: x, y: y))
-                    } else {
-                        wave.addLine(to: CGPoint(x: x, y: y))
-                    }
-                }
-                context.stroke(
-                    wave,
-                    with: .color(.white.opacity(0.22)),
-                    style: StrokeStyle(
-                        lineWidth: max(1, 4 * unit),
-                        lineCap: .round,
-                        lineJoin: .round
-                    )
-                )
-
-                for index in 0..<11 {
-                    let x = CGFloat((index * 83 + 41) % 470) * unit
-                    let y = CGFloat((index * 137 + 54) % 360) * unit
-                    let dot = CGRect(
-                        x: x,
-                        y: y,
-                        width: max(1.5, CGFloat(3 + index % 3) * unit),
-                        height: max(1.5, CGFloat(3 + index % 3) * unit)
-                    )
-                    context.fill(
-                        Path(ellipseIn: dot),
-                        with: .color(.white.opacity(0.20))
-                    )
-                }
-            }
-
-            Circle()
-                .fill(.white.opacity(0.10))
-                .overlay {
-                    Circle()
-                        .stroke(.white.opacity(0.24), lineWidth: max(0.8, size * 0.006))
-                }
-                .frame(width: size * 0.35, height: size * 0.35)
-                .overlay {
-                    Image(systemName: theme.symbol)
-                        .font(
-                            .system(
-                                size: size * 0.15,
-                                weight: .bold,
-                                design: .rounded
-                            )
-                        )
-                        .symbolRenderingMode(.monochrome)
-                        .foregroundStyle(theme.accent)
-                }
-                .offset(x: size * 0.20, y: -size * 0.12)
-        }
+        LinearGradient(
+            colors: theme.colors,
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 }
 
