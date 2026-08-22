@@ -424,29 +424,18 @@ extension SettingsView {
     }
 
     private var serverDescription: String {
-        let serverVersion = session.serverVersion
+        guard let family = session.subsonicAPIFamily else {
+            return String(localized: "API 규격 확인 불가")
+        }
+        let familyName = family == .openSubsonic
+            ? "OpenSubsonic"
+            : "Subsonic"
         let subsonicAPIVersion = session.subsonicAPIVersion
 
-        if !serverVersion.isEmpty, !subsonicAPIVersion.isEmpty {
-            return String(
-                format: String(localized: "서버 %@ · Subsonic API %@"),
-                serverVersion,
-                subsonicAPIVersion
-            )
+        guard !subsonicAPIVersion.isEmpty else {
+            return "\(familyName) API"
         }
-        if !serverVersion.isEmpty {
-            return String(
-                format: String(localized: "서버 %@"),
-                serverVersion
-            )
-        }
-        if !subsonicAPIVersion.isEmpty {
-            return String(
-                format: String(localized: "Subsonic API %@"),
-                subsonicAPIVersion
-            )
-        }
-        return "OpenSubsonic"
+        return "\(familyName) API \(subsonicAPIVersion)"
     }
 
     private var offlineStorageText: String {

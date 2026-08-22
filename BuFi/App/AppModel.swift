@@ -19,7 +19,7 @@ enum FavoriteOverrideApplicationPolicy {
 final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var phase: AppModel.SessionState = .signedOut
     @Published fileprivate(set) var connectedServerAddress = ""
-    @Published fileprivate(set) var serverVersion = ""
+    @Published fileprivate(set) var subsonicAPIFamily: SubsonicAPIFamily?
     @Published fileprivate(set) var subsonicAPIVersion = ""
     @Published fileprivate(set) var hasLastFMAPIKey = false
     @Published fileprivate(set) var hasListenBrainzToken = false
@@ -31,9 +31,9 @@ final class AppSessionState: ObservableObject {
         phase = value
     }
 
-    fileprivate func setServerVersion(_ value: String) {
-        guard serverVersion != value else { return }
-        serverVersion = value
+    fileprivate func setSubsonicAPIFamily(_ value: SubsonicAPIFamily?) {
+        guard subsonicAPIFamily != value else { return }
+        subsonicAPIFamily = value
     }
 
     fileprivate func setConnectedServerAddress(_ value: String) {
@@ -291,9 +291,9 @@ final class AppModel: ObservableObject {
         set { searchContent.setSearching(newValue) }
     }
 
-    private(set) var serverVersion: String {
-        get { session.serverVersion }
-        set { session.setServerVersion(newValue) }
+    private(set) var subsonicAPIFamily: SubsonicAPIFamily? {
+        get { session.subsonicAPIFamily }
+        set { session.setSubsonicAPIFamily(newValue) }
     }
 
     private(set) var connectedServerAddress: String {
@@ -505,7 +505,7 @@ final class AppModel: ObservableObject {
         lastHomeSnapshotSave = nil
         lastExternalRecommendationIdentity = nil
         connectedServerAddress = ""
-        serverVersion = ""
+        subsonicAPIFamily = nil
         subsonicAPIVersion = ""
 
         if let artworkSession = leases.artwork {
@@ -2508,7 +2508,7 @@ final class AppModel: ObservableObject {
         publishHome(.empty)
         searchResults = .empty
         connectedServerAddress = ""
-        serverVersion = ""
+        subsonicAPIFamily = nil
         subsonicAPIVersion = ""
         refreshInFlight = false
         pendingRefresh = false
@@ -2631,7 +2631,9 @@ final class AppModel: ObservableObject {
             self.connectedServerAddress = Self.serverDisplayAddress(
                 from: client.credentials.serverURL
             )
-            self.serverVersion = Self.sanitizedVersion(status?.serverVersion)
+            self.subsonicAPIFamily = status.map {
+                SubsonicCompatibilityPolicy.family(from: $0)
+            }
             self.subsonicAPIVersion = Self.sanitizedVersion(status?.version)
             self.sessionState = .ready
             activatedLeases = StoreActivationLeases(
@@ -2685,7 +2687,7 @@ final class AppModel: ObservableObject {
             publishHome(.empty)
             searchResults = .empty
             connectedServerAddress = ""
-            serverVersion = ""
+            subsonicAPIFamily = nil
             subsonicAPIVersion = ""
             refreshInFlight = false
             lastHomeSnapshotSave = nil
