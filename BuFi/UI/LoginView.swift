@@ -32,9 +32,20 @@ struct LoginView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Image(systemName: "music.note.house.fill")
-                        .font(.system(size: 36, weight: .bold))
-                        .foregroundStyle(BuFiTheme.accentSoft)
+                    Text("Bufi")
+                        .font(.custom("Unbounded_800wght", fixedSize: 34))
+                        .tracking(-2.2)
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.white, BuFiTheme.accentSoft],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 12)
+                        .buFiGlass(cornerRadius: 20)
+                        .accessibilityLabel("Bufi")
                         .padding(.top, 24)
 
                     Spacer(minLength: 72)

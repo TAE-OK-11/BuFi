@@ -43,7 +43,7 @@ struct PersonalizedMixArtwork: View {
     private var coverTypography: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("BUFI SMART")
-                .font(.custom("Unbounded-Black", fixedSize: max(8, size * 0.043)))
+                .font(.custom("Unbounded_900wght", fixedSize: max(8, size * 0.043)))
                 .tracking(size * 0.004)
                 .foregroundStyle(.white.opacity(0.88))
 
@@ -94,7 +94,7 @@ struct PersonalizedMixArtwork: View {
             $0.isASCII
         }
         if supportsUnbounded {
-            return .custom("Unbounded-Black", fixedSize: fontSize)
+            return .custom("Unbounded_900wght", fixedSize: fontSize)
         }
         return .system(
             size: fontSize,
