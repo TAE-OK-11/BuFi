@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-08-20
+Audit date: 2026-08-22
 
 ## Decisions
 
@@ -8,7 +8,7 @@ Audit date: 2026-08-20
 | --- | --- | --- |
 | [SwiftSonic 0.9.0](https://github.com/CassetteLab/swiftsonic) | MIT | Keep and pin. It is a dependency-free, actor-based OpenSubsonic client, and BuFi uses it for authenticated media URLs. |
 | [GRDB.swift 7.11.1](https://github.com/groue/GRDB.swift) | MIT | Keep and pin. It supplies the transactional SQLite persistence layer and requires Swift 6.1 or later. |
-| [Nuke 13.1.0](https://github.com/kean/Nuke/releases/tag/13.1.0) | MIT | Keep and pin the `Nuke` core product. Remove the unused `NukeUI` product to reduce the build and link graph. |
+| [Nuke 13.2.0](https://github.com/kean/Nuke/releases/tag/13.2.0) | MIT | Keep and pin the `Nuke` core product. This release fixes non-finite resize crashes, stale progressive-cache writes, and unfinished processing work; the unused `NukeUI` product remains outside the build graph. |
 | [Zstandard 1.5.7](https://github.com/facebook/zstd/releases/tag/v1.5.7) | BSD 3-Clause | Keep and pin. It provides the `libzstd` SwiftPM product used by BuFi's bounded HTTP content decoder. |
 | [Amperfy](https://github.com/BLeeEZ/amperfy) | GPLv3 | Continue using selected compatibility and audio-session patterns with attribution. Do not add the complete app as a package. |
 | [Cassette](https://github.com/CassetteLab/cassette) | MPL-2.0 for current source | Continue as an architectural reference only. It is an application, not a reusable package required by BuFi. |
@@ -37,7 +37,7 @@ toolchain jobs.
 ## Distribution notices
 
 `BuFi/Resources/ThirdPartyLicenses.txt` bundles the verbatim license files from
-the pinned SwiftSonic 0.9.0, GRDB.swift 7.11.1, Nuke 13.1.0, and Zstandard
+the pinned SwiftSonic 0.9.0, GRDB.swift 7.11.1, Nuke 13.2.0, and Zstandard
 1.5.7 tags, plus the SIL Open Font License for the bundled Unbounded font. The
 open-source settings screen opens this resource inside the app, satisfying the
 linked packages' requirement to reproduce their copyright, permission,
@@ -94,6 +94,9 @@ Swift 6 in
 
 - The required build uses GitHub's `xcode-27` runner and verifies the Swift 6.4
   compiler before compiling or packaging.
+- Workflow actions use their current supported major lines: checkout v7,
+  cache v6, and upload-artifact v7. Cache v6 also handles read-only cache
+  access correctly on jobs that cannot save a new cache entry.
 - Failure logs are uploaded so new SDK and compiler diagnostics remain available
   after the job ends.
 - CI keeps a toolchain-specific Swift Package clone cache, disables the unused

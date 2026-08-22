@@ -48,10 +48,10 @@ background decoding, and bounded memory and disk caching. BuFi does not link
 the optional NukeUI product.
 
 - Project: <https://github.com/kean/Nuke>
-- Version: 13.1.0
+- Version: 13.2.0
 - License: MIT
 - Copyright: Alexander Grebenyuk and contributors
-- License text: <https://github.com/kean/Nuke/blob/13.1.0/LICENSE>
+- License text: <https://github.com/kean/Nuke/blob/13.2.0/LICENSE>
 - Bundled notice: `BuFi/Resources/ThirdPartyLicenses.txt`
 
 ## Zstandard

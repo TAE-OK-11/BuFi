@@ -37,7 +37,7 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
 
       - name: Cache Swift packages
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/BuFiSourcePackages
           key: ${{ runner.os }}-xcode27-swift6.4-spm-${{ hashFiles('project.yml', 'Package.resolved') }}
