@@ -220,6 +220,11 @@ private enum LyricsFoundationRuntimePolicy {
         }
         return SystemLanguageModel.default.isAvailable
     }
+
+    static var maximumConcurrentRefinements: Int {
+        guard allowsRefinement else { return 0 }
+        return ProcessInfo.processInfo.thermalState == .nominal ? 2 : 1
+    }
 }
 
 private enum LyricsTranslationCachePolicy {
@@ -391,6 +396,12 @@ private enum LyricsTranslationChunker {
 @available(iOS 26.0, *)
 private enum LyricsFoundationRefiner {
     private static let maximumRefinementChunks = 6
+    private enum ChunkOutcome: Sendable {
+        case refined([Int: String])
+        case failed
+        case cancelled
+    }
+
     private struct PromptLyricLine: Encodable {
         let lineID: Int
         let sourceText: String
@@ -423,53 +434,125 @@ private enum LyricsFoundationRefiner {
             return draftTranslations
         }
 
-        var refinedTranslations = draftTranslations
-        var consecutiveFailures = 0
-        for chunk in LyricsTranslationChunker.makeChunks(from: lines)
-            .prefix(maximumRefinementChunks) {
-            guard !Task.isCancelled else { return draftTranslations }
-            let eligibleLines = chunk.lines.filter {
-                !(draftTranslations[$0.id] ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .isEmpty
-            }
-            guard eligibleLines.count == chunk.lines.count else { continue }
-
-            let prompt = makePrompt(
-                lines: eligibleLines,
-                drafts: draftTranslations,
-                sourceLanguageCode: sourceLanguageCode,
-                targetLanguageCode: targetLanguageCode
-            )
-            do {
-                let session = LanguageModelSession(instructions: instructions)
-                let response = try await session.respond(
-                    to: prompt,
-                    generating: FoundationRefinedLyrics.self
-                )
-                guard !Task.isCancelled else { return draftTranslations }
-                guard let validated = validate(
-                    response.content.lines,
-                    sourceLines: eligibleLines,
-                    drafts: draftTranslations
-                ) else {
-                    consecutiveFailures += 1
-                    if consecutiveFailures >= 2 { break }
-                    continue
+        let chunks = LyricsTranslationChunker.makeChunks(from: lines)
+            .prefix(maximumRefinementChunks)
+            .filter { chunk in
+                chunk.lines.allSatisfy {
+                    !(draftTranslations[$0.id] ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
                 }
-                consecutiveFailures = 0
-                refinedTranslations.merge(validated) { _, refined in refined }
-            } catch {
-                if Task.isCancelled { return draftTranslations }
-                // Translation is already complete. A model availability,
-                // guardrail, context, or generation failure only skips the
-                // optional style pass for this stanza.
-                consecutiveFailures += 1
-                if consecutiveFailures >= 2 { break }
-                continue
             }
+        let initialConcurrency = min(
+            LyricsFoundationRuntimePolicy.maximumConcurrentRefinements,
+            chunks.count
+        )
+        guard initialConcurrency > 0 else { return draftTranslations }
+
+        return await withTaskGroup(
+            of: ChunkOutcome.self,
+            returning: [Int: String].self
+        ) { group in
+            var refinedTranslations = draftTranslations
+            var nextChunkIndex = 0
+            var activeTasks = 0
+            var consecutiveFailures = 0
+
+            while activeTasks < initialConcurrency,
+                  nextChunkIndex < chunks.count {
+                let chunk = chunks[nextChunkIndex]
+                nextChunkIndex += 1
+                activeTasks += 1
+                group.addTask {
+                    await refineChunk(
+                        chunk,
+                        drafts: draftTranslations,
+                        sourceLanguageCode: sourceLanguageCode,
+                        targetLanguageCode: targetLanguageCode
+                    )
+                }
+            }
+
+            while let outcome = await group.next() {
+                activeTasks -= 1
+                if Task.isCancelled {
+                    group.cancelAll()
+                    return draftTranslations
+                }
+                switch outcome {
+                case let .refined(values):
+                    consecutiveFailures = 0
+                    refinedTranslations.merge(values) { _, refined in refined }
+                case .failed:
+                    consecutiveFailures += 1
+                case .cancelled:
+                    group.cancelAll()
+                    return draftTranslations
+                }
+                if consecutiveFailures >= 2 {
+                    group.cancelAll()
+                    break
+                }
+
+                let desiredConcurrency =
+                    LyricsFoundationRuntimePolicy.maximumConcurrentRefinements
+                while activeTasks < desiredConcurrency,
+                      nextChunkIndex < chunks.count {
+                    let chunk = chunks[nextChunkIndex]
+                    nextChunkIndex += 1
+                    activeTasks += 1
+                    group.addTask {
+                        await refineChunk(
+                            chunk,
+                            drafts: draftTranslations,
+                            sourceLanguageCode: sourceLanguageCode,
+                            targetLanguageCode: targetLanguageCode
+                        )
+                    }
+                }
+                if desiredConcurrency == 0 {
+                    group.cancelAll()
+                    break
+                }
+            }
+            return refinedTranslations
         }
-        return refinedTranslations
+    }
+
+    private static func refineChunk(
+        _ chunk: LyricsTranslationChunk,
+        drafts: [Int: String],
+        sourceLanguageCode: String,
+        targetLanguageCode: String
+    ) async -> ChunkOutcome {
+        guard !Task.isCancelled else { return .cancelled }
+        let prompt = makePrompt(
+            lines: chunk.lines,
+            drafts: drafts,
+            sourceLanguageCode: sourceLanguageCode,
+            targetLanguageCode: targetLanguageCode
+        )
+        do {
+            // A session permits only one response at a time. Each bounded
+            // worker owns an independent session, so parallel stanzas never
+            // share transcript state or race the same session.
+            let session = LanguageModelSession(instructions: instructions)
+            let response = try await session.respond(
+                to: prompt,
+                generating: FoundationRefinedLyrics.self
+            )
+            guard !Task.isCancelled else { return .cancelled }
+            guard let validated = validate(
+                response.content.lines,
+                sourceLines: chunk.lines,
+                drafts: drafts
+            ) else {
+                return .failed
+            }
+            return .refined(validated)
+        } catch {
+            return Task.isCancelled ? .cancelled : .failed
+        }
     }
 
     private static func makePrompt(
@@ -532,7 +615,20 @@ private enum LyricsFoundationRefiner {
 }
 
 private enum LyricsTranslationPlanner {
-    static func makePlan(
+    @concurrent
+    static func makePlanConcurrently(
+        lines: [LyricLine],
+        targetLanguageCode: String,
+        cachedTranslations: [Int: String]
+    ) async -> LyricsTranslationPlan? {
+        makePlan(
+            lines: lines,
+            targetLanguageCode: targetLanguageCode,
+            cachedTranslations: cachedTranslations
+        )
+    }
+
+    private static func makePlan(
         lines: [LyricLine],
         targetLanguageCode: String,
         cachedTranslations: [Int: String]
@@ -666,7 +762,7 @@ private struct SystemLyricsTranslationTaskHost: View {
         )
         guard !Task.isCancelled else { return }
         translations = cached
-        guard let plan = LyricsTranslationPlanner.makePlan(
+        guard let plan = await LyricsTranslationPlanner.makePlanConcurrently(
             lines: lines,
             targetLanguageCode: targetLanguageCode,
             cachedTranslations: cached
@@ -743,7 +839,23 @@ private struct SystemLyricsTranslationTaskHost: View {
             let translatedLines = try await Self.performContextualTranslation(
                 using: session,
                 lines: requestedLines
-            )
+            ) { newTranslations, completedCount in
+                guard !Task.isCancelled,
+                      songID == requestSongID,
+                      accountScope == requestScope,
+                      targetLanguageCode == requestTargetLanguage else {
+                    return
+                }
+                var visibleTranslations = translations
+                visibleTranslations.merge(newTranslations) {
+                    _, translated in translated
+                }
+                translations = visibleTranslations
+                phase = .translating(
+                    completed: completedCount,
+                    total: requestedLines.count
+                )
+            }
             guard !Task.isCancelled,
                   songID == requestSongID,
                   accountScope == requestScope,
@@ -813,18 +925,19 @@ private struct SystemLyricsTranslationTaskHost: View {
         }
     }
 
-    @concurrent
+    @MainActor
     private static func performContextualTranslation(
         using session: TranslationSession,
-        lines: [LyricLine]
+        lines: [LyricLine],
+        onProgress: ([Int: String], Int) -> Void
     ) async throws -> [Int: String] {
         let chunks = LyricsTranslationChunker.makeChunks(from: lines)
         let chunksByID = Dictionary(uniqueKeysWithValues: chunks.map {
             ($0.identifier, $0)
         })
-        let contextualResponses: [TranslationSession.Response]
+        let contextualRequests: [TranslationSession.Request]
         if #available(iOS 26.4, *) {
-            let contextualRequests = chunks.map {
+            contextualRequests = chunks.map {
                 TranslationSession.Request(
                     sourceText: LyricsTranslationChunker.attributedSourceText(
                         for: $0.lines
@@ -832,34 +945,37 @@ private struct SystemLyricsTranslationTaskHost: View {
                     clientIdentifier: $0.identifier
                 )
             }
-            contextualResponses = try await session.translations(
-                from: contextualRequests
-            )
         } else {
-            let contextualRequests = chunks.map {
+            contextualRequests = chunks.map {
                 TranslationSession.Request(
                     sourceText: $0.sourceText,
                     clientIdentifier: $0.identifier
                 )
             }
-            contextualResponses = try await session.translations(
-                from: contextualRequests
-            )
         }
 
         var translatedLines = [Int: String](minimumCapacity: lines.count)
         var unresolvedLineIDs = Set(lines.map(\.id))
-        for response in contextualResponses {
-            guard let identifier = response.clientIdentifier,
-                  let chunk = chunksByID[identifier],
-                  let mapped = mappedContextualResponse(
-                    response,
-                    to: chunk.lines
-                  ) else {
-                continue
+        do {
+            for try await response in session.translate(batch: contextualRequests) {
+                guard !Task.isCancelled else { throw CancellationError() }
+                guard let identifier = response.clientIdentifier,
+                      let chunk = chunksByID[identifier],
+                      let mapped = mappedContextualResponse(
+                        response,
+                        to: chunk.lines
+                      ) else {
+                    continue
+                }
+                translatedLines.merge(mapped) { current, _ in current }
+                unresolvedLineIDs.subtract(mapped.keys)
+                onProgress(mapped, translatedLines.count)
             }
-            translatedLines.merge(mapped) { current, _ in current }
-            unresolvedLineIDs.subtract(mapped.keys)
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            // Retry every unresolved line below. A contextual batch can fail
+            // on one malformed stanza without discarding already delivered
+            // translations from the same asynchronous response stream.
         }
 
         // Translation models occasionally merge poetic line breaks. Preserve
@@ -873,18 +989,33 @@ private struct SystemLyricsTranslationTaskHost: View {
                 clientIdentifier: String($0.id)
             )
         }
-        let fallbackResponses = try await session.translations(
-            from: fallbackRequests
-        )
-        for response in fallbackResponses {
-            guard let identifier = response.clientIdentifier,
-                  let lineID = Int(identifier) else { continue }
-            let text = response.targetText.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            if !text.isEmpty {
-                translatedLines[lineID] = text
+        var pendingProgress = [Int: String]()
+        do {
+            for try await response in session.translate(batch: fallbackRequests) {
+                guard !Task.isCancelled else { throw CancellationError() }
+                guard let identifier = response.clientIdentifier,
+                      let lineID = Int(identifier) else { continue }
+                let text = response.targetText.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if !text.isEmpty {
+                    translatedLines[lineID] = text
+                    pendingProgress[lineID] = text
+                    if pendingProgress.count >= 4 {
+                        onProgress(pendingProgress, translatedLines.count)
+                        pendingProgress.removeAll(keepingCapacity: true)
+                    }
+                }
             }
+            if !pendingProgress.isEmpty {
+                onProgress(pendingProgress, translatedLines.count)
+            }
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            if !pendingProgress.isEmpty {
+                onProgress(pendingProgress, translatedLines.count)
+            }
+            if translatedLines.isEmpty { throw error }
         }
         return translatedLines
     }
