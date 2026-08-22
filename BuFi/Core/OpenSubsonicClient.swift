@@ -235,9 +235,14 @@ enum OpenSubsonicRequestPolicy {
                 dependencies: [.favorites]
             )
         case "getSong":
+            // Canonical transport metadata is immutable for the overwhelming
+            // majority of a listening session. Playback prewarms the next
+            // entry, and app-side mutations invalidate `.songDetails`, so a
+            // longer positive lifetime avoids re-fetching long tracks without
+            // allowing favorite changes to remain stale.
             return OpenSubsonicResponseCachePolicy(
-                lifetime: 5 * 60,
-                staleGrace: 15 * 60,
+                lifetime: 30 * 60,
+                staleGrace: 6 * 60 * 60,
                 dependencies: [.songDetails]
             )
         case "getAlbum":
@@ -3287,16 +3292,50 @@ actor OpenSubsonicClient {
         }
     }
 
-    func prefetchLyrics(songIDs: [String]) async {
+    /// Warms the same canonical getSong representation consumed by playback.
+    /// Failures retain provisional queue metadata so speculative work can
+    /// never make a playable queue entry unavailable.
+    func prefetchPlaybackMetadata(songs: [Song]) async -> [Song] {
         var seen = Set<String>()
-        let uniqueSongIDs = songIDs.prefix(2).filter {
-            seen.insert($0).inserted
+        let uniqueSongs = songs.prefix(3).filter {
+            seen.insert($0.id).inserted
+        }
+        return await withTaskGroup(of: (Int, Song).self) { group in
+            for (index, provisional) in uniqueSongs.enumerated() {
+                group.addTask { [self] in
+                    guard !Task.isCancelled,
+                          let canonical = try? await song(id: provisional.id) else {
+                        return (index, provisional)
+                    }
+                    return (
+                        index,
+                        PlaybackMetadataResolver.resolve(
+                            canonical: canonical,
+                            provisional: provisional
+                        )
+                    )
+                }
+            }
+            var values: [(Int, Song)] = []
+            for await value in group { values.append(value) }
+            return values.sorted { $0.0 < $1.0 }.map { $0.1 }
+        }
+    }
+
+    func prefetchLyrics(songs: [Song]) async {
+        var seen = Set<String>()
+        let uniqueSongs = songs.prefix(2).filter {
+            seen.insert($0.id).inserted
         }
         await withTaskGroup(of: Void.self) { group in
-            for songID in uniqueSongIDs {
+            for song in uniqueSongs {
                 group.addTask { [self] in
                     guard !Task.isCancelled else { return }
-                    _ = try? await lyrics(songID: songID)
+                    _ = try? await lyrics(
+                        songID: song.id,
+                        artist: song.artist,
+                        title: song.title
+                    )
                 }
             }
             await group.waitForAll()

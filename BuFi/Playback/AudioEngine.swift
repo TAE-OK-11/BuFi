@@ -1303,6 +1303,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var itemLoadTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
     private var songMetadataTask: Task<Void, Never>?
+    private var playbackContextStartTask: Task<Void, Never>?
+    private var pendingPlaybackContextSong: Song?
     private var serverQueueTask: Task<Void, Never>?
     private var serverQueueSaveTask: Task<Void, Never>?
     private var pendingServerQueueSave: ServerQueueSaveRequest?
@@ -1438,6 +1440,9 @@ final class AudioEngine: NSObject, ObservableObject {
         let previousAccountScope = currentAccountScope
         serverQueueTask?.cancel()
         serverQueueTask = nil
+        playbackContextStartTask?.cancel()
+        playbackContextStartTask = nil
+        pendingPlaybackContextSong = nil
         songMetadataTask?.cancel()
         songMetadataTask = nil
         songMetadataGeneration &+= 1
@@ -1700,6 +1705,15 @@ final class AudioEngine: NSObject, ObservableObject {
         queueMutationGeneration &+= 1
         player.pause()
         isPlaying = false
+        playbackContextStartTask?.cancel()
+        playbackContextStartTask = nil
+        pendingPlaybackContextSong = selectedSong
+        lyricsTask?.cancel()
+        lyricsTask = nil
+        lyricsLoadGeneration &+= 1
+        songMetadataTask?.cancel()
+        songMetadataTask = nil
+        songMetadataGeneration &+= 1
         seekGeneration &+= 1
         removeCurrentItemObservers()
         invalidateStagedSuccessor(removeFromPlayer: true)
@@ -1726,11 +1740,6 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: activeCompatibilityFormat,
             resumeFrom: 0
         )
-        // Music, lyrics, canonical metadata, and current artwork each own an
-        // independent task. They are enqueued in the same MainActor turn so
-        // none waits for AVPlayer to reach the playing state before starting.
-        refreshCanonicalMetadata(for: selectedSong)
-        loadLyrics(for: selectedSong)
         // Starting the selected stream owns the critical network path. Any
         // previous speculative transfers are discarded now; the new queue is
         // warmed only after AVPlayer confirms that playback is established.
@@ -3094,11 +3103,13 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleNetworkPrefetch() {
-        guard !isRemoteLosslessPlayback else {
-            cancelNetworkPrefetch(resetKey: true)
-            return
-        }
-        let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
+        // Metadata, lyrics, and artwork are tiny compared with media bytes.
+        // A remote lossless stream still gets an uncontested opening window,
+        // then warms only one upcoming context instead of disabling every
+        // non-audio cache and paying those requests at the track boundary.
+        let metadataPrefetchCount = isRemoteLosslessPlayback
+            ? 1
+            : UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
@@ -3130,8 +3141,12 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.networkPrefetchToken = nil
                 }
             }
+            let prefetchedSongs = await client.prefetchPlaybackMetadata(
+                songs: plan.upcomingSongs
+            )
+            guard !Task.isCancelled else { return }
             async let lyricsPrefetch: Void = client.prefetchLyrics(
-                songIDs: plan.upcomingSongs.map(\.id)
+                songs: prefetchedSongs
             )
 
             let screenSize = UIScreen.main.bounds.size
@@ -3148,7 +3163,7 @@ final class AudioEngine: NSObject, ObservableObject {
             )
             var coverURLs: [URL] = []
             var seenArtworkRevisions = Set<String>()
-            for song in plan.upcomingSongs {
+            for song in prefetchedSongs {
                 guard !Task.isCancelled else { return }
                 let revision = song.artworkRevision
                 guard let coverID = song.artworkID,
@@ -3170,6 +3185,14 @@ final class AudioEngine: NSObject, ObservableObject {
             )
             await lyricsPrefetch
             guard !Task.isCancelled else { return }
+            // Only the immediately upcoming cover needs its palette ready.
+            // Run this after network caches are warm so CPU clustering never
+            // competes with the active stream's first seconds.
+            if let firstCoverURL = coverURLs.first {
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                _ = await ArtworkStore.shared.palette(for: firstCoverURL)
+            }
         }
     }
 
@@ -3344,6 +3367,33 @@ final class AudioEngine: NSObject, ObservableObject {
             } else {
                 requestLowLatencyStartup()
             }
+        }
+        if let pendingSong = pendingPlaybackContextSong,
+           pendingSong.id == currentSong?.id {
+            pendingPlaybackContextSong = nil
+            schedulePlaybackContextLoad(for: pendingSong)
+        }
+    }
+
+    private func schedulePlaybackContextLoad(for song: Song) {
+        playbackContextStartTask?.cancel()
+        let playbackItemID = currentPlaybackItem?.id
+        playbackContextStartTask = Task { [weak self] in
+            do {
+                // Let AVPlayer own the first network scheduling slice. The UI
+                // already has provisional row metadata and artwork during this
+                // short interval, so no visible content is withheld.
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.currentPlaybackItem?.id == playbackItemID,
+                  self.currentSong?.id == song.id else { return }
+            self.playbackContextStartTask = nil
+            self.refreshCanonicalMetadata(for: song)
+            self.loadLyrics(for: song)
         }
     }
 
