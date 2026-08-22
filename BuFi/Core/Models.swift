@@ -712,13 +712,13 @@ struct ArtistDetail: Sendable {
     var info: ArtistInfo?
 }
 
-struct LyricLine: Identifiable, Hashable, Sendable {
+struct LyricLine: Identifiable, Hashable, Codable, Sendable {
     let id: Int
     let start: TimeInterval
     let text: String
 }
 
-struct LyricsDocument: Equatable, Sendable {
+struct LyricsDocument: Equatable, Codable, Sendable {
     var synced: Bool
     var lines: [LyricLine]
 

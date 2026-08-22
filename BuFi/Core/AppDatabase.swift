@@ -110,6 +110,10 @@ actor AppDatabase {
     private static let externalRecommendationRetention: TimeInterval = 7 * 24 * 60 * 60
     private static let externalRecommendationEntriesPerSource = 48
     private static let externalRecommendationTotalEntries = 128
+    private static let lyricsDocumentMaximumBytes = 512 * 1_024
+    private static let lyricsDocumentRetention: TimeInterval = 30 * 24 * 60 * 60
+    private static let lyricsDocumentEntriesPerAccount = 256
+    private static let lyricsDocumentTotalEntries = 1_024
 
     private init() {
         currentDate = { Date() }
@@ -171,6 +175,104 @@ actor AppDatabase {
         poolTask = nil
         pool = openedPool
         return openedPool
+    }
+
+    func loadLyricsDocument(
+        scope: String,
+        songID: String,
+        maximumAge: TimeInterval
+    ) async -> LyricsDocument? {
+        guard !scope.isEmpty, !songID.isEmpty else { return nil }
+        let cutoff = currentDate()
+            .addingTimeInterval(-max(0, maximumAge))
+            .timeIntervalSince1970
+        guard let pool = await databasePool() else { return nil }
+        do {
+            guard let data = try await pool.read({ db -> Data? in
+                guard let row = try Row.fetchOne(
+                    db,
+                    sql: """
+                    SELECT document_data FROM lyrics_document_cache
+                    WHERE account_scope = ? AND song_id = ? AND saved_at >= ?
+                    """,
+                    arguments: [scope, songID, cutoff]
+                ) else { return nil }
+                let data: Data = row["document_data"]
+                return data
+            }), data.count <= Self.lyricsDocumentMaximumBytes,
+              let document = await Self.decodeLyricsDocumentConcurrently(data),
+              !document.lines.isEmpty else {
+                return nil
+            }
+            return document
+        } catch {
+            return nil
+        }
+    }
+
+    @discardableResult
+    func saveLyricsDocument(
+        _ document: LyricsDocument,
+        scope: String,
+        songID: String
+    ) async -> Bool {
+        guard !scope.isEmpty, !songID.isEmpty, !document.lines.isEmpty,
+              let data = await Self.encodeLyricsDocumentConcurrently(
+                  document,
+                  maximumBytes: Self.lyricsDocumentMaximumBytes
+              ), let pool = await databasePool() else {
+            return false
+        }
+        let savedAt = currentDate().timeIntervalSince1970
+        let expirationCutoff = savedAt - Self.lyricsDocumentRetention
+        do {
+            try await pool.write { db in
+                try db.execute(
+                    sql: "DELETE FROM lyrics_document_cache WHERE saved_at < ?",
+                    arguments: [expirationCutoff]
+                )
+                try db.execute(
+                    sql: """
+                    INSERT INTO lyrics_document_cache (
+                        account_scope, song_id, saved_at, document_data
+                    ) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(account_scope, song_id) DO UPDATE SET
+                        saved_at = excluded.saved_at,
+                        document_data = excluded.document_data
+                    """,
+                    arguments: [scope, songID, savedAt, data]
+                )
+                try db.execute(
+                    sql: """
+                    DELETE FROM lyrics_document_cache
+                    WHERE account_scope = ? AND song_id IN (
+                        SELECT song_id FROM lyrics_document_cache
+                        WHERE account_scope = ?
+                        ORDER BY saved_at DESC, song_id ASC
+                        LIMIT -1 OFFSET ?
+                    )
+                    """,
+                    arguments: [
+                        scope, scope, Self.lyricsDocumentEntriesPerAccount
+                    ]
+                )
+                try db.execute(
+                    sql: """
+                    DELETE FROM lyrics_document_cache
+                    WHERE (account_scope, song_id) IN (
+                        SELECT account_scope, song_id
+                        FROM lyrics_document_cache
+                        ORDER BY saved_at DESC, account_scope ASC, song_id ASC
+                        LIMIT -1 OFFSET ?
+                    )
+                    """,
+                    arguments: [Self.lyricsDocumentTotalEntries]
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
     }
 
     func loadLyricsTranslations(
@@ -1285,6 +1387,27 @@ actor AppDatabase {
     }
 
     @concurrent
+    private static func encodeLyricsDocumentConcurrently(
+        _ document: LyricsDocument,
+        maximumBytes: Int
+    ) async -> Data? {
+        guard !Task.isCancelled,
+              let data = try? encode(document),
+              data.count <= maximumBytes else {
+            return nil
+        }
+        return data
+    }
+
+    @concurrent
+    private static func decodeLyricsDocumentConcurrently(
+        _ data: Data
+    ) async -> LyricsDocument? {
+        guard !Task.isCancelled else { return nil }
+        return try? decode(LyricsDocument.self, from: data)
+    }
+
+    @concurrent
     private static func decodeListeningHistoryConcurrently(
         _ stored: [StoredListeningBehavior]
     ) async -> [String: SongBehavior] {
@@ -1862,6 +1985,19 @@ actor AppDatabase {
                 ) WITHOUT ROWID;
                 CREATE INDEX lyrics_translation_cache_recent
                     ON lyrics_translation_cache(account_scope, updated_at DESC);
+                """)
+        }
+        migrator.registerMigration("lyrics-document-cache-v11") { db in
+            try db.execute(sql: """
+                CREATE TABLE lyrics_document_cache (
+                    account_scope TEXT NOT NULL,
+                    song_id TEXT NOT NULL,
+                    saved_at DOUBLE NOT NULL,
+                    document_data BLOB NOT NULL,
+                    PRIMARY KEY (account_scope, song_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX lyrics_document_cache_recent
+                    ON lyrics_document_cache(account_scope, saved_at DESC);
                 """)
         }
         return migrator

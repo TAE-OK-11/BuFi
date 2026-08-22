@@ -47,6 +47,17 @@ private struct PlayerArtworkQueueCacheIdentity: Equatable {
 private struct PlayerArtworkPagerAlignmentIdentity: Equatable {
     let queueIdentity: PlayerArtworkQueueCacheIdentity
     let pagesRevision: UInt64
+    let layoutRevision: UInt64
+    let presentationID: UUID
+    let viewportWidth: Int
+    let artworkEdge: Int
+}
+
+private struct PlayerArtworkPagerLayoutIdentity: Hashable {
+    let layoutRevision: UInt64
+    let presentationID: UUID
+    let viewportWidth: Int
+    let artworkEdge: Int
 }
 
 private struct PlayerArtworkPage: Identifiable, Equatable {
@@ -117,6 +128,7 @@ struct PlayerView: View {
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
     @State private var cachedArtworkPages: [PlayerArtworkPage] = []
     @State private var artworkPagesRevision: UInt64 = 0
+    @State private var artworkLayoutRevision: UInt64 = 0
     @State private var translationRequestedSongID: String?
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
@@ -213,6 +225,12 @@ struct PlayerView: View {
             }
         }
         .onAppear {
+            // Full-screen covers may preserve the horizontal scroll view's
+            // internal geometry across presentations. Force a fresh layout
+            // pass for this presentation before aligning the active item.
+            artworkLayoutRevision &+= 1
+            artworkPage = nil
+            pagerSelectionGate = PlayerPagerSelectionGate()
             refreshArtworkPages(from: playback.snapshot, fallback: currentPlayback.item)
             syncArtworkPage(to: playback.snapshot, animated: false)
         }
@@ -413,7 +431,17 @@ struct PlayerView: View {
         let pages = cachedArtworkPages.isEmpty ? artworkPages(fallback: item) : cachedArtworkPages
         let alignmentIdentity = PlayerArtworkPagerAlignmentIdentity(
             queueIdentity: artworkQueueCacheIdentity,
-            pagesRevision: artworkPagesRevision
+            pagesRevision: artworkPagesRevision,
+            layoutRevision: artworkLayoutRevision,
+            presentationID: playerPresentation.presentationID,
+            viewportWidth: Int(viewportWidth.rounded()),
+            artworkEdge: Int(edge.rounded())
+        )
+        let layoutIdentity = PlayerArtworkPagerLayoutIdentity(
+            layoutRevision: artworkLayoutRevision,
+            presentationID: playerPresentation.presentationID,
+            viewportWidth: Int(viewportWidth.rounded()),
+            artworkEdge: Int(edge.rounded())
         )
         let currentPageIndex = pages.firstIndex { $0.id == artworkPage }
             ?? pages.firstIndex { $0.id.queueEntryID == item.queueEntryID }
@@ -492,6 +520,7 @@ struct PlayerView: View {
                 alignArtworkPager(using: proxy)
             }
         }
+        .id(layoutIdentity)
     }
 
     private func alignArtworkPager(using proxy: ScrollViewProxy) {

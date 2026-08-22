@@ -265,14 +265,14 @@ enum OpenSubsonicRequestPolicy {
             )
         case "search2", "search3":
             return OpenSubsonicResponseCachePolicy(
-                lifetime: 60,
-                staleGrace: 10 * 60,
+                lifetime: 5 * 60,
+                staleGrace: 30 * 60,
                 dependencies: [.libraryLists]
             )
         case "getArtists":
             return OpenSubsonicResponseCachePolicy(
-                lifetime: 5 * 60,
-                staleGrace: 20 * 60,
+                lifetime: 15 * 60,
+                staleGrace: 30 * 60,
                 dependencies: [.libraryLists]
             )
         case "getAlbumList2", "getAlbumList":
@@ -778,12 +778,13 @@ actor OpenSubsonicClient {
         let task: Task<any Sendable, Error>
     }
 
-    private static let responseCacheLimit = 128
+    private static let responseCacheLimit = 192
     private static let responseCacheByteLimit = 16 * 1_024 * 1_024
     private static let maximumCachedResponseBytes = 2 * 1_024 * 1_024
-    private static let decodedResponseCacheLimit = 32
+    private static let decodedResponseCacheLimit = 64
     private static let decodedResponseCacheByteLimit = 8 * 1_024 * 1_024
     private static let coverURLCacheLimit = 512
+    private static let persistedLyricsMaximumAge: TimeInterval = 7 * 24 * 60 * 60
     private var responseCache = ResponseBodyCache(
         countLimit: OpenSubsonicClient.responseCacheLimit,
         byteLimit: OpenSubsonicClient.responseCacheByteLimit,
@@ -795,7 +796,7 @@ actor OpenSubsonicClient {
     private var inFlightDecodedResponses: [
         DecodedResponseRequestKey: InFlightDecodedResponse
     ] = [:]
-    private var lyricsCache = LyricsDocumentCache(countLimit: 64)
+    private var lyricsCache = LyricsDocumentCache(countLimit: 96)
     private var coverURLCache: [String: URL] = [:]
 
     private struct ServerRecommendationSources: Sendable {
@@ -3056,7 +3057,10 @@ actor OpenSubsonicClient {
         queueEntryID: UUID,
         playbackGenerationID: UUID
     ) async throws -> PlaybackMediaItem {
-        let canonical = try await song(id: provisional.id, forceRefresh: true)
+        // getSong is already short-lived, mutation-aware, and conditionally
+        // revalidated. Reusing its canonical response avoids an otherwise
+        // unconditional API round trip whenever a cached queue item is played.
+        let canonical = try await song(id: provisional.id)
         let resolved = PlaybackMetadataResolver.resolve(
             canonical: canonical,
             provisional: provisional
@@ -3155,6 +3159,15 @@ actor OpenSubsonicClient {
            ) {
             return cached
         }
+        if !forceRefresh,
+           let persisted = await AppDatabase.shared.loadLyricsDocument(
+               scope: accountScope,
+               songID: songID,
+               maximumAge: Self.persistedLyricsMaximumAge
+           ) {
+            lyricsCache.insert(persisted, for: songID)
+            return persisted
+        }
         let document: LyricsDocument
         let structuredRequestSucceeded: Bool
         let lyricsEndpoints = SubsonicCompatibilityPolicy.lyricsEndpoints(
@@ -3179,7 +3192,7 @@ actor OpenSubsonicClient {
             structuredRequestSucceeded = false
         }
         if !document.lines.isEmpty {
-            lyricsCache.insert(document, for: songID)
+            cachePositiveLyrics(document, songID: songID)
             return document
         }
 
@@ -3215,11 +3228,27 @@ actor OpenSubsonicClient {
         }
         let legacyDocument = LyricsDocumentParser.parse(legacyPayload)
         if !legacyDocument.lines.isEmpty {
-            lyricsCache.insert(legacyDocument, for: songID)
+            cachePositiveLyrics(legacyDocument, songID: songID)
             return legacyDocument
         }
         lyricsCache.insert(.empty, for: songID)
         return legacyDocument
+    }
+
+    private func cachePositiveLyrics(
+        _ document: LyricsDocument,
+        songID: String
+    ) {
+        guard !document.lines.isEmpty else { return }
+        lyricsCache.insert(document, for: songID)
+        let scope = accountScope
+        Task(priority: .utility) {
+            _ = await AppDatabase.shared.saveLyricsDocument(
+                document,
+                scope: scope,
+                songID: songID
+            )
+        }
     }
 
     func prefetchLyrics(songIDs: [String]) async {
