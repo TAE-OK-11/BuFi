@@ -131,6 +131,7 @@ struct PlayerView: View {
     @State private var artworkPagesRevision: UInt64 = 0
     @State private var artworkLayoutRevision: UInt64 = 0
     @State private var translationRequestedSongID: String?
+    @State private var hasRevealedPlayerContent = false
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -181,7 +182,20 @@ struct PlayerView: View {
                         .padding(.horizontal, 22)
                         .padding(.bottom, max(proxy.safeAreaInsets.bottom, 18) + 10)
                     }
-                    .opacity(playerPresentation.showFullLyrics ? 0 : 1)
+                    .opacity(
+                        playerPresentation.showFullLyrics
+                            ? 0
+                            : (hasRevealedPlayerContent ? 1 : 0)
+                    )
+                    .scaleEffect(
+                        hasRevealedPlayerContent ? 1 : 0.994,
+                        anchor: .center
+                    )
+                    .offset(y: hasRevealedPlayerContent ? 0 : 9)
+                    .animation(
+                        allowsMotion ? BuFiMotion.playerEntrance : .none,
+                        value: hasRevealedPlayerContent
+                    )
                     .allowsHitTesting(!playerPresentation.showFullLyrics)
                     .accessibilityHidden(playerPresentation.showFullLyrics)
                 } else {
@@ -234,6 +248,14 @@ struct PlayerView: View {
             pagerSelectionGate = PlayerPagerSelectionGate()
             refreshArtworkPages(from: playback.snapshot, fallback: currentPlayback.item)
             syncArtworkPage(to: playback.snapshot, animated: false)
+        }
+        .task(id: playerPresentation.presentationID) {
+            hasRevealedPlayerContent = false
+            if allowsMotion {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+            }
+            hasRevealedPlayerContent = true
         }
     }
 
@@ -790,18 +812,26 @@ struct PlayerView: View {
         return .asymmetric(
             insertion: .offset(
                 x: transitionDirection > 0 ? distance : -distance
-            ).combined(with: .opacity),
+            )
+            .combined(with: .scale(scale: 0.995))
+            .combined(with: .opacity),
             removal: .offset(
                 x: transitionDirection > 0 ? -distance : distance
-            ).combined(with: .opacity)
+            )
+            .combined(with: .scale(scale: 0.998))
+            .combined(with: .opacity)
         )
     }
 
     private var lyricsPanelTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
         return .asymmetric(
-            insertion: .move(edge: .bottom).combined(with: .opacity),
-            removal: .move(edge: .bottom).combined(with: .opacity)
+            insertion: .offset(y: 24)
+                .combined(with: .scale(scale: 0.992, anchor: .bottom))
+                .combined(with: .opacity),
+            removal: .offset(y: 18)
+                .combined(with: .scale(scale: 0.996, anchor: .bottom))
+                .combined(with: .opacity)
         )
     }
 
@@ -1158,15 +1188,29 @@ private struct PlayerLyricsCard: View {
 
     @ViewBuilder
     var body: some View {
-        if !lyricsState.document.lines.isEmpty {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("가사")
-                        .font(.system(size: 20, weight: .bold))
-                    Spacer()
-                    if canOfferTranslation {
-                        Button(action: onTranslate) {
-                            Image(systemName: "translate")
+        Group {
+            if hasLyrics {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        Text("가사")
+                            .font(.system(size: 20, weight: .bold))
+                        Spacer()
+                        if canOfferTranslation {
+                            Button(action: onTranslate) {
+                                Image(systemName: "translate")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .frame(width: 38, height: 38)
+                                    .background(.black.opacity(0.22), in: Circle())
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(BuFiPressStyle())
+                            .transition(.scale(scale: 0.90).combined(with: .opacity))
+                            .accessibilityLabel("가사 번역")
+                            .accessibilityHint("전체 화면 가사를 열고 번역을 표시합니다.")
+                        }
+                        Button(action: onOpen) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
                                 .font(.system(size: 15, weight: .bold))
                                 .frame(width: 38, height: 38)
                                 .background(.black.opacity(0.22), in: Circle())
@@ -1174,59 +1218,69 @@ private struct PlayerLyricsCard: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(BuFiPressStyle())
-                        .accessibilityLabel("가사 번역")
-                        .accessibilityHint("전체 화면 가사를 열고 번역을 표시합니다.")
+                        .accessibilityLabel("전체 화면 가사")
                     }
+                    .animation(
+                        motionEnabled ? BuFiMotion.lyricsCard : .none,
+                        value: canOfferTranslation
+                    )
+
                     Button(action: onOpen) {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
-                            .font(.system(size: 15, weight: .bold))
-                            .frame(width: 38, height: 38)
-                            .background(.black.opacity(0.22), in: Circle())
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
+                        miniLyricsWindow
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 186, alignment: .top)
+                            .clipped()
                     }
                     .buttonStyle(BuFiPressStyle())
-                    .accessibilityLabel("전체 화면 가사")
+                    .accessibilityLabel("전체 화면 가사 열기")
+                    .accessibilityHint("현재 곡의 가사를 전체 화면으로 표시합니다.")
                 }
-
-                Button(action: onOpen) {
-                    miniLyricsWindow
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 186, alignment: .top)
-                        .clipped()
-                }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityLabel("전체 화면 가사 열기")
-                .accessibilityHint("현재 곡의 가사를 전체 화면으로 표시합니다.")
-            }
-            .padding(20)
-            .foregroundStyle(primary)
-            .background {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [primary.opacity(0.19), primary.opacity(0.10)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                .padding(20)
+                .foregroundStyle(primary)
+                .background {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [primary.opacity(0.19), primary.opacity(0.10)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .buFiGlass(cornerRadius: 24, interactive: true)
+                .padding(.top, 10)
+                .transition(lyricsCardTransition)
+                .task(id: translationEligibilityIdentity) {
+                    let isEligible = LyricsTranslationEligibility
+                        .shouldOfferTranslation(lines: lyricsState.document.lines)
+                    guard !Task.isCancelled else { return }
+                    canOfferTranslation = isEligible
+                }
+            } else {
+                lyricsPlaceholder
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 18)
+                    .transition(.opacity.combined(with: .offset(y: 4)))
             }
-            .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .buFiGlass(cornerRadius: 24, interactive: true)
-            .padding(.top, 10)
-            .task(id: translationEligibilityIdentity) {
-                let isEligible = LyricsTranslationEligibility
-                    .shouldOfferTranslation(lines: lyricsState.document.lines)
-                guard !Task.isCancelled else { return }
-                canOfferTranslation = isEligible
-            }
-        } else {
-            lyricsPlaceholder
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 18)
         }
+        .animation(
+            motionEnabled ? BuFiMotion.lyricsCard : .none,
+            value: hasLyrics
+        )
+    }
+
+    private var hasLyrics: Bool {
+        !lyricsState.document.lines.isEmpty
+    }
+
+    private var lyricsCardTransition: AnyTransition {
+        guard motionEnabled else { return .opacity }
+        return .opacity
+            .combined(with: .offset(y: 8))
+            .combined(with: .scale(scale: 0.995, anchor: .top))
     }
 
     private var translationEligibilityIdentity:

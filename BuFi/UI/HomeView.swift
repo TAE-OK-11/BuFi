@@ -15,16 +15,55 @@ struct HomeView: View {
     @State private var filter = HomeFilter.all
     @State private var presentation = HomePresentation.empty
     @State private var hasLoadedPresentation = false
+    @State private var hasRevealedContent = false
 
     var body: some View {
+        let sections = visibleSections
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
                     BuFiPageHeader(title: "홈")
+                        .opacity(hasRevealedContent ? 1 : 0)
+                        .offset(y: hasRevealedContent ? 0 : 7)
+                        .animation(
+                            motionEnabled ? BuFiMotion.homeEntrance : .none,
+                            value: hasRevealedContent
+                        )
                     filterBar
-                    ForEach(visibleSections, id: \.self) { section in
+                        .opacity(hasRevealedContent ? 1 : 0)
+                        .offset(y: hasRevealedContent ? 0 : 8)
+                        .animation(
+                            motionEnabled
+                                ? BuFiMotion.homeEntrance.delay(0.035)
+                                : .none,
+                            value: hasRevealedContent
+                        )
+                    ForEach(Array(sections.enumerated()), id: \.element) { index, section in
                         homeSection(section)
-                            .padding(.top, section == visibleSections.first ? 0 : 6)
+                            .padding(.top, section == sections.first ? 0 : 6)
+                            .opacity(hasRevealedContent ? 1 : 0)
+                            .offset(y: hasRevealedContent ? 0 : 9)
+                            .scaleEffect(
+                                hasRevealedContent ? 1 : 0.996,
+                                anchor: .top
+                            )
+                            .animation(
+                                motionEnabled
+                                    ? BuFiMotion.homeEntrance.delay(
+                                        min(0.055 + (Double(index) * 0.022), 0.17)
+                                    )
+                                    : .none,
+                                value: hasRevealedContent
+                            )
+                            .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                                content
+                                    .scaleEffect(
+                                        phase.isIdentity || !motionEnabled ? 1 : 0.994,
+                                        anchor: .center
+                                    )
+                                    .opacity(phase.isIdentity || !motionEnabled ? 1 : 0.94)
+                                    .offset(y: phase.isIdentity || !motionEnabled ? 0 : 5)
+                            }
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity
                             )
@@ -32,7 +71,7 @@ struct HomeView: View {
                 }
                 .animation(
                     motionEnabled ? BuFiMotion.content : .none,
-                    value: visibleSections
+                    value: sections
                 )
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance()
@@ -49,6 +88,14 @@ struct HomeView: View {
         }
         .task(id: presentationTaskIdentity) {
             await updatePresentation()
+        }
+        .task {
+            guard !hasRevealedContent else { return }
+            if motionEnabled {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+            }
+            hasRevealedContent = true
         }
     }
 
@@ -407,7 +454,9 @@ struct HomeView: View {
         guard !Task.isCancelled,
               revision == library.revision,
               selectedArtistsStorage == selectedArtistMixes else { return }
-        presentation = next
+        withAnimation(motionEnabled ? BuFiMotion.homeRefresh : .none) {
+            presentation = next
+        }
         hasLoadedPresentation = true
     }
 
