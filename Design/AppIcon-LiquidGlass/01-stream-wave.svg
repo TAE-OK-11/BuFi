@@ -7,14 +7,8 @@
       <stop offset="1" stop-color="#D43EFF"/>
     </linearGradient>
   </defs>
-
-  <!-- Keep this source square and unmasked; the system supplies the enclosure. -->
-  <rect width="1024" height="1024" fill="#F9FBFF"/>
-
-  <!-- A simple orbit identifies the service; one current makes the audio function clear. -->
   <path
     d="M182 490C275 372 365 378 450 478c82 100 145 142 235 70 88-70 123-110 157-56v42c-36-52-69-16-157 66-93 88-162 30-235-74-85-88-173-100-268 8z"
     fill="url(#brand)"
   />
-  <circle cx="512" cy="512" r="330" fill="none" stroke="url(#brand)" stroke-width="56"/>
 </svg>
