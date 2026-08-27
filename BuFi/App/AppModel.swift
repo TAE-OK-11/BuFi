@@ -90,26 +90,33 @@ final class HomeLibraryState: ObservableObject {
     struct Presentation: Equatable, Sendable {
         let snapshot: HomeSnapshot
         let revision: HomeSnapshotRevision
+        let searchCorpus: LocalLibrarySearchCorpus
     }
 
     @Published private(set) var presentation: Presentation
 
     var snapshot: HomeSnapshot { presentation.snapshot }
     var revision: HomeSnapshotRevision { presentation.revision }
+    var searchCorpus: LocalLibrarySearchCorpus { presentation.searchCorpus }
 
     init() {
         presentation = Presentation(
             snapshot: .empty,
-            revision: HomeSnapshotRevision()
+            revision: HomeSnapshotRevision(),
+            searchCorpus: .empty
         )
     }
 
     @discardableResult
-    func setSnapshot(_ value: HomeSnapshot) -> Bool {
+    func setSnapshot(
+        _ value: HomeSnapshot,
+        searchCorpus: LocalLibrarySearchCorpus? = nil
+    ) -> Bool {
         guard snapshot != value else { return false }
         presentation = Presentation(
             snapshot: value,
-            revision: revision.advanced()
+            revision: revision.advanced(),
+            searchCorpus: searchCorpus ?? LocalLibrarySearchCorpus.make(from: value)
         )
         return true
     }
@@ -624,7 +631,14 @@ final class AppModel: ObservableObject {
                 authoritative: loadResult.hasAuthoritativeStarredState
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
-            let snapshotChanged = publishHome(resolvedSnapshot)
+            let searchCorpus = await LocalLibrarySearchCorpus.makeConcurrently(
+                from: resolvedSnapshot
+            )
+            guard generation == sessionGeneration, self.client === client else { return }
+            let snapshotChanged = publishHome(
+                resolvedSnapshot,
+                searchCorpus: searchCorpus
+            )
             let saveNow = runtimeClock.now
             let snapshotSaveIsDue = lastHomeSnapshotSave.map {
                 $0.duration(to: saveNow) >= .seconds(3_600)
@@ -721,7 +735,7 @@ final class AppModel: ObservableObject {
             nextQuery: query
         )
         let local = applyingFavoriteOverrides(
-            to: LocalLibrarySearch.results(for: query, in: home)
+            to: LocalLibrarySearch.results(for: query, in: library.searchCorpus)
         )
         let provisionalResults = local.isEmpty ? retained : local
         let provisionalIsLocal = !local.isEmpty
@@ -797,7 +811,7 @@ final class AppModel: ObservableObject {
             nextQuery: query
         )
         let local = applyingFavoriteOverrides(
-            to: LocalLibrarySearch.results(for: query, in: home)
+            to: LocalLibrarySearch.results(for: query, in: library.searchCorpus)
         )
         if !local.isEmpty {
             return (local, true)
@@ -2083,8 +2097,11 @@ final class AppModel: ObservableObject {
     private var isHomeEmpty: Bool { home == .empty }
 
     @discardableResult
-    private func publishHome(_ snapshot: HomeSnapshot) -> Bool {
-        guard library.setSnapshot(snapshot) else { return false }
+    private func publishHome(
+        _ snapshot: HomeSnapshot,
+        searchCorpus: LocalLibrarySearchCorpus? = nil
+    ) -> Bool {
+        guard library.setSnapshot(snapshot, searchCorpus: searchCorpus) else { return false }
         homeRevision &+= 1
         return true
     }
@@ -2847,7 +2864,16 @@ final class AppModel: ObservableObject {
                 in: prepared,
                 authoritative: false
             )
-            _ = self.publishHome(self.applyingFavoriteOverrides(to: prepared))
+            let resolved = self.applyingFavoriteOverrides(to: prepared)
+            let searchCorpus = await LocalLibrarySearchCorpus.makeConcurrently(
+                from: resolved
+            )
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration,
+                  self.lastFullRefresh == nil else {
+                return
+            }
+            _ = self.publishHome(resolved, searchCorpus: searchCorpus)
         }
     }
 
@@ -2902,7 +2928,19 @@ final class AppModel: ObservableObject {
                     authoritative: false
                 )
                 enriched = self.applyingFavoriteOverrides(to: enriched)
-                let snapshotChanged = self.publishHome(enriched)
+                let searchCorpus = await LocalLibrarySearchCorpus.makeConcurrently(
+                    from: enriched
+                )
+                guard !Task.isCancelled,
+                      generation == self.sessionGeneration,
+                      self.client === client,
+                      sourceRevision == self.library.revision else {
+                    return
+                }
+                let snapshotChanged = self.publishHome(
+                    enriched,
+                    searchCorpus: searchCorpus
+                )
                 if snapshotChanged {
                     let accountScope = AccountScope.identifier(
                         for: client.credentials

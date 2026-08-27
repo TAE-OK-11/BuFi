@@ -1,11 +1,49 @@
 import Foundation
 
+/// Pre-deduplicated local search pool built once per home snapshot refresh.
+struct LocalLibrarySearchCorpus: Sendable, Equatable {
+    let songs: [Song]
+    let albums: [Album]
+    let artists: [Artist]
+
+    static let empty = LocalLibrarySearchCorpus(
+        songs: [],
+        albums: [],
+        artists: []
+    )
+
+    static func make(from snapshot: HomeSnapshot) -> LocalLibrarySearchCorpus {
+        LocalLibrarySearchCorpus(
+            songs: MediaIdentity.uniqueSongs(
+                from: HomeSnapshot.songCollections.map { snapshot[keyPath: $0] },
+                limit: 400
+            ),
+            albums: MediaIdentity.unique(
+                HomeSnapshot.albumCollections.flatMap { snapshot[keyPath: $0] },
+                id: \.id
+            ),
+            artists: MediaIdentity.uniqueArtists(
+                HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
+            )
+        )
+    }
+
+    @concurrent
+    static func makeConcurrently(
+        from snapshot: HomeSnapshot
+    ) async -> LocalLibrarySearchCorpus {
+        guard !Task.isCancelled else { return .empty }
+        let value = make(from: snapshot)
+        return Task.isCancelled ? .empty : value
+    }
+}
+
 /// Local fallback over the already-loaded home snapshot. Search stays useful
 /// when the server is slow or unreachable, and while the user is still typing.
 enum LocalLibrarySearch {
     static func results(
         for rawQuery: String,
-        in snapshot: HomeSnapshot,
+        in corpus: LocalLibrarySearchCorpus,
         artistLimit: Int = 8,
         albumLimit: Int = 14,
         songLimit: Int = 30
@@ -13,17 +51,9 @@ enum LocalLibrarySearch {
         let query = PreparedSearchQuery(rawQuery)
         guard !query.value.isEmpty else { return .empty }
 
-        let songs = MediaIdentity.uniqueSongs(
-            from: HomeSnapshot.songCollections.map { snapshot[keyPath: $0] },
-            limit: 400
-        )
-        let albums = MediaIdentity.unique(
-            HomeSnapshot.albumCollections.flatMap { snapshot[keyPath: $0] },
-            id: \.id
-        )
-        let artists = MediaIdentity.uniqueArtists(
-            HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
-        )
+        let songs = corpus.songs
+        let albums = corpus.albums
+        let artists = corpus.artists
 
         return SearchResults(
             artists: ranked(artists, limit: artistLimit) {
