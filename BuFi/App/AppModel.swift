@@ -766,7 +766,7 @@ final class AppModel: ObservableObject {
                     try await Task.sleep(for: debounce)
                 }
                 try Task.checkCancellation()
-                guard let self, generation == self.searchGeneration, self.client === client else { return }
+                guard generation == self.searchGeneration, self.client === client else { return }
                 let value = try await client.search(query)
                 try Task.checkCancellation()
                 guard generation == self.searchGeneration, self.client === client else { return }
