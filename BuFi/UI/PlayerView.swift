@@ -1242,8 +1242,11 @@ private struct PlayerLyricsCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentTransition(.interpolate)
                         .transition(miniLyricLineTransition)
+                        // Snap highlight changes. Animated opacity and
+                        // contentTransition(.interpolate) leave Korean glyphs
+                        // transparent mid-transition; Latin text tolerates it.
+                        .animation(nil, value: lyricsState.activeIndex)
                 }
             }
         }
@@ -1253,29 +1256,43 @@ private struct PlayerLyricsCard: View {
         .clipped()
         .animation(
             motionEnabled ? BuFiMotion.miniLyrics : .none,
-            value: lyricsState.activeIndex
+            value: miniLyricsWindowStartIndex
         )
+    }
+
+    /// Only animate when the visible lyric window scrolls, not on every line hop.
+    private var miniLyricsWindowStartIndex: Int {
+        visibleMiniLyrics.first?.index ?? lyricsState.activeIndex
     }
 
     private var visibleMiniLyrics: [(index: Int, line: LyricLine)] {
         let lines = lyricsState.document.lines
         guard !lines.isEmpty else { return [] }
         let active = lyricsState.activeIndex
-        let start = active >= 0 ? max(lines.startIndex, active) : lines.startIndex
-        let end = min(lines.endIndex, start + 4)
+        let windowSize = 4
+        let start: Int
+        if active < 0 {
+            start = lines.startIndex
+        } else {
+            // Keep the window pinned while the active line advances so
+            // ForEach insert/remove transitions do not run every beat.
+            let preferredStart = max(lines.startIndex, active - 1)
+            let maxStart = max(lines.startIndex, lines.count - windowSize)
+            start = min(preferredStart, maxStart)
+        }
+        let end = min(lines.endIndex, start + windowSize)
         guard start < end else { return [] }
         return (start..<end).map { (index: $0, line: lines[$0]) }
     }
 
     private var miniLyricLineTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
+        // Offset-only transitions avoid opacity fades that flash on CJK text.
         return .asymmetric(
-            insertion: .offset(y: 8)
-                .combined(with: .scale(scale: 0.99, anchor: .topLeading))
-                .combined(with: .opacity),
-            removal: .offset(y: -7)
-                .combined(with: .scale(scale: 0.995, anchor: .topLeading))
-                .combined(with: .opacity)
+            insertion: .offset(y: 6)
+                .combined(with: .scale(scale: 0.992, anchor: .topLeading)),
+            removal: .offset(y: -5)
+                .combined(with: .scale(scale: 0.996, anchor: .topLeading))
         )
     }
 
