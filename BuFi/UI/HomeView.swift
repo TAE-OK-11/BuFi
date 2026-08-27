@@ -60,11 +60,11 @@ struct HomeView: View {
                             .scrollTransition(.interactive, axis: .vertical) { content, phase in
                                 content
                                     .scaleEffect(
-                                        phase.isIdentity || !enablesMotion ? 1 : 0.994,
+                                        phase.isIdentity || !enablesMotion ? 1 : 0.996,
                                         anchor: .center
                                     )
-                                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.94)
-                                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 5)
+                                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.96)
+                                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 4)
                             }
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity

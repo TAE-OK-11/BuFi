@@ -28,33 +28,35 @@ enum UIRenderPolicy {
 }
 
 enum BuFiMotion {
-    // Each motion has one job. Fast compression followed by a slightly longer
-    // spring release makes controls tactile, while layout and color changes use
-    // restrained curves so repeated updates never wobble or compete.
-    static let pressDown = Animation.smooth(duration: 0.11, extraBounce: 0)
-    static let pressUp = Animation.spring(duration: 0.30, bounce: 0.12)
-    static let symbol = Animation.spring(duration: 0.32, bounce: 0.10)
-    static let selection = Animation.spring(duration: 0.34, bounce: 0.10)
-    static let scrub = Animation.spring(duration: 0.24, bounce: 0.10)
-    static let fade = Animation.smooth(duration: 0.24, extraBounce: 0)
-    static let reveal = Animation.smooth(duration: 0.34, extraBounce: 0)
-    static let content = Animation.smooth(duration: 0.36, extraBounce: 0)
-    static let homeEntrance = Animation.spring(duration: 0.46, bounce: 0.045)
-    static let homeRefresh = Animation.smooth(duration: 0.40, extraBounce: 0)
-    static let playerEntrance = Animation.spring(duration: 0.48, bounce: 0.04)
-    static let screenEntrance = Animation.spring(duration: 0.44, bounce: 0.035)
-    static let trackText = Animation.smooth(duration: 0.38, extraBounce: 0)
-    static let trackPage = Animation.spring(duration: 0.46, bounce: 0.06)
-    static let miniTrack = Animation.smooth(duration: 0.42, extraBounce: 0)
-    static let artworkTouch = Animation.spring(duration: 0.26, bounce: 0.14)
-    static let color = Animation.smooth(duration: 0.52, extraBounce: 0)
-    static let page = Animation.smooth(duration: 0.38, extraBounce: 0)
-    static let miniLyrics = Animation.spring(duration: 0.48, bounce: 0.035)
-    static let lyricsCard = Animation.spring(duration: 0.42, bounce: 0.035)
-    static let lyrics = Animation.smooth(duration: 0.40, extraBounce: 0)
-    static let lyricsPanel = Animation.spring(duration: 0.46, bounce: 0.06)
-    static let timeline = Animation.linear(duration: 0.24)
-    static let miniTimeline = Animation.linear(duration: 0.95)
+    // Springs use restrained bounce so controls feel tactile without wobble.
+    // Smooth curves carry layout, color, and progress interpolation between
+    // infrequent state updates.
+    static let pressDown = Animation.smooth(duration: 0.10, extraBounce: 0)
+    static let pressUp = Animation.spring(duration: 0.28, bounce: 0.08)
+    static let symbol = Animation.spring(duration: 0.30, bounce: 0.08)
+    static let selection = Animation.spring(duration: 0.32, bounce: 0.08)
+    static let scrub = Animation.spring(duration: 0.22, bounce: 0.08)
+    static let fade = Animation.smooth(duration: 0.22, extraBounce: 0)
+    static let reveal = Animation.smooth(duration: 0.32, extraBounce: 0)
+    static let content = Animation.smooth(duration: 0.34, extraBounce: 0)
+    static let homeEntrance = Animation.spring(duration: 0.52, bounce: 0.032)
+    static let homeRefresh = Animation.smooth(duration: 0.38, extraBounce: 0)
+    static let playerEntrance = Animation.spring(duration: 0.52, bounce: 0.028)
+    static let screenEntrance = Animation.spring(duration: 0.48, bounce: 0.028)
+    static let trackText = Animation.smooth(duration: 0.36, extraBounce: 0)
+    static let trackPage = Animation.spring(duration: 0.42, bounce: 0.05)
+    static let miniTrack = Animation.smooth(duration: 0.36, extraBounce: 0)
+    static let artworkTouch = Animation.spring(duration: 0.24, bounce: 0.10)
+    static let color = Animation.smooth(duration: 0.48, extraBounce: 0)
+    static let page = Animation.smooth(duration: 0.36, extraBounce: 0)
+    static let miniLyrics = Animation.spring(duration: 0.46, bounce: 0.028)
+    static let lyricsCard = Animation.spring(duration: 0.40, bounce: 0.028)
+    static let lyrics = Animation.smooth(duration: 0.38, extraBounce: 0)
+    static let lyricsPanel = Animation.spring(duration: 0.44, bounce: 0.05)
+    /// Interpolates between periodic playback ticks (≈4 Hz) without stair-steps.
+    static let timeline = Animation.smooth(duration: 0.30, extraBounce: 0)
+    /// Mini-player bar: short enough to track audio, long enough to stay fluid.
+    static let miniTimeline = Animation.smooth(duration: 0.40, extraBounce: 0)
 
     static func press(isPressed: Bool) -> Animation {
         isPressed ? pressDown : pressUp
@@ -67,14 +69,21 @@ enum BuFiMotion {
         thermalState: ProcessInfo.ThermalState
     ) -> Bool {
         guard userPreference, !reduceMotion, !lowPowerMode else { return false }
-        return thermalState == .nominal
+        switch thermalState {
+        case .nominal, .fair:
+            return true
+        case .serious, .critical:
+            return false
+        @unknown default:
+            return false
+        }
     }
 }
 
 enum BuFiTransition {
     static var scene: AnyTransition {
         .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.992)),
+            insertion: .opacity.combined(with: .scale(scale: 0.994)),
             removal: .opacity
         )
     }
@@ -82,21 +91,21 @@ enum BuFiTransition {
     static var section: AnyTransition {
         .asymmetric(
             insertion: .opacity
-                .combined(with: .offset(y: 10))
-                .combined(with: .scale(scale: 0.996, anchor: .top)),
-            removal: .opacity.combined(with: .offset(y: -4))
+                .combined(with: .offset(y: 8))
+                .combined(with: .scale(scale: 0.997, anchor: .top)),
+            removal: .opacity.combined(with: .offset(y: -3))
         )
     }
 
     static var artworkReveal: AnyTransition {
-        .opacity.combined(with: .scale(scale: 0.992))
+        .opacity.combined(with: .scale(scale: 0.994))
     }
 
     static var miniPlayer: AnyTransition {
         .asymmetric(
             insertion: .move(edge: .bottom)
                 .combined(with: .opacity)
-                .combined(with: .scale(scale: 0.98, anchor: .bottom)),
+                .combined(with: .scale(scale: 0.985, anchor: .bottom)),
             removal: .move(edge: .bottom).combined(with: .opacity)
         )
     }
@@ -110,9 +119,9 @@ private struct BuFiHorizontalScrollMotionModifier: ViewModifier {
         if motionEnabled {
             content.scrollTransition(.interactive, axis: .horizontal) { view, phase in
                 view
-                    .scaleEffect(phase.isIdentity ? 1 : 0.972)
-                    .opacity(phase.isIdentity ? 1 : 0.88)
-                    .offset(y: phase.isIdentity ? 0 : 5)
+                    .scaleEffect(phase.isIdentity ? 1 : 0.978)
+                    .opacity(phase.isIdentity ? 1 : 0.90)
+                    .offset(y: phase.isIdentity ? 0 : 4)
             }
         } else {
             content
@@ -165,15 +174,15 @@ private struct BuFiVerticalSectionMotionModifier: ViewModifier {
             .modifier(
                 BuFiEntranceMotionModifier(
                     delay: delay,
-                    offset: 8,
-                    initialScale: 0.996
+                    offset: 6,
+                    initialScale: 0.997
                 )
             )
             .scrollTransition(.interactive, axis: .vertical) { view, phase in
                 view
-                    .scaleEffect(phase.isIdentity || !enablesMotion ? 1 : 0.995)
-                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.95)
-                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 4)
+                    .scaleEffect(phase.isIdentity || !enablesMotion ? 1 : 0.996)
+                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.96)
+                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 3)
             }
     }
 }
@@ -185,8 +194,8 @@ extension View {
 
     func buFiEntranceMotion(
         delay: TimeInterval = 0,
-        offset: CGFloat = 8,
-        initialScale: CGFloat = 0.996
+        offset: CGFloat = 6,
+        initialScale: CGFloat = 0.997
     ) -> some View {
         modifier(BuFiEntranceMotionModifier(
             delay: delay,

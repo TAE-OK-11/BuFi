@@ -180,10 +180,10 @@ struct PlayerView: View {
                             : (hasRevealedPlayerContent ? 1 : 0)
                     )
                     .scaleEffect(
-                        hasRevealedPlayerContent ? 1 : 0.994,
+                        hasRevealedPlayerContent ? 1 : 0.996,
                         anchor: .center
                     )
-                    .offset(y: hasRevealedPlayerContent ? 0 : 9)
+                    .offset(y: hasRevealedPlayerContent ? 0 : 7)
                     .animation(
                         allowsMotion ? BuFiMotion.playerEntrance : .none,
                         value: hasRevealedPlayerContent
@@ -470,9 +470,9 @@ struct PlayerView: View {
                         .id(page.id)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
-                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.972)
-                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.88)
-                                .offset(y: phase.isIdentity || !animatesTransition ? 0 : 4)
+                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.978)
+                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.90)
+                                .offset(y: phase.isIdentity || !animatesTransition ? 0 : 3)
                         }
                     }
                 }
