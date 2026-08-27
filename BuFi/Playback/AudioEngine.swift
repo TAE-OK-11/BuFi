@@ -312,6 +312,10 @@ private final class PlaybackObserverCoordinator {
         self.lyricBoundaryObserver = nil
     }
 
+    var hasLyricBoundaryObserver: Bool {
+        lyricBoundaryObserver != nil
+    }
+
     func replaceItemNotifications(
         _ install: (NotificationCenter) -> [NSObjectProtocol]
     ) {
@@ -1096,11 +1100,23 @@ struct NowPlayingVisualIdentity: Hashable, Sendable {
 
 @MainActor
 final class AudioEngine: NSObject, ObservableObject {
+    private struct RemoteCommandSnapshot: Equatable {
+        let hasSong: Bool
+        let wantsPlayback: Bool
+        let queueCount: Int
+        let canAutoplay: Bool
+        let isShuffleEnabled: Bool
+        let repeatMode: RepeatMode
+        let isStarred: Bool
+        let duration: TimeInterval
+    }
+
     private struct ServerQueueSaveRequest: Sendable {
         let client: OpenSubsonicClient
         let accountScope: String
         let sessionGeneration: UInt64
         let revision: UInt64
+        let entriesRevision: UInt64
         let songIDs: [String]
         let currentID: String
         let position: TimeInterval
@@ -1319,7 +1335,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var visualPrefetchToken: UUID?
     private var offlinePrefetchToken: UUID?
     private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
-    private var lastVisualPrefetchKey: PlaybackPrefetchPlan.Key?
+    private var lastPresentationPrefetchKey: PlaybackPrefetchPlan.Key?
+    private var lastLyricsPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastOfflinePrefetchKey: PlaybackPrefetchPlan.Key?
     private var preparedPlaybackAssets: [PreparedPlaybackKey: PreparedPlaybackAsset] = [:]
     private var preparedPlaybackAssetOrder: [PreparedPlaybackKey] = []
@@ -1363,6 +1380,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var pendingSeekPosition: TimeInterval?
     private var lastQueueSaveRequest = Date.distantPast
     private var lastServerQueueSaveRequest = Date.distantPast
+    private var lastServerSyncedEntriesRevision: UInt64?
+    private var lyricsRetryTask: Task<Void, Never>?
+    private var lastRemoteCommandSnapshot: RemoteCommandSnapshot?
     private var lastMaintenanceSecond = -1
     private var behaviorStartRecordedForSongID: String?
     private var lastPlaybackReportSongID: String?
@@ -1465,6 +1485,7 @@ final class AudioEngine: NSObject, ObservableObject {
             serverQueueSaveTask?.cancel()
             latestServerQueueSaveRevision = 0
             lastServerQueueSaveRequest = .distantPast
+            lastServerSyncedEntriesRevision = nil
             suspendSpeculativePrefetch()
         }
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
@@ -1484,6 +1505,8 @@ final class AudioEngine: NSObject, ObservableObject {
             playbackStallCount = 0
             lyricsTask?.cancel()
             lyricsTask = nil
+            lyricsRetryTask?.cancel()
+            lyricsRetryTask = nil
             nowPlayingArtworkTask?.cancel()
             nowPlayingArtworkTask = nil
             nowPlayingArtworkRequestKey = nil
@@ -2847,11 +2870,12 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: compatibilityFormat
         )
         if let prepared = preparedPlaybackAssets[key] {
-            // Active playback may consume an in-flight asset immediately, but
-            // gapless staging waits until the speculative isPlayable load has
-            // completed so AVQueuePlayer never advances into an unvalidated item.
             if preparedPlaybackWarmupTasks[key] == nil {
-                stagePreparedSuccessorIfPossible(prepared)
+                if shouldWarmPreparedPlaybackAssetNow() {
+                    warmupPreparedAssetsIfNeeded()
+                } else if let prepared = preparedPlaybackAssets[key] {
+                    stagePreparedSuccessorIfPossible(prepared)
+                }
             }
             return
         }
@@ -2902,18 +2926,12 @@ final class AudioEngine: NSObject, ObservableObject {
                 // active playback can take over this partially warmed asset
                 // instead of opening a duplicate request for the same song.
                 self.storePreparedPlaybackAsset(prepared)
-                do {
-                    _ = try await asset.load(.isPlayable)
-                    guard !Task.isCancelled else { return }
-                    self.stagePreparedSuccessorIfPossible(prepared)
-                } catch {
-                    // A failed speculative asset must not remain reusable. If
-                    // active playback already took ownership, the token was
-                    // cleared and AVPlayer's normal failure/fallback path owns it.
-                    if self.preparedPlaybackWarmupTokens[key] == warmupToken {
-                        self.preparedPlaybackAssets[key] = nil
-                        self.preparedPlaybackAssetOrder.removeAll { $0 == key }
-                    }
+                if self.shouldWarmPreparedPlaybackAssetNow() {
+                    await self.runPreparedPlaybackWarmup(
+                        prepared: prepared,
+                        key: key,
+                        warmupToken: warmupToken
+                    )
                 }
             } catch {
                 // Warming is speculative. Active playback retains its normal
@@ -2921,6 +2939,61 @@ final class AudioEngine: NSObject, ObservableObject {
             }
         }
         preparedPlaybackWarmupTasks[key] = task
+    }
+
+    private func shouldWarmPreparedPlaybackAssetNow() -> Bool {
+        PlaybackGaplessPreparationPolicy.shouldStage(
+            elapsed: currentPlayerPosition(),
+            duration: duration,
+            isBuffering: isBuffering,
+            isActivelyPlaying: player.timeControlStatus == .playing,
+            profile: currentPlaybackAudioProfile()
+        )
+    }
+
+    private func runPreparedPlaybackWarmup(
+        prepared: PreparedPlaybackAsset,
+        key: PreparedPlaybackKey,
+        warmupToken: UUID
+    ) async {
+        do {
+            _ = try await prepared.asset.load(.isPlayable)
+            guard !Task.isCancelled else { return }
+            stagePreparedSuccessorIfPossible(prepared)
+        } catch {
+            if preparedPlaybackWarmupTokens[key] == warmupToken {
+                preparedPlaybackAssets[key] = nil
+                preparedPlaybackAssetOrder.removeAll { $0 == key }
+            }
+        }
+    }
+
+    private func warmupPreparedAssetsIfNeeded() {
+        guard shouldWarmPreparedPlaybackAssetNow() else { return }
+        for key in preparedPlaybackAssetOrder {
+            guard let prepared = preparedPlaybackAssets[key],
+                  preparedPlaybackWarmupTasks[key] == nil,
+                  preparedPlaybackWarmupTokens[key] == nil else {
+                continue
+            }
+            let warmupToken = UUID()
+            preparedPlaybackWarmupTokens[key] = warmupToken
+            let task = Task(priority: .utility) { [weak self] in
+                guard let self else { return }
+                defer {
+                    if self.preparedPlaybackWarmupTokens[key] == warmupToken {
+                        self.preparedPlaybackWarmupTokens[key] = nil
+                        self.preparedPlaybackWarmupTasks[key] = nil
+                    }
+                }
+                await self.runPreparedPlaybackWarmup(
+                    prepared: prepared,
+                    key: key,
+                    warmupToken: warmupToken
+                )
+            }
+            preparedPlaybackWarmupTasks[key] = task
+        }
     }
 
     private func scheduleGaplessSuccessor() {
@@ -2943,6 +3016,7 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
         preparePlaybackAsset(for: playbackState.entries[plan.queueIndex])
+        warmupPreparedAssetsIfNeeded()
     }
 
     private func stagePreparedSuccessorIfPossible(
@@ -3142,14 +3216,17 @@ final class AudioEngine: NSObject, ObservableObject {
         networkPrefetchTask?.cancel()
         networkPrefetchTask = nil
         networkPrefetchToken = nil
-        if resetKey { lastNetworkPrefetchKey = nil }
+        if resetKey {
+            lastNetworkPrefetchKey = nil
+            lastLyricsPrefetchKey = nil
+        }
     }
 
     private func cancelVisualPrefetch(resetKey: Bool) {
         visualPrefetchTask?.cancel()
         visualPrefetchTask = nil
         visualPrefetchToken = nil
-        if resetKey { lastVisualPrefetchKey = nil }
+        if resetKey { lastPresentationPrefetchKey = nil }
     }
 
     private func cancelOfflinePrefetch(resetKey: Bool) {
@@ -3166,6 +3243,8 @@ final class AudioEngine: NSObject, ObservableObject {
         cancelVisualPrefetch(resetKey: true)
         cancelNetworkPrefetch(resetKey: true)
         cancelOfflinePrefetch(resetKey: true)
+        lyricsRetryTask?.cancel()
+        lyricsRetryTask = nil
         discardPreparedPlaybackAssets()
     }
 
@@ -3253,9 +3332,9 @@ final class AudioEngine: NSObject, ObservableObject {
             cancelVisualPrefetch(resetKey: true)
             return
         }
-        guard lastVisualPrefetchKey != plan.key else { return }
+        guard lastPresentationPrefetchKey != plan.key else { return }
         cancelVisualPrefetch(resetKey: false)
-        lastVisualPrefetchKey = plan.key
+        lastPresentationPrefetchKey = plan.key
 
         let token = UUID()
         let sessionGeneration = playbackSessionGeneration
@@ -3304,14 +3383,17 @@ final class AudioEngine: NSObject, ObservableObject {
             await ArtworkStore.shared.prefetch(
                 urls: coverURLs,
                 pixelSize: ArtworkRequestSizing.fullPlayerPixelSize,
-                concurrencyLimit: isConstrained ? 1 : 3
+                concurrencyLimit: min(
+                    isConstrained ? 1 : 3,
+                    EnergyConstraintsPolicy.artworkPrefetchConcurrency()
+                )
             )
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
 
-            // Reuse the now-cached source bytes for background colors too, so
-            // a rapid transition never flashes the fallback gradient.
-            for url in coverURLs {
+            // Palette only for the current and next cover. Later tracks reuse
+            // the same cached bytes when they become visible.
+            for url in coverURLs.prefix(2) {
                 guard !Task.isCancelled else { return }
                 _ = await ArtworkStore.shared.palette(for: url)
             }
@@ -3319,10 +3401,8 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func scheduleNetworkPrefetch() {
-        // Metadata, lyrics, and artwork are tiny compared with media bytes.
-        // This second pass starts only after the stream's uncontested opening
-        // window; the presentation-critical first pass has already warmed the
-        // next three covers at background network priority.
+        // Lyrics are the only remaining network work after the presentation
+        // prefetch has warmed metadata and artwork for upcoming tracks.
         let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
@@ -3341,8 +3421,9 @@ final class AudioEngine: NSObject, ObservableObject {
             return
         }
 
-        guard lastNetworkPrefetchKey != plan.key else { return }
+        guard lastLyricsPrefetchKey != plan.key else { return }
         cancelNetworkPrefetch(resetKey: false)
+        lastLyricsPrefetchKey = plan.key
         lastNetworkPrefetchKey = plan.key
 
         let token = UUID()
@@ -3355,64 +3436,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.networkPrefetchToken = nil
                 }
             }
-            let prefetchedSongs = await client.prefetchPlaybackMetadata(
-                songs: plan.upcomingSongs
-            )
-            guard !Task.isCancelled else { return }
-            async let lyricsPrefetch: Void = client.prefetchLyrics(
-                songs: prefetchedSongs
-            )
-
-            let screenSize = UIScreen.main.bounds.size
-            let artworkEdge = max(
-                220,
-                min(
-                    max(240, screenSize.width - 44),
-                    max(264, screenSize.height * 0.47)
-                )
-            )
-            let artworkPixelSize = max(
-                ArtworkRequestSizing.fullPlayerPixelSize,
-                ArtworkRequestSizing.pixelSize(
-                    pointSize: artworkEdge,
-                    displayScale: UIScreen.main.scale
-                )
-            )
-            var coverURLs: [URL] = []
-            var seenArtworkRevisions = Set<String>()
-            for song in prefetchedSongs {
-                guard !Task.isCancelled else { return }
-                let revision = song.artworkRevision
-                guard let coverID = song.artworkID,
-                      seenArtworkRevisions.insert("\(coverID)|\(revision)").inserted,
-                      let sourceURL = try? client.coverURL(
-                          id: coverID,
-                          size: ArtworkRequestSizing.serverRequestSize(
-                              for: artworkPixelSize
-                          )
-                      ) else {
-                    continue
-                }
-                coverURLs.append(ArtworkStore.cacheURL(
-                    for: sourceURL,
-                    revision: revision
-                ))
-            }
-            await ArtworkStore.shared.prefetch(
-                urls: coverURLs,
-                pixelSize: artworkPixelSize,
-                concurrencyLimit: 3
-            )
-            await lyricsPrefetch
-            guard !Task.isCancelled else { return }
-            // Only the immediately upcoming cover needs its palette ready.
-            // Run this after network caches are warm so CPU clustering never
-            // competes with the active stream's first seconds.
-            if let firstCoverURL = coverURLs.first {
-                try? await Task.sleep(for: .milliseconds(350))
-                guard !Task.isCancelled else { return }
-                _ = await ArtworkStore.shared.palette(for: firstCoverURL)
-            }
+            await client.prefetchLyrics(songs: plan.upcomingSongs)
         }
     }
 
@@ -4131,6 +4155,7 @@ final class AudioEngine: NSObject, ObservableObject {
         forceRefresh: Bool = false
     ) {
         lyricsTask?.cancel()
+        lyricsRetryTask?.cancel()
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
         let playbackItemID = currentPlaybackItem?.id
@@ -4144,61 +4169,114 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         applyLyricsDocument(.empty, status: .loading)
         lyricsTask = Task { [weak self] in
-            for attempt in 0...2 {
-                do {
-                    let document = try await client.lyrics(
-                        songID: song.id,
-                        artist: song.artist,
-                        title: song.title,
-                        forceRefresh: forceRefresh || attempt > 0
-                    )
-                    guard let self,
-                          !Task.isCancelled,
-                          self.lyricsLoadGeneration == generation,
-                          self.currentPlaybackItem?.id == playbackItemID,
-                          self.currentSong?.id == song.id else {
-                        return
-                    }
-                    if document.lines.isEmpty, attempt < 2 {
-                        try await Task.sleep(
-                            for: attempt == 0
-                                ? .milliseconds(650)
-                                : .seconds(2)
-                        )
-                        continue
-                    }
-                    self.lyricsTask = nil
-                    self.applyLyricsDocument(
-                        document,
-                        status: document.lines.isEmpty ? .unavailable : .available
-                    )
+            do {
+                let document = try await client.lyrics(
+                    songID: song.id,
+                    artist: song.artist,
+                    title: song.title,
+                    forceRefresh: forceRefresh
+                )
+                guard let self,
+                      !Task.isCancelled,
+                      self.lyricsLoadGeneration == generation,
+                      self.currentPlaybackItem?.id == playbackItemID,
+                      self.currentSong?.id == song.id else {
                     return
-                } catch is CancellationError {
-                    return
-                } catch {
-                    guard let self,
-                          !Task.isCancelled,
-                          self.lyricsLoadGeneration == generation,
-                          self.currentPlaybackItem?.id == playbackItemID,
-                          self.currentSong?.id == song.id else {
-                        return
-                    }
-                    if attempt < 2 {
-                        do {
-                            try await Task.sleep(
-                                for: attempt == 0
-                                    ? .milliseconds(650)
-                                    : .seconds(2)
-                            )
-                        } catch {
-                            return
-                        }
-                        continue
-                    }
-                    self.lyricsTask = nil
-                    Self.logger.error("Lyrics request failed after retry")
-                    self.applyLyricsDocument(.empty, status: .failed)
                 }
+                if document.lines.isEmpty {
+                    self.lyricsTask = nil
+                    self.applyLyricsDocument(document, status: .unavailable)
+                    self.scheduleDeferredLyricsRetry(
+                        for: song,
+                        generation: generation,
+                        playbackItemID: playbackItemID,
+                        forceRefresh: forceRefresh
+                    )
+                    return
+                }
+                self.lyricsTask = nil
+                self.applyLyricsDocument(
+                    document,
+                    status: .available
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      self.lyricsLoadGeneration == generation,
+                      self.currentPlaybackItem?.id == playbackItemID,
+                      self.currentSong?.id == song.id else {
+                    return
+                }
+                self.lyricsTask = nil
+                self.scheduleDeferredLyricsRetry(
+                    for: song,
+                    generation: generation,
+                    playbackItemID: playbackItemID,
+                    forceRefresh: true
+                )
+            }
+        }
+    }
+
+    private func scheduleDeferredLyricsRetry(
+        for song: Song,
+        generation: UInt64,
+        playbackItemID: UUID,
+        forceRefresh: Bool
+    ) {
+        lyricsRetryTask?.cancel()
+        guard let client else { return }
+        lyricsRetryTask = Task { [weak self] in
+            do {
+                try await Task.sleep(
+                    for: .seconds(
+                        PlaybackGaplessPreparationPolicy.stablePlaybackWindow
+                    )
+                )
+            } catch {
+                return
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.lyricsLoadGeneration == generation,
+                  self.currentPlaybackItem?.id == playbackItemID,
+                  self.currentSong?.id == song.id,
+                  self.wantsPlayback,
+                  self.player.timeControlStatus == .playing else {
+                return
+            }
+            do {
+                let document = try await client.lyrics(
+                    songID: song.id,
+                    artist: song.artist,
+                    title: song.title,
+                    forceRefresh: forceRefresh
+                )
+                guard !Task.isCancelled,
+                      self.lyricsLoadGeneration == generation,
+                      self.currentPlaybackItem?.id == playbackItemID,
+                      self.currentSong?.id == song.id else {
+                    return
+                }
+                self.lyricsRetryTask = nil
+                self.applyLyricsDocument(
+                    document,
+                    status: document.lines.isEmpty ? .unavailable : .available
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled,
+                      self.lyricsLoadGeneration == generation,
+                      self.currentPlaybackItem?.id == playbackItemID,
+                      self.currentSong?.id == song.id else {
+                    return
+                }
+                self.lyricsRetryTask = nil
+                Self.logger.error("Lyrics request failed after deferred retry")
+                self.applyLyricsDocument(.empty, status: .failed)
             }
         }
     }
@@ -4260,12 +4338,60 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.suspendSpeculativePrefetch()
                 }
                 self.refreshIdleTimerPreference()
-                self.updateRemoteCommands()
-                self.updateNowPlaying()
+                self.refreshRemoteCommandsIfNeeded()
+                self.updateNowPlayingPlaybackTransport()
             }
         }
 
         installPlaybackTimeObserver()
+    }
+
+    private func currentRemoteCommandSnapshot() -> RemoteCommandSnapshot {
+        let hasSong = currentSong != nil
+        let canAutoplay = hasSong
+            && client != nil
+            && currentSong?.externalStreamURL == nil
+            && algorithmicAutoplayEnabled
+        return RemoteCommandSnapshot(
+            hasSong: hasSong,
+            wantsPlayback: wantsPlayback,
+            queueCount: queue.count,
+            canAutoplay: canAutoplay,
+            isShuffleEnabled: isShuffleEnabled,
+            repeatMode: repeatMode,
+            isStarred: currentSong?.isStarred ?? false,
+            duration: duration
+        )
+    }
+
+    private func refreshRemoteCommandsIfNeeded() {
+        let snapshot = currentRemoteCommandSnapshot()
+        guard snapshot != lastRemoteCommandSnapshot else { return }
+        lastRemoteCommandSnapshot = snapshot
+        updateRemoteCommands()
+    }
+
+    private func updateNowPlayingPlaybackTransport() {
+        guard currentPlaybackItem != nil else {
+            updateNowPlaying()
+            return
+        }
+        let rate = isPlaying ? 1.0 : 0.0
+        if let info = nowPlayingInfoCenter.nowPlayingInfo {
+            let publishedRate = info[MPNowPlayingInfoPropertyPlaybackRate] as? Double
+            let publishedElapsed = info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double
+            if publishedRate == rate,
+               let publishedElapsed,
+               abs(publishedElapsed - elapsed) < 0.5 {
+                return
+            }
+            var updated = info
+            updated[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
+            updated[MPNowPlayingInfoPropertyPlaybackRate] = rate
+            nowPlayingInfoCenter.nowPlayingInfo = updated
+            return
+        }
+        updateNowPlaying()
     }
 
     private func installPlaybackTimeObserver() {
@@ -4305,7 +4431,16 @@ final class AudioEngine: NSObject, ObservableObject {
             if self.duration > 0 {
                 self.elapsed = min(self.elapsed, self.duration)
             }
-            self.updateActiveLyric(at: lyricPosition)
+            if self.lyrics.synced,
+               !self.lyrics.lines.isEmpty,
+               self.playbackObservers.hasLyricBoundaryObserver,
+               !self.isSeekInFlight,
+               self.pendingSeekPosition == nil {
+                // Synced lyrics advance on boundary observers; skip the
+                // periodic O(1)/O(log n) scan on every progress tick.
+            } else {
+                self.updateActiveLyric(at: lyricPosition)
+            }
 
             // UI progress may need four updates per second while the full
             // player is visible, but duration checks, scrobbling, and
@@ -4325,14 +4460,18 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.submitScrobbleIfNeeded()
                 let now = Date()
                 if now.timeIntervalSince(self.lastQueueSaveRequest) >= 30 {
-                    let shouldSyncServer = now.timeIntervalSince(
-                        self.lastServerQueueSaveRequest
-                    ) >= 180
+                    let entriesChanged = self.playbackState.entriesRevision
+                        != self.lastServerSyncedEntriesRevision
+                    let shouldSyncServer = entriesChanged
+                        && now.timeIntervalSince(
+                            self.lastServerQueueSaveRequest
+                        ) >= 180
                     self.scheduleQueueSave(
                         immediate: true,
                         syncServer: shouldSyncServer
                     )
                 }
+                self.updateNowPlayingPlaybackTransport()
             }
         }
     }
@@ -4859,6 +4998,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         commands.likeCommand.isEnabled = hasSong
         commands.likeCommand.isActive = currentSong?.isStarred ?? false
+        lastRemoteCommandSnapshot = currentRemoteCommandSnapshot()
     }
 
     private func refreshCanonicalMetadata(for selectedSong: Song) {
@@ -4976,6 +5116,7 @@ final class AudioEngine: NSObject, ObservableObject {
             nowPlayingArtworkKey = nil
             nowPlayingArtworkRequestKey = nil
             nowPlayingInfoCenter.nowPlayingInfo = nil
+            lastRemoteCommandSnapshot = nil
             updateRemoteCommands()
             return
         }
@@ -5012,7 +5153,7 @@ final class AudioEngine: NSObject, ObservableObject {
         info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = max(0, queueIndex)
         nowPlayingInfoCenter.nowPlayingInfo = info
         activateNowPlayingSession()
-        updateRemoteCommands()
+        refreshRemoteCommandsIfNeeded()
 
         guard let coverID = song.artworkID,
               let client else {
@@ -5292,6 +5433,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     accountScope: accountScope,
                     sessionGeneration: sessionGeneration,
                     revision: saveRevision,
+                    entriesRevision: entriesRevision,
                     songIDs: snapshot.queue.map(\.id),
                     currentID: current,
                     position: snapshot.elapsed
@@ -5336,6 +5478,7 @@ final class AudioEngine: NSObject, ObservableObject {
                         continue
                     }
                     self.lastServerQueueSaveRequest = Date()
+                    self.lastServerSyncedEntriesRevision = request.entriesRevision
                 } catch {
                     if Task.isCancelled { break }
                 }
