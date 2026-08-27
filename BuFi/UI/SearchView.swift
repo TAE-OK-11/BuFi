@@ -263,7 +263,7 @@ struct SearchView: View {
         case .resultSongs:
             resultSection("곡") {
                 ForEach(Array(result.songs.indices), id: \.self) { index in
-                    SongRow(
+                    SongRowCurrentTrackResolver(
                         song: result.songs[index],
                         queue: result.songs,
                         queueIndex: index,
@@ -402,7 +402,7 @@ struct SearchView: View {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(songs.indices), id: \.self) { index in
-                        SongRow(
+                        SongRowCurrentTrackResolver(
                             song: songs[index],
                             queue: songs,
                             queueIndex: index
@@ -568,7 +568,7 @@ struct SearchView: View {
                                     )
                                     .monospacedDigit()
                                     .frame(width: 24, alignment: .trailing)
-                                SongRow(
+                                SongRowCurrentTrackResolver(
                                     song: songs[index],
                                     queue: songs,
                                     queueIndex: index,

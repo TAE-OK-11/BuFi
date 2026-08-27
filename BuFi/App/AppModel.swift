@@ -1114,9 +1114,10 @@ final class AppModel: ObservableObject {
         lowPowerMode: Bool,
         thermalState: ProcessInfo.ThermalState
     ) {
-        guard lowPowerMode
-                || thermalState == .serious
-                || thermalState == .critical else {
+        guard EnergyConstraintsPolicy.shouldCancelBackgroundWork(
+            lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        ) else {
             return
         }
         recommendationTask?.cancel()
@@ -2419,9 +2420,7 @@ final class AppModel: ObservableObject {
         generation: Int
     ) {
         guard hasLastFMAPIKey || !listenBrainzUsername.isEmpty,
-              !ProcessInfo.processInfo.isLowPowerModeEnabled,
-              ProcessInfo.processInfo.thermalState.rawValue <
-                ProcessInfo.ThermalState.serious.rawValue else {
+              EnergyConstraintsPolicy.allowsExternalRecommendationRefresh() else {
             lastExternalRecommendationIdentity = nil
             return
         }
@@ -3034,15 +3033,7 @@ final class AppModel: ObservableObject {
     }
 
     private var allowsBackgroundPreparation: Bool {
-        guard !ProcessInfo.processInfo.isLowPowerModeEnabled else { return false }
-        switch ProcessInfo.processInfo.thermalState {
-        case .nominal, .fair:
-            return true
-        case .serious, .critical:
-            return false
-        @unknown default:
-            return false
-        }
+        EnergyConstraintsPolicy.allowsBackgroundPreparation()
     }
 
     private func deactivateStores(_ leases: StoreActivationLeases) async {

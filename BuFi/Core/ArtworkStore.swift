@@ -315,7 +315,10 @@ actor ArtworkStore {
         // Wi-Fi can fill three HTTP/2/3 streams together. Expensive or
         // constrained paths pass one here so cover warming never crowds the
         // active AVFoundation byte-range request.
-        let batchSize = min(max(concurrencyLimit, 1), 4)
+        let batchSize = min(
+            max(concurrencyLimit, 1),
+            EnergyConstraintsPolicy.artworkPrefetchConcurrency()
+        )
         for start in stride(from: 0, to: uniqueURLs.count, by: batchSize) {
             guard !Task.isCancelled else { return }
             let end = min(start + batchSize, uniqueURLs.count)
@@ -665,7 +668,9 @@ actor ArtworkStore {
         // Nuke defaults to ImageCache.shared. A pipeline can outlive an account
         // switch while finishing a request, so each account-scoped pipeline
         // must own its decoded-memory cache just as it owns its disk cache.
-        configuration.imageCache = ImageCache()
+        let imageCache = ImageCache()
+        imageCache.costLimit = 64 * 1_024 * 1_024
+        configuration.imageCache = imageCache
         configuration.maximumResponseDataSize = 32 * 1_024 * 1_024
         configuration.isTaskCoalescingEnabled = true
         configuration.isProgressiveDecodingEnabled = false

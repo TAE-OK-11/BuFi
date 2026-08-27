@@ -67,14 +67,7 @@ enum BuFiMotion {
         thermalState: ProcessInfo.ThermalState
     ) -> Bool {
         guard userPreference, !reduceMotion, !lowPowerMode else { return false }
-        switch thermalState {
-        case .nominal, .fair:
-            return true
-        case .serious, .critical:
-            return false
-        @unknown default:
-            return false
-        }
+        return thermalState == .nominal
     }
 }
 

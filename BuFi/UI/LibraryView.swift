@@ -135,7 +135,7 @@ struct LibraryView: View {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(snapshot.starredSongs.indices), id: \.self) { index in
-                            SongRow(
+                            SongRowCurrentTrackResolver(
                                 song: snapshot.starredSongs[index],
                                 queue: snapshot.starredSongs,
                                 queueIndex: index

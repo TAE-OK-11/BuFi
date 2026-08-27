@@ -304,6 +304,12 @@ struct RootView: View {
             lowPowerMode: lowPowerMode,
             thermalState: thermalState
         )
+        if EnergyConstraintsPolicy.shouldCancelBackgroundWork(
+            lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        ) {
+            Task { await ArtworkStore.shared.clearMemory() }
+        }
     }
 
     @MainActor
@@ -360,14 +366,10 @@ private struct AutomaticSyncHost: View {
     }
 
     private var isThermallyConstrained: Bool {
-        switch thermalState {
-        case .serious, .critical:
-            true
-        case .nominal, .fair:
-            false
-        @unknown default:
-            true
-        }
+        EnergyConstraintsPolicy.pausesAutomaticSync(
+            lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        )
     }
 
     private var baseSyncInterval: TimeInterval {
@@ -376,7 +378,7 @@ private struct AutomaticSyncHost: View {
         case .serious, .critical:
             return max(selected, 900)
         case .fair:
-            return max(selected, 120)
+            return max(selected, 300)
         case .nominal:
             break
         @unknown default:
