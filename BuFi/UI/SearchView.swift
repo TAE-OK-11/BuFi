@@ -234,13 +234,13 @@ struct SearchView: View {
                 .padding(.horizontal, 16)
         case .resultArtists:
             resultSection("아티스트") {
-                ForEach(result.artists) { artist in
+                ForEach(Array(result.artists.enumerated()), id: \.element.id) { index, artist in
                     NavigationLink(value: MusicRoute.artist(artist)) {
                         artistResultRow(artist)
                     }
                     .buttonStyle(BuFiPressStyle())
                     .simultaneousGesture(TapGesture().onEnded(resignSearchField))
-                    if artist.id != result.artists.last?.id {
+                    if index < result.artists.count - 1 {
                         rowSeparator
                     }
                 }
@@ -248,13 +248,13 @@ struct SearchView: View {
             .padding(.horizontal, 16)
         case .resultAlbums:
             resultSection("앨범") {
-                ForEach(result.albums) { album in
+                ForEach(Array(result.albums.enumerated()), id: \.element.id) { index, album in
                     NavigationLink(value: MusicRoute.album(album)) {
                         albumResultRow(album)
                     }
                     .buttonStyle(BuFiPressStyle())
                     .simultaneousGesture(TapGesture().onEnded(resignSearchField))
-                    if album.id != result.albums.last?.id {
+                    if index < result.albums.count - 1 {
                         rowSeparator
                     }
                 }
@@ -262,12 +262,9 @@ struct SearchView: View {
             .padding(.horizontal, 16)
         case .resultSongs:
             resultSection("곡") {
-                ForEach(
-                    Array(result.songs.enumerated()),
-                    id: \.offset
-                ) { index, song in
+                ForEach(Array(result.songs.indices), id: \.self) { index in
                     SongRow(
-                        song: song,
+                        song: result.songs[index],
                         queue: result.songs,
                         queueIndex: index,
                         playbackOrigin: .search,
@@ -404,9 +401,9 @@ struct SearchView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
+                    ForEach(Array(songs.indices), id: \.self) { index in
                         SongRow(
-                            song: song,
+                            song: songs[index],
                             queue: songs,
                             queueIndex: index
                         )
@@ -556,7 +553,7 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
+                        ForEach(Array(songs.indices), id: \.self) { index in
                             HStack(spacing: 10) {
                                 Text("\(index + 1)")
                                     .font(
@@ -572,7 +569,7 @@ struct SearchView: View {
                                     .monospacedDigit()
                                     .frame(width: 24, alignment: .trailing)
                                 SongRow(
-                                    song: song,
+                                    song: songs[index],
                                     queue: songs,
                                     queueIndex: index,
                                     artworkSize: 52,

@@ -123,7 +123,6 @@ struct HomeView: View {
     @ViewBuilder
     private func homeSection(_ section: HomeSection) -> some View {
         let snapshot = library.snapshot
-        let mixes = presentation.personalizedMixes
         switch section {
         case .shortcuts:
             shortcuts
@@ -138,7 +137,7 @@ struct HomeView: View {
         case .artistMixes:
             personalizedMixSection(
                 filter == .personalized ? "아티스트 믹스" : "아티스트에서 이어 듣기",
-                mixes: mixes.filter { $0.kind == .artist }
+                mixes: presentation.artistMixes
             )
         case .featuredArtists:
             artistSection("놓치면 아쉬운 아티스트", artists: presentation.featuredArtists)
@@ -155,14 +154,12 @@ struct HomeView: View {
         case .daylistMixes:
             personalizedMixSection(
                 "오늘의 믹스",
-                mixes: mixes.filter {
-                    [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
-                }
+                mixes: presentation.daylistMixes
             )
         case .moodMixes:
             personalizedMixSection(
                 "무드별 믹스",
-                mixes: mixes.filter { $0.kind == .mood }
+                mixes: presentation.moodMixes
             )
         }
     }
@@ -465,6 +462,9 @@ struct HomePresentation: Sendable {
     let featuredArtists: [Artist]
     let allFilterSections: [HomeSection]
     let personalizedFilterSections: [HomeSection]
+    let artistMixes: [PersonalizedMix]
+    let daylistMixes: [PersonalizedMix]
+    let moodMixes: [PersonalizedMix]
 
     static let empty = HomePresentation(
         personalizedMixes: [],
@@ -474,7 +474,10 @@ struct HomePresentation: Sendable {
         primaryArtists: [],
         featuredArtists: [],
         allFilterSections: [.shortcuts],
-        personalizedFilterSections: []
+        personalizedFilterSections: [],
+        artistMixes: [],
+        daylistMixes: [],
+        moodMixes: []
     )
 
     @concurrent
@@ -501,6 +504,11 @@ struct HomePresentation: Sendable {
                 .prefix(12)
         )
         let featuredArtists = makeFeaturedArtists(snapshot: snapshot)
+        let artistMixes = personalizedMixes.filter { $0.kind == .artist }
+        let daylistMixes = personalizedMixes.filter {
+            [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
+        }
+        let moodMixes = personalizedMixes.filter { $0.kind == .mood }
         return HomePresentation(
             personalizedMixes: personalizedMixes,
             favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),
@@ -517,7 +525,10 @@ struct HomePresentation: Sendable {
             ),
             personalizedFilterSections: makePersonalizedFilterSections(
                 personalizedMixes: personalizedMixes
-            )
+            ),
+            artistMixes: artistMixes,
+            daylistMixes: daylistMixes,
+            moodMixes: moodMixes
         )
     }
 

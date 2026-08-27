@@ -1,10 +1,28 @@
 import Foundation
 
+struct LocalLibrarySearchSong: Sendable, Equatable {
+    let song: Song
+    let normalizedTitle: String
+    let normalizedArtist: String
+    let normalizedAlbum: String
+}
+
+struct LocalLibrarySearchAlbum: Sendable, Equatable {
+    let album: Album
+    let normalizedName: String
+    let normalizedArtist: String
+}
+
+struct LocalLibrarySearchArtist: Sendable, Equatable {
+    let artist: Artist
+    let normalizedName: String
+}
+
 /// Pre-deduplicated local search pool built once per home snapshot refresh.
 struct LocalLibrarySearchCorpus: Sendable, Equatable {
-    let songs: [Song]
-    let albums: [Album]
-    let artists: [Artist]
+    let songs: [LocalLibrarySearchSong]
+    let albums: [LocalLibrarySearchAlbum]
+    let artists: [LocalLibrarySearchArtist]
 
     static let empty = LocalLibrarySearchCorpus(
         songs: [],
@@ -17,14 +35,32 @@ struct LocalLibrarySearchCorpus: Sendable, Equatable {
             songs: MediaIdentity.uniqueSongs(
                 from: HomeSnapshot.songCollections.map { snapshot[keyPath: $0] },
                 limit: 400
-            ),
+            ).map { song in
+                LocalLibrarySearchSong(
+                    song: song,
+                    normalizedTitle: normalized(song.title),
+                    normalizedArtist: normalized(song.artist),
+                    normalizedAlbum: normalized(song.album)
+                )
+            },
             albums: MediaIdentity.unique(
                 HomeSnapshot.albumCollections.flatMap { snapshot[keyPath: $0] },
                 id: \.id
-            ),
+            ).map { album in
+                LocalLibrarySearchAlbum(
+                    album: album,
+                    normalizedName: normalized(album.name),
+                    normalizedArtist: normalized(album.artist)
+                )
+            },
             artists: MediaIdentity.uniqueArtists(
                 HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
-            )
+            ).map { artist in
+                LocalLibrarySearchArtist(
+                    artist: artist,
+                    normalizedName: normalized(artist.name)
+                )
+            }
         )
     }
 
@@ -51,28 +87,43 @@ enum LocalLibrarySearch {
         let query = PreparedSearchQuery(rawQuery)
         guard !query.value.isEmpty else { return .empty }
 
-        let songs = corpus.songs
-        let albums = corpus.albums
-        let artists = corpus.artists
-
         return SearchResults(
-            artists: ranked(artists, limit: artistLimit) {
-                fieldMatch($0.name, query: query, field: 0)
-            },
-            albums: ranked(albums, limit: albumLimit) { album in
+            artists: ranked(corpus.artists, limit: artistLimit) { entry in
+                fieldMatch(entry.normalizedName, query: query, field: 0)
+            }.map(\.artist),
+            albums: ranked(corpus.albums, limit: albumLimit) { entry in
                 bestFieldMatch(
-                    fieldMatch(album.name, query: query, field: 0),
-                    fieldMatch(album.artist, query: query, field: 1)
+                    fieldMatch(entry.normalizedName, query: query, field: 0),
+                    fieldMatch(entry.normalizedArtist, query: query, field: 1)
                 )
-            },
-            songs: ranked(songs, limit: songLimit) { song in
+            }.map(\.album),
+            songs: ranked(corpus.songs, limit: songLimit) { entry in
                 bestFieldMatch(
-                    fieldMatch(song.title, query: query, field: 0),
-                    fieldMatch(song.artist, query: query, field: 1),
-                    fieldMatch(song.album, query: query, field: 2)
+                    fieldMatch(entry.normalizedTitle, query: query, field: 0),
+                    fieldMatch(entry.normalizedArtist, query: query, field: 1),
+                    fieldMatch(entry.normalizedAlbum, query: query, field: 2)
                 )
-            }
+            }.map(\.song)
         )
+    }
+
+    @concurrent
+    static func resultsConcurrently(
+        for rawQuery: String,
+        in corpus: LocalLibrarySearchCorpus,
+        artistLimit: Int = 8,
+        albumLimit: Int = 14,
+        songLimit: Int = 30
+    ) async -> SearchResults {
+        guard !Task.isCancelled else { return .empty }
+        let value = results(
+            for: rawQuery,
+            in: corpus,
+            artistLimit: artistLimit,
+            albumLimit: albumLimit,
+            songLimit: songLimit
+        )
+        return Task.isCancelled ? .empty : value
     }
 }
 
@@ -153,10 +204,9 @@ private func ranked<Item>(
 }
 
 private func matches(
-    _ value: String,
+    _ haystack: String,
     query: PreparedSearchQuery
 ) -> SearchMatchRank? {
-    let haystack = normalized(value)
     guard !haystack.isEmpty else { return nil }
     if haystack == query.value { return .exact }
     if haystack.hasPrefix(query.value) { return .prefix }
@@ -170,11 +220,11 @@ private func matches(
 }
 
 private func fieldMatch(
-    _ value: String,
+    _ haystack: String,
     query: PreparedSearchQuery,
     field: Int
 ) -> FieldMatch? {
-    matches(value, query: query).map { FieldMatch(match: $0, field: field) }
+    matches(haystack, query: query).map { FieldMatch(match: $0, field: field) }
 }
 
 private func bestFieldMatch(

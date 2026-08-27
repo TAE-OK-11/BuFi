@@ -3211,15 +3211,18 @@ actor OpenSubsonicClient {
             "getArtistInfo2",
             parameters: ["id": id, "count": "8", "includeNotPresent": "false"]
         )
-        let albums = try await albumsPayload
+        async let topPayload: TopSongsPayload = readRequest(
+            "getTopSongs",
+            parameters: ["artist": name, "count": "20"]
+        )
+        let (albums, info, top) = try await (
+            albumsPayload,
+            infoPayload,
+            topPayload
+        )
         guard let artist = albums.artist else {
             throw OpenSubsonicError.invalidResponse
         }
-        let top: TopSongsPayload = try await readRequest(
-            "getTopSongs",
-            parameters: ["artist": artist.name, "count": "20"]
-        )
-        let info = try await infoPayload
         return ArtistDetail(
             artist: artist.artistValue,
             albums: artist.album ?? [],

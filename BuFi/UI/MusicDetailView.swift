@@ -829,13 +829,21 @@ struct MusicDetailView: View {
             displayScale: 3
         )
         var urls: [URL] = []
-        for id in coverIDs.prefix(8) {
-            guard !Task.isCancelled else { return }
-            if let url = await model.artworkURL(
-                id: id,
-                size: ArtworkRequestSizing.serverRequestSize(for: pixelSize)
-            ) {
-                urls.append(ArtworkStore.cacheURL(for: url, revision: nil))
+        await withTaskGroup(of: URL?.self) { group in
+            for id in coverIDs.prefix(8) {
+                group.addTask {
+                    guard !Task.isCancelled else { return nil }
+                    guard let url = await model.artworkURL(
+                        id: id,
+                        size: ArtworkRequestSizing.serverRequestSize(for: pixelSize)
+                    ) else { return nil }
+                    return ArtworkStore.cacheURL(for: url, revision: nil)
+                }
+            }
+            for await url in group {
+                if let url {
+                    urls.append(url)
+                }
             }
         }
         await ArtworkStore.shared.prefetch(urls: urls, pixelSize: pixelSize)

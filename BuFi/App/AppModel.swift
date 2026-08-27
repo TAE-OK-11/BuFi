@@ -734,21 +734,34 @@ final class AppModel: ObservableObject {
             previousResults: searchContent.results,
             nextQuery: query
         )
-        let local = applyingFavoriteOverrides(
-            to: LocalLibrarySearch.results(for: query, in: library.searchCorpus)
-        )
-        let provisionalResults = local.isEmpty ? retained : local
-        let provisionalIsLocal = !local.isEmpty
-            || (searchContent.isLocalFallback && !retained.isEmpty)
+        let provisionalIsLocalFromRetained = searchContent.isLocalFallback
+            && !retained.isEmpty
         searchContent.publish(
             query: query,
-            results: provisionalResults,
+            results: retained,
             isSearching: true,
-            isLocalFallback: provisionalIsLocal
+            isLocalFallback: provisionalIsLocalFromRetained
         )
 
+        let corpus = library.searchCorpus
         let task = Task { [weak self] in
+            let localResults = await LocalLibrarySearch.resultsConcurrently(
+                for: query,
+                in: corpus
+            )
             do {
+                guard let self,
+                      generation == self.searchGeneration,
+                      self.client === client else { return }
+                let local = self.applyingFavoriteOverrides(to: localResults)
+                if !local.isEmpty {
+                    self.searchContent.publish(
+                        query: query,
+                        results: local,
+                        isSearching: true,
+                        isLocalFallback: true
+                    )
+                }
                 if let debounce {
                     try await Task.sleep(for: debounce)
                 }
@@ -1665,6 +1678,13 @@ final class AppModel: ObservableObject {
     }
 
     private func applyingFavoriteOverrides(to results: SearchResults) -> SearchResults {
+        guard !FavoriteOverrideApplicationPolicy.canReuseSnapshot(
+            hasOverrides: !favoriteOverrides.isEmpty,
+            hasPendingMutations: !starRequests.isEmpty
+                || !awaitingStarConfirmations.isEmpty
+        ) else {
+            return results
+        }
         var value = results
         value.artists = value.artists.map(applyingFavoriteOverride)
         value.albums = value.albums.map(applyingFavoriteOverride)
@@ -2169,6 +2189,7 @@ final class AppModel: ObservableObject {
         let weights = RecommendationWeights.current()
         let sections = await Self.recommendationSections(
             snapshot: value,
+            snapshotRevision: library.revision.advanced(),
             weights: weights,
             behavior: behavior
         )
