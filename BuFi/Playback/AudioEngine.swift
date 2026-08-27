@@ -2869,7 +2869,7 @@ final class AudioEngine: NSObject, ObservableObject {
             quality: preparedQuality,
             compatibilityFormat: compatibilityFormat
         )
-        if let prepared = preparedPlaybackAssets[key] {
+        if preparedPlaybackAssets[key] != nil {
             if preparedPlaybackWarmupTasks[key] == nil {
                 if shouldWarmPreparedPlaybackAssetNow() {
                     warmupPreparedAssetsIfNeeded()
@@ -4158,7 +4158,10 @@ final class AudioEngine: NSObject, ObservableObject {
         lyricsRetryTask?.cancel()
         lyricsLoadGeneration &+= 1
         let generation = lyricsLoadGeneration
-        let playbackItemID = currentPlaybackItem?.id
+        guard let playbackItemID = currentPlaybackItem?.id else {
+            applyLyricsDocument(.empty, status: .unavailable)
+            return
+        }
         guard song.externalStreamURL == nil else {
             applyLyricsDocument(.empty, status: .unavailable)
             return
