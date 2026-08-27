@@ -385,6 +385,8 @@ final class AppModel: ObservableObject {
     private var cachedHomePreparationToken: UUID?
     private var serverHomeEnrichmentTask: Task<Void, Never>?
     private var serverHomeEnrichmentToken: UUID?
+    private var catalogActivationTask: Task<Void, Never>?
+    private var catalogActivationToken: UUID?
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogRefreshToken: UUID?
     private var recommendationGeneration: UInt64 = 0
@@ -435,22 +437,31 @@ final class AppModel: ObservableObject {
         guard bootstrapState == .idle else { return }
         bootstrapState = .running
         LaunchDiagnostics.mark("credential-bootstrap-starting")
-        let stored = await secureStore.loadBootstrapState(
-            lastFMAccount: Self.lastFMKeyAccount,
-            listenBrainzAccount: Self.listenBrainzTokenAccount
-        )
+        let credentials = await secureStore.loadCredentialsForBootstrap()
         guard !Task.isCancelled else {
             bootstrapState = .idle
             return
         }
-        hasLastFMAPIKey = stored.hasLastFMKey
-        hasListenBrainzToken = stored.hasListenBrainzToken
         LaunchDiagnostics.mark("credential-bootstrap-loaded")
-        if let credentials = stored.credentials {
+        if let credentials {
             await connect(credentials, persist: false)
         } else {
             sessionState = .signedOut
         }
+        guard !Task.isCancelled else {
+            bootstrapState = sessionState == .ready ? .completed : .idle
+            return
+        }
+        let apiKeyFlags = await secureStore.bootstrapAPIKeyFlags(
+            lastFMAccount: Self.lastFMKeyAccount,
+            listenBrainzAccount: Self.listenBrainzTokenAccount
+        )
+        guard !Task.isCancelled else {
+            bootstrapState = sessionState == .ready ? .completed : .idle
+            return
+        }
+        hasLastFMAPIKey = apiKeyFlags.hasLastFMKey
+        hasListenBrainzToken = apiKeyFlags.hasListenBrainzToken
         guard !Task.isCancelled else {
             bootstrapState = sessionState == .ready ? .completed : .idle
             return
@@ -618,7 +629,13 @@ final class AppModel: ObservableObject {
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
-            let snapshot = await preparedHomeSnapshot(loadResult.snapshot)
+            let recomputeRecommendations = needsFullRefresh
+                || previousHome.recommendedSongs.isEmpty
+                || previousHome.daylistSongs.isEmpty
+            let snapshot = await preparedHomeSnapshot(
+                loadResult.snapshot,
+                recomputeRecommendations: recomputeRecommendations
+            )
             guard generation == sessionGeneration, self.client === client else { return }
             guard revision == homeRevision else { return }
             guard starRequests.isEmpty else {
@@ -2183,9 +2200,19 @@ final class AppModel: ObservableObject {
     }
 
     private func preparedHomeSnapshot(
-        _ snapshot: HomeSnapshot
+        _ snapshot: HomeSnapshot,
+        recomputeRecommendations: Bool = true
     ) async -> HomeSnapshot {
         var value = await mergingListeningHistory(into: snapshot)
+        let needsRecommendationSections = recomputeRecommendations
+            || value.recommendedSongs.isEmpty
+            || value.daylistSongs.isEmpty
+        guard needsRecommendationSections else {
+            if value.recommendedArtists.isEmpty, !value.recommendedSongs.isEmpty {
+                value.recommendedArtists = resolvedRecommendedArtists(in: value)
+            }
+            return value
+        }
         let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
         let weights = RecommendationWeights.current()
         let sections = await Self.recommendationSections(
@@ -2633,8 +2660,8 @@ final class AppModel: ObservableObject {
             let client = try OpenSubsonicClient(
                 credentials: credentials,
                 waitsForConnectivity: !persist,
-                requestTimeout: persist ? 12 : 18,
-                resourceTimeout: persist ? 20 : 60
+                requestTimeout: 12,
+                resourceTimeout: persist ? 20 : 30
             )
             provisionalClient = client
             let accountScope = AccountScope.identifier(for: client.credentials)
@@ -2651,15 +2678,11 @@ final class AppModel: ObservableObject {
             async let historyRequest = ListeningHistoryStore.shared.activate(
                 accountScope: accountScope
             )
-            async let catalogRequest = LocalLibraryCatalog.shared.activate(
-                accountScope: accountScope
-            )
 
             let cachedSnapshot = await cachedSnapshotRequest
             let offlineSession = await offlineRequest
             let artworkSession = await artworkRequest
             let historySession = await historyRequest
-            let catalogSession = await catalogRequest
             let ping = await statusRequest
             try Task.checkCancellation()
             guard generation == sessionGeneration else {
@@ -2670,7 +2693,7 @@ final class AppModel: ObservableObject {
                         offline: offlineSession,
                         artwork: artworkSession,
                         history: historySession,
-                        catalog: catalogSession
+                        catalog: nil
                     )
                 )
                 return
@@ -2683,7 +2706,7 @@ final class AppModel: ObservableObject {
                 offline: offlineSession,
                 artwork: artworkSession,
                 history: historySession,
-                catalog: catalogSession
+                catalog: nil
             )
 
             if ping.isCancelled {
@@ -2734,9 +2757,11 @@ final class AppModel: ObservableObject {
             self.offlineSessionToken = offlineSession
             self.artworkSessionToken = artworkSession
             self.historySessionToken = historySession
-            self.catalogSessionToken = catalogSession
             self.publishHome(applyingFavoriteOverrides(to: snapshot))
-            self.scheduleLibraryCatalogRefresh(snapshot: snapshot)
+            scheduleDeferredCatalogActivation(
+                accountScope: accountScope,
+                generation: generation
+            )
             self.lastFullRefresh = nil
             self.lastHomeSnapshotSave = nil
             self.connectedServerAddress = Self.serverDisplayAddress(
@@ -3030,6 +3055,9 @@ final class AppModel: ObservableObject {
         catalogRefreshTask?.cancel()
         catalogRefreshTask = nil
         catalogRefreshToken = nil
+        catalogActivationTask?.cancel()
+        catalogActivationTask = nil
+        catalogActivationToken = nil
     }
 
     private var allowsBackgroundPreparation: Bool {
@@ -3048,6 +3076,39 @@ final class AppModel: ObservableObject {
         }
         if let catalog = leases.catalog {
             await LocalLibraryCatalog.shared.deactivate(session: catalog)
+        }
+    }
+
+    private func scheduleDeferredCatalogActivation(
+        accountScope: String,
+        generation: Int
+    ) {
+        catalogActivationTask?.cancel()
+        guard allowsBackgroundPreparation else {
+            catalogActivationTask = nil
+            catalogActivationToken = nil
+            return
+        }
+        let token = UUID()
+        catalogActivationToken = token
+        catalogActivationTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.catalogActivationToken == token {
+                    self.catalogActivationTask = nil
+                    self.catalogActivationToken = nil
+                }
+            }
+            let catalogSession = await LocalLibraryCatalog.shared.activate(
+                accountScope: accountScope
+            )
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration,
+                  let catalogSession else { return }
+            self.catalogSessionToken = catalogSession
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration else { return }
+            self.scheduleLibraryCatalogRefresh(snapshot: self.home)
         }
     }
 

@@ -30,11 +30,10 @@ struct BuFiApp: App {
                 .tint(BuFiTheme.accent)
                 .task {
                     // SwiftUI may begin a view task before Core Animation has
-                    // committed the first frame. Yield and add a short grace
-                    // period so MediaPlayer, AVFoundation, and network-monitor
-                    // registration cannot extend or crash the pre-frame path.
+                    // committed the first frame. Yield once so MediaPlayer,
+                    // AVFoundation, and network-monitor registration stay off
+                    // the pre-frame path without adding an artificial delay.
                     await Task.yield()
-                    try? await Task.sleep(for: .milliseconds(150))
                     LaunchDiagnostics.mark("first-scene-mounted")
                     audio.activateRuntimeIfNeeded()
                     await model.bootstrapIfNeeded()

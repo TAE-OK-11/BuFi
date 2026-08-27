@@ -3609,7 +3609,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 // Let AVPlayer own the first network scheduling slice. The UI
                 // already has provisional row metadata and artwork during this
                 // short interval, so no visible content is withheld.
-                try await Task.sleep(for: .milliseconds(120))
+                try await Task.sleep(for: .milliseconds(64))
             } catch {
                 return
             }
