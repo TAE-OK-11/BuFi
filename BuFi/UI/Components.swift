@@ -872,13 +872,13 @@ struct SongRowCurrentTrackResolver: View {
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     let song: Song
     let queue: [Song]
-    let queueIndex: Int?
-    let playbackOrigin: PlaybackOrigin
-    let artworkSize: CGFloat
-    let layout: SongRowLayout
-    let fallbackTrackNumber: Int?
-    let onMore: (() -> Void)?
-    let textLineLimit: Int
+    var queueIndex: Int? = nil
+    var playbackOrigin: PlaybackOrigin = .manual
+    var artworkSize: CGFloat = 54
+    var layout: SongRowLayout = .standard
+    var fallbackTrackNumber: Int? = nil
+    var onMore: (() -> Void)? = nil
+    var textLineLimit: Int = 1
 
     var body: some View {
         SongRow(
