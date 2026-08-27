@@ -1224,30 +1224,27 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        ZStack(alignment: .topLeading) {
-            VStack(alignment: .leading, spacing: 13) {
-                ForEach(visibleMiniLyrics, id: \.line.id) { item in
-                    let isActive = item.index == lyricsState.activeIndex
-                    Text(item.line.text)
-                        .font(
-                            .system(
-                                size: 21,
-                                weight: isActive ? .bold : .semibold
-                            )
+        VStack(alignment: .leading, spacing: 13) {
+            ForEach(visibleMiniLyrics, id: \.line.id) { item in
+                let isActive = item.index == lyricsState.activeIndex
+                Text(item.line.text)
+                    .font(
+                        .system(
+                            size: 21,
+                            weight: isActive ? .bold : .semibold
                         )
-                        .tracking(-0.12)
-                        .lineSpacing(5)
-                        .foregroundStyle(lyricColor(for: item.index))
-                        .lineLimit(isActive ? 3 : 2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .transition(miniLyricLineTransition)
-                        // Snap highlight changes. Animated opacity and
-                        // contentTransition(.interpolate) leave Korean glyphs
-                        // transparent mid-transition; Latin text tolerates it.
-                        .animation(nil, value: lyricsState.activeIndex)
-                }
+                    )
+                    .tracking(-0.12)
+                    .lineSpacing(5)
+                    .foregroundStyle(lyricColor(for: item.index))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(miniLyricLineTransition)
+                    // Highlight snaps instantly; CJK glyphs flash when opacity
+                    // or contentTransition animates on the same Text view.
+                    .animation(nil, value: lyricsState.activeIndex)
             }
         }
         .padding(.top, 4)
@@ -1255,52 +1252,35 @@ private struct PlayerLyricsCard: View {
         .contentShape(Rectangle())
         .clipped()
         .animation(
-            motionEnabled ? BuFiMotion.miniLyrics : .none,
-            value: miniLyricsWindowStartIndex
+            motionEnabled ? BuFiMotion.miniLyricsScroll : .none,
+            value: lyricsState.activeIndex
         )
     }
 
-    /// Only animate when the visible lyric window scrolls, not on every line hop.
-    private var miniLyricsWindowStartIndex: Int {
-        visibleMiniLyrics.first?.index ?? lyricsState.activeIndex
-    }
-
+    /// Active line is always the first visible row; show the next lines below.
     private var visibleMiniLyrics: [(index: Int, line: LyricLine)] {
         let lines = lyricsState.document.lines
         guard !lines.isEmpty else { return [] }
         let active = lyricsState.activeIndex
-        let windowSize = 4
-        let start: Int
-        if active < 0 {
-            start = lines.startIndex
-        } else {
-            // Keep the window pinned while the active line advances so
-            // ForEach insert/remove transitions do not run every beat.
-            let preferredStart = max(lines.startIndex, active - 1)
-            let maxStart = max(lines.startIndex, lines.count - windowSize)
-            start = min(preferredStart, maxStart)
-        }
-        let end = min(lines.endIndex, start + windowSize)
+        let start = active >= 0 ? active : lines.startIndex
+        let end = min(lines.endIndex, start + 4)
         guard start < end else { return [] }
         return (start..<end).map { (index: $0, line: lines[$0]) }
     }
 
     private var miniLyricLineTransition: AnyTransition {
-        guard motionEnabled else { return .opacity }
-        // Offset-only transitions avoid opacity fades that flash on CJK text.
+        guard motionEnabled else { return .identity }
+        // Push mimics a lyric sheet sliding up without opacity fades on CJK text.
         return .asymmetric(
-            insertion: .offset(y: 6)
-                .combined(with: .scale(scale: 0.992, anchor: .topLeading)),
-            removal: .offset(y: -5)
-                .combined(with: .scale(scale: 0.996, anchor: .topLeading))
+            insertion: .push(from: .bottom),
+            removal: .push(from: .top)
         )
     }
 
     private func lyricColor(for index: Int) -> Color {
         if index == lyricsState.activeIndex { return primary }
-        if index < lyricsState.activeIndex { return primary.opacity(0.18) }
         let distance = max(1, index - lyricsState.activeIndex)
-        return primary.opacity(max(0.28, 0.64 - (Double(distance - 1) * 0.10)))
+        return primary.opacity(max(0.32, 0.62 - (Double(distance - 1) * 0.10)))
     }
 }
 
