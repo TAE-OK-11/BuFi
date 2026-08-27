@@ -762,7 +762,7 @@ private struct HomeAlbumCard: View {
     }
 }
 
-private enum HomeSection: Hashable, CaseIterable {
+fileprivate enum HomeSection: Hashable, CaseIterable {
     case shortcuts
     case randomAlbums
     case starredAlbums
