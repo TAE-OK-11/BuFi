@@ -214,9 +214,9 @@ struct BuFiPressStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed && motionEnabled ? 0.976 : 1)
-            .brightness(configuration.isPressed ? -0.012 : 0)
-            .opacity(configuration.isPressed ? 0.96 : 1)
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.982 : 1)
+            .brightness(configuration.isPressed ? -0.008 : 0)
+            .opacity(configuration.isPressed ? 0.97 : 1)
             .animation(
                 motionEnabled
                     ? BuFiMotion.press(isPressed: configuration.isPressed)

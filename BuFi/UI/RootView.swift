@@ -230,7 +230,7 @@ struct RootView: View {
         return content
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
-            .offset(y: effectiveMotion ? CGFloat(1 - activeProgress) * 7 : 0)
+            .offset(y: effectiveMotion ? CGFloat(1 - activeProgress) * 5 : 0)
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if currentPlayback.song != nil {
                     Color.clear
