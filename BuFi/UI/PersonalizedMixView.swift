@@ -404,7 +404,7 @@ struct PersonalizedMixDetailView: View {
                                     .monospacedDigit()
                                     .frame(width: 24, alignment: .trailing)
                             }
-                            SongRow(
+                            SongRowCurrentTrackResolver(
                                 song: song,
                                 queue: mix.songs,
                                 queueIndex: index,

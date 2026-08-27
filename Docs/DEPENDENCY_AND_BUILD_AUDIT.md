@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-08-22
+Audit date: 2026-08-27 (dependency versions reverified)
 
 ## Decisions
 
@@ -10,6 +10,12 @@ Audit date: 2026-08-22
 | [GRDB.swift 7.11.1](https://github.com/groue/GRDB.swift) | MIT | Keep and pin. It supplies the transactional SQLite persistence layer and requires Swift 6.1 or later. |
 | [Nuke 13.2.0](https://github.com/kean/Nuke/releases/tag/13.2.0) | MIT | Keep and pin the `Nuke` core product. This release fixes non-finite resize crashes, stale progressive-cache writes, and unfinished processing work; the unused `NukeUI` product remains outside the build graph. |
 | [Zstandard 1.5.7](https://github.com/facebook/zstd/releases/tag/v1.5.7) | BSD 3-Clause | Keep and pin. It provides the `libzstd` SwiftPM product used by BuFi's bounded HTTP content decoder. |
+
+All four linked packages were reverified on 2026-08-27 against their upstream
+release feeds. GRDB.swift 7.11.1, Nuke 13.2.0, SwiftSonic 0.9.0, and Zstandard
+1.5.7 remain the latest stable pins compatible with BuFi's iOS 17 floor and
+Xcode 27 / Swift 6.4 CI lane. No dependency bumps were required for this audit.
+
 | [Amperfy](https://github.com/BLeeEZ/amperfy) | GPLv3 | Continue using selected compatibility and audio-session patterns with attribution. Do not add the complete app as a package. |
 | [Cassette](https://github.com/CassetteLab/cassette) | MPL-2.0 for current source | Continue as an architectural reference only. It is an application, not a reusable package required by BuFi. |
 | [TIDAL iOS SDK](https://github.com/tidal-music/tidal-sdk-ios) | Apache-2.0 | Architecture reference only at revision `41aed3a`. Adopt bounded task scheduling, keyed in-flight request coalescing, jittered retry, and observer ownership patterns without linking or copying the SDK. |

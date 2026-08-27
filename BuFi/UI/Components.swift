@@ -657,6 +657,7 @@ struct SongRow: View {
     let song: Song
     let queue: [Song]
     var queueIndex: Int? = nil
+    var isCurrentTrack: Bool? = nil
     var playbackOrigin: PlaybackOrigin = .manual
     var artworkSize: CGFloat = 54
     var layout: SongRowLayout = .standard
@@ -708,12 +709,12 @@ struct SongRow: View {
             } label: {
                 HStack(spacing: 12) {
                     CompactTrackLeading(
-                        songID: song.id,
+                        isCurrent: resolvedIsCurrent,
                         trackNumber: displayedTrackNumber
                     )
 
                     PlayingSongTitle(
-                        songID: song.id,
+                        isCurrent: resolvedIsCurrent,
                         title: song.title,
                         lineLimit: 1,
                         expandsVertically: false
@@ -770,7 +771,7 @@ struct SongRow: View {
                     .frame(width: artworkSize, height: artworkSize)
                     VStack(alignment: .leading, spacing: 4) {
                         PlayingSongTitle(
-                            songID: song.id,
+                            isCurrent: resolvedIsCurrent,
                             title: song.title,
                             lineLimit: textLineLimit
                         )
@@ -810,15 +811,18 @@ struct SongRow: View {
         song.track ?? fallbackTrackNumber ?? 1
     }
 
+    private var resolvedIsCurrent: Bool {
+        isCurrentTrack ?? false
+    }
+
     private var durationText: String {
         song.safeDuration > 0 ? song.safeDuration.playbackText : "—:—"
     }
 }
 
 private struct PlayingSongTitle: View {
-    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
-    let songID: String
+    let isCurrent: Bool
     let title: String
     var lineLimit = 1
     var expandsVertically = true
@@ -827,28 +831,25 @@ private struct PlayingSongTitle: View {
         Text(title)
             .font(.system(size: 16, weight: .semibold))
             .foregroundStyle(
-                currentPlayback.song?.id == songID
-                    ? BuFiTheme.accent
-                    : Color.primary
+                isCurrent ? BuFiTheme.accent : Color.primary
             )
             .lineLimit(lineLimit)
             .fixedSize(horizontal: false, vertical: expandsVertically)
             .animation(
                 motionEnabled ? BuFiMotion.symbol : .none,
-                value: currentPlayback.song?.id == songID
+                value: isCurrent
             )
     }
 }
 
 private struct CompactTrackLeading: View {
-    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
-    let songID: String
+    let isCurrent: Bool
     let trackNumber: Int
 
     var body: some View {
         Group {
-            if currentPlayback.song?.id == songID {
+            if isCurrent {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(BuFiTheme.accent)
@@ -862,7 +863,35 @@ private struct CompactTrackLeading: View {
         .frame(width: 28, alignment: .trailing)
         .animation(
             motionEnabled ? BuFiMotion.symbol : .none,
-            value: currentPlayback.song?.id == songID
+            value: isCurrent
+        )
+    }
+}
+
+struct SongRowCurrentTrackResolver: View {
+    @EnvironmentObject private var currentPlayback: CurrentPlaybackState
+    let song: Song
+    let queue: [Song]
+    let queueIndex: Int?
+    let playbackOrigin: PlaybackOrigin
+    let artworkSize: CGFloat
+    let layout: SongRowLayout
+    let fallbackTrackNumber: Int?
+    let onMore: (() -> Void)?
+    let textLineLimit: Int
+
+    var body: some View {
+        SongRow(
+            song: song,
+            queue: queue,
+            queueIndex: queueIndex,
+            isCurrentTrack: currentPlayback.song?.id == song.id,
+            playbackOrigin: playbackOrigin,
+            artworkSize: artworkSize,
+            layout: layout,
+            fallbackTrackNumber: fallbackTrackNumber,
+            onMore: onMore,
+            textLineLimit: textLineLimit
         )
     }
 }

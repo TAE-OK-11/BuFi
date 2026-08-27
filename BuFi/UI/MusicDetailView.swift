@@ -531,7 +531,7 @@ struct MusicDetailView: View {
                         Array(songs.enumerated()),
                         id: \.offset
                     ) { index, song in
-                        SongRow(
+                        SongRowCurrentTrackResolver(
                             song: song,
                             queue: songs,
                             queueIndex: index,
