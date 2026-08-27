@@ -1096,6 +1096,7 @@ private struct PlayerLyricsCard: View {
     let onOpen: () -> Void
 
     @State private var canOfferTranslation = false
+    @State private var miniLyricsScrollLineID: Int?
 
     @ViewBuilder
     var body: some View {
@@ -1224,63 +1225,75 @@ private struct PlayerLyricsCard: View {
     }
 
     private var miniLyricsWindow: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            ForEach(visibleMiniLyrics, id: \.line.id) { item in
-                let isActive = item.index == lyricsState.activeIndex
-                Text(item.line.text)
-                    .font(
-                        .system(
-                            size: 21,
-                            weight: isActive ? .bold : .semibold
-                        )
-                    )
-                    .tracking(-0.12)
-                    .lineSpacing(5)
-                    .foregroundStyle(lyricColor(for: item.index))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .transition(miniLyricLineTransition)
-                    // Highlight snaps instantly; CJK glyphs flash when opacity
-                    // or contentTransition animates on the same Text view.
-                    .animation(nil, value: lyricsState.activeIndex)
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 13) {
+                ForEach(Array(lyricsState.document.lines.enumerated()), id: \.element.id) {
+                    index,
+                    line in
+                    miniLyricLineView(index: index, line: line)
+                        .id(line.id)
+                }
             }
+            .padding(.top, 4)
+            .scrollTargetLayout()
         }
-        .padding(.top, 4)
+        .scrollPosition(id: $miniLyricsScrollLineID, anchor: .top)
+        .scrollDisabled(true)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())
         .clipped()
-        .animation(
-            motionEnabled ? BuFiMotion.miniLyricsScroll : .none,
-            value: lyricsState.activeIndex
-        )
+        .onAppear {
+            syncMiniLyricsScrollPosition(animated: false)
+        }
+        .onChange(of: lyricsState.document.lines) { _, _ in
+            syncMiniLyricsScrollPosition(animated: false)
+        }
+        .onChange(of: lyricsState.activeIndex) { _, _ in
+            syncMiniLyricsScrollPosition(animated: true)
+        }
     }
 
-    /// Active line is always the first visible row; show the next lines below.
-    private var visibleMiniLyrics: [(index: Int, line: LyricLine)] {
+    private func miniLyricLineView(index: Int, line: LyricLine) -> some View {
+        let isActive = index == lyricsState.activeIndex
+        return Text(line.text)
+            .font(
+                .system(
+                    size: isActive ? 22 : 20,
+                    weight: isActive ? .bold : .semibold
+                )
+            )
+            .tracking(isActive ? -0.14 : -0.10)
+            .lineSpacing(5)
+            .foregroundStyle(lyricColor(for: index))
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(nil, value: lyricsState.activeIndex)
+    }
+
+    private func syncMiniLyricsScrollPosition(animated: Bool) {
         let lines = lyricsState.document.lines
-        guard !lines.isEmpty else { return [] }
         let active = lyricsState.activeIndex
-        let start = active >= 0 ? active : lines.startIndex
-        let end = min(lines.endIndex, start + 4)
-        guard start < end else { return [] }
-        return (start..<end).map { (index: $0, line: lines[$0]) }
-    }
-
-    private var miniLyricLineTransition: AnyTransition {
-        guard motionEnabled else { return .identity }
-        // Push mimics a lyric sheet sliding up without opacity fades on CJK text.
-        return .asymmetric(
-            insertion: .push(from: .bottom),
-            removal: .push(from: .top)
-        )
+        guard lines.indices.contains(active) else {
+            miniLyricsScrollLineID = nil
+            return
+        }
+        let nextID = lines[active].id
+        guard miniLyricsScrollLineID != nextID else { return }
+        if animated && motionEnabled {
+            withAnimation(BuFiMotion.miniLyricsScroll) {
+                miniLyricsScrollLineID = nextID
+            }
+        } else {
+            miniLyricsScrollLineID = nextID
+        }
     }
 
     private func lyricColor(for index: Int) -> Color {
         if index == lyricsState.activeIndex { return primary }
         let distance = max(1, index - lyricsState.activeIndex)
-        return primary.opacity(max(0.32, 0.62 - (Double(distance - 1) * 0.10)))
+        return primary.opacity(max(0.30, 0.58 - (Double(distance - 1) * 0.09)))
     }
 }
 
