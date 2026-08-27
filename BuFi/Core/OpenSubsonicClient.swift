@@ -3345,25 +3345,42 @@ actor OpenSubsonicClient {
         let uniqueSongs = songs.prefix(3).filter {
             seen.insert($0.id).inserted
         }
-        return await withTaskGroup(of: (Int, Song).self) { group in
-            for (index, provisional) in uniqueSongs.enumerated() {
-                group.addTask { [self] in
-                    guard !Task.isCancelled,
-                          let canonical = try? await song(id: provisional.id) else {
-                        return (index, provisional)
-                    }
-                    return (
-                        index,
-                        PlaybackMetadataResolver.resolve(
-                            canonical: canonical,
-                            provisional: provisional
+        var results = Array<Song?>(repeating: nil, count: uniqueSongs.count)
+        var pending: [(Int, Song)] = []
+        for (index, provisional) in uniqueSongs.enumerated() {
+            if let cached = playbackMetadataCache[provisional.id] {
+                results[index] = PlaybackMetadataResolver.resolve(
+                    canonical: cached,
+                    provisional: provisional
+                )
+            } else {
+                pending.append((index, provisional))
+            }
+        }
+        if !pending.isEmpty {
+            await withTaskGroup(of: (Int, Song).self) { group in
+                for (index, provisional) in pending {
+                    group.addTask { [self] in
+                        guard !Task.isCancelled,
+                              let canonical = try? await song(id: provisional.id) else {
+                            return (index, provisional)
+                        }
+                        return (
+                            index,
+                            PlaybackMetadataResolver.resolve(
+                                canonical: canonical,
+                                provisional: provisional
+                            )
                         )
-                    )
+                    }
+                }
+                for await value in group {
+                    results[value.0] = value.1
                 }
             }
-            var values: [(Int, Song)] = []
-            for await value in group { values.append(value) }
-            return values.sorted { $0.0 < $1.0 }.map { $0.1 }
+        }
+        return uniqueSongs.indices.map { index in
+            results[index] ?? uniqueSongs[index]
         }
     }
 
@@ -3374,6 +3391,13 @@ actor OpenSubsonicClient {
         }
         await withTaskGroup(of: Void.self) { group in
             for song in uniqueSongs {
+                if lyricsCache.value(
+                    for: song.id,
+                    maximumAge: 6 * 60 * 60,
+                    emptyMaximumAge: 30 * 60
+                ) != nil {
+                    continue
+                }
                 group.addTask { [self] in
                     guard !Task.isCancelled else { return }
                     _ = try? await lyrics(
