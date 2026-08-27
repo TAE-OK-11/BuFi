@@ -71,8 +71,8 @@ struct LibraryView: View {
                 surfaces.append(.favoriteArtists)
             }
             surfaces.append(.allArtistsHeader)
-            surfaces.append(contentsOf: artistPresentation.sections.map {
-                .artistSection($0.title)
+            surfaces.append(contentsOf: artistPresentation.sections.indices.map {
+                .artistSection($0)
             })
             return surfaces
         }
@@ -134,12 +134,9 @@ struct LibraryView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(
-                            Array(snapshot.starredSongs.enumerated()),
-                            id: \.offset
-                        ) { index, song in
+                        ForEach(Array(snapshot.starredSongs.indices), id: \.self) { index in
                             SongRow(
-                                song: song,
+                                song: snapshot.starredSongs[index],
                                 queue: snapshot.starredSongs,
                                 queueIndex: index
                             )
@@ -169,27 +166,26 @@ struct LibraryView: View {
             }
         case .allArtistsHeader:
             librarySectionTitle("모든 아티스트")
-        case .artistSection(let title):
-            if let section = artistPresentation.sections.first(where: { $0.title == title }) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(section.title)
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(BuFiTheme.accentSoft)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
+        case .artistSection(let index):
+            let section = artistPresentation.sections[index]
+            VStack(alignment: .leading, spacing: 8) {
+                Text(section.title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(BuFiTheme.accentSoft)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
 
-                    BuFiGroupedSurface {
-                        LazyVStack(spacing: 0) {
-                            ForEach(section.artists) { artist in
-                                artistRow(artist)
-                                if artist.id != section.artists.last?.id {
-                                    rowSeparator
-                                }
+                BuFiGroupedSurface {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(section.artists.enumerated()), id: \.element.id) { index, artist in
+                            artistRow(artist)
+                            if index < section.artists.count - 1 {
+                                rowSeparator
                             }
                         }
                     }
-                    .padding(.horizontal, 16)
                 }
+                .padding(.horizontal, 16)
             }
         }
     }
@@ -319,9 +315,9 @@ struct LibraryView: View {
     ) -> some View {
         BuFiGroupedSurface {
             LazyVStack(spacing: 0) {
-                ForEach(items) { item in
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     row(item)
-                    if item.id != items.last?.id {
+                    if index < items.count - 1 {
                         rowSeparator
                     }
                 }
@@ -477,7 +473,7 @@ private enum LibrarySurface: Hashable {
     case artistsEmpty
     case favoriteArtists
     case allArtistsHeader
-    case artistSection(String)
+    case artistSection(Int)
 }
 
 private enum LibraryFilter: Int, CaseIterable, Identifiable {

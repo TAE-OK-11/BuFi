@@ -110,57 +110,19 @@ struct HomeView: View {
     }
 
     private var visibleSections: [HomeSection] {
-        let snapshot = library.snapshot
-        let mixes = presentation.personalizedMixes
         switch filter {
         case .all:
-            return HomeSection.allCases.filter { section in
-                switch section {
-                case .shortcuts:
-                    true
-                case .randomAlbums:
-                    !snapshot.randomAlbums.isEmpty
-                case .starredAlbums:
-                    !snapshot.starredAlbums.isEmpty
-                case .recommendedAlbums:
-                    !presentation.recommendedAlbums.isEmpty
-                case .primaryArtists:
-                    !presentation.primaryArtists.isEmpty
-                case .artistMixes:
-                    mixes.contains { $0.kind == .artist }
-                case .featuredArtists:
-                    !presentation.featuredArtists.isEmpty
-                case .recentlyPlayed:
-                    !snapshot.recentlyPlayedAlbums.isEmpty
-                case .frequentAlbums:
-                    !snapshot.frequentAlbums.isEmpty
-                case .recentAlbums:
-                    !snapshot.recentAlbums.isEmpty
-                case .playlists:
-                    !snapshot.playlists.isEmpty
-                case .radio:
-                    !snapshot.radioStations.isEmpty
-                case .daylistMixes, .moodMixes:
-                    false
-                }
-            }
+            return presentation.allFilterSections
         case .playlists:
             return [.playlists]
         case .personalized:
-            return [
-                mixes.contains {
-                    [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
-                } ? HomeSection.daylistMixes : nil,
-                mixes.contains { $0.kind == .artist } ? .artistMixes : nil,
-                mixes.contains { $0.kind == .mood } ? .moodMixes : nil
-            ].compactMap { $0 }
+            return presentation.personalizedFilterSections
         }
     }
 
     @ViewBuilder
     private func homeSection(_ section: HomeSection) -> some View {
         let snapshot = library.snapshot
-        let mixes = presentation.personalizedMixes
         switch section {
         case .shortcuts:
             shortcuts
@@ -175,7 +137,7 @@ struct HomeView: View {
         case .artistMixes:
             personalizedMixSection(
                 filter == .personalized ? "아티스트 믹스" : "아티스트에서 이어 듣기",
-                mixes: mixes.filter { $0.kind == .artist }
+                mixes: presentation.artistMixes
             )
         case .featuredArtists:
             artistSection("놓치면 아쉬운 아티스트", artists: presentation.featuredArtists)
@@ -192,14 +154,12 @@ struct HomeView: View {
         case .daylistMixes:
             personalizedMixSection(
                 "오늘의 믹스",
-                mixes: mixes.filter {
-                    [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
-                }
+                mixes: presentation.daylistMixes
             )
         case .moodMixes:
             personalizedMixSection(
                 "무드별 믹스",
-                mixes: mixes.filter { $0.kind == .mood }
+                mixes: presentation.moodMixes
             )
         }
     }
@@ -500,6 +460,11 @@ struct HomePresentation: Sendable {
     let recommendedAlbums: [Album]
     let primaryArtists: [Artist]
     let featuredArtists: [Artist]
+    fileprivate let allFilterSections: [HomeSection]
+    fileprivate let personalizedFilterSections: [HomeSection]
+    let artistMixes: [PersonalizedMix]
+    let daylistMixes: [PersonalizedMix]
+    let moodMixes: [PersonalizedMix]
 
     static let empty = HomePresentation(
         personalizedMixes: [],
@@ -507,7 +472,12 @@ struct HomePresentation: Sendable {
         mostPlayedSongsMix: PersonalizedMixBuilder.mostPlayedSongs([]),
         recommendedAlbums: [],
         primaryArtists: [],
-        featuredArtists: []
+        featuredArtists: [],
+        allFilterSections: [.shortcuts],
+        personalizedFilterSections: [],
+        artistMixes: [],
+        daylistMixes: [],
+        moodMixes: []
     )
 
     @concurrent
@@ -521,23 +491,96 @@ struct HomePresentation: Sendable {
 
     static func make(input: HomePresentationInput) -> HomePresentation {
         let snapshot = input.snapshot
+        let personalizedMixes = PersonalizedMixBuilder.make(
+            snapshot: snapshot,
+            snapshotRevision: input.revision,
+            selectedArtists: input.selectedArtists
+        )
+        let recommendedAlbums = makeRecommendedAlbums(snapshot: snapshot)
+        let primaryArtists = Array(
+            (snapshot.starredArtists.isEmpty
+                ? snapshot.artists
+                : snapshot.starredArtists)
+                .prefix(12)
+        )
+        let featuredArtists = makeFeaturedArtists(snapshot: snapshot)
+        let artistMixes = personalizedMixes.filter { $0.kind == .artist }
+        let daylistMixes = personalizedMixes.filter {
+            [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
+        }
+        let moodMixes = personalizedMixes.filter { $0.kind == .mood }
         return HomePresentation(
-            personalizedMixes: PersonalizedMixBuilder.make(
-                snapshot: snapshot,
-                snapshotRevision: input.revision,
-                selectedArtists: input.selectedArtists
-            ),
+            personalizedMixes: personalizedMixes,
             favoriteSongsMix: PersonalizedMixBuilder.favoriteSongs(snapshot.starredSongs),
             mostPlayedSongsMix: PersonalizedMixBuilder.mostPlayedSongs(snapshot.mostPlayedSongs),
-            recommendedAlbums: makeRecommendedAlbums(snapshot: snapshot),
-            primaryArtists: Array(
-                (snapshot.starredArtists.isEmpty
-                    ? snapshot.artists
-                    : snapshot.starredArtists)
-                    .prefix(12)
+            recommendedAlbums: recommendedAlbums,
+            primaryArtists: primaryArtists,
+            featuredArtists: featuredArtists,
+            allFilterSections: makeAllFilterSections(
+                snapshot: snapshot,
+                personalizedMixes: personalizedMixes,
+                recommendedAlbums: recommendedAlbums,
+                primaryArtists: primaryArtists,
+                featuredArtists: featuredArtists
             ),
-            featuredArtists: makeFeaturedArtists(snapshot: snapshot)
+            personalizedFilterSections: makePersonalizedFilterSections(
+                personalizedMixes: personalizedMixes
+            ),
+            artistMixes: artistMixes,
+            daylistMixes: daylistMixes,
+            moodMixes: moodMixes
         )
+    }
+
+    private static func makeAllFilterSections(
+        snapshot: HomeSnapshot,
+        personalizedMixes: [PersonalizedMix],
+        recommendedAlbums: [Album],
+        primaryArtists: [Artist],
+        featuredArtists: [Artist]
+    ) -> [HomeSection] {
+        HomeSection.allCases.filter { section in
+            switch section {
+            case .shortcuts:
+                true
+            case .randomAlbums:
+                !snapshot.randomAlbums.isEmpty
+            case .starredAlbums:
+                !snapshot.starredAlbums.isEmpty
+            case .recommendedAlbums:
+                !recommendedAlbums.isEmpty
+            case .primaryArtists:
+                !primaryArtists.isEmpty
+            case .artistMixes:
+                personalizedMixes.contains { $0.kind == .artist }
+            case .featuredArtists:
+                !featuredArtists.isEmpty
+            case .recentlyPlayed:
+                !snapshot.recentlyPlayedAlbums.isEmpty
+            case .frequentAlbums:
+                !snapshot.frequentAlbums.isEmpty
+            case .recentAlbums:
+                !snapshot.recentAlbums.isEmpty
+            case .playlists:
+                !snapshot.playlists.isEmpty
+            case .radio:
+                !snapshot.radioStations.isEmpty
+            case .daylistMixes, .moodMixes:
+                false
+            }
+        }
+    }
+
+    private static func makePersonalizedFilterSections(
+        personalizedMixes: [PersonalizedMix]
+    ) -> [HomeSection] {
+        [
+            personalizedMixes.contains {
+                [.daylist, .repeatListening, .listenAgain, .genre].contains($0.kind)
+            } ? HomeSection.daylistMixes : nil,
+            personalizedMixes.contains { $0.kind == .artist } ? .artistMixes : nil,
+            personalizedMixes.contains { $0.kind == .mood } ? .moodMixes : nil
+        ].compactMap { $0 }
     }
 
     private static func makeFeaturedArtists(snapshot: HomeSnapshot) -> [Artist] {
@@ -719,7 +762,7 @@ private struct HomeAlbumCard: View {
     }
 }
 
-private enum HomeSection: Hashable, CaseIterable {
+fileprivate enum HomeSection: Hashable, CaseIterable {
     case shortcuts
     case randomAlbums
     case starredAlbums
