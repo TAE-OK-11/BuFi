@@ -98,12 +98,28 @@ actor SecureStore {
         return try? JSONDecoder().decode(ServerCredentials.self, from: data)
     }
 
+    /// Credentials only — used on the automatic-login path so Last.fm and
+    /// ListenBrainz Keychain reads do not block session restoration.
+    func loadCredentialsForBootstrap() -> ServerCredentials? {
+        load()
+    }
+
     func loadBootstrapState(
         lastFMAccount: String,
         listenBrainzAccount: String
     ) -> SecureBootstrapState {
         SecureBootstrapState(
             credentials: load(),
+            hasLastFMKey: loadSecret(account: lastFMAccount)?.isEmpty == false,
+            hasListenBrainzToken: loadSecret(account: listenBrainzAccount)?.isEmpty == false
+        )
+    }
+
+    func bootstrapAPIKeyFlags(
+        lastFMAccount: String,
+        listenBrainzAccount: String
+    ) -> (hasLastFMKey: Bool, hasListenBrainzToken: Bool) {
+        (
             hasLastFMKey: loadSecret(account: lastFMAccount)?.isEmpty == false,
             hasListenBrainzToken: loadSecret(account: listenBrainzAccount)?.isEmpty == false
         )

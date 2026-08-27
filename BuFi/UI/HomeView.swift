@@ -404,7 +404,7 @@ struct HomeView: View {
 
         if hasLoadedPresentation {
             do {
-                try await Task.sleep(for: .milliseconds(120))
+                try await Task.sleep(for: .milliseconds(64))
             } catch {
                 return
             }
