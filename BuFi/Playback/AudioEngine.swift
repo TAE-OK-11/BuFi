@@ -3499,7 +3499,6 @@ final class AudioEngine: NSObject, ObservableObject {
             cancelNetworkPrefetch(resetKey: true)
             return
         }
-        let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
