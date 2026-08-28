@@ -343,8 +343,7 @@ enum OpenSubsonicRequestPolicy {
                     .songDetails,
                     .albumDetails,
                     .libraryLists,
-                    .recommendations,
-                    .playQueue
+                    .recommendations
                 ])
             }
             if names.contains("albumId") {
@@ -798,6 +797,8 @@ actor OpenSubsonicClient {
     private static let persistedLyricsMaximumAge: TimeInterval = 7 * 24 * 60 * 60
     private static let persistedPlaybackMetadataMaximumAge: TimeInterval =
         7 * 24 * 60 * 60
+    private static let persistedPlaybackMetadataPositiveAge: TimeInterval =
+        30 * 60
     private static let playbackMetadataMemoryLimit = 256
     private static let zstandardBackoff: Duration = .seconds(300)
     private var responseCache = ResponseBodyCache(
@@ -1662,6 +1663,11 @@ actor OpenSubsonicClient {
         }
         for key in invalidDecodedKeys {
             removeDecodedResponse(for: key)
+        }
+        if dependencies.contains(.songDetails) {
+            playbackMetadataCache.removeAll(keepingCapacity: true)
+            playbackMetadataAccess.removeAll(keepingCapacity: true)
+            playbackMetadataAccessClock = 0
         }
     }
 
@@ -3110,6 +3116,13 @@ actor OpenSubsonicClient {
             playbackMetadataAccess[id] = nil
         } else if let cached = cachedPlaybackMetadata(id: id) {
             return cached
+        } else if let persisted = await AppDatabase.shared.loadPlaybackMetadata(
+            scope: accountScope,
+            songID: id,
+            maximumAge: Self.persistedPlaybackMetadataPositiveAge
+        ) {
+            cachePlaybackMetadata(persisted)
+            return persisted
         }
         do {
             let payload: SongPayload = try await readRequest(
@@ -3367,9 +3380,13 @@ actor OpenSubsonicClient {
     /// Warms the same canonical getSong representation consumed by playback.
     /// Failures retain provisional queue metadata so speculative work can
     /// never make a playable queue entry unavailable.
-    func prefetchPlaybackMetadata(songs: [Song]) async -> [Song] {
+    func prefetchPlaybackMetadata(
+        songs: [Song],
+        limit: Int = UpcomingArtworkPrefetchPolicy.upcomingCount
+    ) async -> [Song] {
+        let boundedLimit = max(1, limit)
         var seen = Set<String>()
-        let uniqueSongs = songs.prefix(3).filter {
+        let uniqueSongs = songs.prefix(boundedLimit).filter {
             seen.insert($0.id).inserted
         }
         var results = Array<Song?>(repeating: nil, count: uniqueSongs.count)
@@ -3413,7 +3430,7 @@ actor OpenSubsonicClient {
 
     func prefetchLyrics(songs: [Song]) async {
         var seen = Set<String>()
-        let uniqueSongs = songs.prefix(2).filter {
+        let uniqueSongs = songs.prefix(UpcomingArtworkPrefetchPolicy.upcomingCount).filter {
             seen.insert($0.id).inserted
         }
         await withTaskGroup(of: Void.self) { group in
