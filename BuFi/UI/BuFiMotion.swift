@@ -72,9 +72,9 @@ enum BuFiMotion {
     ) -> AnyTransition {
         guard enabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(x: distance * direction)
+            insertion: .offset(x: -distance * direction)
                 .combined(with: .opacity),
-            removal: .offset(x: -distance * 0.68 * direction)
+            removal: .offset(x: distance * 0.68 * direction)
                 .combined(with: .opacity)
         )
     }
