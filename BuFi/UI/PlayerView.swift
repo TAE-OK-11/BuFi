@@ -124,7 +124,6 @@ struct PlayerView: View {
     @State private var palette = ArtworkPalette.fallback
     @State private var showQueue = false
     @State private var transitionDirection: CGFloat = 1
-    @State private var presentedItem: PlaybackMediaItem?
     @State private var artworkPage: PlayerArtworkPageID?
     @State private var pagerSelectionGate = PlayerPagerSelectionGate()
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
@@ -133,7 +132,6 @@ struct PlayerView: View {
     @State private var artworkLayoutRevision: UInt64 = 0
     @State private var translationRequestedSongID: String?
     @State private var hasRevealedPlayerContent = false
-    @State private var paletteApplyTask: Task<Void, Never>?
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -146,7 +144,7 @@ struct PlayerView: View {
             ZStack {
                 background
 
-                if let item = presentedItem ?? currentPlayback.item {
+                if let item = currentPlayback.item {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(item)
@@ -225,15 +223,15 @@ struct PlayerView: View {
             let next = playback.snapshot
             refreshArtworkPages(from: next, fallback: currentPlayback.item)
             pruneArtworkPalettes(using: next)
-            guard let currentID = currentArtworkPageID(in: next) else {
-                syncArtworkPage(to: next)
-                return
+            if let currentID = currentArtworkPageID(in: next),
+               artworkPage != currentID {
+                syncArtworkPage(to: next, animated: false)
+            } else if artworkPage != nil,
+                      !next.entries.contains(where: { $0.id == artworkPage?.queueEntryID }) {
+                syncArtworkPage(to: next, animated: false)
             }
-            guard artworkPage != currentID else { return }
-            animateArtworkPage(to: currentID)
         }
         .onAppear {
-            presentedItem = currentPlayback.item
             if PlayerAppearance(rawValue: playerAppearance) == nil {
                 playerAppearance = PlayerAppearance.liquidGlass.rawValue
             }
@@ -244,7 +242,7 @@ struct PlayerView: View {
             artworkPage = nil
             pagerSelectionGate = PlayerPagerSelectionGate()
             refreshArtworkPages(from: playback.snapshot, fallback: currentPlayback.item)
-            syncArtworkPage(to: playback.snapshot)
+            syncArtworkPage(to: playback.snapshot, animated: false)
         }
         .task(id: playerPresentation.presentationID) {
             hasRevealedPlayerContent = false
@@ -261,86 +259,13 @@ struct PlayerView: View {
         to next: CurrentPlaybackSnapshot
     ) {
         let indexChanged = previous.index != next.index
-        let trackChanged = previous.item?.id != next.item?.id
         if previous.item?.song.id != next.item?.song.id {
             translationRequestedSongID = nil
         }
         if indexChanged {
             transitionDirection = next.index >= previous.index ? 1 : -1
         }
-        guard let currentPage = currentArtworkPageID(in: playback.snapshot) else {
-            paletteApplyTask?.cancel()
-            pagerSelectionGate.beginProgrammaticMove(to: nil)
-            artworkPage = nil
-            if trackChanged {
-                presentedItem = next.item
-            }
-            if palette != .fallback { palette = .fallback }
-            return
-        }
-        if artworkPage == currentPage {
-            if trackChanged {
-                applyTrackPresentation(next.item)
-            }
-            return
-        }
-        animateArtworkPage(
-            to: currentPage,
-            presentedItem: trackChanged ? next.item : nil
-        )
-    }
-
-    private func applyTrackPresentation(_ item: PlaybackMediaItem?) {
-        guard allowsMotion else {
-            presentedItem = item
-            return
-        }
-        withAnimation(BuFiMotion.trackPage) {
-            presentedItem = item
-        }
-    }
-
-    private func animateArtworkPage(
-        to currentPage: PlayerArtworkPageID,
-        presentedItem update: PlaybackMediaItem? = nil
-    ) {
-        pagerSelectionGate.beginProgrammaticMove(to: currentPage)
-        if allowsMotion {
-            withAnimation(BuFiMotion.trackPage) {
-                if let update {
-                    presentedItem = update
-                }
-                artworkPage = currentPage
-            }
-            schedulePaletteApply(for: currentPage, animated: true)
-        } else {
-            if let update {
-                presentedItem = update
-            }
-            artworkPage = currentPage
-            paletteApplyTask?.cancel()
-            applyPalette(for: currentPage)
-        }
-    }
-
-    private func schedulePaletteApply(
-        for page: PlayerArtworkPageID,
-        animated: Bool
-    ) {
-        paletteApplyTask?.cancel()
-        if artworkPalettes[page] != nil {
-            applyPalette(for: page)
-            return
-        }
-        guard animated, allowsMotion else {
-            applyPalette(for: page)
-            return
-        }
-        paletteApplyTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(48))
-            guard !Task.isCancelled else { return }
-            applyPalette(for: page)
-        }
+        syncArtworkPage(to: playback.snapshot, animated: indexChanged)
     }
 
     private var lyricsTranslationVisibility: Binding<Bool> {
@@ -369,7 +294,7 @@ struct PlayerView: View {
         .equatable()
         .ignoresSafeArea()
         .animation(
-            allowsMotion ? BuFiMotion.trackBackground : .none,
+            allowsMotion ? BuFiMotion.color : .none,
             value: PlayerBackgroundAnimationIdentity(
                 palette: palette,
                 playerAppearance: resolvedPlayerAppearance,
@@ -404,10 +329,10 @@ struct PlayerView: View {
                         .lineLimit(1)
                 }
                 .id(item.id)
-                .transition(trackSlideTransition)
+                .transition(trackTextTransition)
             }
             .frame(maxWidth: 240)
-            .clipped()
+            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer()
 
             PlayerOverflowMenu(song: song, foreground: playerPrimary)
@@ -457,10 +382,10 @@ struct PlayerView: View {
                     PlayerArtistLink(song: song, foreground: playerSecondary)
                 }
                 .id(item.id)
-                .transition(trackSlideTransition)
+                .transition(trackTextTransition)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .clipped()
+            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer(minLength: 4)
             PlayerFavoriteButton(
                 song: song,
@@ -673,19 +598,25 @@ struct PlayerView: View {
         return playback.entries.firstIndex { $0.id == page.queueEntryID }
     }
 
-    private func syncArtworkPage(to snapshot: PlaybackSnapshot) {
+    private func syncArtworkPage(to snapshot: PlaybackSnapshot, animated: Bool) {
         guard let currentPage = currentArtworkPageID(in: snapshot) else {
-            paletteApplyTask?.cancel()
             pagerSelectionGate.beginProgrammaticMove(to: nil)
             artworkPage = nil
             if palette != .fallback { palette = .fallback }
             return
         }
-        guard artworkPage != currentPage else {
-            applyPalette(for: currentPage)
-            return
+        if artworkPage != currentPage {
+            pagerSelectionGate.beginProgrammaticMove(to: currentPage)
         }
-        animateArtworkPage(to: currentPage)
+        let update = {
+            artworkPage = currentPage
+        }
+        if animated && allowsMotion {
+            withAnimation(BuFiMotion.trackPage) { update() }
+        } else {
+            update()
+        }
+        applyPalette(for: currentPage)
     }
 
     private func receivePalette(
@@ -705,9 +636,7 @@ struct PlayerView: View {
 
     private func applyPalette(for page: PlayerArtworkPageID?) {
         guard let page, let cached = artworkPalettes[page] else {
-            // Keep the outgoing palette until the incoming page reports one.
-            // Snapping to fallback here double-animates the background and
-            // makes track changes feel randomly slow when extraction lags.
+            if palette != .fallback { palette = .fallback }
             return
         }
         if palette != cached { palette = cached }
@@ -789,11 +718,20 @@ struct PlayerView: View {
         PlayerBackgroundAppearance.resolved(playerBackgroundAppearance)
     }
 
-    private var trackSlideTransition: AnyTransition {
-        BuFiMotion.trackSlideTransition(
-            direction: transitionDirection,
-            enabled: allowsMotion,
-            distance: 30
+    private var trackTextTransition: AnyTransition {
+        guard allowsMotion else { return .opacity }
+        let distance: CGFloat = 10
+        return .asymmetric(
+            insertion: .offset(
+                x: transitionDirection > 0 ? distance : -distance
+            )
+            .combined(with: .scale(scale: 0.995))
+            .combined(with: .opacity),
+            removal: .offset(
+                x: transitionDirection > 0 ? -distance : distance
+            )
+            .combined(with: .scale(scale: 0.998))
+            .combined(with: .opacity)
         )
     }
 

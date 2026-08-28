@@ -43,10 +43,9 @@ enum BuFiMotion {
     static let homeRefresh = Animation.smooth(duration: 0.38, extraBounce: 0)
     static let playerEntrance = Animation.spring(duration: 0.52, bounce: 0.028)
     static let screenEntrance = Animation.spring(duration: 0.48, bounce: 0.028)
-    static let trackText = Animation.smooth(duration: 0.40, extraBounce: 0)
-    static let trackPage = Animation.smooth(duration: 0.52, extraBounce: 0)
-    static let trackBackground = Animation.smooth(duration: 0.56, extraBounce: 0)
-    static let miniTrack = Animation.smooth(duration: 0.52, extraBounce: 0)
+    static let trackText = Animation.smooth(duration: 0.38, extraBounce: 0)
+    static let trackPage = Animation.spring(duration: 0.46, bounce: 0.06)
+    static let miniTrack = Animation.smooth(duration: 0.42, extraBounce: 0)
     static let artworkTouch = Animation.spring(duration: 0.24, bounce: 0.10)
     static let color = Animation.smooth(duration: 0.48, extraBounce: 0)
     static let page = Animation.smooth(duration: 0.36, extraBounce: 0)
@@ -62,19 +61,6 @@ enum BuFiMotion {
 
     static func press(isPressed: Bool) -> Animation {
         isPressed ? pressDown : pressUp
-    }
-
-    /// Horizontal slide matching the artwork pager direction.
-    static func trackSlideTransition(
-        direction: CGFloat,
-        enabled: Bool,
-        distance: CGFloat = 28
-    ) -> AnyTransition {
-        guard enabled else { return .opacity }
-        return .asymmetric(
-            insertion: .offset(x: -distance * direction),
-            removal: .offset(x: distance * direction)
-        )
     }
 
     static func isEnabled(
