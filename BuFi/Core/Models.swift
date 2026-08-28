@@ -497,6 +497,48 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
         mostPlayedSongs = other.mostPlayedSongs
         recommendedArtists = other.recommendedArtists
     }
+
+    /// Stable catalog identity for local search. Derived recommendation
+    /// sections are excluded so enrichment-only publishes can reuse corpus.
+    var searchCorpusIdentity: UInt64 {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        func mix(_ value: UInt64) {
+            hash ^= value
+            hash &*= 1_099_511_628_211
+        }
+        func mix(_ value: Int) {
+            mix(UInt64(bitPattern: Int64(value)))
+        }
+        func mix(_ value: String) {
+            mix(UInt64(bitPattern: Int64(value.hashValue)))
+        }
+        let derivedSongPaths: Set<PartialKeyPath<HomeSnapshot>> = [
+            \.recommendedSongs,
+            \.daylistSongs,
+            \.lastFMRecommendedSongs,
+            \.listenBrainzRecommendedSongs,
+            \.offlineBackupSongs
+        ]
+        for path in Self.songCollections where !derivedSongPaths.contains(path) {
+            let songs = self[keyPath: path]
+            mix(songs.count)
+            if let first = songs.first?.id { mix(first) }
+            if songs.count > 1, let last = songs.last?.id { mix(last) }
+        }
+        for path in Self.albumCollections {
+            let albums = self[keyPath: path]
+            mix(albums.count)
+            if let first = albums.first?.id { mix(first) }
+        }
+        for path in Self.artistCollections {
+            let artists = self[keyPath: path]
+            mix(artists.count)
+            if let first = artists.first?.id { mix(first) }
+        }
+        mix(playlists.count)
+        mix(artists.count)
+        return hash
+    }
 }
 
 enum MediaIdentity {
