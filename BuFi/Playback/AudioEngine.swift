@@ -3468,7 +3468,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     for (coverURL, pixelSize) in warmedCovers[start..<end] {
                         group.addTask {
                             guard !Task.isCancelled else { return }
-                            _ = try? await ArtworkStore.shared.prefetch(
+                            await ArtworkStore.shared.prefetch(
                                 urls: [coverURL],
                                 pixelSize: pixelSize,
                                 concurrencyLimit: 1
