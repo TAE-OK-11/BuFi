@@ -230,7 +230,7 @@ struct PlayerView: View {
                 return
             }
             guard artworkPage != currentID else { return }
-            animateArtworkPage(to: currentID, in: next)
+            animateArtworkPage(to: currentID)
         }
         .onAppear {
             presentedItem = currentPlayback.item
@@ -268,31 +268,55 @@ struct PlayerView: View {
         if indexChanged {
             transitionDirection = next.index >= previous.index ? 1 : -1
         }
-        if trackChanged {
-            presentedItem = next.item
-        }
         guard let currentPage = currentArtworkPageID(in: playback.snapshot) else {
             paletteApplyTask?.cancel()
             pagerSelectionGate.beginProgrammaticMove(to: nil)
             artworkPage = nil
+            if trackChanged {
+                presentedItem = next.item
+            }
             if palette != .fallback { palette = .fallback }
             return
         }
-        guard artworkPage != currentPage else { return }
-        animateArtworkPage(to: currentPage, in: playback.snapshot)
+        if artworkPage == currentPage {
+            if trackChanged {
+                applyTrackPresentation(next.item)
+            }
+            return
+        }
+        animateArtworkPage(
+            to: currentPage,
+            presentedItem: trackChanged ? next.item : nil
+        )
+    }
+
+    private func applyTrackPresentation(_ item: PlaybackMediaItem?) {
+        guard allowsMotion else {
+            presentedItem = item
+            return
+        }
+        withAnimation(BuFiMotion.trackPage) {
+            presentedItem = item
+        }
     }
 
     private func animateArtworkPage(
         to currentPage: PlayerArtworkPageID,
-        in snapshot: PlaybackSnapshot
+        presentedItem update: PlaybackMediaItem? = nil
     ) {
         pagerSelectionGate.beginProgrammaticMove(to: currentPage)
         if allowsMotion {
             withAnimation(BuFiMotion.trackPage) {
+                if let update {
+                    presentedItem = update
+                }
                 artworkPage = currentPage
             }
             schedulePaletteApply(for: currentPage, animated: true)
         } else {
+            if let update {
+                presentedItem = update
+            }
             artworkPage = currentPage
             paletteApplyTask?.cancel()
             applyPalette(for: currentPage)
@@ -375,13 +399,11 @@ struct PlayerView: View {
                         .foregroundStyle(playerSecondary)
                         .lineLimit(1)
                 }
-                .animation(
-                    allowsMotion ? BuFiMotion.trackText : .none,
-                    value: item.id
-                )
-                .contentTransition(.opacity)
+                .id(item.id)
+                .transition(trackSlideTransition)
             }
             .frame(maxWidth: 240)
+            .clipped()
             Spacer()
 
             PlayerOverflowMenu(song: song, foreground: playerPrimary)
@@ -430,13 +452,11 @@ struct PlayerView: View {
                     )
                     PlayerArtistLink(song: song, foreground: playerSecondary)
                 }
-                .animation(
-                    allowsMotion ? BuFiMotion.trackText : .none,
-                    value: item.id
-                )
-                .contentTransition(.opacity)
+                .id(item.id)
+                .transition(trackSlideTransition)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
             Spacer(minLength: 4)
             PlayerFavoriteButton(
                 song: song,
@@ -661,7 +681,7 @@ struct PlayerView: View {
             applyPalette(for: currentPage)
             return
         }
-        animateArtworkPage(to: currentPage, in: snapshot)
+        animateArtworkPage(to: currentPage)
     }
 
     private func receivePalette(
@@ -763,6 +783,14 @@ struct PlayerView: View {
 
     private var resolvedBackgroundAppearance: PlayerBackgroundAppearance {
         PlayerBackgroundAppearance.resolved(playerBackgroundAppearance)
+    }
+
+    private var trackSlideTransition: AnyTransition {
+        BuFiMotion.trackSlideTransition(
+            direction: transitionDirection,
+            enabled: allowsMotion,
+            distance: 34
+        )
     }
 
     private var lyricsPanelTransition: AnyTransition {

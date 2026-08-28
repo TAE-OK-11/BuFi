@@ -64,6 +64,21 @@ enum BuFiMotion {
         isPressed ? pressDown : pressUp
     }
 
+    /// Horizontal slide matching the artwork pager direction.
+    static func trackSlideTransition(
+        direction: CGFloat,
+        enabled: Bool,
+        distance: CGFloat = 28
+    ) -> AnyTransition {
+        guard enabled else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(x: distance * direction)
+                .combined(with: .opacity),
+            removal: .offset(x: -distance * 0.68 * direction)
+                .combined(with: .opacity)
+        )
+    }
+
     static func isEnabled(
         userPreference: Bool,
         reduceMotion: Bool,
