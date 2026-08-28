@@ -412,9 +412,12 @@ final class AppModel: ObservableObject {
     private var albumDetailTasks: [String: DetailRequest<AlbumDetail>] = [:]
     private var playlistDetailTasks: [String: DetailRequest<PlaylistDetail>] = [:]
     private var artistDetailTasks: [String: DetailRequest<ArtistDetail>] = [:]
+    private var artistDetailRequestNames: [String: String] = [:]
     private var starRequests: [String: StarRequest] = [:]
     private var confirmedStarStates: [String: Bool] = [:]
     private var awaitingStarConfirmations: [String: Bool] = [:]
+    private var awaitingStarConfirmationDates: [String: ContinuousClock.Instant] = [:]
+    private static let starConfirmationTimeout: Duration = .seconds(120)
     private static let starDateFormatter = ISO8601DateFormatter()
     private static let albumDetailCacheLimit = 64
     private static let playlistDetailCacheLimit = 32
@@ -1124,6 +1127,7 @@ final class AppModel: ObservableObject {
             playlistDetailTasks.removeValue(forKey: playlist.id)?.task.cancel()
         case .artist(let artist):
             artistDetailTasks.removeValue(forKey: artist.id)?.task.cancel()
+            artistDetailRequestNames[artist.id] = nil
         }
     }
 
@@ -1280,15 +1284,27 @@ final class AppModel: ObservableObject {
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
         let generation = sessionGeneration
+        let resolvedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let existing = artistDetailTasks[id] {
+            let existingName = artistDetailRequestNames[id] ?? ""
+            // An empty list-row name can win the in-flight slot and starve
+            // getTopSongs of the real artist name. Replace that weaker task.
+            if existingName.isEmpty && !resolvedName.isEmpty {
+                existing.task.cancel()
+                artistDetailTasks[id] = nil
+                artistDetailRequestNames[id] = nil
+            }
+        }
         let request: DetailRequest<ArtistDetail>
         if let existing = artistDetailTasks[id] {
             request = existing
         } else {
             let created = DetailRequest(
                 token: UUID(),
-                task: Task { try await client.artist(id: id, name: name) }
+                task: Task { try await client.artist(id: id, name: resolvedName) }
             )
             artistDetailTasks[id] = created
+            artistDetailRequestNames[id] = resolvedName
             request = created
         }
         let value: ArtistDetail
@@ -1298,6 +1314,7 @@ final class AppModel: ObservableObject {
             if generation == sessionGeneration,
                artistDetailTasks[id]?.token == request.token {
                 artistDetailTasks[id] = nil
+                artistDetailRequestNames[id] = nil
             }
             if TransientServiceFailurePolicy.allowsCachedFallback(error),
                let stale = Self.staleDetail(id: id, cache: &artistDetailCache) {
@@ -1320,6 +1337,7 @@ final class AppModel: ObservableObject {
         let resolvedValue: ArtistDetail
         if artistDetailTasks[id]?.token == request.token {
             artistDetailTasks[id] = nil
+            artistDetailRequestNames[id] = nil
             reconcileFavoriteStates(
                 songs: value.topSongs,
                 albums: value.albums,
@@ -1543,7 +1561,7 @@ final class AppModel: ObservableObject {
             self.confirmedStarStates[key] = enabled
             // Preserve every successful mutation until a later server payload
             // confirms it. This also covers A-success/B-failure chains.
-            self.awaitingStarConfirmations[key] = enabled
+            self.rememberStarConfirmation(key: key, enabled: enabled)
         }
         starRequests[key] = StarRequest(
             token: token,
@@ -1556,7 +1574,7 @@ final class AppModel: ObservableObject {
             if starRequests[key]?.token == token {
                 starRequests[key] = nil
                 confirmedStarStates[key] = nil
-                awaitingStarConfirmations[key] = enabled
+                rememberStarConfirmation(key: key, enabled: enabled)
                 // Invalidate a home request that may have started while this
                 // mutation was pending and captured a stale starred list.
                 homeRevision &+= 1
@@ -1590,6 +1608,27 @@ final class AppModel: ObservableObject {
         target: OpenSubsonicClient.StarTarget
     ) -> String {
         "\(starKeyPrefix(for: target)):\(id)"
+    }
+
+    private func rememberStarConfirmation(key: String, enabled: Bool) {
+        awaitingStarConfirmations[key] = enabled
+        awaitingStarConfirmationDates[key] = ContinuousClock().now
+    }
+
+    private func clearStarConfirmation(key: String) {
+        awaitingStarConfirmations[key] = nil
+        awaitingStarConfirmationDates[key] = nil
+    }
+
+    private func expireStaleStarConfirmations() {
+        let now = ContinuousClock().now
+        let staleKeys = awaitingStarConfirmationDates.compactMap { entry -> String? in
+            let (key, startedAt) = entry
+            return startedAt.duration(to: now) >= Self.starConfirmationTimeout ? key : nil
+        }
+        for key in staleKeys {
+            clearStarConfirmation(key: key)
+        }
     }
 
     private func starKeyPrefix(
@@ -1875,6 +1914,7 @@ final class AppModel: ObservableObject {
         artists: [Artist] = [],
         authoritative: Bool = false
     ) {
+        expireStaleStarConfirmations()
         var observed: [String: Bool] = [:]
         for song in songs {
             let key = starKey(id: song.id, target: .song)
@@ -1895,7 +1935,7 @@ final class AppModel: ObservableObject {
             if let expected = awaitingStarConfirmations[key] {
                 states[key] = expected
                 if serverState == expected {
-                    awaitingStarConfirmations[key] = nil
+                    clearStarConfirmation(key: key)
                 }
             } else if authoritative {
                 states[key] = serverState
@@ -1920,7 +1960,7 @@ final class AppModel: ObservableObject {
             if let expected = awaitingStarConfirmations[key] {
                 states[key] = expected
                 if !expected {
-                    awaitingStarConfirmations[key] = nil
+                    clearStarConfirmation(key: key)
                 }
             } else {
                 states[key] = false
@@ -1937,7 +1977,7 @@ final class AppModel: ObservableObject {
             let id = String(key.dropFirst(targetPrefix.count))
             guard !presentIDs.contains(id) else { continue }
             states[key] = false
-            awaitingStarConfirmations[key] = nil
+            clearStarConfirmation(key: key)
         }
     }
 
@@ -2050,6 +2090,7 @@ final class AppModel: ObservableObject {
         starRequests.removeAll(keepingCapacity: false)
         confirmedStarStates.removeAll(keepingCapacity: false)
         awaitingStarConfirmations.removeAll(keepingCapacity: false)
+        awaitingStarConfirmationDates.removeAll(keepingCapacity: false)
         favorites.removeAll()
     }
 
@@ -2060,6 +2101,7 @@ final class AppModel: ObservableObject {
         albumDetailTasks.removeAll(keepingCapacity: false)
         playlistDetailTasks.removeAll(keepingCapacity: false)
         artistDetailTasks.removeAll(keepingCapacity: false)
+        artistDetailRequestNames.removeAll(keepingCapacity: false)
         albumDetailCache.removeAll(keepingCapacity: false)
         playlistDetailCache.removeAll(keepingCapacity: false)
         artistDetailCache.removeAll(keepingCapacity: false)

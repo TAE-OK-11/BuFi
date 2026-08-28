@@ -3157,7 +3157,7 @@ actor ExternalRecommendationClient {
         guard !apiKey.isEmpty else { return }
         var seen = Set<String>()
         var pending: [String] = []
-        pending.reserveCapacity(8)
+        pending.reserveCapacity(2)
         for name in names {
             let key = ArtistPersonaResolver.normalized(name)
             guard !key.isEmpty, seen.insert(key).inserted else { continue }
@@ -3165,7 +3165,7 @@ actor ExternalRecommendationClient {
             if cached.gender == .unknown {
                 pending.append(name)
             }
-            if pending.count == 8 { break }
+            if pending.count == 2 { break }
         }
         await withTaskGroup(of: Void.self) { group in
             for name in pending {

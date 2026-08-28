@@ -726,7 +726,7 @@ actor OpenSubsonicClient {
     private let authenticationQueryItems: [URLQueryItem]
     private var supportedExtensions: Set<String>?
     private var apiFamily: SubsonicAPIFamily = .openSubsonic
-    private var allowsZstandardResponses = true
+    private var zstandardBackoffUntil: [String: ContinuousClock.Instant] = [:]
     private var preferredFallbackEndpoints: [String: String] = [:]
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
     private var cacheRevisionState = OpenSubsonicCacheRevisionState()
@@ -799,6 +799,7 @@ actor OpenSubsonicClient {
     private static let persistedPlaybackMetadataMaximumAge: TimeInterval =
         7 * 24 * 60 * 60
     private static let playbackMetadataMemoryLimit = 256
+    private static let zstandardBackoff: Duration = .seconds(300)
     private var responseCache = ResponseBodyCache(
         countLimit: OpenSubsonicClient.responseCacheLimit,
         byteLimit: OpenSubsonicClient.responseCacheByteLimit,
@@ -812,6 +813,8 @@ actor OpenSubsonicClient {
     ] = [:]
     private var lyricsCache = LyricsDocumentCache(countLimit: 96)
     private var playbackMetadataCache: [String: Song] = [:]
+    private var playbackMetadataAccess: [String: UInt64] = [:]
+    private var playbackMetadataAccessClock: UInt64 = 0
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -890,6 +893,11 @@ actor OpenSubsonicClient {
         decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
         playbackMetadataCache.removeAll(keepingCapacity: false)
+        playbackMetadataAccess.removeAll(keepingCapacity: false)
+        playbackMetadataAccessClock = 0
+        lyricsCache.removeAll(keepingCapacity: false)
+        zstandardBackoffUntil.removeAll(keepingCapacity: false)
+        clearResponseCache()
         session.invalidateAndCancel()
     }
 
@@ -1673,7 +1681,8 @@ actor OpenSubsonicClient {
     ) async throws -> HTTPResponseData {
         // Mutations avoid the zstd negotiation fallback because reissuing a
         // state-changing endpoint would itself be an unsafe retry.
-        var acceptsZstandard = allowsRetry && allowsZstandardResponses
+        var acceptsZstandard = allowsRetry
+            && isZstandardAllowed(for: originalRequest.url)
         var retryCount = 0
 
         while true {
@@ -1711,8 +1720,9 @@ actor OpenSubsonicClient {
                    error is ZstandardNegotiationError {
                     // Content negotiation fallback is not a retry. It existed
                     // before the bounded transient-failure policy and does not
-                    // consume its budget.
-                    allowsZstandardResponses = false
+                    // consume its budget. Disable zstd for this host for a
+                    // short window instead of the rest of the session.
+                    noteZstandardFailure(for: originalRequest.url)
                     acceptsZstandard = false
                     continue
                 }
@@ -3097,39 +3107,56 @@ actor OpenSubsonicClient {
     func song(id: String, forceRefresh: Bool = false) async throws -> Song {
         if forceRefresh {
             playbackMetadataCache[id] = nil
-        } else if let cached = playbackMetadataCache[id] {
+            playbackMetadataAccess[id] = nil
+        } else if let cached = cachedPlaybackMetadata(id: id) {
             return cached
-        } else if let persisted = await AppDatabase.shared.loadPlaybackMetadata(
-            scope: accountScope,
-            songID: id,
-            maximumAge: Self.persistedPlaybackMetadataMaximumAge
-        ) {
-            cachePlaybackMetadata(persisted)
-            return persisted
         }
-        let payload: SongPayload = try await readRequest(
-            "getSong",
-            parameters: ["id": id],
-            allowsCachedResponse: !forceRefresh
-        )
-        guard let song = payload.song, song.id == id else {
-            throw OpenSubsonicError.invalidResponse
+        do {
+            let payload: SongPayload = try await readRequest(
+                "getSong",
+                parameters: ["id": id],
+                allowsCachedResponse: !forceRefresh
+            )
+            guard let song = payload.song, song.id == id else {
+                throw OpenSubsonicError.invalidResponse
+            }
+            cachePlaybackMetadata(song)
+            _ = await AppDatabase.shared.savePlaybackMetadata(
+                song,
+                scope: accountScope
+            )
+            return song
+        } catch {
+            if !forceRefresh,
+               TransientServiceFailurePolicy.allowsCachedFallback(error),
+               let persisted = await AppDatabase.shared.loadPlaybackMetadata(
+                   scope: accountScope,
+                   songID: id,
+                   maximumAge: Self.persistedPlaybackMetadataMaximumAge
+               ) {
+                cachePlaybackMetadata(persisted)
+                return persisted
+            }
+            throw error
         }
-        cachePlaybackMetadata(song)
-        _ = await AppDatabase.shared.savePlaybackMetadata(
-            song,
-            scope: accountScope
-        )
+    }
+
+    private func cachedPlaybackMetadata(id: String) -> Song? {
+        guard let song = playbackMetadataCache[id] else { return nil }
+        playbackMetadataAccessClock &+= 1
+        playbackMetadataAccess[id] = playbackMetadataAccessClock
         return song
     }
 
     private func cachePlaybackMetadata(_ song: Song) {
+        playbackMetadataAccessClock &+= 1
         playbackMetadataCache[song.id] = song
+        playbackMetadataAccess[song.id] = playbackMetadataAccessClock
         guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit,
-              let victim = playbackMetadataCache.keys.first(where: {
-                  $0 != song.id
-              }) else { return }
+              let victim = playbackMetadataAccess.min(by: { $0.value < $1.value })?.key,
+              victim != song.id else { return }
         playbackMetadataCache[victim] = nil
+        playbackMetadataAccess[victim] = nil
     }
 
     /// Canonical API boundary for an active playback occurrence. The caller's
@@ -3417,6 +3444,26 @@ actor OpenSubsonicClient {
         // when their last waiter goes away.
         clearResponseCache()
         lyricsCache.removeAll(keepingCapacity: true)
+        playbackMetadataCache.removeAll(keepingCapacity: true)
+        playbackMetadataAccess.removeAll(keepingCapacity: true)
+        playbackMetadataAccessClock = 0
+    }
+
+    private func isZstandardAllowed(for url: URL?) -> Bool {
+        guard let host = url?.host?.lowercased(), !host.isEmpty else {
+            return true
+        }
+        guard let until = zstandardBackoffUntil[host] else { return true }
+        if ContinuousClock().now < until {
+            return false
+        }
+        zstandardBackoffUntil[host] = nil
+        return true
+    }
+
+    private func noteZstandardFailure(for url: URL?) {
+        guard let host = url?.host?.lowercased(), !host.isEmpty else { return }
+        zstandardBackoffUntil[host] = ContinuousClock().now.advanced(by: Self.zstandardBackoff)
     }
 
     nonisolated func streamURL(
