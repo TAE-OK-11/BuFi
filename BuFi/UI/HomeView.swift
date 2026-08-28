@@ -20,6 +20,7 @@ struct HomeView: View {
     var body: some View {
         let sections = visibleSections
         let enablesMotion = motionEnabled
+        let revealsContent = hasRevealedContent
 
         NavigationStack {
             ScrollView {
@@ -58,7 +59,7 @@ struct HomeView: View {
                                     .opacity(
                                         phase.isIdentity
                                             || !enablesMotion
-                                            || !hasRevealedContent ? 1 : 0.97
+                                            || !revealsContent ? 1 : 0.97
                                     )
                             }
                             .transition(

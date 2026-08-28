@@ -5132,8 +5132,9 @@ final class AudioEngine: NSObject, ObservableObject {
                   generation == self.songMetadataGeneration,
                   sessionGeneration == self.playbackSessionGeneration,
                   accountScope == self.currentAccountScope,
-                  self.currentPlaybackItem?.id == selectedItemID,
-                  self.currentPlaybackItem?.queueEntryID == selectedQueueEntryID,
+                  let playbackItem = self.currentPlaybackItem,
+                  playbackItem.id == selectedItemID,
+                  playbackItem.queueEntryID == selectedQueueEntryID,
                   let current = self.currentSong,
                   current.id == selectedSong.id else {
                 return
@@ -5149,7 +5150,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 lyricsAreAvailable: self.lyricsState.status == .available
             )
 
-            let previousStream = self.currentPlaybackItem?.stream
+            let previousStream = playbackItem.stream
             var resolvedItem = canonicalItem
             resolvedItem.song = resolved
             var updatedEntries = self.playbackState.entries
