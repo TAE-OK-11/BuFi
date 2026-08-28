@@ -593,30 +593,33 @@ actor AppDatabase {
         guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
-                for id in deletedIDs {
-                    try db.execute(
-                        sql: "DELETE FROM listening_behavior WHERE account_scope = ? AND song_id = ?",
-                        arguments: [scope, id]
+                if !deletedIDs.isEmpty {
+                    let delete = try db.makeStatement(
+                        sql: """
+                        DELETE FROM listening_behavior
+                        WHERE account_scope = ? AND song_id = ?
+                        """
                     )
+                    for id in deletedIDs {
+                        try delete.execute(arguments: [scope, id])
+                    }
                 }
+                let upsert = try db.makeStatement(sql: Self.listeningUpsertSQL)
                 for item in encoded {
                     let value = item.value
-                    try db.execute(
-                        sql: Self.listeningUpsertSQL,
-                        arguments: [
-                            scope, item.songID, item.songData, value.playCount,
-                            value.firstPlayed.timeIntervalSince1970,
-                            value.lastPlayed.timeIntervalSince1970,
-                            value.completedCount, value.skipCount,
-                            value.earlySkipCount, value.repeatedSkipCount,
-                            value.repeatCount, value.manualPlayCount,
-                            value.searchPlayCount, value.albumSelectionCount,
-                            value.playlistPlayCount, value.autoplayCount,
-                            value.queueRemovalCount, value.playlistAddCount,
-                            value.favoriteCount, value.totalCompletion,
-                            value.completionSamples, value.consecutiveSkips
-                        ]
-                    )
+                    try upsert.execute(arguments: [
+                        scope, item.songID, item.songData, value.playCount,
+                        value.firstPlayed.timeIntervalSince1970,
+                        value.lastPlayed.timeIntervalSince1970,
+                        value.completedCount, value.skipCount,
+                        value.earlySkipCount, value.repeatedSkipCount,
+                        value.repeatCount, value.manualPlayCount,
+                        value.searchPlayCount, value.albumSelectionCount,
+                        value.playlistPlayCount, value.autoplayCount,
+                        value.queueRemovalCount, value.playlistAddCount,
+                        value.favoriteCount, value.totalCompletion,
+                        value.completionSamples, value.consecutiveSkips
+                    ])
                 }
             }
             return true
@@ -644,24 +647,22 @@ actor AppDatabase {
                     sql: "DELETE FROM listening_behavior WHERE account_scope = ?",
                     arguments: [scope]
                 )
+                let upsert = try db.makeStatement(sql: Self.listeningUpsertSQL)
                 for item in encoded {
                     let value = item.value
-                    try db.execute(
-                        sql: Self.listeningUpsertSQL,
-                        arguments: [
-                            scope, item.songID, item.songData, value.playCount,
-                            value.firstPlayed.timeIntervalSince1970,
-                            value.lastPlayed.timeIntervalSince1970,
-                            value.completedCount, value.skipCount,
-                            value.earlySkipCount, value.repeatedSkipCount,
-                            value.repeatCount, value.manualPlayCount,
-                            value.searchPlayCount, value.albumSelectionCount,
-                            value.playlistPlayCount, value.autoplayCount,
-                            value.queueRemovalCount, value.playlistAddCount,
-                            value.favoriteCount, value.totalCompletion,
-                            value.completionSamples, value.consecutiveSkips
-                        ]
-                    )
+                    try upsert.execute(arguments: [
+                        scope, item.songID, item.songData, value.playCount,
+                        value.firstPlayed.timeIntervalSince1970,
+                        value.lastPlayed.timeIntervalSince1970,
+                        value.completedCount, value.skipCount,
+                        value.earlySkipCount, value.repeatedSkipCount,
+                        value.repeatCount, value.manualPlayCount,
+                        value.searchPlayCount, value.albumSelectionCount,
+                        value.playlistPlayCount, value.autoplayCount,
+                        value.queueRemovalCount, value.playlistAddCount,
+                        value.favoriteCount, value.totalCompletion,
+                        value.completionSamples, value.consecutiveSkips
+                    ])
                 }
             }
             return true

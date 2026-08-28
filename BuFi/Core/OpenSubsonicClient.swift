@@ -144,13 +144,21 @@ enum OpenSubsonicCacheDependency: String, CaseIterable, Hashable, Sendable {
 
 struct OpenSubsonicMutationImpact: Equatable, Sendable {
     let invalidatedDependencies: Set<OpenSubsonicCacheDependency>
+    let invalidatedSongIDs: Set<String>
 
-    static let none = OpenSubsonicMutationImpact(invalidatedDependencies: [])
+    static let none = OpenSubsonicMutationImpact(
+        invalidatedDependencies: [],
+        invalidatedSongIDs: []
+    )
 
     static func invalidating(
-        _ dependencies: Set<OpenSubsonicCacheDependency>
+        _ dependencies: Set<OpenSubsonicCacheDependency>,
+        songIDs: Set<String> = []
     ) -> OpenSubsonicMutationImpact {
-        OpenSubsonicMutationImpact(invalidatedDependencies: dependencies)
+        OpenSubsonicMutationImpact(
+            invalidatedDependencies: dependencies,
+            invalidatedSongIDs: songIDs
+        )
     }
 
     var participatesInStaleReadBarrier: Bool {
@@ -184,6 +192,7 @@ struct OpenSubsonicResponseCachePolicy: Equatable, Sendable {
 
 enum OpenSubsonicRequestPolicy {
     static let homeEnrichmentConcurrencyLimit = 3
+    static let playbackMetadataPrefetchConcurrencyLimit = 2
     static let homeRecommendationSeedLimit = 2
     static let homeGenreLimit = 2
     static let homeTopArtistLimit = 2
@@ -337,14 +346,16 @@ enum OpenSubsonicRequestPolicy {
             return .invalidating([.playQueue])
         case "star", "unstar":
             let names = Set(queryItems.map(\.name))
-            if names.contains("id") {
+            if names.contains("id"),
+               let id = queryItems.first(where: { $0.name == "id" })?.value,
+               !id.isEmpty {
                 return .invalidating([
                     .favorites,
                     .songDetails,
                     .albumDetails,
                     .libraryLists,
                     .recommendations
-                ])
+                ], songIDs: [id])
             }
             if names.contains("albumId") {
                 return .invalidating([
@@ -724,6 +735,7 @@ actor OpenSubsonicClient {
     private let retryPolicy = ReadRequestRetryPolicy()
     private let authenticationQueryItems: [URLQueryItem]
     private var supportedExtensions: Set<String>?
+    private var extensionProbeUnavailableUntil: ContinuousClock.Instant?
     private var apiFamily: SubsonicAPIFamily = .openSubsonic
     private var zstandardBackoffUntil: [String: ContinuousClock.Instant] = [:]
     private var preferredFallbackEndpoints: [String: String] = [:]
@@ -1665,9 +1677,16 @@ actor OpenSubsonicClient {
             removeDecodedResponse(for: key)
         }
         if dependencies.contains(.songDetails) {
-            playbackMetadataCache.removeAll(keepingCapacity: true)
-            playbackMetadataAccess.removeAll(keepingCapacity: true)
-            playbackMetadataAccessClock = 0
+            if impact.invalidatedSongIDs.isEmpty {
+                playbackMetadataCache.removeAll(keepingCapacity: true)
+                playbackMetadataAccess.removeAll(keepingCapacity: true)
+                playbackMetadataAccessClock = 0
+            } else {
+                for id in impact.invalidatedSongIDs {
+                    playbackMetadataCache[id] = nil
+                    playbackMetadataAccess[id] = nil
+                }
+            }
         }
     }
 
@@ -2210,57 +2229,85 @@ actor OpenSubsonicClient {
         from previous: HomeSnapshot? = nil,
         refreshStableCatalog: Bool = true,
         enrichesServerRecommendations: Bool = true,
-        forcesServerEnrichment: Bool = false
+        forcesServerEnrichment: Bool = false,
+        enrichmentOnly: Bool = false
     ) async throws -> HomeLoadResult {
         let fallback = previous ?? .empty
+        if enrichmentOnly, previous == nil {
+            throw OpenSubsonicError.invalidResponse
+        }
         let shouldRefreshStableCatalog = refreshStableCatalog
             || fallback.artists.isEmpty
 
-        async let recent: AlbumListPayload? = albumList("newest", size: "16")
-        async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
-        async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
-        async let randomAlbums: AlbumListPayload? = albumList("random", size: "16")
-        async let starred: StarredPayload? = bestEffortWithFallback(
-            SubsonicCompatibilityPolicy.starredEndpoints(for: apiFamily)
-        )
-        async let randomSongs: RandomSongsPayload? = bestEffortRequest(
-            "getRandomSongs",
-            parameters: ["size": "16"]
-        )
-        async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
-        async let artists: ArtistsPayload? = shouldRefreshStableCatalog
-            ? bestEffortRequest("getArtists")
-            : nil
-        async let radioStations: InternetRadioStationsPayload? = shouldRefreshStableCatalog
-            ? bestEffortRequest("getInternetRadioStations")
-            : nil
-        async let genres: GenresPayload? = shouldRefreshStableCatalog
-            ? bestEffortRequest("getGenres")
-            : nil
+        let recentValue: AlbumListPayload?
+        let recentlyPlayedValue: AlbumListPayload?
+        let frequentValue: AlbumListPayload?
+        let randomAlbumsValue: AlbumListPayload?
+        let starredValue: StarredPayload?
+        let randomSongsValue: RandomSongsPayload?
+        let playlistsValue: PlaylistsPayload?
+        let artistsValue: ArtistsPayload?
+        let radioStationsValue: InternetRadioStationsPayload?
+        let genresValue: GenresPayload?
 
-        let (
-            recentValue,
-            recentlyPlayedValue,
-            frequentValue,
-            randomAlbumsValue,
-            starredValue,
-            artistsValue,
-            randomSongsValue,
-            playlistsValue,
-            radioStationsValue,
-            genresValue
-        ) = try await (
-            recent,
-            recentlyPlayed,
-            frequent,
-            randomAlbums,
-            starred,
-            artists,
-            randomSongs,
-            playlists,
-            radioStations,
-            genres
-        )
+        if enrichmentOnly {
+            recentValue = nil
+            recentlyPlayedValue = nil
+            frequentValue = nil
+            randomAlbumsValue = nil
+            starredValue = nil
+            randomSongsValue = nil
+            playlistsValue = nil
+            artistsValue = nil
+            radioStationsValue = nil
+            genresValue = nil
+        } else {
+            async let recent: AlbumListPayload? = albumList("newest", size: "16")
+            async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
+            async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
+            async let randomAlbums: AlbumListPayload? = albumList("random", size: "16")
+            async let starred: StarredPayload? = bestEffortWithFallback(
+                SubsonicCompatibilityPolicy.starredEndpoints(for: apiFamily)
+            )
+            async let randomSongs: RandomSongsPayload? = bestEffortRequest(
+                "getRandomSongs",
+                parameters: ["size": "16"]
+            )
+            async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
+            async let artists: ArtistsPayload? = shouldRefreshStableCatalog
+                ? bestEffortRequest("getArtists")
+                : nil
+            async let radioStations: InternetRadioStationsPayload? = shouldRefreshStableCatalog
+                ? bestEffortRequest("getInternetRadioStations")
+                : nil
+            async let genres: GenresPayload? = shouldRefreshStableCatalog
+                ? bestEffortRequest("getGenres")
+                : nil
+
+            (
+                recentValue,
+                recentlyPlayedValue,
+                frequentValue,
+                randomAlbumsValue,
+                starredValue,
+                artistsValue,
+                randomSongsValue,
+                playlistsValue,
+                radioStationsValue,
+                genresValue
+            ) = try await (
+                recent,
+                recentlyPlayed,
+                frequent,
+                randomAlbums,
+                starred,
+                artists,
+                randomSongs,
+                playlists,
+                radioStations,
+                genres
+            )
+        }
         guard recentValue != nil || recentlyPlayedValue != nil ||
                 frequentValue != nil || randomAlbumsValue != nil ||
                 starredValue != nil || artistsValue != nil ||
@@ -2318,6 +2365,7 @@ actor OpenSubsonicClient {
         )
         let canReuseEnrichment = previous != nil
             && !forcesServerEnrichment
+            && !enrichmentOnly
             && enrichmentIdentity == HomeEnrichmentIdentity(snapshot: fallback)
 
         var snapshot = HomeSnapshot(
@@ -2720,6 +2768,10 @@ actor OpenSubsonicClient {
         if let supportedExtensions {
             return supportedExtensions.contains(name)
         }
+        if let unavailableUntil = extensionProbeUnavailableUntil,
+           ContinuousClock().now < unavailableUntil {
+            return false
+        }
         let payload: OpenSubsonicExtensionsPayload
         do {
             payload = try await withEnrichmentPermit(limiter) { [self] in
@@ -2727,10 +2779,14 @@ actor OpenSubsonicClient {
             }
         } catch {
             // A transient/auth/cancellation failure is not an authoritative
-            // statement that the server supports no extensions. Leave the
-            // cache unresolved so a later healthy request can recover.
+            // statement that the server supports no extensions. Back off so
+            // flaky connectivity does not re-probe on every enrichment pass.
+            extensionProbeUnavailableUntil = ContinuousClock().now.advanced(
+                by: .seconds(90)
+            )
             return false
         }
+        extensionProbeUnavailableUntil = nil
         let names = Set(
             (payload.openSubsonicExtensions ?? []).compactMap { value in
                 value.versions.isEmpty ? nil : value.name
@@ -3402,20 +3458,29 @@ actor OpenSubsonicClient {
             }
         }
         if !pending.isEmpty {
+            let limiter = HomeEnrichmentRequestLimiter(
+                limit: OpenSubsonicRequestPolicy.playbackMetadataPrefetchConcurrencyLimit
+            )
             await withTaskGroup(of: (Int, Song).self) { group in
                 for (index, provisional) in pending {
                     group.addTask { [self] in
-                        guard !Task.isCancelled,
-                              let canonical = try? await song(id: provisional.id) else {
+                        guard !Task.isCancelled else {
                             return (index, provisional)
                         }
-                        return (
-                            index,
-                            PlaybackMetadataResolver.resolve(
-                                canonical: canonical,
-                                provisional: provisional
+                        do {
+                            let canonical = try await limiter.withPermit { [self] in
+                                try await song(id: provisional.id)
+                            }
+                            return (
+                                index,
+                                PlaybackMetadataResolver.resolve(
+                                    canonical: canonical,
+                                    provisional: provisional
+                                )
                             )
-                        )
+                        } catch {
+                            return (index, provisional)
+                        }
                     }
                 }
                 for await value in group {
