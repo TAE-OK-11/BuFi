@@ -3504,7 +3504,9 @@ actor OpenSubsonicClient {
             id: songID,
             maxBitRate: requestedBitRate,
             format: requestedFormat,
-            estimateContentLength: true
+            estimateContentLength: StreamURLRequestPolicy.shouldEstimateContentLength(
+                format: requestedFormat
+            )
         ), url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }

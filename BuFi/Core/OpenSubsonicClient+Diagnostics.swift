@@ -70,14 +70,15 @@ private enum OpenSubsonicLatencyProbe {
 }
 
 extension OpenSubsonicClient {
-    /// Measures the shortest healthy authenticated OpenSubsonic RTT. iOS does
+    /// Measures a representative authenticated OpenSubsonic RTT. iOS does
     /// not expose a general-purpose ICMP ping API to normal apps, so this keeps
     /// the probe on the exact HTTPS route BuFi actually uses while stripping
     /// unrelated client-side work from the timed interval.
     ///
     /// Three back-to-back probes are normally enough: a cold first request can
-    /// establish DNS/TLS/QUIC state and the following requests reuse it. Taking
-    /// the minimum reports the path's baseline RTT instead of UI/radio jitter.
+    /// establish DNS/TLS/QUIC state and the following requests reuse it. The
+    /// median reports typical playback-path latency instead of the optimistic
+    /// best sample, which hid jitter that actually stalls streams.
     func measuredServerLatency(sampleCount: Int = 3) async throws -> Double {
         let targetCount = min(max(sampleCount, 1), 4)
         let minimumSuccessfulSamples = min(targetCount, 2)
@@ -119,7 +120,7 @@ extension OpenSubsonicClient {
         }
 
         guard samples.count >= minimumSuccessfulSamples,
-              let baseline = samples.min() else {
+              let baseline = Self.representativeLatency(from: samples) else {
             throw lastError ?? URLError(.cannotConnectToHost)
         }
         return baseline
@@ -131,21 +132,25 @@ extension OpenSubsonicClient {
             + Double(components.attoseconds) / 1_000_000_000_000_000
     }
 
+    /// Median of successful probe samples. The minimum is too optimistic for
+    /// a badge that should reflect the path playback actually sees.
+    static func representativeLatency(from samples: [Double]) -> Double? {
+        let values = samples.filter { $0.isFinite && $0 >= 0 }.sorted()
+        guard !values.isEmpty else { return nil }
+        let middle = values.count / 2
+        if values.count.isMultiple(of: 2) {
+            return (values[middle - 1] + values[middle]) / 2
+        }
+        return values[middle]
+    }
+
     private func latencyProbeRequest() throws -> URLRequest {
         // Authentication generation intentionally happens before timing starts.
         // It validates the real OpenSubsonic route without inflating network RTT
         // with random salt/MD5 work performed locally on the device.
         let url = try endpointURL("ping")
         var request = URLRequest(url: url)
-        ModernNetworkPolicy.prepareHealthCheckRequest(
-            &request,
-            acceptsZstandard: false
-        )
-        request.timeoutInterval = 3
-        // ping.view is tiny. Compression only adds negotiation/server work and
-        // can trigger a second compatibility request, so demand byte identity.
-        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+        ModernNetworkPolicy.prepareDiagnosticPingRequest(&request)
         return request
     }
 

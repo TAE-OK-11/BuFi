@@ -100,6 +100,9 @@ struct ServerLatencyBadge: View {
         }
 
         let now = ContinuousClock().now
+        if !force, isMeasuring {
+            return
+        }
         if !force,
            latencyMilliseconds != nil,
            !measurementFailed,

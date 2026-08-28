@@ -39,6 +39,19 @@ enum RepeatMode: String, Codable, Sendable {
     case one
 }
 
+/// OpenSubsonic `estimateContentLength` is accurate for original/raw files.
+/// Transcoded AAC/Opus/MP3 responses often advertise a guessed size that
+/// makes AVPlayer treat the stream as complete or wait for bytes that never
+/// arrive, which shows up as a stall after the first buffer.
+enum StreamURLRequestPolicy {
+    static func shouldEstimateContentLength(format: String?) -> Bool {
+        let normalized = format?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return normalized.isEmpty || normalized == "raw"
+    }
+}
+
 enum ShuffleStyle: String, Codable, CaseIterable, Identifiable, Sendable {
     case fewerRepeats
     case standard

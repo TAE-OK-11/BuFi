@@ -809,6 +809,60 @@ enum PlaybackRecoveryPolicy {
                 && (allowsRaw || formats[$0].lowercased() != "raw")
         }
     }
+
+    /// After a path-policy rebuild that starts with the active format, keep
+    /// the next-fallback cursor after that format so a later failure does not
+    /// retry encodings that already failed on this item.
+    static func indexAfterActiveFormat(
+        in formats: [String],
+        activeFormat: String?
+    ) -> Int {
+        guard let active = normalizedFormat(activeFormat),
+              let index = formats.firstIndex(where: {
+                  normalizedFormat($0) == active
+              }) else {
+            return 0
+        }
+        return index + 1
+    }
+
+    /// Canonical `getSong` often fills suffix/MIME after the row started.
+    /// Restart only when that changes the actual stream URL or transcode plan.
+    /// A first-buffer wait has `isPlaying == false`; tearing down there caused
+    /// a second stream open for metadata-only updates.
+    static func shouldReloadTransportForCanonicalMetadata(
+        previousStream: PlaybackStreamReference,
+        resolvedStream: PlaybackStreamReference,
+        previousPreferredFormat: String,
+        resolvedPreferredFormat: String,
+        activeFormat: String?,
+        hasReachedPlaying: Bool
+    ) -> Bool {
+        guard previousStream.songID == resolvedStream.songID else {
+            return false
+        }
+        let previousFormat = normalizedFormat(previousPreferredFormat)
+        let resolvedFormat = normalizedFormat(resolvedPreferredFormat)
+        let preferredChanged = previousFormat != resolvedFormat
+        let externalChanged = previousStream.externalURL != resolvedStream.externalURL
+        guard externalChanged || preferredChanged else { return false }
+        guard !hasReachedPlaying else { return false }
+        if preferredChanged,
+           let active = normalizedFormat(activeFormat),
+           active != previousFormat {
+            // Recovery already left the original preferred encoding.
+            return false
+        }
+        return true
+    }
+
+    private static func normalizedFormat(_ format: String?) -> String? {
+        guard let format else { return nil }
+        let normalized = format
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalized.isEmpty ? nil : normalized
+    }
 }
 
 struct GaplessSuccessorPlan: Equatable, Sendable {
@@ -1358,7 +1412,9 @@ final class AudioEngine: NSObject, ObservableObject {
     private var resumeAfterInterruption = false
     private var activeCompatibilityFormat: String?
     private var recoveryStabilityTask: Task<Void, Never>?
+    private var recoveryBackoffTask: Task<Void, Never>?
     private var prolongedStallRecoveryTask: Task<Void, Never>?
+    private var hasReachedPlayingForCurrentItem = false
     private var audioSessionActivationTask: Task<Void, Never>?
     private var audioSessionActivationToken: UUID?
     private var audioSessionDeactivationTask: Task<Void, Never>?
@@ -1503,9 +1559,9 @@ final class AudioEngine: NSObject, ObservableObject {
             suspendSpeculativePrefetch()
             itemLoadTask?.cancel()
             itemLoadTask = nil
-            prolongedStallRecoveryTask?.cancel()
-            prolongedStallRecoveryTask = nil
+            cancelTransportRecoveryWork(includingStability: true)
             playbackStallCount = 0
+            hasReachedPlayingForCurrentItem = false
             lyricsTask?.cancel()
             lyricsTask = nil
             lyricsRetryTask?.cancel()
@@ -1800,17 +1856,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private func requestPlayback() {
         // `play()` cooperates with automaticallyWaitsToMinimizeStalling. Using
         // playImmediately here repeatedly forced a high-bitrate stream to run
-        // before AVPlayer considered its buffer safe.
+        // before AVPlayer considered its buffer safe, including remote AAC.
         player.play()
-    }
-
-    private func requestLowLatencyStartup() {
-        // This is issued only once for a newly installed remote item. It lets
-        // AVPlayer begin with the first decodable media already available,
-        // without disabling automatic stall recovery for the rest of the song.
-        // readyToPlay repeats a regular play request for AirPlay and for an
-        // initially empty transport buffer.
-        player.playImmediately(atRate: 1)
     }
 
     func resumePlayback() {
@@ -1885,6 +1932,7 @@ final class AudioEngine: NSObject, ObservableObject {
         wantsPlayback = false
         playbackStartupRequestedAt = nil
         playbackItemInstalledAt = nil
+        cancelTransportRecoveryWork(includingStability: true)
         player.pause()
         suspendSpeculativePrefetch()
         isPlaying = false
@@ -2762,7 +2810,10 @@ final class AudioEngine: NSObject, ObservableObject {
                         for: song,
                         startingWith: activeFormat
                     )
-                    self.fallbackIndex = 0
+                    self.fallbackIndex = PlaybackRecoveryPolicy.indexAfterActiveFormat(
+                        in: self.fallbackFormats,
+                        activeFormat: activeFormat
+                    )
                 }
                 if prefetchChanged, allowsPrefetch {
                     self.scheduleSpeculativePrefetchAfterPlaybackStability()
@@ -2774,13 +2825,14 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
                 guard connectivityChanged else { return }
                 if !isSatisfied {
-                    self.prolongedStallRecoveryTask?.cancel()
-                    self.prolongedStallRecoveryTask = nil
+                    self.cancelTransportRecoveryWork(includingStability: true)
+                    self.playbackStallCount = 0
                     if self.wantsPlayback {
                         self.isBuffering = true
                     }
                     return
                 }
+                self.playbackStallCount = 0
                 guard self.wantsPlayback,
                       self.currentSong != nil else {
                     return
@@ -2799,7 +2851,10 @@ final class AudioEngine: NSObject, ObservableObject {
                             for: song,
                             startingWith: compatibilityFormat
                         )
-                        self.fallbackIndex = 0
+                        self.fallbackIndex = PlaybackRecoveryPolicy.indexAfterActiveFormat(
+                            in: self.fallbackFormats,
+                            activeFormat: compatibilityFormat
+                        )
                     }
                     self.loadCurrentItem(
                         compatibilityFormat: compatibilityFormat,
@@ -3411,6 +3466,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private func scheduleNetworkPrefetch() {
         // Lyrics are the only remaining network work after the presentation
         // prefetch has warmed metadata and artwork for upcoming tracks.
+        guard !isRemoteLosslessPlayback else {
+            cancelNetworkPrefetch(resetKey: true)
+            return
+        }
         let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
@@ -3501,11 +3560,9 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func restartPlaybackPlan(resumeFrom: TimeInterval) {
         guard let song = currentSong else { return }
-        recoveryStabilityTask?.cancel()
-        recoveryStabilityTask = nil
-        prolongedStallRecoveryTask?.cancel()
-        prolongedStallRecoveryTask = nil
+        cancelTransportRecoveryWork(includingStability: true)
         playbackStallCount = 0
+        hasReachedPlayingForCurrentItem = false
         recoveryAttempt = 0
         fallbackIndex = 0
         let preferredFormat = preferredCompatibilityFormat(for: song)
@@ -3528,8 +3585,8 @@ final class AudioEngine: NSObject, ObservableObject {
         let song = playbackItem.song
         let playbackItemID = playbackItem.id
         let resumePosition = max(0, requestedPosition ?? elapsed)
-        prolongedStallRecoveryTask?.cancel()
-        prolongedStallRecoveryTask = nil
+        cancelTransportRecoveryWork(includingStability: true)
+        hasReachedPlayingForCurrentItem = false
         itemLoadTask?.cancel()
         itemLoadGeneration &+= 1
         let generation = itemLoadGeneration
@@ -3622,11 +3679,7 @@ final class AudioEngine: NSObject, ObservableObject {
             player.isMuted = false
             player.volume = 1
             activateNowPlayingSession()
-            if asset.url.isFileURL || currentPlaybackAudioProfile() == .lossless {
-                requestPlayback()
-            } else {
-                requestLowLatencyStartup()
-            }
+            requestPlayback()
         }
         if let pendingSong = pendingPlaybackContextSong,
            pendingSong.id == currentSong?.id {
@@ -3780,8 +3833,7 @@ final class AudioEngine: NSObject, ObservableObject {
             startingWith: preferredFormat
         )
         activeCompatibilityFormat = preferredFormat
-        prolongedStallRecoveryTask?.cancel()
-        prolongedStallRecoveryTask = nil
+        cancelTransportRecoveryWork(includingStability: true)
         playbackStallCount = 0
         recoveryAttempt = 0
         playbackError = nil
@@ -3913,6 +3965,10 @@ final class AudioEngine: NSObject, ObservableObject {
                 if item.isPlaybackBufferEmpty, self.wantsPlayback {
                     self.isBuffering = true
                     self.suspendSpeculativePrefetch()
+                    self.scheduleProlongedStallRecovery(
+                        for: item,
+                        observerGeneration: generation
+                    )
                 } else {
                     self.resumeSpeculativePrefetchAfterBufferRefill()
                 }
@@ -3926,6 +3982,7 @@ final class AudioEngine: NSObject, ObservableObject {
         error: Error? = nil
     ) {
         guard currentSong != nil else { return }
+        cancelTransportRecoveryWork(includingStability: true)
         if let failedItem {
             guard player.currentItem === failedItem,
                   handledFailedItem !== failedItem else {
@@ -4005,20 +4062,23 @@ final class AudioEngine: NSObject, ObservableObject {
         for item: AVPlayerItem,
         observerGeneration: UInt64
     ) {
-        guard quality == .automatic,
+        guard hasReachedPlayingForCurrentItem,
+              quality == .automatic,
               currentSong?.externalStreamURL == nil,
               wantsPlayback,
               networkPathIsSatisfied else {
             return
         }
-        playbackStallCount += 1
+        if prolongedStallRecoveryTask != nil {
+            return
+        }
         let pathNeedsConservativeRecovery = networkPathIsConstrained
             || networkPathIsExpensive
             || networkLinkQualityIsMinimal
-        guard pathNeedsConservativeRecovery || playbackStallCount >= 2,
-              let format = lowerBandwidthCompatibilityFormat() else {
+        guard let format = lowerBandwidthCompatibilityFormat() else {
             return
         }
+        playbackStallCount += 1
 
         prolongedStallRecoveryTask?.cancel()
         let playbackItemID = currentPlaybackItem?.id
@@ -4053,8 +4113,11 @@ final class AudioEngine: NSObject, ObservableObject {
                     for: song,
                     startingWith: format
                 )
+                self.fallbackIndex = PlaybackRecoveryPolicy.indexAfterActiveFormat(
+                    in: self.fallbackFormats,
+                    activeFormat: format
+                )
             }
-            self.fallbackIndex = 0
             self.recoveryAttempt = 0
             self.loadCurrentItem(
                 compatibilityFormat: format,
@@ -4086,7 +4149,8 @@ final class AudioEngine: NSObject, ObservableObject {
             afterFailedAttempt: attempt,
             jitter: Double.random(in: 0.8...1.2)
         )
-        Task { @MainActor [weak self] in
+        recoveryBackoffTask?.cancel()
+        recoveryBackoffTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: delay)
             } catch {
@@ -4098,6 +4162,7 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.currentSong != nil else {
                 return
             }
+            self.recoveryBackoffTask = nil
             self.loadCurrentItem(
                 compatibilityFormat: compatibilityFormat,
                 resumeFrom: self.currentPlayerPosition()
@@ -4121,11 +4186,23 @@ final class AudioEngine: NSObject, ObservableObject {
         wantsPlayback = false
         isPlaying = false
         isBuffering = false
+        cancelTransportRecoveryWork(includingStability: true)
         player.pause()
         refreshIdleTimerPreference()
         updateNowPlaying()
         scheduleQueueSave(immediate: true)
         playbackError = message
+    }
+
+    private func cancelTransportRecoveryWork(includingStability: Bool) {
+        recoveryBackoffTask?.cancel()
+        recoveryBackoffTask = nil
+        prolongedStallRecoveryTask?.cancel()
+        prolongedStallRecoveryTask = nil
+        if includingStability {
+            recoveryStabilityTask?.cancel()
+            recoveryStabilityTask = nil
+        }
     }
 
     private func scheduleRecoveryAttemptReset(for item: AVPlayerItem?) {
@@ -4318,8 +4395,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 self.isPlaying = isPlaying
                 self.isBuffering = self.wantsPlayback && !isPlaying
                 if player.timeControlStatus == .playing {
-                    self.prolongedStallRecoveryTask?.cancel()
-                    self.prolongedStallRecoveryTask = nil
+                    self.hasReachedPlayingForCurrentItem = true
+                    self.cancelTransportRecoveryWork(includingStability: true)
                     if let requestedAt = self.playbackStartupRequestedAt {
                         let now = ProcessInfo.processInfo.systemUptime
                         let total = max(0, now - requestedAt)
@@ -4338,19 +4415,25 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.scheduleSpeculativePrefetchAfterPlaybackStability()
                     self.scheduleUpcomingVisualPrefetch()
                 } else if !self.wantsPlayback {
-                    self.prolongedStallRecoveryTask?.cancel()
-                    self.prolongedStallRecoveryTask = nil
-                    self.recoveryStabilityTask?.cancel()
-                    self.recoveryStabilityTask = nil
+                    self.cancelTransportRecoveryWork(includingStability: true)
                     self.reportPlaybackState("paused")
                     self.suspendSpeculativePrefetch()
                 } else {
-                    // Waiting and buffering are AVPlayer-owned states. BuFi
-                    // updates presentation only and does not seek, reload, or
-                    // force the item back to an immediate playback rate.
+                    // Waiting after a prior `.playing` is a real stall, not the
+                    // first-buffer wait AVPlayer always shows at startup.
                     self.recoveryStabilityTask?.cancel()
                     self.recoveryStabilityTask = nil
                     self.suspendSpeculativePrefetch()
+                    if self.hasReachedPlayingForCurrentItem,
+                       let item = self.logicalCurrentItem,
+                       player.currentItem === item,
+                       (player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                           || item.isPlaybackBufferEmpty) {
+                        self.scheduleProlongedStallRecovery(
+                            for: item,
+                            observerGeneration: self.itemObserverGeneration
+                        )
+                    }
                 }
                 self.refreshIdleTimerPreference()
                 self.refreshRemoteCommandsIfNeeded()
@@ -5049,8 +5132,9 @@ final class AudioEngine: NSObject, ObservableObject {
                   generation == self.songMetadataGeneration,
                   sessionGeneration == self.playbackSessionGeneration,
                   accountScope == self.currentAccountScope,
-                  self.currentPlaybackItem?.id == selectedItemID,
-                  self.currentPlaybackItem?.queueEntryID == selectedQueueEntryID,
+                  let playbackItem = self.currentPlaybackItem,
+                  playbackItem.id == selectedItemID,
+                  playbackItem.queueEntryID == selectedQueueEntryID,
                   let current = self.currentSong,
                   current.id == selectedSong.id else {
                 return
@@ -5066,7 +5150,7 @@ final class AudioEngine: NSObject, ObservableObject {
                 lyricsAreAvailable: self.lyricsState.status == .available
             )
 
-            let previousStream = self.currentPlaybackItem?.stream
+            let previousStream = playbackItem.stream
             var resolvedItem = canonicalItem
             resolvedItem.song = resolved
             var updatedEntries = self.playbackState.entries
@@ -5093,13 +5177,26 @@ final class AudioEngine: NSObject, ObservableObject {
                 startingWith: self.activeCompatibilityFormat
                     ?? self.preferredCompatibilityFormat(for: resolved)
             )
-            self.fallbackIndex = 0
-            if previousStream != resolvedItem.stream,
-               !self.isPlaying,
-               self.currentPlayerPosition() < 1 {
-                // A provisional row can omit or misreport suffix/MIME data.
-                // Before meaningful playback begins, rebuild the transport
-                // from the same canonical payload used by artwork/metadata.
+            self.fallbackIndex = PlaybackRecoveryPolicy.indexAfterActiveFormat(
+                in: self.fallbackFormats,
+                activeFormat: self.activeCompatibilityFormat
+            )
+            let previousPreferredFormat = self.preferredCompatibilityFormat(for: current)
+            let resolvedPreferredFormat = self.preferredCompatibilityFormat(for: resolved)
+            if PlaybackRecoveryPolicy.shouldReloadTransportForCanonicalMetadata(
+                previousStream: previousStream,
+                resolvedStream: resolvedItem.stream,
+                previousPreferredFormat: previousPreferredFormat,
+                resolvedPreferredFormat: resolvedPreferredFormat,
+                activeFormat: self.activeCompatibilityFormat,
+                hasReachedPlaying: self.hasReachedPlayingForCurrentItem
+                    || self.isPlaying
+                    || self.player.timeControlStatus == .playing
+            ) {
+                // A provisional row can omit suffix/MIME so Automatic quality
+                // picks the wrong transcode. Rebuild only when that actually
+                // changes the stream URL or format, and only before audio has
+                // started — first-buffer waits must not open a second stream.
                 self.restartPlaybackPlan(resumeFrom: self.elapsed)
             }
             if shouldReloadLyrics {

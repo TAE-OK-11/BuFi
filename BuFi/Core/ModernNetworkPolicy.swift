@@ -103,6 +103,17 @@ enum ModernNetworkPolicy {
             cachePolicy: .reloadIgnoringLocalCacheData
         )
         request.timeoutInterval = 8
+        request.networkServiceType = .responsiveData
+    }
+
+    /// Settings ping and other probes must not race AVPlayer for the
+    /// interactive/responsive traffic class while a stream is filling.
+    static func prepareDiagnosticPingRequest(_ request: inout URLRequest) {
+        prepareHealthCheckRequest(&request, acceptsZstandard: false)
+        request.timeoutInterval = 3
+        request.networkServiceType = .background
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
     }
 
     static func prepareImageRequest(_ request: inout URLRequest) {
