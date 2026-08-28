@@ -2516,7 +2516,7 @@ actor OpenSubsonicClient {
             snapshot.mostPlayedSongs = rankedServerSongs
             snapshot.recommendedArtists = artistRecommendations
         }
-        snapshot.daylistSongs = DaylistBuilder.make(snapshot: snapshot)
+        // Daylist is owned by RecommendationMixer via preparedHomeSnapshot.
         return HomeLoadResult(
             snapshot: snapshot,
             hasAuthoritativeStarredState: starredValue?.container != nil
