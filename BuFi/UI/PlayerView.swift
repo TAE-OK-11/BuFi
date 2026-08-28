@@ -328,12 +328,16 @@ struct PlayerView: View {
         animated: Bool
     ) {
         paletteApplyTask?.cancel()
+        if artworkPalettes[page] != nil {
+            applyPalette(for: page)
+            return
+        }
         guard animated, allowsMotion else {
             applyPalette(for: page)
             return
         }
         paletteApplyTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(80))
+            try? await Task.sleep(for: .milliseconds(48))
             guard !Task.isCancelled else { return }
             applyPalette(for: page)
         }
@@ -789,7 +793,7 @@ struct PlayerView: View {
         BuFiMotion.trackSlideTransition(
             direction: transitionDirection,
             enabled: allowsMotion,
-            distance: 34
+            distance: 30
         )
     }
 
@@ -975,17 +979,18 @@ private struct PlayerArtistLink: View {
     let song: Song
     let foreground: Color
 
+    private var artistFont: Font {
+        .system(size: 18, weight: .medium)
+    }
+
     @ViewBuilder
     var body: some View {
         if let route = artistRoute {
             NavigationLink(value: route) {
-                HStack(spacing: 5) {
-                    Text(song.artist).lineLimit(1)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .bold))
-                }
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(foreground)
+                Text(song.artist)
+                    .font(artistFont)
+                    .foregroundStyle(foreground)
+                    .lineLimit(1)
             }
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel(
@@ -993,7 +998,7 @@ private struct PlayerArtistLink: View {
             )
         } else {
             Text(song.artist)
-                .font(.system(size: 17, weight: .medium))
+                .font(artistFont)
                 .foregroundStyle(foreground)
                 .lineLimit(1)
         }

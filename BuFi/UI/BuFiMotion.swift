@@ -43,10 +43,10 @@ enum BuFiMotion {
     static let homeRefresh = Animation.smooth(duration: 0.38, extraBounce: 0)
     static let playerEntrance = Animation.spring(duration: 0.52, bounce: 0.028)
     static let screenEntrance = Animation.spring(duration: 0.48, bounce: 0.028)
-    static let trackText = Animation.smooth(duration: 0.36, extraBounce: 0)
-    static let trackPage = Animation.smooth(duration: 0.46, extraBounce: 0)
-    static let trackBackground = Animation.smooth(duration: 0.64, extraBounce: 0)
-    static let miniTrack = Animation.smooth(duration: 0.40, extraBounce: 0)
+    static let trackText = Animation.smooth(duration: 0.40, extraBounce: 0)
+    static let trackPage = Animation.smooth(duration: 0.52, extraBounce: 0)
+    static let trackBackground = Animation.smooth(duration: 0.56, extraBounce: 0)
+    static let miniTrack = Animation.smooth(duration: 0.52, extraBounce: 0)
     static let artworkTouch = Animation.spring(duration: 0.24, bounce: 0.10)
     static let color = Animation.smooth(duration: 0.48, extraBounce: 0)
     static let page = Animation.smooth(duration: 0.36, extraBounce: 0)
@@ -72,10 +72,8 @@ enum BuFiMotion {
     ) -> AnyTransition {
         guard enabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(x: -distance * direction)
-                .combined(with: .opacity),
-            removal: .offset(x: distance * 0.68 * direction)
-                .combined(with: .opacity)
+            insertion: .offset(x: -distance * direction),
+            removal: .offset(x: distance * direction)
         )
     }
 
