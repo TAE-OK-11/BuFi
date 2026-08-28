@@ -1867,14 +1867,15 @@ final class AudioEngine: NSObject, ObservableObject {
     ) {
         refreshIdleTimerPreference()
         installPlaybackTimeObserver()
-        guard lowPowerMode
-                || thermalState == .serious
-                || thermalState == .critical else {
-            scheduleSpeculativePrefetchAfterPlaybackStability()
-            scheduleUpcomingVisualPrefetch()
+        if EnergyConstraintsPolicy.shouldCancelBackgroundWork(
+            lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        ) {
+            suspendSpeculativePrefetch()
             return
         }
-        suspendSpeculativePrefetch()
+        scheduleSpeculativePrefetchAfterPlaybackStability()
+        scheduleUpcomingVisualPrefetch()
     }
 
     private func pausePlayback(persistsQueue: Bool) {
@@ -3311,24 +3312,24 @@ final class AudioEngine: NSObject, ObservableObject {
 
     /// Cover art and canonical metadata are presentation-critical even when a
     /// user skips several tracks before the two-second audio stability window.
-    /// Warm exactly the full-player decode size for the next three entries.
-    /// The request remains background-class traffic, and constrained links run
-    /// one cover at a time so AVFoundation keeps transport priority.
+    /// Warm only the immediate successor at a thumbnail decode size so the
+    /// active stream keeps radio and decoder headroom.
     private func scheduleUpcomingVisualPrefetch() {
         guard networkPathIsSatisfied,
               wantsPlayback,
               let client,
               let plan = playbackPrefetchPlan(
                   maximumUpcoming: UpcomingArtworkPrefetchPolicy.upcomingCount,
-                  permitsPendingPlayback: true
+                  permitsPendingPlayback: false
               ) else {
             cancelVisualPrefetch(resetKey: true)
             return
         }
         let processInfo = ProcessInfo.processInfo
-        guard !processInfo.isLowPowerModeEnabled,
-              processInfo.thermalState != .serious,
-              processInfo.thermalState != .critical else {
+        guard !EnergyConstraintsPolicy.shouldCancelBackgroundWork(
+            lowPowerMode: processInfo.isLowPowerModeEnabled,
+            thermalState: processInfo.thermalState
+        ) else {
             cancelVisualPrefetch(resetKey: true)
             return
         }
@@ -3345,10 +3346,7 @@ final class AudioEngine: NSObject, ObservableObject {
         visualPrefetchToken = token
         visualPrefetchTask = Task(priority: .utility) { [weak self] in
             do {
-                // Submit the active stream first, then let background artwork
-                // share the established connection without extending the old
-                // two-second placeholder window.
-                try await Task.sleep(for: .milliseconds(180))
+                try await Task.sleep(for: .milliseconds(450))
             } catch {
                 return
             }
@@ -3357,7 +3355,8 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.visualPrefetchToken == token,
                   self.playbackSessionGeneration == sessionGeneration,
                   self.currentAccountScope == accountScope,
-                  self.wantsPlayback else { return }
+                  self.wantsPlayback,
+                  self.player.timeControlStatus == .playing else { return }
 
             let songs = await client.prefetchPlaybackMetadata(
                 songs: plan.upcomingSongs
@@ -3367,13 +3366,14 @@ final class AudioEngine: NSObject, ObservableObject {
 
             var coverURLs: [URL] = []
             var seenArtwork = Set<String>()
+            let thumbnailSize = Int(UpcomingArtworkPrefetchPolicy.thumbnailPixelSize)
             for song in songs {
                 let revision = song.artworkRevision
                 guard let coverID = song.artworkID,
                       seenArtwork.insert("\(coverID)|\(revision)").inserted,
                       let sourceURL = try? client.coverURL(
                           id: coverID,
-                          size: nil
+                          size: thumbnailSize
                       ) else { continue }
                 coverURLs.append(ArtworkStore.cacheURL(
                     for: sourceURL,
@@ -3382,19 +3382,16 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             await ArtworkStore.shared.prefetch(
                 urls: coverURLs,
-                pixelSize: ArtworkRequestSizing.fullPlayerPixelSize,
+                pixelSize: UpcomingArtworkPrefetchPolicy.thumbnailPixelSize,
                 concurrencyLimit: min(
-                    isConstrained ? 1 : 3,
+                    isConstrained ? 1 : 2,
                     EnergyConstraintsPolicy.artworkPrefetchConcurrency()
                 )
             )
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
 
-            // Palette only for the current and next cover. Later tracks reuse
-            // the same cached bytes when they become visible.
-            for url in coverURLs.prefix(2) {
-                guard !Task.isCancelled else { return }
+            if let url = coverURLs.first {
                 _ = await ArtworkStore.shared.palette(for: url)
             }
         }
@@ -3414,9 +3411,10 @@ final class AudioEngine: NSObject, ObservableObject {
         }
 
         let processInfo = ProcessInfo.processInfo
-        guard !processInfo.isLowPowerModeEnabled,
-              processInfo.thermalState != .serious,
-              processInfo.thermalState != .critical else {
+        guard !EnergyConstraintsPolicy.shouldCancelBackgroundWork(
+            lowPowerMode: processInfo.isLowPowerModeEnabled,
+            thermalState: processInfo.thermalState
+        ) else {
             cancelNetworkPrefetch(resetKey: true)
             return
         }
@@ -3450,10 +3448,11 @@ final class AudioEngine: NSObject, ObservableObject {
             UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
                 ? 0
                 : configured
-        let thermalState = ProcessInfo.processInfo.thermalState
-        guard !ProcessInfo.processInfo.isLowPowerModeEnabled,
-              thermalState != .serious,
-              thermalState != .critical else {
+        let processInfo = ProcessInfo.processInfo
+        guard !EnergyConstraintsPolicy.shouldCancelBackgroundWork(
+            lowPowerMode: processInfo.isLowPowerModeEnabled,
+            thermalState: processInfo.thermalState
+        ) else {
             cancelOfflinePrefetch(resetKey: true)
             return
         }
@@ -3612,7 +3611,7 @@ final class AudioEngine: NSObject, ObservableObject {
             player.isMuted = false
             player.volume = 1
             activateNowPlayingSession()
-            if asset.url.isFileURL {
+            if asset.url.isFileURL || currentPlaybackAudioProfile() == .lossless {
                 requestPlayback()
             } else {
                 requestLowLatencyStartup()

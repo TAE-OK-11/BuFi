@@ -35,11 +35,11 @@ enum TransientServiceFailurePolicy {
             switch openSubsonic {
             case .http(let status):
                 return CoreRequestClassifier.shouldRetry(statusCode: status)
-            case .server(let code, _):
-                if Self.isAuthenticationFailure(code: code) {
-                    return false
-                }
-                return true
+            case .server:
+                // Subsonic business codes (missing params, not found, auth,
+                // unsupported) are not transient. Serving a stale playlist or
+                // song body would resurrect deleted library items.
+                return false
             case .invalidResponse:
                 return true
             case .invalidServerURL,

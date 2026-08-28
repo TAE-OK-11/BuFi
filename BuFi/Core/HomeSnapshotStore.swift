@@ -42,14 +42,12 @@ actor HomeSnapshotStore {
     }
 
     func save(_ snapshot: HomeSnapshot, accountScope: String) async {
-        scopeEpochs[accountScope, default: 0] &+= 1
-        let epoch = scopeEpochs[accountScope, default: 0]
         if await AppDatabase.shared.saveHomeSnapshot(
             snapshot,
             scope: accountScope,
             maximumBytes: maximumBytes
         ) {
-            guard scopeEpochs[accountScope, default: 0] == epoch else { return }
+            scopeEpochs[accountScope, default: 0] &+= 1
             removeLegacySnapshot(accountScope: accountScope)
         }
     }

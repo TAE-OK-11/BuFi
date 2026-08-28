@@ -27,7 +27,8 @@ enum ArtworkRequestSizing {
 }
 
 enum UpcomingArtworkPrefetchPolicy {
-    static let upcomingCount = 3
+    static let upcomingCount = 1
+    static let thumbnailPixelSize: CGFloat = 768
 }
 
 struct RGBAColor: Codable, Equatable, Sendable {
