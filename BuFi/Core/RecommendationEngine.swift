@@ -1347,13 +1347,13 @@ enum RecommendationMixer {
                 songID: song.id
             )
             let seedScore: Double
-            if let preparation.resolvedSeed,
-               let preparation.resolvedSeedMetadata {
+            if let resolvedSeed = preparation.resolvedSeed,
+               let resolvedSeedMetadata = preparation.resolvedSeedMetadata {
                 seedScore = RecommendationSeedAffinity.score(
                     candidate: song,
                     candidateMetadata: metadata,
-                    seed: preparation.resolvedSeed,
-                    seedMetadata: preparation.resolvedSeedMetadata,
+                    seed: resolvedSeed,
+                    seedMetadata: resolvedSeedMetadata,
                     seedCompleted: preparation.seedCompleted
                 )
             } else {
