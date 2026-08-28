@@ -142,9 +142,6 @@ struct MiniPlayerView: View {
         }
         .onChange(of: currentPlayback.snapshot) { previous, next in
             let changesTrack = previous.item?.id != next.item?.id
-            if changesTrack {
-                transitionDirection = next.index >= previous.index ? 1 : -1
-            }
             if changesTrack && motionEnabled {
                 withAnimation(BuFiMotion.miniTrack) {
                     presentedItem = next.item
