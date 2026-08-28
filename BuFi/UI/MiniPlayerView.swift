@@ -134,9 +134,26 @@ struct MiniPlayerView: View {
         .onAppear {
             presentedItem = currentPlayback.item
         }
-        .onChange(of: currentPlayback.snapshot) { _, next in
-            presentedItem = next.item
+        .onChange(of: currentPlayback.snapshot) { previous, next in
+            let changesTrack = previous.item?.id != next.item?.id
+            guard changesTrack else { return }
+            transitionDirection = next.index >= previous.index ? 1 : -1
+            if motionEnabled {
+                withAnimation(BuFiMotion.trackPage) {
+                    presentedItem = next.item
+                }
+            } else {
+                presentedItem = next.item
+            }
         }
+    }
+
+    private var trackSlideTransition: AnyTransition {
+        BuFiMotion.trackSlideTransition(
+            direction: transitionDirection,
+            enabled: motionEnabled,
+            distance: 18
+        )
     }
 
     private func receivePalette(
