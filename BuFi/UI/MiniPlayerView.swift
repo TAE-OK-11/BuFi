@@ -6,9 +6,8 @@ struct MiniPlayerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
-    // Stage the visible item so the direction is fixed before SwiftUI inserts
-    // the next artwork and metadata into the transition transaction.
     @State private var presentedItem: PlaybackMediaItem?
+    @State private var paletteApplyTask: Task<Void, Never>?
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
@@ -41,50 +40,44 @@ struct MiniPlayerView: View {
 
                     VStack(spacing: 0) {
                         HStack(spacing: 9) {
-                            ZStack {
-                                ArtworkView(
-                                    coverArt: song.artworkID,
-                                    size: 50,
-                                    cornerRadius: 5,
-                                    cacheRevision: artworkIdentity.artworkRevision,
-                                    onPalette: { nextPalette in
-                                        guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
-                                            return
-                                        }
-                                        if nextPalette == .fallback {
-                                            palette = nil
-                                            paletteArtworkIdentity = nil
-                                        } else {
-                                            palette = nextPalette
-                                            paletteArtworkIdentity = artworkIdentity
-                                        }
-                                    }
-                                )
-                                .id(artworkIdentity)
-                                .transition(trackArtworkTransition)
-                            }
-                            .frame(width: 50, height: 50)
-
-                            ZStack(alignment: .leading) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    OverflowMarqueeText(
-                                        text: song.title,
-                                        font: .system(size: 15, weight: .semibold)
+                            ArtworkView(
+                                coverArt: song.artworkID,
+                                size: 50,
+                                cornerRadius: 5,
+                                cacheRevision: artworkIdentity.artworkRevision,
+                                onPalette: { nextPalette in
+                                    receivePalette(
+                                        nextPalette,
+                                        for: artworkIdentity
                                     )
-                                    Text(song.artist)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(miniPlayerForeground.opacity(0.72))
-                                        .lineLimit(1)
-                                        .minimumScaleFactor(0.76)
-                                        .contentTransition(.interpolate)
                                 }
-                                .id(item.id)
-                                .transition(trackTextTransition)
-                                .contentTransition(.opacity)
+                            )
+                            .frame(width: 50, height: 50)
+                            .animation(
+                                motionEnabled ? BuFiMotion.miniTrack : .none,
+                                value: artworkIdentity
+                            )
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                OverflowMarqueeText(
+                                    text: song.title,
+                                    font: .system(size: 15, weight: .semibold)
+                                )
+                                Text(song.artist)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(miniPlayerForeground.opacity(0.72))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.76)
+                                    .contentTransition(.interpolate)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
                             .allowsHitTesting(false)
+                            .animation(
+                                motionEnabled ? BuFiMotion.trackText : .none,
+                                value: item.id
+                            )
+                            .contentTransition(.opacity)
 
                             AirPlayButton(lightContent: !usesDarkForeground)
                                 .frame(width: 36, height: 36)
@@ -117,7 +110,7 @@ struct MiniPlayerView: View {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(miniPlayerBackground)
                         .animation(
-                            motionEnabled ? BuFiMotion.color : .none,
+                            motionEnabled ? BuFiMotion.trackBackground : .none,
                             value: resolvedPalette
                         )
                 }
@@ -125,7 +118,7 @@ struct MiniPlayerView: View {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .stroke(miniPlayerForeground.opacity(0.16), lineWidth: 0.7)
                         .animation(
-                            motionEnabled ? BuFiMotion.color : .none,
+                            motionEnabled ? BuFiMotion.trackBackground : .none,
                             value: resolvedPalette
                         )
                 }
@@ -140,15 +133,37 @@ struct MiniPlayerView: View {
         .onAppear {
             presentedItem = currentPlayback.item
         }
-        .onChange(of: currentPlayback.snapshot) { previous, next in
-            let changesTrack = previous.item?.id != next.item?.id
-            if changesTrack && motionEnabled {
-                withAnimation(BuFiMotion.miniTrack) {
-                    presentedItem = next.item
-                }
-            } else {
-                presentedItem = next.item
+        .onChange(of: currentPlayback.snapshot) { _, next in
+            presentedItem = next.item
+        }
+    }
+
+    private func receivePalette(
+        _ nextPalette: ArtworkPalette,
+        for artworkIdentity: PlayerArtworkIdentity
+    ) {
+        guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
+            return
+        }
+        paletteApplyTask?.cancel()
+        if nextPalette == .fallback {
+            palette = nil
+            paletteArtworkIdentity = nil
+            return
+        }
+        guard motionEnabled else {
+            palette = nextPalette
+            paletteArtworkIdentity = artworkIdentity
+            return
+        }
+        paletteApplyTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard !Task.isCancelled,
+                  currentPlayback.item?.artworkIdentity == artworkIdentity else {
+                return
             }
+            palette = nextPalette
+            paletteArtworkIdentity = artworkIdentity
         }
     }
 
@@ -185,16 +200,6 @@ struct MiniPlayerView: View {
         return 0.2126 * linear(color.red)
             + 0.7152 * linear(color.green)
             + 0.0722 * linear(color.blue)
-    }
-
-    private var trackTextTransition: AnyTransition {
-        guard motionEnabled else { return .opacity }
-        return .opacity
-    }
-
-    private var trackArtworkTransition: AnyTransition {
-        guard motionEnabled else { return .opacity }
-        return .opacity
     }
 }
 

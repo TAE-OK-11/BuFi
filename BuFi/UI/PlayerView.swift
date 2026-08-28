@@ -133,6 +133,7 @@ struct PlayerView: View {
     @State private var artworkLayoutRevision: UInt64 = 0
     @State private var translationRequestedSongID: String?
     @State private var hasRevealedPlayerContent = false
+    @State private var paletteApplyTask: Task<Void, Never>?
     @AppStorage("player-seekbar-appearance")
     private var playerAppearance = PlayerAppearance.liquidGlass.rawValue
     @AppStorage("player-background-appearance")
@@ -224,13 +225,12 @@ struct PlayerView: View {
             let next = playback.snapshot
             refreshArtworkPages(from: next, fallback: currentPlayback.item)
             pruneArtworkPalettes(using: next)
-            if let currentID = currentArtworkPageID(in: next),
-               artworkPage != currentID {
+            guard let currentID = currentArtworkPageID(in: next) else {
                 syncArtworkPage(to: next)
-            } else if artworkPage != nil,
-                      !next.entries.contains(where: { $0.id == artworkPage?.queueEntryID }) {
-                syncArtworkPage(to: next)
+                return
             }
+            guard artworkPage != currentID else { return }
+            animateArtworkPage(to: currentID, in: next)
         }
         .onAppear {
             presentedItem = currentPlayback.item
@@ -268,19 +268,50 @@ struct PlayerView: View {
         if indexChanged {
             transitionDirection = next.index >= previous.index ? 1 : -1
         }
-        let animate = indexChanged && allowsMotion
-        if animate {
+        if trackChanged {
+            presentedItem = next.item
+        }
+        guard let currentPage = currentArtworkPageID(in: playback.snapshot) else {
+            paletteApplyTask?.cancel()
+            pagerSelectionGate.beginProgrammaticMove(to: nil)
+            artworkPage = nil
+            if palette != .fallback { palette = .fallback }
+            return
+        }
+        guard artworkPage != currentPage else { return }
+        animateArtworkPage(to: currentPage, in: playback.snapshot)
+    }
+
+    private func animateArtworkPage(
+        to currentPage: PlayerArtworkPageID,
+        in snapshot: PlaybackSnapshot
+    ) {
+        pagerSelectionGate.beginProgrammaticMove(to: currentPage)
+        if allowsMotion {
             withAnimation(BuFiMotion.trackPage) {
-                if trackChanged {
-                    presentedItem = next.item
-                }
-                syncArtworkPage(to: playback.snapshot)
+                artworkPage = currentPage
             }
+            schedulePaletteApply(for: currentPage, animated: true)
         } else {
-            if trackChanged {
-                presentedItem = next.item
-            }
-            syncArtworkPage(to: playback.snapshot)
+            artworkPage = currentPage
+            paletteApplyTask?.cancel()
+            applyPalette(for: currentPage)
+        }
+    }
+
+    private func schedulePaletteApply(
+        for page: PlayerArtworkPageID,
+        animated: Bool
+    ) {
+        paletteApplyTask?.cancel()
+        guard animated, allowsMotion else {
+            applyPalette(for: page)
+            return
+        }
+        paletteApplyTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled else { return }
+            applyPalette(for: page)
         }
     }
 
@@ -310,7 +341,7 @@ struct PlayerView: View {
         .equatable()
         .ignoresSafeArea()
         .animation(
-            allowsMotion ? BuFiMotion.trackPage : .none,
+            allowsMotion ? BuFiMotion.trackBackground : .none,
             value: PlayerBackgroundAnimationIdentity(
                 palette: palette,
                 playerAppearance: resolvedPlayerAppearance,
@@ -344,8 +375,10 @@ struct PlayerView: View {
                         .foregroundStyle(playerSecondary)
                         .lineLimit(1)
                 }
-                .id(item.id)
-                .transition(trackTextTransition)
+                .animation(
+                    allowsMotion ? BuFiMotion.trackText : .none,
+                    value: item.id
+                )
                 .contentTransition(.opacity)
             }
             .frame(maxWidth: 240)
@@ -397,8 +430,10 @@ struct PlayerView: View {
                     )
                     PlayerArtistLink(song: song, foreground: playerSecondary)
                 }
-                .id(item.id)
-                .transition(trackTextTransition)
+                .animation(
+                    allowsMotion ? BuFiMotion.trackText : .none,
+                    value: item.id
+                )
                 .contentTransition(.opacity)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -487,10 +522,7 @@ struct PlayerView: View {
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
                                 .opacity(
-                                    phase.isIdentity || !animatesTransition ? 1 : 0.98
-                                )
-                                .scaleEffect(
-                                    phase.isIdentity || !animatesTransition ? 1 : 0.992
+                                    phase.isIdentity || !animatesTransition ? 1 : 0.99
                                 )
                         }
                     }
@@ -525,6 +557,7 @@ struct PlayerView: View {
                 || cachedArtworkPages.contains(where: { $0.id == currentPage }) else {
             return
         }
+        guard artworkPage != currentPage else { return }
         pagerSelectionGate.beginProgrammaticMove(to: currentPage)
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -618,16 +651,17 @@ struct PlayerView: View {
 
     private func syncArtworkPage(to snapshot: PlaybackSnapshot) {
         guard let currentPage = currentArtworkPageID(in: snapshot) else {
+            paletteApplyTask?.cancel()
             pagerSelectionGate.beginProgrammaticMove(to: nil)
             artworkPage = nil
             if palette != .fallback { palette = .fallback }
             return
         }
-        if artworkPage != currentPage {
-            pagerSelectionGate.beginProgrammaticMove(to: currentPage)
+        guard artworkPage != currentPage else {
+            applyPalette(for: currentPage)
+            return
         }
-        artworkPage = currentPage
-        applyPalette(for: currentPage)
+        animateArtworkPage(to: currentPage, in: snapshot)
     }
 
     private func receivePalette(
@@ -729,11 +763,6 @@ struct PlayerView: View {
 
     private var resolvedBackgroundAppearance: PlayerBackgroundAppearance {
         PlayerBackgroundAppearance.resolved(playerBackgroundAppearance)
-    }
-
-    private var trackTextTransition: AnyTransition {
-        guard allowsMotion else { return .opacity }
-        return .opacity
     }
 
     private var lyricsPanelTransition: AnyTransition {
@@ -1718,23 +1747,26 @@ private struct PlayerPaletteBackground: View, Equatable {
 
     @ViewBuilder
     var body: some View {
-        switch appearance {
-        case .classic:
-            ZStack {
-                artisticField(style: .restrained)
-                restrainedReadabilityOverlay
-            }
-        case .multicolor:
-            ZStack {
-                artisticField(style: .vivid)
-                readabilityOverlay
-            }
-        case .bright:
-            ZStack {
-                artisticField(style: .bright)
-                Color.white.opacity(0.04)
+        Group {
+            switch appearance {
+            case .classic:
+                ZStack {
+                    artisticField(style: .restrained)
+                    restrainedReadabilityOverlay
+                }
+            case .multicolor:
+                ZStack {
+                    artisticField(style: .vivid)
+                    readabilityOverlay
+                }
+            case .bright:
+                ZStack {
+                    artisticField(style: .bright)
+                    Color.white.opacity(0.04)
+                }
             }
         }
+        .drawingGroup(opaque: false, colorMode: .linear)
     }
 
     @ViewBuilder
