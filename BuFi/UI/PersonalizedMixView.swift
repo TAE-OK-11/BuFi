@@ -294,7 +294,7 @@ struct PersonalizedMixDetailView: View {
                     .buFiVerticalSectionMotion(delay: 0.05)
             }
             .padding(.top, 12)
-            .buFiMiniPlayerContentClearance(idle: 56, playing: 148)
+            .buFiMiniPlayerContentClearance()
         }
         .background(BuFiScreenBackground())
         .navigationBarTitleDisplayMode(.inline)
@@ -352,6 +352,7 @@ struct PersonalizedMixDetailView: View {
                     )
             }
             .buttonStyle(BuFiPressStyle())
+            .disabled(mix.songs.isEmpty)
             .accessibilityLabel("셔플 재생")
 
             Button {
@@ -365,6 +366,7 @@ struct PersonalizedMixDetailView: View {
                     .background(BuFiTheme.accent, in: Circle())
             }
             .buttonStyle(BuFiPressStyle())
+            .disabled(mix.songs.isEmpty)
             .accessibilityLabel("전체 재생")
         }
         .padding(.horizontal, 18)
@@ -382,22 +384,19 @@ struct PersonalizedMixDetailView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(
-                        Array(mix.songs.enumerated()),
-                        id: \.offset
-                    ) { index, song in
+                    ForEach(IndexedSong.list(mix.songs)) { item in
                         HStack(spacing: mix.showsRanking ? 10 : 2) {
                             if mix.showsRanking {
-                                Text("\(index + 1)")
+                                Text("\(item.index + 1)")
                                     .font(
                                         .system(
                                             size: 14,
-                                            weight: index < 3 ? .bold : .medium,
+                                            weight: item.index < 3 ? .bold : .medium,
                                             design: .rounded
                                         )
                                     )
                                     .foregroundStyle(
-                                        index < 3
+                                        item.index < 3
                                             ? BuFiTheme.accent
                                             : Color.secondary
                                     )
@@ -405,16 +404,16 @@ struct PersonalizedMixDetailView: View {
                                     .frame(width: 24, alignment: .trailing)
                             }
                             SongRowCurrentTrackResolver(
-                                song: song,
+                                song: item.song,
                                 queue: mix.songs,
-                                queueIndex: index,
+                                queueIndex: item.index,
                                 artworkSize: 52,
                                 textLineLimit: 2
                             )
                         }
                         .padding(.horizontal, 12)
 
-                        if index < mix.songs.count - 1 {
+                        if item.index < mix.songs.count - 1 {
                             Divider()
                                 .padding(.leading, mix.showsRanking ? 112 : 78)
                                 .opacity(0.50)

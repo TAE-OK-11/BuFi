@@ -2359,6 +2359,24 @@ enum ArtistMixPreferences {
         return encoded
     }
 
+    static func removing(_ artist: String, from value: String) -> String {
+        let key = normalized(artist)
+        guard !key.isEmpty else { return value }
+        let artists = decode(value).filter { normalized($0) != key }
+        guard let data = try? JSONEncoder().encode(artists),
+              let encoded = String(data: data, encoding: .utf8) else {
+            return value
+        }
+        return encoded
+    }
+
+    static func toggling(_ artist: String, in value: String) -> String {
+        if contains(artist, in: value) {
+            return removing(artist, from: value)
+        }
+        return adding(artist, to: value)
+    }
+
     static func contains(_ artist: String, in value: String) -> Bool {
         let key = normalized(artist)
         return decode(value).contains { normalized($0) == key }

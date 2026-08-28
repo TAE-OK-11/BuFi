@@ -26,17 +26,21 @@ enum LyricsTranslationPhase: Equatable {
     var statusText: String? {
         switch self {
         case .loadingCache:
-            "저장된 번역 확인 중"
+            String(localized: "저장된 번역 확인 중")
         case .preparing:
-            "번역 모델 준비 중"
+            String(localized: "번역 모델 준비 중")
         case let .translating(completed, total):
-            "번역 중 \(completed)/\(total)"
+            String(
+                format: String(localized: "번역 중 %d/%d"),
+                completed,
+                total
+            )
         case .refining:
-            "가사 문맥을 자연스럽게 다듬는 중"
+            String(localized: "가사 문맥을 자연스럽게 다듬는 중")
         case .unsupported:
-            "이 언어는 번역할 수 없습니다"
+            String(localized: "이 언어는 번역할 수 없습니다")
         case .failed:
-            "번역을 완료하지 못했습니다"
+            String(localized: "번역을 완료하지 못했습니다")
         case .idle, .ready:
             nil
         }

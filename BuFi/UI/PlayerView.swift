@@ -949,7 +949,7 @@ private struct PlayerArtistLink: View {
             Artist(
                 id: artistID,
                 name: song.artist,
-                coverArt: nil,
+                coverArt: song.coverArt,
                 albumCount: nil,
                 starred: nil
             )
@@ -1564,7 +1564,7 @@ private struct FullLyricLine: View {
         }
         .buttonStyle(.plain)
         .id(line.id)
-        .animation(motionEnabled ? BuFiMotion.lyrics : .none, value: isActive)
+        .animation(nil, value: isActive)
         .animation(motionEnabled ? BuFiMotion.fade : .none, value: translation)
     }
 
@@ -1600,7 +1600,7 @@ private struct FullLyricsFooter: View {
             // The translation affordance enters the full screen only through
             // the mini-lyrics translate action. A normal lyrics expansion
             // remains a clean, untranslated view for the whole presentation.
-            if canOfferTranslations, showsTranslations {
+            if canOfferTranslations {
                 translationControls
             }
 

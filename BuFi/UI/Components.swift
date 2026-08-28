@@ -197,10 +197,11 @@ extension View {
         )
     }
 
-    /// Keeps the final scrollable content clear of the persistent mini player.
+    /// Extra scroll padding under the last row. Tab pages already reserve the
+    /// mini player with `safeAreaInset`, so this only needs a small gap.
     func buFiMiniPlayerContentClearance(
-        idle: CGFloat = 34,
-        playing: CGFloat = 110
+        idle: CGFloat = 28,
+        playing: CGFloat = 36
     ) -> some View {
         modifier(BuFiMiniPlayerContentClearanceModifier(
             idle: idle,
@@ -545,6 +546,17 @@ enum SongRowLayout: Equatable {
     case compactAlbum
 }
 
+struct IndexedSong: Identifiable {
+    let index: Int
+    let song: Song
+
+    var id: String { "\(song.id)#\(index)" }
+
+    static func list(_ songs: [Song]) -> [IndexedSong] {
+        songs.enumerated().map { IndexedSong(index: $0.offset, song: $0.element) }
+    }
+}
+
 struct SongFavoriteIconButton: View {
     @EnvironmentObject private var model: AppModel
 
@@ -881,11 +893,53 @@ struct SongRowCurrentTrackResolver: View {
     var textLineLimit: Int = 1
 
     var body: some View {
-        SongRow(
+        SongRowCurrentTrackBody(
             song: song,
             queue: queue,
             queueIndex: queueIndex,
             isCurrentTrack: currentPlayback.song?.id == song.id,
+            playbackOrigin: playbackOrigin,
+            artworkSize: artworkSize,
+            layout: layout,
+            fallbackTrackNumber: fallbackTrackNumber,
+            onMore: onMore,
+            textLineLimit: textLineLimit
+        )
+    }
+}
+
+/// Skips rebuilding artwork-heavy song rows when only unrelated playback
+/// snapshot fields changed (queue count, current item metadata, and so on).
+private struct SongRowCurrentTrackBody: View, Equatable {
+    let song: Song
+    let queue: [Song]
+    let queueIndex: Int?
+    let isCurrentTrack: Bool
+    let playbackOrigin: PlaybackOrigin
+    let artworkSize: CGFloat
+    let layout: SongRowLayout
+    let fallbackTrackNumber: Int?
+    let onMore: (() -> Void)?
+    let textLineLimit: Int
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.isCurrentTrack == rhs.isCurrentTrack
+            && lhs.song == rhs.song
+            && lhs.queueIndex == rhs.queueIndex
+            && lhs.queue.count == rhs.queue.count
+            && lhs.playbackOrigin == rhs.playbackOrigin
+            && lhs.artworkSize == rhs.artworkSize
+            && lhs.layout == rhs.layout
+            && lhs.fallbackTrackNumber == rhs.fallbackTrackNumber
+            && lhs.textLineLimit == rhs.textLineLimit
+    }
+
+    var body: some View {
+        SongRow(
+            song: song,
+            queue: queue,
+            queueIndex: queueIndex,
+            isCurrentTrack: isCurrentTrack,
             playbackOrigin: playbackOrigin,
             artworkSize: artworkSize,
             layout: layout,

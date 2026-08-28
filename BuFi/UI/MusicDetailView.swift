@@ -92,6 +92,7 @@ struct MusicDetailView: View {
     @State private var discography = ArtistDiscographyPresentation.empty
     @State private var downloadAllTask: Task<Void, Never>?
     @State private var isDownloadingAll = false
+    @State private var loadError: String?
 
     var body: some View {
         ScrollView {
@@ -110,6 +111,22 @@ struct MusicDetailView: View {
                         .transition(
                             motionEnabled ? BuFiTransition.section : .opacity
                         )
+                } else if let loadError {
+                    VStack(spacing: 16) {
+                        ContentUnavailableView(
+                            "불러오지 못했습니다",
+                            systemImage: "exclamationmark.triangle",
+                            description: Text(loadError)
+                        )
+                        Button("다시 시도") {
+                            Task { await load() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(BuFiTheme.accent)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 48)
+                    .buFiEntranceMotion(delay: 0.03)
                 } else {
                     controls
                         .buFiVerticalSectionMotion()
@@ -134,7 +151,7 @@ struct MusicDetailView: View {
                 motionEnabled ? BuFiMotion.content : .none,
                 value: isLoading
             )
-            .buFiMiniPlayerContentClearance(idle: 56, playing: 148)
+            .buFiMiniPlayerContentClearance()
         }
         .background(background)
         .navigationBarTitleDisplayMode(.inline)
@@ -410,10 +427,10 @@ struct MusicDetailView: View {
 
     private var artistMixControl: some View {
         Button {
-            addCurrentArtistMix()
+            toggleCurrentArtistMix()
         } label: {
             Label {
-                Text(hasCurrentArtistMix ? "Artist Mix Added" : "Create Artist Mix")
+                Text(hasCurrentArtistMix ? "Artist Mix에 추가됨" : "Artist Mix 만들기")
                     .contentTransition(.interpolate)
             } icon: {
                 Image(
@@ -440,8 +457,13 @@ struct MusicDetailView: View {
         .padding(.bottom, 12)
         .accessibilityLabel(
             hasCurrentArtistMix
-                ? "Artist Mix에 추가됨"
+                ? "Artist Mix에서 제거"
                 : "Artist Mix 만들기"
+        )
+        .accessibilityHint(
+            hasCurrentArtistMix
+                ? "탭하면 이 아티스트를 Artist Mix에서 뺍니다"
+                : "최대 4명의 아티스트를 Artist Mix에 고정합니다"
         )
     }
 
@@ -527,21 +549,23 @@ struct MusicDetailView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(
-                        Array(songs.enumerated()),
-                        id: \.offset
-                    ) { index, song in
+                    ForEach(IndexedSong.list(songs)) { item in
                         SongRowCurrentTrackResolver(
-                            song: song,
+                            song: item.song,
                             queue: songs,
-                            queueIndex: index,
+                            queueIndex: item.index,
                             playbackOrigin: isArtist ? .manual : .album,
                             artworkSize: isArtist ? 54 : 44,
                             layout: songRowLayout,
-                            fallbackTrackNumber: index + 1,
-                            onMore: { selectedSong = song }
+                            fallbackTrackNumber: item.index + 1,
+                            onMore: { selectedSong = item.song }
                         )
                         .padding(.horizontal, 12)
+                        if item.index < songs.count - 1 {
+                            Divider()
+                                .padding(.leading, isArtist ? 78 : 56)
+                                .opacity(0.50)
+                        }
                     }
                 }
             }
@@ -629,11 +653,11 @@ struct MusicDetailView: View {
         )
     }
 
-    private func addCurrentArtistMix() {
+    private func toggleCurrentArtistMix() {
         guard let currentArtistName else { return }
-        selectedArtistMixes = ArtistMixPreferences.adding(
+        selectedArtistMixes = ArtistMixPreferences.toggling(
             currentArtistName,
-            to: selectedArtistMixes
+            in: selectedArtistMixes
         )
     }
 
@@ -710,6 +734,7 @@ struct MusicDetailView: View {
     private func load() async {
         let loadingRoute = route
         isLoading = true
+        loadError = nil
         palette = .fallback
         title = ""
         subtitle = ""
@@ -802,8 +827,12 @@ struct MusicDetailView: View {
                 discography = preparedArtistContent.discography
             }
         } catch {
-            guard !Task.isCancelled else { return }
-            model.errorMessage = error.localizedDescription
+            guard !Task.isCancelled, route == loadingRoute else { return }
+            loadError = error.localizedDescription
+            withAnimation(allowsMotion ? BuFiMotion.reveal : .none) {
+                isLoading = false
+            }
+            return
         }
         guard !Task.isCancelled, route == loadingRoute else { return }
         withAnimation(allowsMotion ? BuFiMotion.reveal : .none) {

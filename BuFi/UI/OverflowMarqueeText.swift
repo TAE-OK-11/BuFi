@@ -64,6 +64,11 @@ struct OverflowMarqueeText: View {
                 if containerSize != size { containerSize = size }
             }
             .task(id: animationIdentity) {
+                do {
+                    try await Task.sleep(for: .milliseconds(90))
+                } catch {
+                    return
+                }
                 let runID = UUID()
                 animationRunID = runID
                 await runAnimation(distance: overflowDistance, runID: runID)
