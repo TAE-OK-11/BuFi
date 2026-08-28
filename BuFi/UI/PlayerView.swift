@@ -332,6 +332,7 @@ struct PlayerView: View {
                 .transition(trackTextTransition)
             }
             .frame(maxWidth: 240)
+            .clipped()
             .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer()
 
@@ -385,6 +386,7 @@ struct PlayerView: View {
                 .transition(trackTextTransition)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .clipped()
             .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer(minLength: 4)
             PlayerFavoriteButton(
