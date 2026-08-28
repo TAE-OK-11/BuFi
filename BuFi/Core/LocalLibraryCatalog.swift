@@ -2,7 +2,7 @@ import Foundation
 
 /// On-device song catalog for instant Last.fm / ListenBrainz matching.
 ///
-/// Structured keys (MBID, ISRC, normalized title+artist) are the only lookup
+/// Structured keys (MBID, normalized title+artist) are the only lookup
 /// used on the radio path. Neural embeddings were removed from launch because
 /// NLContextualEmbedding.load() can abort the process when language assets
 /// are missing.
@@ -37,7 +37,6 @@ actor LocalLibraryCatalog {
     private var scopeGeneration: UInt64 = 0
     private var entries: [String: Entry] = [:]
     private var songsByMBID: [String: String] = [:]
-    private var songsByISRC: [String: String] = [:]
     private var songsByIdentity: [String: String] = [:]
     private var persistTask: Task<Void, Never>?
     private var persistenceRetryCount = 0
@@ -88,7 +87,6 @@ actor LocalLibraryCatalog {
         activeScope = accountScope
         entries.removeAll(keepingCapacity: true)
         songsByMBID.removeAll(keepingCapacity: true)
-        songsByISRC.removeAll(keepingCapacity: true)
         songsByIdentity.removeAll(keepingCapacity: true)
         dirtySongIDs.removeAll(keepingCapacity: true)
         deletedSongIDs.removeAll(keepingCapacity: true)
@@ -124,7 +122,6 @@ actor LocalLibraryCatalog {
         guard generation == scopeGeneration, activeScope == nil else { return true }
         entries.removeAll(keepingCapacity: false)
         songsByMBID.removeAll(keepingCapacity: false)
-        songsByISRC.removeAll(keepingCapacity: false)
         songsByIdentity.removeAll(keepingCapacity: false)
         dirtySongIDs.removeAll(keepingCapacity: false)
         deletedSongIDs.removeAll(keepingCapacity: false)
@@ -241,7 +238,6 @@ actor LocalLibraryCatalog {
         }
         entries[entry.song.id] = entry
         if !entry.mbid.isEmpty { songsByMBID[entry.mbid] = entry.song.id }
-        if !entry.isrc.isEmpty { songsByISRC[entry.isrc] = entry.song.id }
         if !entry.identityKey.hasPrefix("\u{1F}") {
             songsByIdentity[entry.identityKey] = entry.song.id
         }
@@ -250,9 +246,6 @@ actor LocalLibraryCatalog {
     private func removeIndexes(_ entry: Entry) {
         if songsByMBID[entry.mbid] == entry.song.id {
             songsByMBID[entry.mbid] = nil
-        }
-        if songsByISRC[entry.isrc] == entry.song.id {
-            songsByISRC[entry.isrc] = nil
         }
         if songsByIdentity[entry.identityKey] == entry.song.id {
             songsByIdentity[entry.identityKey] = nil
@@ -465,9 +458,7 @@ actor LocalLibraryCatalog {
                 artistKey: entry.artistKey,
                 albumKey: entry.albumKey,
                 mbid: entry.mbid,
-                isrc: entry.isrc,
-                hashEmbedding: Data(),
-                neuralEmbedding: Data()
+                isrc: entry.isrc
             ))
         }
         return records

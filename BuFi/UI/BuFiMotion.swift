@@ -120,9 +120,7 @@ private struct BuFiHorizontalScrollMotionModifier: ViewModifier {
         if motionEnabled {
             content.scrollTransition(.interactive, axis: .horizontal) { view, phase in
                 view
-                    .scaleEffect(phase.isIdentity ? 1 : 0.978)
-                    .opacity(phase.isIdentity ? 1 : 0.90)
-                    .offset(y: phase.isIdentity ? 0 : 4)
+                    .opacity(phase.isIdentity ? 1 : 0.94)
             }
         } else {
             content
@@ -181,9 +179,7 @@ private struct BuFiVerticalSectionMotionModifier: ViewModifier {
             )
             .scrollTransition(.interactive, axis: .vertical) { view, phase in
                 view
-                    .scaleEffect(phase.isIdentity || !enablesMotion ? 1 : 0.996)
-                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.96)
-                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 3)
+                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.97)
             }
     }
 }

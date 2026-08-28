@@ -470,9 +470,7 @@ struct PlayerView: View {
                         .id(page.id)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
-                                .scaleEffect(phase.isIdentity || !animatesTransition ? 1 : 0.978)
-                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.90)
-                                .offset(y: phase.isIdentity || !animatesTransition ? 0 : 3)
+                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.94)
                         }
                     }
                 }
