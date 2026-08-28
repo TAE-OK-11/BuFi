@@ -922,7 +922,7 @@ private struct SongRowCurrentTrackBody: View, Equatable {
     let onMore: (() -> Void)?
     let textLineLimit: Int
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.isCurrentTrack == rhs.isCurrentTrack
             && lhs.song == rhs.song
             && lhs.queueIndex == rhs.queueIndex
