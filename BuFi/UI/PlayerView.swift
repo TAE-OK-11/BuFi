@@ -310,7 +310,7 @@ struct PlayerView: View {
         .equatable()
         .ignoresSafeArea()
         .animation(
-            allowsMotion ? BuFiMotion.color : .none,
+            allowsMotion ? BuFiMotion.trackPage : .none,
             value: PlayerBackgroundAnimationIdentity(
                 palette: palette,
                 playerAppearance: resolvedPlayerAppearance,
@@ -645,7 +645,9 @@ struct PlayerView: View {
 
     private func applyPalette(for page: PlayerArtworkPageID?) {
         guard let page, let cached = artworkPalettes[page] else {
-            if palette != .fallback { palette = .fallback }
+            // Keep the outgoing palette until the incoming page reports one.
+            // Snapping to fallback here double-animates the background and
+            // makes track changes feel randomly slow when extraction lags.
             return
         }
         if palette != cached { palette = cached }

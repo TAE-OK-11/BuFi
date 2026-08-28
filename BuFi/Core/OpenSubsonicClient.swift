@@ -3430,7 +3430,7 @@ actor OpenSubsonicClient {
 
     func prefetchLyrics(songs: [Song]) async {
         var seen = Set<String>()
-        let uniqueSongs = songs.prefix(UpcomingArtworkPrefetchPolicy.upcomingCount).filter {
+        let uniqueSongs = songs.prefix(UpcomingArtworkPrefetchPolicy.lyricsPrefetchCount).filter {
             seen.insert($0.id).inserted
         }
         await withTaskGroup(of: Void.self) { group in
