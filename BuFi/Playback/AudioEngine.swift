@@ -158,6 +158,9 @@ final class PlaybackReportDeliveryQueue {
         position: TimeInterval,
         state: String
     ) {
+        pending.removeAll {
+            $0.songID == songID && $0.state == state
+        }
         pending.append(Request(
             client: client,
             songID: songID,
@@ -1779,7 +1782,7 @@ final class AudioEngine: NSObject, ObservableObject {
         // warmed only after AVPlayer confirms that playback is established.
         suspendSpeculativePrefetch()
         scheduleUpcomingVisualPrefetch()
-        scheduleQueueSave()
+        scheduleQueueSave(syncServer: !reusesCurrentQueue)
         updateNowPlaying()
         scheduleAutoplayContinuationIfNeeded()
     }
@@ -3249,6 +3252,18 @@ final class AudioEngine: NSObject, ObservableObject {
         discardPreparedPlaybackAssets()
     }
 
+    private func resumeSpeculativePrefetchAfterBufferRefill() {
+        guard wantsPlayback,
+              let item = logicalCurrentItem,
+              player.currentItem === item,
+              !item.isPlaybackBufferEmpty else { return }
+        isBuffering = false
+        scheduleGaplessSuccessor()
+        guard player.timeControlStatus == .playing else { return }
+        scheduleSpeculativePrefetchAfterPlaybackStability()
+        scheduleUpcomingVisualPrefetch()
+    }
+
     /// Give the active stream an uncontested opening window before optional
     /// artwork, lyrics, and offline preparation begin. Resumes later in a song
     /// skip the delay because AVPlayer already owns a stable connection.
@@ -3390,10 +3405,6 @@ final class AudioEngine: NSObject, ObservableObject {
             )
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
-
-            if let url = coverURLs.first {
-                _ = await ArtworkStore.shared.palette(for: url)
-            }
         }
     }
 
@@ -3744,7 +3755,7 @@ final class AudioEngine: NSObject, ObservableObject {
         observeActiveItem(item, resumePosition: 0)
         refreshCanonicalMetadata(for: song)
         loadLyrics(for: song)
-        scheduleQueueSave(immediate: true)
+        scheduleQueueSave(immediate: true, syncServer: false)
         updateNowPlaying()
         scheduleAutoplayContinuationIfNeeded()
         if schedulesFollowingSuccessor { scheduleGaplessSuccessor() }
@@ -3902,6 +3913,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 if item.isPlaybackBufferEmpty, self.wantsPlayback {
                     self.isBuffering = true
                     self.suspendSpeculativePrefetch()
+                } else {
+                    self.resumeSpeculativePrefetchAfterBufferRefill()
                 }
             }
         }
