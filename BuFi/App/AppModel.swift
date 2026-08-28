@@ -2992,7 +2992,7 @@ final class AppModel: ObservableObject {
                     from: source,
                     refreshStableCatalog: false,
                     enrichesServerRecommendations: true,
-                    forcesServerEnrichment: true
+                    enrichmentOnly: true
                 )
                 guard !Task.isCancelled,
                       generation == self.sessionGeneration,
