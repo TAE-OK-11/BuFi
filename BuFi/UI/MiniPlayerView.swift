@@ -6,7 +6,6 @@ struct MiniPlayerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
-    @State private var transitionDirection: CGFloat = 1
     // Stage the visible item so the direction is fixed before SwiftUI inserts
     // the next artwork and metadata into the transition transaction.
     @State private var presentedItem: PlaybackMediaItem?
@@ -81,6 +80,7 @@ struct MiniPlayerView: View {
                                 }
                                 .id(item.id)
                                 .transition(trackTextTransition)
+                                .contentTransition(.opacity)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
@@ -142,12 +142,11 @@ struct MiniPlayerView: View {
         }
         .onChange(of: currentPlayback.snapshot) { previous, next in
             let changesTrack = previous.item?.id != next.item?.id
-            if changesTrack {
-                transitionDirection = next.index >= previous.index ? 1 : -1
-            }
-            withAnimation(
-                changesTrack && motionEnabled ? BuFiMotion.trackPage : .none
-            ) {
+            if changesTrack && motionEnabled {
+                withAnimation(BuFiMotion.miniTrack) {
+                    presentedItem = next.item
+                }
+            } else {
                 presentedItem = next.item
             }
         }
@@ -190,28 +189,12 @@ struct MiniPlayerView: View {
 
     private var trackTextTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
-        let offset: CGFloat = 5
-        return .asymmetric(
-            insertion: .offset(
-                y: transitionDirection > 0 ? offset : -offset
-            )
-            .combined(with: .opacity),
-            removal: .offset(
-                y: transitionDirection > 0 ? -offset * 0.5 : offset * 0.5
-            )
-            .combined(with: .opacity)
-        )
+        return .opacity
     }
 
     private var trackArtworkTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
-        let offset: CGFloat = 14
-        return .asymmetric(
-            insertion: .offset(x: offset * transitionDirection)
-                .combined(with: .opacity),
-            removal: .offset(x: -offset * 0.65 * transitionDirection)
-                .combined(with: .opacity)
-        )
+        return .opacity
     }
 }
 

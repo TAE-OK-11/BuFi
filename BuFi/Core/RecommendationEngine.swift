@@ -1095,10 +1095,14 @@ enum RecommendationMixer {
         guard !Task.isCancelled else { return nil }
 
         var starredSongIDs = Set<String>()
-        starredSongIDs.reserveCapacity(snapshot.starredSongs.count)
+        let starredScanLimit = min(
+            snapshot.starredSongs.count,
+            RecommendationScoringPolicy.favoriteProfileLimit
+        )
+        starredSongIDs.reserveCapacity(starredScanLimit)
         var knownArtists = Set<String>()
         var favoriteGenres = Set<String>()
-        for (index, song) in snapshot.starredSongs.enumerated() {
+        for (index, song) in snapshot.starredSongs.prefix(starredScanLimit).enumerated() {
             if index.isMultiple(of: 64), Task.isCancelled { return nil }
             starredSongIDs.insert(song.id)
             let artist = RecommendationCandidateMetadata.artistKey(for: song)
@@ -2739,15 +2743,19 @@ enum PersonalizedMixBuilder {
         }
 
         let dailySeed = year * 1_000 + day
+        let daylistPreferred: [Song]
+        if snapshot.daylistSongs.isEmpty {
+            daylistPreferred = DaylistBuilder.make(
+                snapshot: snapshot,
+                date: date,
+                calendar: calendar,
+                limit: songLimit
+            )
+        } else {
+            daylistPreferred = snapshot.daylistSongs
+        }
         let daylist = filled(
-            preferred: canonicalized(
-                DaylistBuilder.make(
-                    snapshot: snapshot,
-                    date: date,
-                    calendar: calendar,
-                    limit: songLimit
-                )
-            ),
+            preferred: canonicalized(daylistPreferred),
             from: pool,
             seed: dailySeed,
             limit: songLimit

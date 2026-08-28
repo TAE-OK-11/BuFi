@@ -147,6 +147,10 @@ actor LocalLibraryCatalog {
         }
     }
 
+    func knownSongIDs() -> Set<String> {
+        Set(entries.keys)
+    }
+
     func persistNow() async {
         persistTask?.cancel()
         persistTask = nil

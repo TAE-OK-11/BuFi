@@ -112,11 +112,16 @@ final class HomeLibraryState: ObservableObject {
         _ value: HomeSnapshot,
         searchCorpus: LocalLibrarySearchCorpus? = nil
     ) -> Bool {
+        let reuseCorpus = searchCorpus == nil
+            && presentation.snapshot.searchCorpusIdentity == value.searchCorpusIdentity
         guard snapshot != value else { return false }
         presentation = Presentation(
             snapshot: value,
             revision: revision.advanced(),
-            searchCorpus: searchCorpus ?? LocalLibrarySearchCorpus.make(from: value)
+            searchCorpus: searchCorpus
+                ?? (reuseCorpus
+                    ? presentation.searchCorpus
+                    : LocalLibrarySearchCorpus.make(from: value))
         )
         return true
     }
@@ -602,6 +607,9 @@ final class AppModel: ObservableObject {
             return
         }
         cancelServerHomeEnrichment()
+        cachedHomePreparationTask?.cancel()
+        cachedHomePreparationTask = nil
+        cachedHomePreparationToken = nil
         let generation = sessionGeneration
         let revision = homeRevision
         let previousHome = home
@@ -633,9 +641,10 @@ final class AppModel: ObservableObject {
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
-            let recomputeRecommendations = needsFullRefresh
-                || previousHome.recommendedSongs.isEmpty
-                || previousHome.daylistSongs.isEmpty
+            let recomputeRecommendations = !loadsCoreHomeFirst
+                && (needsFullRefresh
+                    || previousHome.recommendedSongs.isEmpty
+                    || previousHome.daylistSongs.isEmpty)
             let snapshot = await preparedHomeSnapshot(
                 loadResult.snapshot,
                 recomputeRecommendations: recomputeRecommendations
@@ -652,9 +661,7 @@ final class AppModel: ObservableObject {
                 authoritative: loadResult.hasAuthoritativeStarredState
             )
             let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
-            let searchCorpus = await LocalLibrarySearchCorpus.makeConcurrently(
-                from: resolvedSnapshot
-            )
+            let searchCorpus = await resolveSearchCorpus(for: resolvedSnapshot)
             guard generation == sessionGeneration, self.client === client else { return }
             let snapshotChanged = publishHome(
                 resolvedSnapshot,
@@ -2202,6 +2209,15 @@ final class AppModel: ObservableObject {
         return true
     }
 
+    private func resolveSearchCorpus(
+        for snapshot: HomeSnapshot
+    ) async -> LocalLibrarySearchCorpus {
+        if snapshot.searchCorpusIdentity == library.snapshot.searchCorpusIdentity {
+            return library.searchCorpus
+        }
+        return await LocalLibrarySearchCorpus.makeConcurrently(from: snapshot)
+    }
+
     private func mergingListeningHistory(
         into snapshot: HomeSnapshot
     ) async -> HomeSnapshot {
@@ -2212,6 +2228,13 @@ final class AppModel: ObservableObject {
             offlineSongIDsRequest
         )
         var value = snapshot
+        if !value.mostPlayedSongs.isEmpty,
+           !value.recentlyPlayedAlbums.isEmpty {
+            value.offlineBackupSongs = history.recentlyPlayedSongs.filter {
+                offlineSongIDs.contains($0.id)
+            }
+            return value
+        }
         if value.mostPlayedSongs.isEmpty {
             value.mostPlayedSongs = history.mostPlayedSongs
         }
@@ -2968,9 +2991,7 @@ final class AppModel: ObservableObject {
                 authoritative: false
             )
             let resolved = self.applyingFavoriteOverrides(to: prepared)
-            let searchCorpus = await LocalLibrarySearchCorpus.makeConcurrently(
-                from: resolved
-            )
+            let searchCorpus = await self.resolveSearchCorpus(for: resolved)
             guard !Task.isCancelled,
                   generation == self.sessionGeneration,
                   self.lastFullRefresh == nil else {
@@ -3031,9 +3052,7 @@ final class AppModel: ObservableObject {
                     authoritative: false
                 )
                 enriched = self.applyingFavoriteOverrides(to: enriched)
-                let searchCorpus = await LocalLibrarySearchCorpus.makeConcurrently(
-                    from: enriched
-                )
+                let searchCorpus = await self.resolveSearchCorpus(for: enriched)
                 guard !Task.isCancelled,
                       generation == self.sessionGeneration,
                       self.client === client,
@@ -3200,9 +3219,13 @@ final class AppModel: ObservableObject {
             guard !Task.isCancelled,
                   generation == self.sessionGeneration else { return }
             let historySongs = await ListeningHistoryStore.shared.catalogSongs()
+            let knownCatalogIDs = await LocalLibraryCatalog.shared.knownSongIDs()
+            let newHistorySongs = historySongs.filter {
+                !knownCatalogIDs.contains($0.id)
+            }
             guard !Task.isCancelled,
                   generation == self.sessionGeneration else { return }
-            await LocalLibraryCatalog.shared.ingest(historySongs)
+            await LocalLibraryCatalog.shared.ingest(newHistorySongs)
             guard !Task.isCancelled,
                   generation == self.sessionGeneration else { return }
             await LocalLibraryCatalog.shared.persistNow()

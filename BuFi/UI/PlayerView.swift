@@ -269,18 +269,18 @@ struct PlayerView: View {
             transitionDirection = next.index >= previous.index ? 1 : -1
         }
         let animate = indexChanged && allowsMotion
-        let apply = {
+        if animate {
+            withAnimation(BuFiMotion.trackPage) {
+                if trackChanged {
+                    presentedItem = next.item
+                }
+                syncArtworkPage(to: playback.snapshot)
+            }
+        } else {
             if trackChanged {
                 presentedItem = next.item
             }
             syncArtworkPage(to: playback.snapshot)
-        }
-        if animate {
-            withAnimation(BuFiMotion.trackPage) {
-                apply()
-            }
-        } else {
-            apply()
         }
     }
 
@@ -346,6 +346,7 @@ struct PlayerView: View {
                 }
                 .id(item.id)
                 .transition(trackTextTransition)
+                .contentTransition(.opacity)
             }
             .frame(maxWidth: 240)
             Spacer()
@@ -398,6 +399,7 @@ struct PlayerView: View {
                 }
                 .id(item.id)
                 .transition(trackTextTransition)
+                .contentTransition(.opacity)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 4)
@@ -485,10 +487,10 @@ struct PlayerView: View {
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
                                 .opacity(
-                                    phase.isIdentity || !animatesTransition ? 1 : 0.97
+                                    phase.isIdentity || !animatesTransition ? 1 : 0.98
                                 )
                                 .scaleEffect(
-                                    phase.isIdentity || !animatesTransition ? 1 : 0.985
+                                    phase.isIdentity || !animatesTransition ? 1 : 0.992
                                 )
                         }
                     }
@@ -731,17 +733,7 @@ struct PlayerView: View {
 
     private var trackTextTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
-        let offset: CGFloat = 7
-        return .asymmetric(
-            insertion: .offset(
-                y: transitionDirection > 0 ? offset : -offset
-            )
-            .combined(with: .opacity),
-            removal: .offset(
-                y: transitionDirection > 0 ? -offset * 0.55 : offset * 0.55
-            )
-            .combined(with: .opacity)
-        )
+        return .opacity
     }
 
     private var lyricsPanelTransition: AnyTransition {
