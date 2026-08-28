@@ -615,7 +615,7 @@ actor ListeningHistoryStore {
         trimEntriesIfNeeded()
         schedulePersistence()
         if invalidatesRecommendations {
-            RecommendationMixer.invalidateCache()
+            RecommendationMixer.noteBehaviorRevision(revision)
         }
     }
 

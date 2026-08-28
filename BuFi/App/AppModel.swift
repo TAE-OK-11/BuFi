@@ -389,6 +389,7 @@ final class AppModel: ObservableObject {
     private var catalogActivationToken: UUID?
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogRefreshToken: UUID?
+    private var catalogIngestedHomeRevision: HomeSnapshotRevision?
     private var recommendationGeneration: UInt64 = 0
     private var lastFMKeyOperationGeneration: UInt64 = 0
     private var listenBrainzOperationGeneration: UInt64 = 0
@@ -1768,21 +1769,22 @@ final class AppModel: ObservableObject {
         let songIDs = Set(snapshot.starredSongs.map(\.id))
         let albumIDs = Set(snapshot.starredAlbums.map(\.id))
         let artistIDs = Set(snapshot.starredArtists.map(\.id))
+        let knownStarred = knownStarredIDIndex(including: snapshot)
         var states = favoriteOverrides
         reconcileMissingFavorites(
-            knownStarredIDs(for: .song, including: snapshot),
+            Array(knownStarred.songs),
             presentIDs: songIDs,
             target: .song,
             states: &states
         )
         reconcileMissingFavorites(
-            knownStarredIDs(for: .album, including: snapshot),
+            Array(knownStarred.albums),
             presentIDs: albumIDs,
             target: .album,
             states: &states
         )
         reconcileMissingFavorites(
-            knownStarredIDs(for: .artist, including: snapshot),
+            Array(knownStarred.artists),
             presentIDs: artistIDs,
             target: .artist,
             states: &states
@@ -1802,102 +1804,116 @@ final class AppModel: ObservableObject {
         AudioEngine.shared.synchronizeStarredStates(playbackStates)
     }
 
-    private func knownStarredIDs(
-        for target: OpenSubsonicClient.StarTarget,
+    private struct KnownStarredIDIndex {
+        var songs: Set<String> = []
+        var albums: Set<String> = []
+        var artists: Set<String> = []
+    }
+
+    private func knownStarredIDIndex(
         including snapshot: HomeSnapshot
-    ) -> [String] {
-        var ids = Set<String>()
-        switch target {
-        case .song:
-            func addStarredSongs(_ songs: [Song]) {
-                ids.formUnion(songs.lazy.filter(\.isStarred).map(\.id))
-            }
-            addStarredSongs(home.starredSongs)
-            addStarredSongs(home.randomSongs)
-            addStarredSongs(home.recommendedSongs)
-            addStarredSongs(home.sonicRecommendedSongs)
-            addStarredSongs(home.similarArtistSongs)
-            addStarredSongs(home.genreRecommendedSongs)
-            addStarredSongs(home.topArtistSongs)
-            addStarredSongs(home.recentlyAddedSongs)
-            addStarredSongs(home.popularSongs)
-            addStarredSongs(home.playlistAffinitySongs)
-            addStarredSongs(home.serverRecommendedSongs)
-            addStarredSongs(home.lastFMRecommendedSongs)
-            addStarredSongs(home.listenBrainzRecommendedSongs)
-            addStarredSongs(home.mostPlayedSongs)
-            addStarredSongs(home.daylistSongs)
-            addStarredSongs(home.offlineBackupSongs)
-            addStarredSongs(snapshot.starredSongs)
-            addStarredSongs(snapshot.randomSongs)
-            addStarredSongs(snapshot.sonicRecommendedSongs)
-            addStarredSongs(snapshot.similarArtistSongs)
-            addStarredSongs(snapshot.genreRecommendedSongs)
-            addStarredSongs(snapshot.topArtistSongs)
-            addStarredSongs(snapshot.recentlyAddedSongs)
-            addStarredSongs(snapshot.popularSongs)
-            addStarredSongs(snapshot.playlistAffinitySongs)
-            addStarredSongs(snapshot.serverRecommendedSongs)
-            addStarredSongs(snapshot.lastFMRecommendedSongs)
-            addStarredSongs(snapshot.listenBrainzRecommendedSongs)
-            addStarredSongs(snapshot.recommendedSongs)
-            addStarredSongs(snapshot.mostPlayedSongs)
-            addStarredSongs(snapshot.daylistSongs)
-            addStarredSongs(snapshot.offlineBackupSongs)
-            addStarredSongs(searchResults.songs)
-            addStarredSongs(AudioEngine.shared.queue)
-            if let song = AudioEngine.shared.currentSong, song.isStarred {
-                ids.insert(song.id)
-            }
-            for cached in albumDetailCache.values {
-                addStarredSongs(cached.value.songs)
-            }
-            for cached in playlistDetailCache.values {
-                addStarredSongs(cached.value.songs)
-            }
-            for cached in artistDetailCache.values {
-                addStarredSongs(cached.value.topSongs)
-            }
-        case .album:
-            func addStarredAlbums(_ albums: [Album]) {
-                ids.formUnion(albums.lazy.filter(\.isStarred).map(\.id))
-            }
-            addStarredAlbums(home.starredAlbums)
-            addStarredAlbums(home.recentAlbums)
-            addStarredAlbums(home.recentlyPlayedAlbums)
-            addStarredAlbums(home.frequentAlbums)
-            addStarredAlbums(home.randomAlbums)
-            addStarredAlbums(snapshot.starredAlbums)
-            addStarredAlbums(snapshot.recentAlbums)
-            addStarredAlbums(snapshot.recentlyPlayedAlbums)
-            addStarredAlbums(snapshot.frequentAlbums)
-            addStarredAlbums(snapshot.randomAlbums)
-            addStarredAlbums(searchResults.albums)
-            for cached in artistDetailCache.values {
-                addStarredAlbums(cached.value.albums)
-            }
-        case .artist:
-            func addStarredArtists(_ artists: [Artist]) {
-                ids.formUnion(artists.lazy.filter(\.isStarred).map(\.id))
-            }
-            addStarredArtists(home.starredArtists)
-            addStarredArtists(home.artists)
-            addStarredArtists(home.recommendedArtists)
-            addStarredArtists(snapshot.starredArtists)
-            addStarredArtists(snapshot.artists)
-            addStarredArtists(snapshot.recommendedArtists)
-            addStarredArtists(searchResults.artists)
-            for cached in artistDetailCache.values where cached.value.artist.isStarred {
-                ids.insert(cached.value.artist.id)
-            }
+    ) -> KnownStarredIDIndex {
+        var index = KnownStarredIDIndex()
+        func addStarredSongs(_ songs: [Song]) {
+            index.songs.formUnion(songs.lazy.filter(\.isStarred).map(\.id))
+        }
+        func addStarredAlbums(_ albums: [Album]) {
+            index.albums.formUnion(albums.lazy.filter(\.isStarred).map(\.id))
+        }
+        func addStarredArtists(_ artists: [Artist]) {
+            index.artists.formUnion(artists.lazy.filter(\.isStarred).map(\.id))
         }
 
-        let prefix = starKeyPrefix(for: target) + ":"
-        for (key, enabled) in favoriteOverrides
-            where enabled && key.hasPrefix(prefix) {
-            ids.insert(String(key.dropFirst(prefix.count)))
+        addStarredSongs(home.starredSongs)
+        addStarredSongs(home.randomSongs)
+        addStarredSongs(home.recommendedSongs)
+        addStarredSongs(home.sonicRecommendedSongs)
+        addStarredSongs(home.similarArtistSongs)
+        addStarredSongs(home.genreRecommendedSongs)
+        addStarredSongs(home.topArtistSongs)
+        addStarredSongs(home.recentlyAddedSongs)
+        addStarredSongs(home.popularSongs)
+        addStarredSongs(home.playlistAffinitySongs)
+        addStarredSongs(home.serverRecommendedSongs)
+        addStarredSongs(home.lastFMRecommendedSongs)
+        addStarredSongs(home.listenBrainzRecommendedSongs)
+        addStarredSongs(home.mostPlayedSongs)
+        addStarredSongs(home.daylistSongs)
+        addStarredSongs(home.offlineBackupSongs)
+        addStarredSongs(snapshot.starredSongs)
+        addStarredSongs(snapshot.randomSongs)
+        addStarredSongs(snapshot.sonicRecommendedSongs)
+        addStarredSongs(snapshot.similarArtistSongs)
+        addStarredSongs(snapshot.genreRecommendedSongs)
+        addStarredSongs(snapshot.topArtistSongs)
+        addStarredSongs(snapshot.recentlyAddedSongs)
+        addStarredSongs(snapshot.popularSongs)
+        addStarredSongs(snapshot.playlistAffinitySongs)
+        addStarredSongs(snapshot.serverRecommendedSongs)
+        addStarredSongs(snapshot.lastFMRecommendedSongs)
+        addStarredSongs(snapshot.listenBrainzRecommendedSongs)
+        addStarredSongs(snapshot.recommendedSongs)
+        addStarredSongs(snapshot.mostPlayedSongs)
+        addStarredSongs(snapshot.daylistSongs)
+        addStarredSongs(snapshot.offlineBackupSongs)
+        addStarredSongs(searchResults.songs)
+        addStarredSongs(AudioEngine.shared.queue)
+        if let song = AudioEngine.shared.currentSong, song.isStarred {
+            index.songs.insert(song.id)
         }
-        return Array(ids)
+        for cached in albumDetailCache.values {
+            addStarredSongs(cached.value.songs)
+        }
+        for cached in playlistDetailCache.values {
+            addStarredSongs(cached.value.songs)
+        }
+        for cached in artistDetailCache.values {
+            addStarredSongs(cached.value.topSongs)
+        }
+
+        addStarredAlbums(home.starredAlbums)
+        addStarredAlbums(home.recentAlbums)
+        addStarredAlbums(home.recentlyPlayedAlbums)
+        addStarredAlbums(home.frequentAlbums)
+        addStarredAlbums(home.randomAlbums)
+        addStarredAlbums(snapshot.starredAlbums)
+        addStarredAlbums(snapshot.recentAlbums)
+        addStarredAlbums(snapshot.recentlyPlayedAlbums)
+        addStarredAlbums(snapshot.frequentAlbums)
+        addStarredAlbums(snapshot.randomAlbums)
+        addStarredAlbums(searchResults.albums)
+        for cached in artistDetailCache.values {
+            addStarredAlbums(cached.value.albums)
+        }
+
+        addStarredArtists(home.starredArtists)
+        addStarredArtists(home.artists)
+        addStarredArtists(home.recommendedArtists)
+        addStarredArtists(snapshot.starredArtists)
+        addStarredArtists(snapshot.artists)
+        addStarredArtists(snapshot.recommendedArtists)
+        addStarredArtists(searchResults.artists)
+        for cached in artistDetailCache.values where cached.value.artist.isStarred {
+            index.artists.insert(cached.value.artist.id)
+        }
+
+        for target in [
+            OpenSubsonicClient.StarTarget.song,
+            .album,
+            .artist
+        ] {
+            let prefix = starKeyPrefix(for: target) + ":"
+            for (key, enabled) in favoriteOverrides
+                where enabled && key.hasPrefix(prefix) {
+                let id = String(key.dropFirst(prefix.count))
+                switch target {
+                case .song: index.songs.insert(id)
+                case .album: index.albums.insert(id)
+                case .artist: index.artists.insert(id)
+                }
+            }
+        }
+        return index
     }
 
     private func reconcileFavoriteStates(in results: SearchResults) {
@@ -3097,6 +3113,7 @@ final class AppModel: ObservableObject {
         catalogRefreshTask?.cancel()
         catalogRefreshTask = nil
         catalogRefreshToken = nil
+        catalogIngestedHomeRevision = nil
         catalogActivationTask?.cancel()
         catalogActivationTask = nil
         catalogActivationToken = nil
@@ -3155,6 +3172,10 @@ final class AppModel: ObservableObject {
     }
 
     private func scheduleLibraryCatalogRefresh(snapshot: HomeSnapshot) {
+        let homeRevision = library.revision
+        if catalogIngestedHomeRevision == homeRevision {
+            return
+        }
         let seedSongs = snapshot.knownSongs()
         catalogRefreshTask?.cancel()
         guard allowsBackgroundPreparation else {
@@ -3185,6 +3206,9 @@ final class AppModel: ObservableObject {
             guard !Task.isCancelled,
                   generation == self.sessionGeneration else { return }
             await LocalLibraryCatalog.shared.persistNow()
+            guard !Task.isCancelled,
+                  generation == self.sessionGeneration else { return }
+            self.catalogIngestedHomeRevision = homeRevision
         }
     }
 }
