@@ -129,9 +129,10 @@ actor ArtworkStore {
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
     private static let cacheSchemaRevision = "media-v2"
     private static let artworkFreshnessInterval: TimeInterval = 12 * 60 * 60
-    private static let paletteEngineVersion = 9
-    private static let sampleSide = 72
+    private static let paletteEngineVersion = 10
+    private static let sampleSide = 56
     private static let acceleratedSamplePixelLimit = 512 * 512
+    private static let providedPalettePixelLimit = 128 * 128
     private static let neutralChromaLimit = 0.035
     private static let darkLightnessLimit = 0.12
     private static let darkCanvasLimit = 0.55
@@ -458,7 +459,10 @@ actor ArtworkStore {
         }
 
         let source: ArtworkImage
-        if let providedImage {
+        let providedPixelCount = providedImage.map {
+            $0.cgImage.width * $0.cgImage.height
+        } ?? Int.max
+        if let providedImage, providedPixelCount <= Self.providedPalettePixelLimit {
             source = providedImage
         } else {
             guard let loaded = try? await image(for: url, pixelSize: 96) else {
@@ -748,7 +752,7 @@ actor ArtworkStore {
         guard !samples.isEmpty, !Task.isCancelled else { return nil }
 
         // Classify the sample set in one pass. The previous independent
-        // reductions walked the same 4,096 pixels four times and recalculated
+        // reductions walked the same sampled pixels four times and recalculated
         // perceptual chroma for each classification.
         var visibleWeight = 0.0
         var neutralWeight = 0.0
@@ -1088,7 +1092,7 @@ actor ArtworkStore {
         _ samples: [Sample],
         neutralFamily: Bool
     ) -> [Swatch] {
-        let clusterLimit = min(10, samples.count)
+        let clusterLimit = min(8, samples.count)
         let totalWeight = samples.reduce(0) { $0 + $1.visibility }
         guard clusterLimit > 0, totalWeight > 0 else { return [] }
 
@@ -1123,7 +1127,7 @@ actor ArtworkStore {
             centers.append(samples[bestIndex].lab)
         }
 
-        for _ in 0..<9 {
+        for _ in 0..<5 {
             guard !Task.isCancelled else { return [] }
             var accumulators = [ClusterAccumulator](
                 repeating: ClusterAccumulator(),

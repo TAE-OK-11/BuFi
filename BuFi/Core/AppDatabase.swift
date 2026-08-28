@@ -23,8 +23,6 @@ struct LibraryCatalogRecord: Sendable {
     var albumKey: String
     var mbid: String
     var isrc: String
-    var hashEmbedding: Data
-    var neuralEmbedding: Data
 }
 
 actor AppDatabase {
@@ -106,6 +104,8 @@ actor AppDatabase {
     private var pendingPaletteTouches = Set<PaletteTouch>()
     private var paletteTouchTask: Task<Void, Never>?
     private var lyricsTranslationSaveCount: UInt = 0
+    private var lyricsDocumentSaveCount: UInt = 0
+    private var playbackMetadataSaveCount: UInt = 0
 
     private static let externalRecommendationMaximumBytes = 512 * 1_024
     private static let externalRecommendationRetention: TimeInterval = 7 * 24 * 60 * 60
@@ -231,6 +231,9 @@ actor AppDatabase {
               ), let pool = await databasePool() else {
             return false
         }
+        lyricsDocumentSaveCount &+= 1
+        let prunesCapacity = lyricsDocumentSaveCount == 1
+            || lyricsDocumentSaveCount.isMultiple(of: 16)
         let savedAt = currentDate().timeIntervalSince1970
         let expirationCutoff = savedAt - Self.lyricsDocumentRetention
         do {
@@ -250,32 +253,34 @@ actor AppDatabase {
                     """,
                     arguments: [scope, songID, savedAt, data]
                 )
-                try db.execute(
-                    sql: """
-                    DELETE FROM lyrics_document_cache
-                    WHERE account_scope = ? AND song_id IN (
-                        SELECT song_id FROM lyrics_document_cache
-                        WHERE account_scope = ?
-                        ORDER BY saved_at DESC, song_id ASC
-                        LIMIT -1 OFFSET ?
+                if prunesCapacity {
+                    try db.execute(
+                        sql: """
+                        DELETE FROM lyrics_document_cache
+                        WHERE account_scope = ? AND song_id IN (
+                            SELECT song_id FROM lyrics_document_cache
+                            WHERE account_scope = ?
+                            ORDER BY saved_at DESC, song_id ASC
+                            LIMIT -1 OFFSET ?
+                        )
+                        """,
+                        arguments: [
+                            scope, scope, Self.lyricsDocumentEntriesPerAccount
+                        ]
                     )
-                    """,
-                    arguments: [
-                        scope, scope, Self.lyricsDocumentEntriesPerAccount
-                    ]
-                )
-                try db.execute(
-                    sql: """
-                    DELETE FROM lyrics_document_cache
-                    WHERE (account_scope, song_id) IN (
-                        SELECT account_scope, song_id
-                        FROM lyrics_document_cache
-                        ORDER BY saved_at DESC, account_scope ASC, song_id ASC
-                        LIMIT -1 OFFSET ?
+                    try db.execute(
+                        sql: """
+                        DELETE FROM lyrics_document_cache
+                        WHERE (account_scope, song_id) IN (
+                            SELECT account_scope, song_id
+                            FROM lyrics_document_cache
+                            ORDER BY saved_at DESC, account_scope ASC, song_id ASC
+                            LIMIT -1 OFFSET ?
+                        )
+                        """,
+                        arguments: [Self.lyricsDocumentTotalEntries]
                     )
-                    """,
-                    arguments: [Self.lyricsDocumentTotalEntries]
-                )
+                }
             }
             return true
         } catch {
@@ -327,6 +332,9 @@ actor AppDatabase {
               let data = try? Self.encode(song),
               data.count <= Self.playbackMetadataMaximumBytes,
               let pool = await databasePool() else { return false }
+        playbackMetadataSaveCount &+= 1
+        let prunesCapacity = playbackMetadataSaveCount == 1
+            || playbackMetadataSaveCount.isMultiple(of: 16)
         let updatedAt = currentDate().timeIntervalSince1970
         let expirationCutoff = updatedAt - Self.playbackMetadataRetention
         do {
@@ -346,32 +354,34 @@ actor AppDatabase {
                     """,
                     arguments: [scope, song.id, updatedAt, data]
                 )
-                try db.execute(
-                    sql: """
-                    DELETE FROM playback_metadata_cache
-                    WHERE account_scope = ? AND song_id IN (
-                        SELECT song_id FROM playback_metadata_cache
-                        WHERE account_scope = ?
-                        ORDER BY updated_at DESC, song_id ASC
-                        LIMIT -1 OFFSET ?
+                if prunesCapacity {
+                    try db.execute(
+                        sql: """
+                        DELETE FROM playback_metadata_cache
+                        WHERE account_scope = ? AND song_id IN (
+                            SELECT song_id FROM playback_metadata_cache
+                            WHERE account_scope = ?
+                            ORDER BY updated_at DESC, song_id ASC
+                            LIMIT -1 OFFSET ?
+                        )
+                        """,
+                        arguments: [
+                            scope, scope, Self.playbackMetadataEntriesPerAccount
+                        ]
                     )
-                    """,
-                    arguments: [
-                        scope, scope, Self.playbackMetadataEntriesPerAccount
-                    ]
-                )
-                try db.execute(
-                    sql: """
-                    DELETE FROM playback_metadata_cache
-                    WHERE (account_scope, song_id) IN (
-                        SELECT account_scope, song_id
-                        FROM playback_metadata_cache
-                        ORDER BY updated_at DESC, account_scope ASC, song_id ASC
-                        LIMIT -1 OFFSET ?
+                    try db.execute(
+                        sql: """
+                        DELETE FROM playback_metadata_cache
+                        WHERE (account_scope, song_id) IN (
+                            SELECT account_scope, song_id
+                            FROM playback_metadata_cache
+                            ORDER BY updated_at DESC, account_scope ASC, song_id ASC
+                            LIMIT -1 OFFSET ?
+                        )
+                        """,
+                        arguments: [Self.playbackMetadataTotalEntries]
                     )
-                    """,
-                    arguments: [Self.playbackMetadataTotalEntries]
-                )
+                }
             }
             return true
         } catch {
@@ -894,7 +904,7 @@ actor AppDatabase {
                     db,
                     sql: """
                     SELECT song_id, song_data, title_key, artist_key, album_key,
-                           mbid, isrc, hash_embedding, neural_embedding
+                           mbid, isrc
                     FROM library_catalog
                     WHERE account_scope = ?
                     """,
@@ -908,9 +918,7 @@ actor AppDatabase {
                         artistKey: row["artist_key"],
                         albumKey: row["album_key"],
                         mbid: row["mbid"],
-                        isrc: row["isrc"],
-                        hashEmbedding: row["hash_embedding"],
-                        neuralEmbedding: row["neural_embedding"]
+                        isrc: row["isrc"]
                     )
                 }
             }
@@ -929,40 +937,36 @@ actor AppDatabase {
         guard let pool = await databasePool() else { return false }
         do {
             try await pool.write { db in
-                for id in deletedIDs {
-                    try db.execute(
-                        sql: """
+                if !deletedIDs.isEmpty {
+                    let delete = try db.makeStatement(sql: """
                         DELETE FROM library_catalog
                         WHERE account_scope = ? AND song_id = ?
-                        """,
-                        arguments: [scope, id]
-                    )
+                        """)
+                    for id in deletedIDs {
+                        try delete.execute(arguments: [scope, id])
+                    }
                 }
-                for record in records {
-                    try db.execute(
-                        sql: """
+                if !records.isEmpty {
+                    let upsert = try db.makeStatement(sql: """
                         INSERT INTO library_catalog (
                             account_scope, song_id, song_data, title_key,
-                            artist_key, album_key, mbid, isrc,
-                            hash_embedding, neural_embedding
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            artist_key, album_key, mbid, isrc
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(account_scope, song_id) DO UPDATE SET
                             song_data = excluded.song_data,
                             title_key = excluded.title_key,
                             artist_key = excluded.artist_key,
                             album_key = excluded.album_key,
                             mbid = excluded.mbid,
-                            isrc = excluded.isrc,
-                            hash_embedding = excluded.hash_embedding,
-                            neural_embedding = excluded.neural_embedding
-                        """,
-                        arguments: [
+                            isrc = excluded.isrc
+                        """)
+                    for record in records {
+                        try upsert.execute(arguments: [
                             scope, record.songID, record.songData,
                             record.titleKey, record.artistKey, record.albumKey,
-                            record.mbid, record.isrc,
-                            record.hashEmbedding, record.neuralEmbedding
-                        ]
-                    )
+                            record.mbid, record.isrc
+                        ])
+                    }
                 }
             }
             return true
@@ -2199,6 +2203,10 @@ actor AppDatabase {
                 CREATE INDEX playback_metadata_cache_recent
                     ON playback_metadata_cache(account_scope, updated_at DESC);
                 """)
+        }
+        migrator.registerMigration("drop-dead-catalog-embeddings-v13") { db in
+            try db.execute(sql: "ALTER TABLE library_catalog DROP COLUMN hash_embedding")
+            try db.execute(sql: "ALTER TABLE library_catalog DROP COLUMN neural_embedding")
         }
         return migrator
     }

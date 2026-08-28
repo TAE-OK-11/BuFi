@@ -45,10 +45,6 @@ struct HomeView: View {
                             .padding(.top, section == sections.first ? 0 : 6)
                             .opacity(hasRevealedContent ? 1 : 0)
                             .offset(y: hasRevealedContent ? 0 : 9)
-                            .scaleEffect(
-                                hasRevealedContent ? 1 : 0.996,
-                                anchor: .top
-                            )
                             .animation(
                                 motionEnabled
                                     ? BuFiMotion.homeEntrance.delay(
@@ -59,12 +55,11 @@ struct HomeView: View {
                             )
                             .scrollTransition(.interactive, axis: .vertical) { content, phase in
                                 content
-                                    .scaleEffect(
-                                        phase.isIdentity || !enablesMotion ? 1 : 0.996,
-                                        anchor: .center
+                                    .opacity(
+                                        phase.isIdentity
+                                            || !enablesMotion
+                                            || !hasRevealedContent ? 1 : 0.97
                                     )
-                                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.96)
-                                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 4)
                             }
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity

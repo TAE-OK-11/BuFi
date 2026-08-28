@@ -1716,6 +1716,7 @@ enum RecommendationMixer {
         var result: [RankedRecommendation] = []
         var isRemaining = Array(repeating: true, count: values.count)
         var remainingCount = values.count
+        let candidateWindow = min(values.count, max(limit * 2, 72))
         let applyGenreSpread = purpose != .daylist && purpose != .autoplay
         let breatherEvery = rankingSeed.isMultiple(of: 2) ? 4 : 5
         let separator = "\u{1e}"
@@ -1741,7 +1742,10 @@ enum RecommendationMixer {
                         : key
                 }
             )
+            var scanned = 0
             for index in values.indices where isRemaining[index] {
+                scanned += 1
+                if scanned > candidateWindow { break }
                 let value = values[index]
                 let workKey = value.deduplicationKey
                 let tooCloseToVariant = !workKey.hasPrefix(separator)
@@ -2187,12 +2191,15 @@ enum DaylistBuilder {
             familiarSlots = 3
         }
         let seed = day * 3 + period
+        let recommendedByAlbumID = Dictionary(
+            grouping: snapshot.recommendedSongs.filter { $0.albumId != nil }
+        ) { $0.albumId ?? "" }
         let familiar = ordered(
             unique(
                 snapshot.mostPlayedSongs +
                 snapshot.starredSongs +
                 snapshot.recentlyPlayedAlbums.flatMap { album in
-                    snapshot.recommendedSongs.filter { $0.albumId == album.id }
+                    recommendedByAlbumID[album.id] ?? []
                 }
             ),
             seed: seed
@@ -2590,23 +2597,27 @@ enum PersonalizedMixBuilder {
             limit: songLimit
         )
 
-        let kPopTokens = normalizedTokens(
-            ["k-pop", "kpop", "korean pop", "케이팝"]
+        let kPopTokens = ["k-pop", "kpop", "korean pop", "케이팝"]
+        let popTokens = ["pop", "팝"]
+        let happyTokens = ["happy", "smile", "joy", "summer", "disco", "funk", "행복", "여름"]
+        let upbeatTokens = ["dance", "edm", "electronic", "rock", "hip hop", "upbeat", "댄스"]
+        let loveTokens = ["love", "romantic", "romance", "r&b", "soul", "ballad", "사랑"]
+        let chillTokens = ["chill", "ambient", "acoustic", "jazz", "lo-fi", "indie", "잔잔"]
+        let groupedMatches = matchingSongs(
+            in: pool,
+            searchableTexts: searchableTexts,
+            tokenSets: [
+                kPopTokens, popTokens, happyTokens,
+                upbeatTokens, loveTokens, chillTokens
+            ]
         )
-        let popTokens = normalizedTokens(["pop", "팝"])
-        let kPopMatches = pool.filter { song in
-            containsAny(
-                searchableTexts[song.id] ?? "",
-                normalizedTokens: kPopTokens
-            )
-        }
+        let kPopMatches = groupedMatches[0]
         let kPopIDs = Set(kPopMatches.map(\.id))
-        let popMatches = pool.filter { song in
-            containsAny(
-                searchableTexts[song.id] ?? "",
-                normalizedTokens: popTokens
-            ) && !kPopIDs.contains(song.id)
-        }
+        let popMatches = groupedMatches[1].filter { !kPopIDs.contains($0.id) }
+        let happyMatches = groupedMatches[2]
+        let upbeatMatches = groupedMatches[3]
+        let loveMatches = groupedMatches[4]
+        let chillMatches = groupedMatches[5]
         let affinityCandidates = highestAffinityArtists(
             in: snapshot,
             fallbackPool: pool,
@@ -2618,14 +2629,6 @@ enum PersonalizedMixBuilder {
         let customArtistKeys = Set(customArtists.map(normalized))
         var defaultArtists = affinityCandidates.filter {
             !customArtistKeys.contains(normalized($0))
-        }
-        if let taylorSwift = affinityCandidates.first(where: {
-            normalized($0) == "taylor swift"
-        }) {
-            defaultArtists.removeAll {
-                normalized($0) == "taylor swift"
-            }
-            defaultArtists.insert(taylorSwift, at: 0)
         }
         defaultArtists = Array(defaultArtists.prefix(6))
         let artistArtwork = (
@@ -2704,9 +2707,8 @@ enum PersonalizedMixBuilder {
                 id: "happy-mix-\(dailySeed)",
                 title: "Happy Mix",
                 subtitle: String(localized: "기분을 환하게 만드는 음악"),
-                tokens: ["happy", "smile", "joy", "summer", "disco", "funk", "행복", "여름"],
+                matches: happyMatches,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 61,
                 limit: songLimit
             ),
@@ -2714,9 +2716,8 @@ enum PersonalizedMixBuilder {
                 id: "upbeat-mix-\(dailySeed)",
                 title: "Upbeat Mix",
                 subtitle: String(localized: "에너지가 필요한 순간을 위한 음악"),
-                tokens: ["dance", "edm", "electronic", "rock", "hip hop", "upbeat", "댄스"],
+                matches: upbeatMatches,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 67,
                 limit: songLimit
             ),
@@ -2724,9 +2725,8 @@ enum PersonalizedMixBuilder {
                 id: "love-mix-\(dailySeed)",
                 title: "Love Mix",
                 subtitle: String(localized: "사랑과 설렘을 담은 음악"),
-                tokens: ["love", "romantic", "romance", "r&b", "soul", "ballad", "사랑"],
+                matches: loveMatches,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 71,
                 limit: songLimit
             ),
@@ -2734,9 +2734,8 @@ enum PersonalizedMixBuilder {
                 id: "chill-mix-\(dailySeed)",
                 title: "Chill Mix",
                 subtitle: String(localized: "편안하게 흐르는 차분한 음악"),
-                tokens: ["chill", "ambient", "acoustic", "jazz", "lo-fi", "indie", "잔잔"],
+                matches: chillMatches,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 79,
                 limit: songLimit
             )
@@ -2787,13 +2786,28 @@ enum PersonalizedMixBuilder {
         let primaryGenres = Set(primary.flatMap {
             corpus.normalizedGenres[$0.id] ?? []
         })
-        let relatedPool = primaryGenres.sorted().flatMap {
-            corpus.songsByGenre[$0] ?? []
-        } + corpus.songsWithoutGenre
+        let relatedCap = max(limit * 4, 48)
+        var relatedPool: [Song] = []
+        var seenRelated = Set<String>()
+        relatedPool.reserveCapacity(relatedCap)
+        func appendRelated(_ songs: [Song], extraLimit: Int) {
+            guard relatedPool.count < relatedCap else { return }
+            for song in songs.prefix(extraLimit) {
+                guard corpus.normalizedArtists[song.id] != normalizedArtist,
+                      seenRelated.insert(song.id).inserted else { continue }
+                relatedPool.append(song)
+                if relatedPool.count == relatedCap { return }
+            }
+        }
+        for genre in primaryGenres.sorted() {
+            appendRelated(corpus.songsByGenre[genre] ?? [], extraLimit: limit * 2)
+            if relatedPool.count == relatedCap { break }
+        }
+        if relatedPool.count < limit {
+            appendRelated(corpus.songsWithoutGenre, extraLimit: limit * 2)
+        }
         let related = orderedPrefix(
-            relatedPool.filter { song in
-                corpus.normalizedArtists[song.id] != normalizedArtist
-            },
+            relatedPool,
             seed: seed + 7,
             limit: limit
         )
@@ -2832,19 +2846,11 @@ enum PersonalizedMixBuilder {
         id: String,
         title: String,
         subtitle: String,
-        tokens: [String],
+        matches: [Song],
         pool: [Song],
-        searchableTexts: [String: String],
         seed: Int,
         limit: Int
     ) -> PersonalizedMix {
-        let tokens = normalizedTokens(tokens)
-        let matches = pool.filter { song in
-            containsAny(
-                searchableTexts[song.id] ?? "",
-                normalizedTokens: tokens
-            )
-        }
         return PersonalizedMix(
             id: id,
             title: title,
@@ -3005,6 +3011,26 @@ enum PersonalizedMixBuilder {
                 + (song.moods ?? [])
             ).joined(separator: " ")
         )
+    }
+
+    private static func matchingSongs(
+        in pool: [Song],
+        searchableTexts: [String: String],
+        tokenSets: [[String]]
+    ) -> [[Song]] {
+        let normalizedSets = tokenSets.map(normalizedTokens)
+        var results = Array(repeating: [Song](), count: normalizedSets.count)
+        for (index, song) in pool.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { break }
+            let text = searchableTexts[song.id] ?? ""
+            guard !text.isEmpty else { continue }
+            for setIndex in normalizedSets.indices {
+                if containsAny(text, normalizedTokens: normalizedSets[setIndex]) {
+                    results[setIndex].append(song)
+                }
+            }
+        }
+        return results
     }
 
     private static func normalizedTokens(_ values: [String]) -> [String] {
