@@ -448,7 +448,7 @@ struct PlayerView: View {
         let song = item.song
         return HStack(spacing: 14) {
             ZStack(alignment: .leading) {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 6) {
                     OverflowMarqueeText(
                         text: song.title,
                         font: .system(size: 25, weight: .bold),
