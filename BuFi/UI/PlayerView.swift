@@ -124,6 +124,7 @@ struct PlayerView: View {
     @State private var palette = ArtworkPalette.fallback
     @State private var showQueue = false
     @State private var transitionDirection: CGFloat = 1
+    @State private var presentedItem: PlaybackMediaItem?
     @State private var artworkPage: PlayerArtworkPageID?
     @State private var pagerSelectionGate = PlayerPagerSelectionGate()
     @State private var artworkPalettes: [PlayerArtworkPageID: ArtworkPalette] = [:]
@@ -144,7 +145,7 @@ struct PlayerView: View {
             ZStack {
                 background
 
-                if let item = currentPlayback.item {
+                if let item = presentedItem ?? currentPlayback.item {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             header(item)
@@ -225,13 +226,14 @@ struct PlayerView: View {
             pruneArtworkPalettes(using: next)
             if let currentID = currentArtworkPageID(in: next),
                artworkPage != currentID {
-                syncArtworkPage(to: next, animated: false)
+                syncArtworkPage(to: next)
             } else if artworkPage != nil,
                       !next.entries.contains(where: { $0.id == artworkPage?.queueEntryID }) {
-                syncArtworkPage(to: next, animated: false)
+                syncArtworkPage(to: next)
             }
         }
         .onAppear {
+            presentedItem = currentPlayback.item
             if PlayerAppearance(rawValue: playerAppearance) == nil {
                 playerAppearance = PlayerAppearance.liquidGlass.rawValue
             }
@@ -242,7 +244,7 @@ struct PlayerView: View {
             artworkPage = nil
             pagerSelectionGate = PlayerPagerSelectionGate()
             refreshArtworkPages(from: playback.snapshot, fallback: currentPlayback.item)
-            syncArtworkPage(to: playback.snapshot, animated: false)
+            syncArtworkPage(to: playback.snapshot)
         }
         .task(id: playerPresentation.presentationID) {
             hasRevealedPlayerContent = false
@@ -259,13 +261,27 @@ struct PlayerView: View {
         to next: CurrentPlaybackSnapshot
     ) {
         let indexChanged = previous.index != next.index
+        let trackChanged = previous.item?.id != next.item?.id
         if previous.item?.song.id != next.item?.song.id {
             translationRequestedSongID = nil
         }
         if indexChanged {
             transitionDirection = next.index >= previous.index ? 1 : -1
         }
-        syncArtworkPage(to: playback.snapshot, animated: indexChanged)
+        let animate = indexChanged && allowsMotion
+        let apply = {
+            if trackChanged {
+                presentedItem = next.item
+            }
+            syncArtworkPage(to: playback.snapshot)
+        }
+        if animate {
+            withAnimation(BuFiMotion.trackPage) {
+                apply()
+            }
+        } else {
+            apply()
+        }
     }
 
     private var lyricsTranslationVisibility: Binding<Bool> {
@@ -332,7 +348,6 @@ struct PlayerView: View {
                 .transition(trackTextTransition)
             }
             .frame(maxWidth: 240)
-            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer()
 
             PlayerOverflowMenu(song: song, foreground: playerPrimary)
@@ -385,7 +400,6 @@ struct PlayerView: View {
                 .transition(trackTextTransition)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
             Spacer(minLength: 4)
             PlayerFavoriteButton(
                 song: song,
@@ -470,7 +484,12 @@ struct PlayerView: View {
                         .id(page.id)
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
-                                .opacity(phase.isIdentity || !animatesTransition ? 1 : 0.94)
+                                .opacity(
+                                    phase.isIdentity || !animatesTransition ? 1 : 0.97
+                                )
+                                .scaleEffect(
+                                    phase.isIdentity || !animatesTransition ? 1 : 0.985
+                                )
                         }
                     }
                 }
@@ -595,7 +614,7 @@ struct PlayerView: View {
         return playback.entries.firstIndex { $0.id == page.queueEntryID }
     }
 
-    private func syncArtworkPage(to snapshot: PlaybackSnapshot, animated: Bool) {
+    private func syncArtworkPage(to snapshot: PlaybackSnapshot) {
         guard let currentPage = currentArtworkPageID(in: snapshot) else {
             pagerSelectionGate.beginProgrammaticMove(to: nil)
             artworkPage = nil
@@ -605,14 +624,7 @@ struct PlayerView: View {
         if artworkPage != currentPage {
             pagerSelectionGate.beginProgrammaticMove(to: currentPage)
         }
-        let update = {
-            artworkPage = currentPage
-        }
-        if animated && allowsMotion {
-            withAnimation(BuFiMotion.trackPage) { update() }
-        } else {
-            update()
-        }
+        artworkPage = currentPage
         applyPalette(for: currentPage)
     }
 
@@ -717,17 +729,15 @@ struct PlayerView: View {
 
     private var trackTextTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
-        let distance: CGFloat = 10
+        let offset: CGFloat = 7
         return .asymmetric(
             insertion: .offset(
-                x: transitionDirection > 0 ? distance : -distance
+                y: transitionDirection > 0 ? offset : -offset
             )
-            .combined(with: .scale(scale: 0.995))
             .combined(with: .opacity),
             removal: .offset(
-                x: transitionDirection > 0 ? -distance : distance
+                y: transitionDirection > 0 ? -offset * 0.55 : offset * 0.55
             )
-            .combined(with: .scale(scale: 0.998))
             .combined(with: .opacity)
         )
     }

@@ -146,7 +146,7 @@ struct MiniPlayerView: View {
                 transitionDirection = next.index >= previous.index ? 1 : -1
             }
             withAnimation(
-                changesTrack && motionEnabled ? BuFiMotion.miniTrack : .none
+                changesTrack && motionEnabled ? BuFiMotion.trackPage : .none
             ) {
                 presentedItem = next.item
             }
@@ -190,20 +190,26 @@ struct MiniPlayerView: View {
 
     private var trackTextTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
+        let offset: CGFloat = 5
         return .asymmetric(
-            insertion: .offset(x: 10 * transitionDirection).combined(with: .opacity),
-            removal: .offset(x: -8 * transitionDirection).combined(with: .opacity)
+            insertion: .offset(
+                y: transitionDirection > 0 ? offset : -offset
+            )
+            .combined(with: .opacity),
+            removal: .offset(
+                y: transitionDirection > 0 ? -offset * 0.5 : offset * 0.5
+            )
+            .combined(with: .opacity)
         )
     }
 
     private var trackArtworkTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
+        let offset: CGFloat = 14
         return .asymmetric(
-            insertion: .offset(x: 10 * transitionDirection)
-                .combined(with: .scale(scale: 0.988))
+            insertion: .offset(x: offset * transitionDirection)
                 .combined(with: .opacity),
-            removal: .offset(x: -8 * transitionDirection)
-                .combined(with: .scale(scale: 0.994))
+            removal: .offset(x: -offset * 0.65 * transitionDirection)
                 .combined(with: .opacity)
         )
     }
