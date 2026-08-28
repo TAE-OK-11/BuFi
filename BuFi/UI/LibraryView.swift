@@ -32,7 +32,7 @@ struct LibraryView: View {
                     value: surfaces
                 )
                 .padding(.top, 18)
-                .buFiMiniPlayerContentClearance(idle: 56, playing: 154)
+                .buFiMiniPlayerContentClearance()
             }
             .background(BuFiScreenBackground())
             .refreshable { await model.refresh() }
@@ -134,14 +134,14 @@ struct LibraryView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(snapshot.starredSongs.indices), id: \.self) { index in
+                        ForEach(IndexedSong.list(snapshot.starredSongs)) { item in
                             SongRowCurrentTrackResolver(
-                                song: snapshot.starredSongs[index],
+                                song: item.song,
                                 queue: snapshot.starredSongs,
-                                queueIndex: index
+                                queueIndex: item.index
                             )
                             .padding(.horizontal, 14)
-                            if index < snapshot.starredSongs.count - 1 {
+                            if item.index < snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
                         }

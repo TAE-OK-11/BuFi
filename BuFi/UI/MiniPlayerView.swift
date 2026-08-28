@@ -163,7 +163,9 @@ struct MiniPlayerView: View {
 
     private var usesDarkForeground: Bool {
         guard let palette = resolvedPalette else { return colorScheme == .light }
-        return relativeLuminance(palette.top) >= 0.18
+        // Match the full player cutover so mid-luminance art does not put
+        // white labels on a light tint.
+        return relativeLuminance(palette.top) >= 0.46
     }
 
     private var resolvedPalette: ArtworkPalette? {

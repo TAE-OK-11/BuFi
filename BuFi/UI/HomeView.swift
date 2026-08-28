@@ -70,6 +70,18 @@ struct HomeView: View {
                                 motionEnabled ? BuFiTransition.section : .opacity
                             )
                     }
+                    if sections.isEmpty {
+                        ContentUnavailableView(
+                            filter == .personalized
+                                ? LocalizedStringKey("아직 맞춤 믹스가 없습니다")
+                                : LocalizedStringKey("표시할 음악이 없습니다"),
+                            systemImage: filter == .personalized
+                                ? "sparkles"
+                                : "music.note.house"
+                        )
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 48)
+                    }
                 }
                 .animation(
                     motionEnabled ? BuFiMotion.content : .none,
@@ -182,7 +194,6 @@ struct HomeView: View {
                 )
             }
             .buttonStyle(BuFiPressStyle())
-            .disabled(library.snapshot.starredSongs.isEmpty)
 
             NavigationLink(
                 value: presentation.mostPlayedSongsMix
@@ -194,7 +205,6 @@ struct HomeView: View {
                 )
             }
             .buttonStyle(BuFiPressStyle())
-            .disabled(library.snapshot.mostPlayedSongs.isEmpty)
         }
         .padding(.horizontal, 16)
     }
@@ -585,61 +595,6 @@ struct HomePresentation: Sendable {
 
     private static func makeFeaturedArtists(snapshot: HomeSnapshot) -> [Artist] {
         let maximumCount = 12
-        let artistSources = [
-            snapshot.recommendedArtists,
-            snapshot.starredArtists,
-            snapshot.artists
-        ]
-        let songSources = [
-            snapshot.starredSongs,
-            snapshot.mostPlayedSongs,
-            snapshot.recommendedSongs,
-            snapshot.randomSongs
-        ]
-        let albumSources = [
-            snapshot.starredAlbums,
-            snapshot.randomAlbums,
-            snapshot.recentAlbums
-        ]
-
-        var taylor = firstValue(
-            named: "taylor swift",
-            in: artistSources,
-            name: \.name
-        )
-        if taylor == nil,
-           let album = firstValue(
-               named: "taylor swift",
-               in: albumSources,
-               name: \.artist
-           ),
-           let artistID = album.artistId,
-           !artistID.isEmpty {
-            taylor = Artist(
-                id: artistID,
-                name: "Taylor Swift",
-                coverArt: nil,
-                albumCount: nil,
-                starred: nil
-            )
-        }
-        if taylor == nil,
-           let song = firstValue(
-               named: "taylor swift",
-               in: songSources,
-               name: \.artist
-           ),
-           let artistID = song.artistId,
-           !artistID.isEmpty {
-            taylor = Artist(
-                id: artistID,
-                name: "Taylor Swift",
-                coverArt: nil,
-                albumCount: nil,
-                starred: nil
-            )
-        }
-
         var values: [Artist] = []
         var seen = Set<String>()
         func append(_ artist: Artist?) {
@@ -648,7 +603,6 @@ struct HomePresentation: Sendable {
             guard !key.isEmpty, seen.insert(key).inserted else { return }
             values.append(artist)
         }
-        append(taylor)
         for source in [
             snapshot.starredArtists,
             snapshot.recommendedArtists,
@@ -656,27 +610,10 @@ struct HomePresentation: Sendable {
         ] {
             for artist in source {
                 append(artist)
-                if values.count == maximumCount { break }
+                if values.count == maximumCount { return values }
             }
-            if values.count == maximumCount { break }
         }
         return values
-    }
-
-    private static func firstValue<Value>(
-        named normalizedName: String,
-        in sources: [[Value]],
-        name: KeyPath<Value, String>
-    ) -> Value? {
-        for source in sources {
-            for value in source {
-                if Task.isCancelled { return nil }
-                if normalizedArtistName(value[keyPath: name]) == normalizedName {
-                    return value
-                }
-            }
-        }
-        return nil
     }
 
     private static func normalizedArtistName(_ value: String) -> String {

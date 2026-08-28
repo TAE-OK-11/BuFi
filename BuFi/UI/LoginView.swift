@@ -32,7 +32,7 @@ struct LoginView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Bufi")
+                    Text("BuFi")
                         .font(.custom("Unbounded_800wght", fixedSize: 34))
                         .tracking(-2.2)
                         .foregroundStyle(
@@ -45,7 +45,7 @@ struct LoginView: View {
                         .padding(.horizontal, 18)
                         .padding(.vertical, 12)
                         .buFiGlass(cornerRadius: 20)
-                        .accessibilityLabel("Bufi")
+                        .accessibilityLabel("BuFi")
                         .padding(.top, 24)
 
                     Spacer(minLength: 72)
@@ -88,17 +88,14 @@ struct LoginView: View {
                         )
                         .textInputAutocapitalization(.never)
 
-                        SecureField("비밀번호", text: $password)
-                            .textContentType(.password)
-                            .focused($focus, equals: .password)
-                            .submitLabel(.go)
-                            .onSubmit(connect)
-                            .padding(.horizontal, 16)
-                            .frame(height: 56)
-                            .background(
-                                BuFiTheme.elevated,
-                                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-                            )
+                        input(
+                            "비밀번호",
+                            text: $password,
+                            icon: "lock.fill",
+                            field: .password,
+                            contentType: .password,
+                            isSecure: true
+                        )
                     }
                     .padding(.top, 34)
 
@@ -140,6 +137,11 @@ struct LoginView: View {
                 .frame(minHeight: UIScreen.main.bounds.height - 30)
             }
             .scrollDismissesKeyboard(.interactively)
+            .onDisappear {
+                loginTask?.cancel()
+                loginTask = nil
+                isSubmitting = false
+            }
         }
     }
 
@@ -149,19 +151,28 @@ struct LoginView: View {
         text: Binding<String>,
         icon: String,
         field: Field,
-        contentType: UITextContentType
+        contentType: UITextContentType,
+        isSecure: Bool = false
     ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .frame(width: 22)
                 .foregroundStyle(.secondary)
-            TextField(LocalizedStringKey(title), text: text)
-                .textContentType(contentType)
-                .focused($focus, equals: field)
-                .submitLabel(.next)
-                .onSubmit {
-                    focus = field == .server ? .username : .password
-                }
+            if isSecure {
+                SecureField(LocalizedStringKey(title), text: text)
+                    .textContentType(contentType)
+                    .focused($focus, equals: field)
+                    .submitLabel(.go)
+                    .onSubmit(connect)
+            } else {
+                TextField(LocalizedStringKey(title), text: text)
+                    .textContentType(contentType)
+                    .focused($focus, equals: field)
+                    .submitLabel(.next)
+                    .onSubmit {
+                        focus = field == .server ? .username : .password
+                    }
+            }
         }
         .padding(.horizontal, 16)
         .frame(height: 56)
@@ -223,12 +234,14 @@ struct LoginView: View {
         isSubmitting = true
         session.errorMessage = nil
         let submittedPassword = password
+        loginTask?.cancel()
         loginTask = Task {
             await model.login(
                 serverURL: ServerURLNormalization.persistedServerURL(from: url),
                 username: trimmedUsername,
                 password: submittedPassword
             )
+            guard !Task.isCancelled else { return }
             isSubmitting = false
             loginTask = nil
         }

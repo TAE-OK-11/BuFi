@@ -12,6 +12,7 @@ struct SearchView: View {
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
     @State private var personalizedMixes: [PersonalizedMix] = []
+    @State private var hasLoadedPersonalizedMixes = false
     @FocusState private var isSearchFieldFocused: Bool
 
     var body: some View {
@@ -101,7 +102,7 @@ struct SearchView: View {
                 }
                 .buttonStyle(BuFiPressStyle())
                 .transition(.scale(scale: 0.84).combined(with: .opacity))
-                .accessibilityLabel("검색 닫기")
+                .accessibilityLabel("검색어 지우기")
             }
         }
         .foregroundStyle(.primary)
@@ -262,17 +263,17 @@ struct SearchView: View {
             .padding(.horizontal, 16)
         case .resultSongs:
             resultSection("곡") {
-                ForEach(Array(result.songs.indices), id: \.self) { index in
+                ForEach(IndexedSong.list(result.songs)) { item in
                     SongRowCurrentTrackResolver(
-                        song: result.songs[index],
+                        song: item.song,
                         queue: result.songs,
-                        queueIndex: index,
+                        queueIndex: item.index,
                         playbackOrigin: .search,
                         textLineLimit: 2
                     )
                     .padding(.horizontal, 14)
                     .simultaneousGesture(TapGesture().onEnded(resignSearchField))
-                    if index < result.songs.count - 1 {
+                    if item.index < result.songs.count - 1 {
                         rowSeparator
                     }
                 }
@@ -316,7 +317,7 @@ struct SearchView: View {
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("앨범 · \(album.artist)")
+                Text(String(format: String(localized: "앨범 · %@"), album.artist))
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -401,14 +402,14 @@ struct SearchView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(songs.indices), id: \.self) { index in
+                    ForEach(IndexedSong.list(songs)) { item in
                         SongRowCurrentTrackResolver(
-                            song: songs[index],
+                            song: item.song,
                             queue: songs,
-                            queueIndex: index
+                            queueIndex: item.index
                         )
                         .padding(.horizontal, 14)
-                        if index < songs.count - 1 {
+                        if item.index < songs.count - 1 {
                             rowSeparator
                         }
                     }
@@ -503,7 +504,7 @@ struct SearchView: View {
         ),
         SearchShortcut(
             mode: .mostPlayed,
-            title: "자주 듣는 곡",
+            title: "자주 들은 곡",
             subtitle: String(localized: "청취 기록 순위"),
             systemImage: "chart.bar.fill",
             tint: Color(red: 0.22, green: 0.50, blue: 0.78)
@@ -512,7 +513,14 @@ struct SearchView: View {
 
     @ViewBuilder
     private func algorithmPlaylistGrid(_ mixes: [PersonalizedMix]) -> some View {
-        if mixes.isEmpty {
+        if !hasLoadedPersonalizedMixes {
+            HStack {
+                Spacer()
+                ProgressView("불러오는 중…")
+                Spacer()
+            }
+            .padding(.top, 48)
+        } else if mixes.isEmpty {
             ContentUnavailableView(
                 "추천 플레이리스트를 만들 음악이 없습니다",
                 systemImage: "sparkles"
@@ -553,31 +561,31 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(songs.indices), id: \.self) { index in
+                        ForEach(IndexedSong.list(songs)) { item in
                             HStack(spacing: 10) {
-                                Text("\(index + 1)")
+                                Text("\(item.index + 1)")
                                     .font(
                                         .system(
                                             size: 14,
-                                            weight: index < 3 ? .bold : .medium,
+                                            weight: item.index < 3 ? .bold : .medium,
                                             design: .rounded
                                         )
                                     )
                                     .foregroundStyle(
-                                        index < 3 ? BuFiTheme.accent : Color.secondary
+                                        item.index < 3 ? BuFiTheme.accent : Color.secondary
                                     )
                                     .monospacedDigit()
                                     .frame(width: 24, alignment: .trailing)
                                 SongRowCurrentTrackResolver(
-                                    song: songs[index],
+                                    song: item.song,
                                     queue: songs,
-                                    queueIndex: index,
+                                    queueIndex: item.index,
                                     artworkSize: 52,
                                     textLineLimit: 2
                                 )
                             }
                             .padding(.horizontal, 12)
-                            if index < songs.count - 1 {
+                            if item.index < songs.count - 1 {
                                 Divider()
                                     .padding(.leading, 112)
                                     .opacity(0.50)
@@ -631,6 +639,7 @@ struct SearchView: View {
             return
         }
         personalizedMixes = next
+        hasLoadedPersonalizedMixes = true
     }
 
     private var rowSeparator: some View {
