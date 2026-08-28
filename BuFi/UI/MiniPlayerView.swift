@@ -67,7 +67,7 @@ struct MiniPlayerView: View {
                                         font: .system(size: 15, weight: .semibold)
                                     )
                                     Text(song.artist)
-                                        .font(.system(size: 13))
+                                        .font(.system(size: 14, weight: .medium))
                                         .foregroundStyle(miniPlayerForeground.opacity(0.72))
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.76)
@@ -139,7 +139,7 @@ struct MiniPlayerView: View {
             guard changesTrack else { return }
             transitionDirection = next.index >= previous.index ? 1 : -1
             if motionEnabled {
-                withAnimation(BuFiMotion.trackPage) {
+                withAnimation(BuFiMotion.miniTrack) {
                     presentedItem = next.item
                 }
             } else {
@@ -152,7 +152,7 @@ struct MiniPlayerView: View {
         BuFiMotion.trackSlideTransition(
             direction: transitionDirection,
             enabled: motionEnabled,
-            distance: 18
+            distance: 22
         )
     }
 
