@@ -8,6 +8,7 @@ struct MiniPlayerView: View {
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
     @State private var presentedItem: PlaybackMediaItem?
     @State private var paletteApplyTask: Task<Void, Never>?
+    @State private var transitionDirection: CGFloat = 1
 
     private let playerHeight: CGFloat = 60
     private let cornerRadius: CGFloat = 10
@@ -40,44 +41,44 @@ struct MiniPlayerView: View {
 
                     VStack(spacing: 0) {
                         HStack(spacing: 9) {
-                            ArtworkView(
-                                coverArt: song.artworkID,
-                                size: 50,
-                                cornerRadius: 5,
-                                cacheRevision: artworkIdentity.artworkRevision,
-                                onPalette: { nextPalette in
-                                    receivePalette(
-                                        nextPalette,
-                                        for: artworkIdentity
-                                    )
-                                }
-                            )
-                            .frame(width: 50, height: 50)
-                            .animation(
-                                motionEnabled ? BuFiMotion.miniTrack : .none,
-                                value: artworkIdentity
-                            )
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                OverflowMarqueeText(
-                                    text: song.title,
-                                    font: .system(size: 15, weight: .semibold)
+                            ZStack {
+                                ArtworkView(
+                                    coverArt: song.artworkID,
+                                    size: 50,
+                                    cornerRadius: 5,
+                                    cacheRevision: artworkIdentity.artworkRevision,
+                                    onPalette: { nextPalette in
+                                        receivePalette(
+                                            nextPalette,
+                                            for: artworkIdentity
+                                        )
+                                    }
                                 )
-                                Text(song.artist)
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(miniPlayerForeground.opacity(0.72))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.76)
-                                    .contentTransition(.interpolate)
+                                .id(artworkIdentity)
+                                .transition(trackSlideTransition)
+                            }
+                            .frame(width: 50, height: 50)
+                            .clipped()
+
+                            ZStack(alignment: .leading) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    OverflowMarqueeText(
+                                        text: song.title,
+                                        font: .system(size: 15, weight: .semibold)
+                                    )
+                                    Text(song.artist)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(miniPlayerForeground.opacity(0.72))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.76)
+                                }
+                                .id(item.id)
+                                .transition(trackSlideTransition)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
                             .allowsHitTesting(false)
-                            .animation(
-                                motionEnabled ? BuFiMotion.trackText : .none,
-                                value: item.id
-                            )
-                            .contentTransition(.opacity)
+                            .clipped()
 
                             AirPlayButton(lightContent: !usesDarkForeground)
                                 .frame(width: 36, height: 36)
@@ -133,9 +134,26 @@ struct MiniPlayerView: View {
         .onAppear {
             presentedItem = currentPlayback.item
         }
-        .onChange(of: currentPlayback.snapshot) { _, next in
-            presentedItem = next.item
+        .onChange(of: currentPlayback.snapshot) { previous, next in
+            let changesTrack = previous.item?.id != next.item?.id
+            guard changesTrack else { return }
+            transitionDirection = next.index >= previous.index ? 1 : -1
+            if motionEnabled {
+                withAnimation(BuFiMotion.trackPage) {
+                    presentedItem = next.item
+                }
+            } else {
+                presentedItem = next.item
+            }
         }
+    }
+
+    private var trackSlideTransition: AnyTransition {
+        BuFiMotion.trackSlideTransition(
+            direction: transitionDirection,
+            enabled: motionEnabled,
+            distance: 18
+        )
     }
 
     private func receivePalette(
