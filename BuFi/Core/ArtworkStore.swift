@@ -27,8 +27,13 @@ enum ArtworkRequestSizing {
 }
 
 enum UpcomingArtworkPrefetchPolicy {
-    static let upcomingCount = 1
+    /// Upcoming queue covers warmed for the player pager and skip UX.
+    static let upcomingCount = 3
+    /// Lyrics stay on the immediate successor so API traffic does not scale
+    /// with the wider artwork window.
+    static let lyricsPrefetchCount = 1
     static let thumbnailPixelSize: CGFloat = 768
+    static let anchorPixelSize = ArtworkRequestSizing.fullPlayerPixelSize
 }
 
 struct RGBAColor: Codable, Equatable, Sendable {

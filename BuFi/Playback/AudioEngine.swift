@@ -3434,30 +3434,59 @@ final class AudioEngine: NSObject, ObservableObject {
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
 
-            var coverURLs: [URL] = []
+            var warmedCovers: [(URL, CGFloat)] = []
             var seenArtwork = Set<String>()
-            let thumbnailSize = Int(UpcomingArtworkPrefetchPolicy.thumbnailPixelSize)
-            for song in songs {
+            for (offset, song) in songs.enumerated() {
                 let revision = song.artworkRevision
                 guard let coverID = song.artworkID,
                       seenArtwork.insert("\(coverID)|\(revision)").inserted,
                       let sourceURL = try? client.coverURL(
                           id: coverID,
-                          size: thumbnailSize
+                          size: Int(
+                              offset == 0
+                                  ? UpcomingArtworkPrefetchPolicy.anchorPixelSize
+                                  : UpcomingArtworkPrefetchPolicy.thumbnailPixelSize
+                          )
                       ) else { continue }
-                coverURLs.append(ArtworkStore.cacheURL(
-                    for: sourceURL,
-                    revision: revision
+                let pixelSize = offset == 0
+                    ? UpcomingArtworkPrefetchPolicy.anchorPixelSize
+                    : UpcomingArtworkPrefetchPolicy.thumbnailPixelSize
+                warmedCovers.append((
+                    ArtworkStore.cacheURL(for: sourceURL, revision: revision),
+                    pixelSize
                 ))
             }
-            await ArtworkStore.shared.prefetch(
-                urls: coverURLs,
-                pixelSize: UpcomingArtworkPrefetchPolicy.thumbnailPixelSize,
-                concurrencyLimit: min(
-                    isConstrained ? 1 : 2,
-                    EnergyConstraintsPolicy.artworkPrefetchConcurrency()
-                )
+            let prefetchConcurrency = min(
+                isConstrained ? 1 : 2,
+                EnergyConstraintsPolicy.artworkPrefetchConcurrency()
             )
+            for start in stride(from: 0, to: warmedCovers.count, by: prefetchConcurrency) {
+                guard !Task.isCancelled,
+                      self.visualPrefetchToken == token else { return }
+                let end = min(start + prefetchConcurrency, warmedCovers.count)
+                await withTaskGroup(of: Void.self) { group in
+                    for (coverURL, pixelSize) in warmedCovers[start..<end] {
+                        group.addTask {
+                            guard !Task.isCancelled else { return }
+                            await ArtworkStore.shared.prefetch(
+                                urls: [coverURL],
+                                pixelSize: pixelSize,
+                                concurrencyLimit: 1
+                            )
+                            guard let image = try? await ArtworkStore.shared.image(
+                                for: coverURL,
+                                pixelSize: pixelSize,
+                                isPrefetch: true
+                            ) else { return }
+                            _ = await ArtworkStore.shared.palette(
+                                for: coverURL,
+                                image: image
+                            )
+                        }
+                    }
+                    await group.waitForAll()
+                }
+            }
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
         }
@@ -3470,11 +3499,10 @@ final class AudioEngine: NSObject, ObservableObject {
             cancelNetworkPrefetch(resetKey: true)
             return
         }
-        let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
         guard allowsSpeculativeNetworkPrefetch,
               let client,
               let plan = playbackPrefetchPlan(
-                maximumUpcoming: metadataPrefetchCount
+                maximumUpcoming: UpcomingArtworkPrefetchPolicy.lyricsPrefetchCount
               ) else {
             cancelNetworkPrefetch(resetKey: true)
             return
