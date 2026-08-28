@@ -7,7 +7,6 @@ struct MiniPlayerView: View {
     @State private var palette: ArtworkPalette?
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
     @State private var presentedItem: PlaybackMediaItem?
-    @State private var paletteApplyTask: Task<Void, Never>?
     @State private var transitionDirection: CGFloat = 1
 
     private let playerHeight: CGFloat = 60
@@ -55,7 +54,7 @@ struct MiniPlayerView: View {
                                     }
                                 )
                                 .id(artworkIdentity)
-                                .transition(trackSlideTransition)
+                                .transition(trackArtworkTransition)
                             }
                             .frame(width: 50, height: 50)
                             .clipped()
@@ -73,7 +72,7 @@ struct MiniPlayerView: View {
                                         .minimumScaleFactor(0.76)
                                 }
                                 .id(item.id)
-                                .transition(trackSlideTransition)
+                                .transition(trackTextTransition)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
@@ -111,7 +110,7 @@ struct MiniPlayerView: View {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(miniPlayerBackground)
                         .animation(
-                            motionEnabled ? BuFiMotion.trackBackground : .none,
+                            motionEnabled ? BuFiMotion.color : .none,
                             value: resolvedPalette
                         )
                 }
@@ -119,7 +118,7 @@ struct MiniPlayerView: View {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .stroke(miniPlayerForeground.opacity(0.16), lineWidth: 0.7)
                         .animation(
-                            motionEnabled ? BuFiMotion.trackBackground : .none,
+                            motionEnabled ? BuFiMotion.color : .none,
                             value: resolvedPalette
                         )
                 }
@@ -136,23 +135,34 @@ struct MiniPlayerView: View {
         }
         .onChange(of: currentPlayback.snapshot) { previous, next in
             let changesTrack = previous.item?.id != next.item?.id
-            guard changesTrack else { return }
-            transitionDirection = next.index >= previous.index ? 1 : -1
-            if motionEnabled {
-                withAnimation(BuFiMotion.miniTrack) {
-                    presentedItem = next.item
-                }
-            } else {
+            if changesTrack {
+                transitionDirection = next.index >= previous.index ? 1 : -1
+            }
+            withAnimation(
+                changesTrack && motionEnabled ? BuFiMotion.miniTrack : .none
+            ) {
                 presentedItem = next.item
             }
         }
     }
 
-    private var trackSlideTransition: AnyTransition {
-        BuFiMotion.trackSlideTransition(
-            direction: transitionDirection,
-            enabled: motionEnabled,
-            distance: 22
+    private var trackTextTransition: AnyTransition {
+        guard motionEnabled else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(x: 12 * transitionDirection).combined(with: .opacity),
+            removal: .offset(x: -9 * transitionDirection).combined(with: .opacity)
+        )
+    }
+
+    private var trackArtworkTransition: AnyTransition {
+        guard motionEnabled else { return .opacity }
+        return .asymmetric(
+            insertion: .offset(x: 12 * transitionDirection)
+                .combined(with: .scale(scale: 0.985))
+                .combined(with: .opacity),
+            removal: .offset(x: -9 * transitionDirection)
+                .combined(with: .scale(scale: 0.992))
+                .combined(with: .opacity)
         )
     }
 
@@ -163,23 +173,10 @@ struct MiniPlayerView: View {
         guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
             return
         }
-        paletteApplyTask?.cancel()
         if nextPalette == .fallback {
             palette = nil
             paletteArtworkIdentity = nil
-            return
-        }
-        guard motionEnabled else {
-            palette = nextPalette
-            paletteArtworkIdentity = artworkIdentity
-            return
-        }
-        paletteApplyTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(60))
-            guard !Task.isCancelled,
-                  currentPlayback.item?.artworkIdentity == artworkIdentity else {
-                return
-            }
+        } else {
             palette = nextPalette
             paletteArtworkIdentity = artworkIdentity
         }
