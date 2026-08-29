@@ -1143,6 +1143,10 @@ final class AppModel: ObservableObject {
         lowPowerMode: Bool,
         thermalState: ProcessInfo.ThermalState
     ) {
+        if thermalState == .fair {
+            recommendationTask?.cancel()
+            recommendationTask = nil
+        }
         guard EnergyConstraintsPolicy.shouldCancelBackgroundWork(
             lowPowerMode: lowPowerMode,
             thermalState: thermalState

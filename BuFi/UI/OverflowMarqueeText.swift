@@ -17,6 +17,7 @@ struct OverflowMarqueeText: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @Environment(\.buFiMotionTier) private var motionTier
     @Environment(\.layoutDirection) private var layoutDirection
     @Environment(\.scenePhase) private var scenePhase
 
@@ -84,6 +85,7 @@ struct OverflowMarqueeText: View {
     private var canAnimate: Bool {
         overflowDistance > 1
             && motionEnabled
+            && motionTier == .full
             && !reduceMotion
             && scenePhase == .active
     }

@@ -3,6 +3,7 @@ import SwiftUI
 struct MiniPlayerView: View {
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @Environment(\.buFiMotionTier) private var motionTier
     @Environment(\.colorScheme) private var colorScheme
     @State private var palette: ArtworkPalette?
     @State private var paletteArtworkIdentity: PlayerArtworkIdentity?
@@ -110,7 +111,7 @@ struct MiniPlayerView: View {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(miniPlayerBackground)
                         .animation(
-                            motionEnabled ? BuFiMotion.color : .none,
+                            motionEnabled ? BuFiMotion.color(for: motionTier) : .none,
                             value: resolvedPalette
                         )
                 }
@@ -118,7 +119,7 @@ struct MiniPlayerView: View {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .stroke(miniPlayerForeground.opacity(0.16), lineWidth: 0.7)
                         .animation(
-                            motionEnabled ? BuFiMotion.color : .none,
+                            motionEnabled ? BuFiMotion.color(for: motionTier) : .none,
                             value: resolvedPalette
                         )
                 }
@@ -139,7 +140,8 @@ struct MiniPlayerView: View {
                 transitionDirection = next.index >= previous.index ? 1 : -1
             }
             withAnimation(
-                changesTrack && motionEnabled ? BuFiMotion.miniTrack : .none
+                changesTrack && motionEnabled
+                    ? BuFiMotion.miniTrack(for: motionTier) : .none
             ) {
                 presentedItem = next.item
             }

@@ -10,6 +10,7 @@ struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var library: HomeLibraryState
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @Environment(\.buFiMotionTier) private var motionTier
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
     @State private var filter = HomeFilter.all
@@ -48,20 +49,13 @@ struct HomeView: View {
                             .offset(y: hasRevealedContent ? 0 : 9)
                             .animation(
                                 motionEnabled
-                                    ? BuFiMotion.homeEntrance.delay(
+                                    ? BuFiMotion.homeEntrance(for: motionTier).delay(
                                         min(0.055 + (Double(index) * 0.022), 0.17)
                                     )
                                     : .none,
                                 value: hasRevealedContent
                             )
-                            .scrollTransition(.interactive, axis: .vertical) { content, phase in
-                                content
-                                    .opacity(
-                                        phase.isIdentity
-                                            || !enablesMotion
-                                            || !revealsContent ? 1 : 0.97
-                                    )
-                            }
+                            .modifier(HomeSectionScrollTransitionModifier())
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity
                             )
@@ -734,6 +728,21 @@ private enum HomeFilter: Int, CaseIterable, Identifiable {
         case .all: "전체"
         case .playlists: "플레이리스트"
         case .personalized: "나만의 플레이리스트"
+        }
+    }
+}
+
+private struct HomeSectionScrollTransitionModifier: ViewModifier {
+    @Environment(\.buFiMotionTier) private var motionTier
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if motionTier.enablesScrollTransition {
+            content.scrollTransition(.interactive, axis: .vertical) { view, phase in
+                view.opacity(phase.isIdentity ? 1 : 0.97)
+            }
+        } else {
+            content
         }
     }
 }

@@ -47,7 +47,7 @@ struct RootView: View {
             switch session.phase {
             case .signedOut:
                 LoginView()
-                    .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
+                    .transition(BuFiMotion.transition(for: motionTier))
             case .connecting:
                 ZStack {
                     BuFiScreenBackground()
@@ -55,7 +55,7 @@ struct RootView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .tint(BuFiTheme.accent)
                 }
-                .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
+                .transition(BuFiMotion.transition(for: motionTier))
             case .signingOut:
                 ZStack {
                     BuFiScreenBackground()
@@ -63,17 +63,17 @@ struct RootView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .tint(BuFiTheme.accent)
                 }
-                .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
+                .transition(BuFiMotion.transition(for: motionTier))
             case .ready:
                 tabs
-                    .transition(effectiveMotion ? BuFiTransition.scene : .opacity)
+                    .transition(BuFiMotion.transition(for: motionTier))
             }
         }
-        .animation(effectiveMotion ? BuFiMotion.fade : .none, value: session.phase)
+        .animation(BuFiMotion.fade(for: motionTier), value: session.phase)
         .preferredColorScheme(AppAppearance(rawValue: appearanceMode)?.colorScheme)
-        .environment(\.buFiMotionEnabled, effectiveMotion)
+        .environment(\.buFiMotionTier, motionTier)
         .transaction { transaction in
-            if !effectiveMotion { transaction.animation = nil }
+            if motionTier == .off { transaction.animation = nil }
         }
         .background {
             AutomaticSyncHost(
@@ -130,7 +130,7 @@ struct RootView: View {
             }
             .environmentObject(model)
             .environmentObject(audio)
-            .environment(\.buFiMotionEnabled, effectiveMotion)
+            .environment(\.buFiMotionTier, motionTier)
             .id(presentation.id)
         }
     }
@@ -151,14 +151,16 @@ struct RootView: View {
         )
     }
 
-    private var effectiveMotion: Bool {
-        BuFiMotion.isEnabled(
+    private var motionTier: BuFiMotionTier {
+        BuFiMotion.resolveTier(
             userPreference: motionEnabled,
             reduceMotion: reduceMotion,
             lowPowerMode: lowPowerMode,
             thermalState: thermalState
         )
     }
+
+    private var effectiveMotion: Bool { motionTier.enablesAnimation }
 
     @ViewBuilder
     private var tabs: some View {
@@ -190,7 +192,7 @@ struct RootView: View {
                 return
             }
             pageProgress = 0
-            withAnimation(BuFiMotion.page) {
+            withAnimation(BuFiMotion.page(for: motionTier)) {
                 pageProgress = 1
             }
         }
@@ -207,10 +209,7 @@ struct RootView: View {
                     }
                 }
             }
-            .animation(
-                effectiveMotion ? BuFiMotion.content : .none,
-                value: currentPlayback.song != nil
-            )
+            .animation(BuFiMotion.content(for: motionTier), value: currentPlayback.song != nil)
     }
 
     @ViewBuilder
@@ -249,7 +248,7 @@ struct RootView: View {
         MiniPlayerView()
             .frame(height: 60)
             .padding(.horizontal, 8)
-            .transition(effectiveMotion ? BuFiTransition.miniPlayer : .opacity)
+            .transition(BuFiMotion.miniPlayerTransition(for: motionTier))
     }
 
     @MainActor
@@ -306,6 +305,8 @@ struct RootView: View {
         )
         if EnergyConstraintsPolicy.shouldCancelBackgroundWork(
             lowPowerMode: lowPowerMode,
+            thermalState: thermalState
+        ) || EnergyConstraintsPolicy.shouldTrimArtworkMemory(
             thermalState: thermalState
         ) {
             Task { await ArtworkStore.shared.clearMemory() }

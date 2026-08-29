@@ -232,18 +232,16 @@ enum PlaybackTimelineRefreshPolicy {
     static func interval(
         isApplicationActive: Bool,
         showsFullPlayer: Bool,
-        lowPowerModeEnabled: Bool,
-        thermallyConstrained: Bool
+        lowPowerModeEnabled: Bool
     ) -> TimeInterval {
         // Background playback needs persistence/scrobble maintenance, not UI
         // animation. Two-second ticks cut wakeups by 75% versus the old 2 Hz
         // cadence while keeping 30/180-second maintenance comfortably precise.
         guard isApplicationActive else { return 2.0 }
         // The mini player needs only coarse progress. Reserve 4 Hz for the full
-        // player when the system is not asking us to conserve power/thermals.
-        guard showsFullPlayer,
-              !lowPowerModeEnabled,
-              !thermallyConstrained else {
+        // player when Low Power Mode is off. Thermal pressure does not slow
+        // progress interpolation.
+        guard showsFullPlayer, !lowPowerModeEnabled else {
             return 1.0
         }
         return 0.25
@@ -4522,12 +4520,10 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func installPlaybackTimeObserver() {
         let processInfo = ProcessInfo.processInfo
-        let thermalState = processInfo.thermalState
         let refreshInterval = PlaybackTimelineRefreshPolicy.interval(
             isApplicationActive: applicationIsActive,
             showsFullPlayer: showPlayer,
-            lowPowerModeEnabled: processInfo.isLowPowerModeEnabled,
-            thermallyConstrained: thermalState == .serious || thermalState == .critical
+            lowPowerModeEnabled: processInfo.isLowPowerModeEnabled
         )
         guard timelineRefreshInterval != refreshInterval else { return }
         timelineRefreshInterval = refreshInterval
