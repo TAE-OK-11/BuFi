@@ -69,23 +69,24 @@ enum BuFiMotion {
     static let content = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let homeEntrance = Animation.spring(duration: 0.52, bounce: 0.032)
     static let homeRefresh = Animation.smooth(duration: 0.38, extraBounce: 0)
-    static let playerEntrance = Animation.spring(duration: 0.52, bounce: 0.028)
+    static let playerEntrance = Animation.spring(duration: 0.40, bounce: 0.034)
     static let screenEntrance = Animation.spring(duration: 0.48, bounce: 0.028)
-    static let trackText = Animation.smooth(duration: 0.44, extraBounce: 0)
-    static let trackPage = Animation.spring(duration: 0.52, bounce: 0.035)
-    static let miniTrack = Animation.smooth(duration: 0.46, extraBounce: 0)
-    static let artworkTouch = Animation.spring(duration: 0.24, bounce: 0.10)
-    static let color = Animation.smooth(duration: 0.52, extraBounce: 0)
+    /// Fast horizontal text hand-off; smooth curve keeps motion fluid at short duration.
+    static let trackText = Animation.smooth(duration: 0.30, extraBounce: 0)
+    static let trackPage = Animation.spring(duration: 0.36, bounce: 0.048)
+    static let miniTrack = Animation.smooth(duration: 0.30, extraBounce: 0)
+    static let artworkTouch = Animation.spring(duration: 0.20, bounce: 0.10)
+    static let color = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let page = Animation.smooth(duration: 0.36, extraBounce: 0)
     static let miniLyricsScroll = Animation.smooth(duration: 0.48, extraBounce: 0)
     static let miniLyrics = Animation.smooth(duration: 0.48, extraBounce: 0)
     static let lyricsCard = Animation.spring(duration: 0.40, bounce: 0.028)
     static let lyrics = Animation.smooth(duration: 0.38, extraBounce: 0)
-    static let lyricsPanel = Animation.spring(duration: 0.44, bounce: 0.05)
+    static let lyricsPanel = Animation.spring(duration: 0.36, bounce: 0.04)
     /// Interpolates between periodic playback ticks (≈4 Hz) without stair-steps.
-    static let timeline = Animation.smooth(duration: 0.30, extraBounce: 0)
+    static let timeline = Animation.smooth(duration: 0.22, extraBounce: 0)
     /// Mini-player bar: short enough to track audio, long enough to stay fluid.
-    static let miniTimeline = Animation.smooth(duration: 0.40, extraBounce: 0)
+    static let miniTimeline = Animation.smooth(duration: 0.26, extraBounce: 0)
 
     static func press(isPressed: Bool, tier: BuFiMotionTier = .full) -> Animation {
         let down = tier == .minimal
