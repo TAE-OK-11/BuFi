@@ -181,10 +181,10 @@ struct PlayerView: View {
                             : (hasRevealedPlayerContent ? 1 : 0)
                     )
                     .scaleEffect(
-                        hasRevealedPlayerContent ? 1 : 0.996,
+                        hasRevealedPlayerContent ? 1 : 0.997,
                         anchor: .center
                     )
-                    .offset(y: hasRevealedPlayerContent ? 0 : 7)
+                    .offset(y: hasRevealedPlayerContent ? 0 : 5)
                     .animation(
                         allowsMotion ? BuFiMotion.playerEntrance : .none,
                         value: hasRevealedPlayerContent
@@ -728,12 +728,12 @@ struct PlayerView: View {
 
     private var trackTextTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
-        let distance: CGFloat = 8
+        let distance: CGFloat = 10
         return .asymmetric(
             insertion: .offset(
                 x: transitionDirection > 0 ? distance : -distance
             )
-            .combined(with: .scale(scale: 0.997))
+            .combined(with: .scale(scale: 0.998))
             .combined(with: .opacity),
             removal: .offset(
                 x: transitionDirection > 0 ? -distance : distance
