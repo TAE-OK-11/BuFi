@@ -344,6 +344,28 @@ final class PlaybackTimeline: ObservableObject {
     // invalidate artwork, palette backgrounds, queue controls, and the app root.
     @Published fileprivate(set) var elapsed: TimeInterval = 0
     @Published fileprivate(set) var duration: TimeInterval = 0
+
+    /// Nominal seconds between periodic position ticks. Progress views spend
+    /// exactly this long interpolating one tick, so the bar advances at a
+    /// constant rate instead of easing to a stop between updates.
+    private(set) var refreshInterval: TimeInterval = 0.25
+
+    /// False when the last position change was a seek, a track change, or a
+    /// restored session, so progress views snap instead of sliding.
+    private(set) var advancesContinuously = false
+
+    fileprivate func setElapsed(_ value: TimeInterval, continuous: Bool) {
+        guard elapsed != value else { return }
+        // Written before the published change so a body evaluation triggered by
+        // `elapsed` already observes the matching continuity.
+        advancesContinuously = continuous
+        elapsed = value
+    }
+
+    fileprivate func setRefreshInterval(_ value: TimeInterval) {
+        guard refreshInterval != value else { return }
+        refreshInterval = value
+    }
 }
 
 @MainActor
@@ -1246,9 +1268,16 @@ final class AudioEngine: NSObject, ObservableObject {
     private(set) var elapsed: TimeInterval {
         get { timeline.elapsed }
         set {
-            if timeline.elapsed != newValue {
-                timeline.elapsed = newValue
-            }
+            guard timeline.elapsed != newValue else { return }
+            // Only a forward step no larger than a periodic tick can be drawn as
+            // continuous motion. Seeks, track changes, and restores land outside
+            // that window and must not slide the bar across the jump.
+            let step = newValue - timeline.elapsed
+            let tick = timeline.refreshInterval
+            timeline.setElapsed(
+                newValue,
+                continuous: step > 0 && step <= (tick * 2) + 0.05
+            )
         }
     }
     private(set) var duration: TimeInterval {
@@ -4527,6 +4556,7 @@ final class AudioEngine: NSObject, ObservableObject {
         )
         guard timelineRefreshInterval != refreshInterval else { return }
         timelineRefreshInterval = refreshInterval
+        timeline.setRefreshInterval(refreshInterval)
         timelineObserverGeneration &+= 1
         let generation = timelineObserverGeneration
         playbackObservers.replacePeriodicTimeObserver(

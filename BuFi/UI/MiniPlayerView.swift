@@ -303,12 +303,19 @@ private struct MiniPlayerProgressView: View {
                     .frame(width: proxy.size.width * resolvedProgress)
             }
         }
-        .animation(
-            motionEnabled && playbackControl.wantsPlayback
-                ? BuFiMotion.miniTimeline
-                : .none,
-            value: resolvedProgress
-        )
+        .animation(playbackAnimation, value: resolvedProgress)
+    }
+
+    /// Behind the mini player the timeline ticks once a second, so an eased
+    /// curve would lurch forward and then hold. Spreading each tick evenly
+    /// across the full second keeps the bar creeping at a constant rate.
+    private var playbackAnimation: Animation? {
+        guard motionEnabled,
+              playbackControl.wantsPlayback,
+              timeline.advancesContinuously else {
+            return nil
+        }
+        return BuFiMotion.progress(tick: timeline.refreshInterval)
     }
 
     private var progress: CGFloat {

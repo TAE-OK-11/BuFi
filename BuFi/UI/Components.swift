@@ -1006,6 +1006,8 @@ struct PlayerSeekBar: View {
     let range: ClosedRange<Double>
     let appearance: PlayerSeekBarAppearance
     var tint: Color = .white
+    var progressTick: TimeInterval = 0
+    var progressIsContinuous = false
     var onEditingChanged: (Bool) -> Void = { _ in }
 
     @ViewBuilder
@@ -1016,6 +1018,8 @@ struct PlayerSeekBar: View {
                     value: $value,
                     range: range,
                     tint: tint,
+                    progressTick: progressTick,
+                    progressIsContinuous: progressIsContinuous,
                     onEditingChanged: onEditingChanged
                 )
             } else {
@@ -1031,6 +1035,8 @@ struct PlayerSeekBar: View {
             value: $value,
             range: range,
             tint: tint,
+            progressTick: progressTick,
+            progressIsContinuous: progressIsContinuous,
             onEditingChanged: onEditingChanged
         )
     }
@@ -1041,20 +1047,38 @@ private struct NativeLiquidGlassSeekBar: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let tint: Color
+    let progressTick: TimeInterval
+    let progressIsContinuous: Bool
     let onEditingChanged: (Bool) -> Void
+
+    @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @State private var isEditing = false
 
     var body: some View {
         // Standard controls adopt Apple's Liquid Glass design automatically on
         // iOS 26, including system interaction, accessibility, and contrast.
         Slider(
             value: clampedValue,
-            in: range,
-            onEditingChanged: onEditingChanged
-        )
+            in: range
+        ) { editing in
+            isEditing = editing
+            onEditingChanged(editing)
+        }
         .tint(tint)
         .frame(height: 28)
+        .animation(playbackAnimation, value: clamped(value))
         .accessibilityLabel("재생 위치")
         .accessibilityValue("\(Int(normalizedValue * 100))%")
+    }
+
+    private var playbackAnimation: Animation? {
+        guard motionEnabled,
+              !isEditing,
+              progressIsContinuous,
+              progressTick > 0 else {
+            return nil
+        }
+        return BuFiMotion.progress(tick: progressTick)
     }
 
     private var clampedValue: Binding<Double> {
@@ -1083,6 +1107,11 @@ struct InteractiveSeekBar: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     var tint: Color = .white
+    /// Nominal seconds between position updates driving `value`, and whether
+    /// the latest update continued playback rather than jumping to a new
+    /// position. Together they let the fill travel at a constant rate.
+    var progressTick: TimeInterval = 0
+    var progressIsContinuous = false
     var onEditingChanged: (Bool) -> Void = { _ in }
 
     @Environment(\.buFiMotionEnabled) private var motionEnabled
@@ -1133,10 +1162,7 @@ struct InteractiveSeekBar: View {
                     }
             )
             .animation(motionEnabled ? BuFiMotion.scrub : .none, value: isEditing)
-            .animation(
-                motionEnabled && !isEditing ? BuFiMotion.timeline : .none,
-                value: fraction
-            )
+            .animation(playbackAnimation, value: fraction)
         }
         .frame(height: 28)
         .accessibilityElement()
@@ -1154,6 +1180,19 @@ struct InteractiveSeekBar: View {
             }
             onEditingChanged(false)
         }
+    }
+
+    /// Only playback that advanced by one tick is drawn as travel. Scrubbing
+    /// tracks the finger directly, and a seek or track change lands on its new
+    /// position without sweeping the bar across the gap.
+    private var playbackAnimation: Animation? {
+        guard motionEnabled,
+              !isEditing,
+              progressIsContinuous,
+              progressTick > 0 else {
+            return nil
+        }
+        return BuFiMotion.progress(tick: progressTick)
     }
 
     private func normalized(_ value: Double) -> CGFloat {

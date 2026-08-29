@@ -69,24 +69,35 @@ enum BuFiMotion {
     static let content = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let homeEntrance = Animation.spring(duration: 0.52, bounce: 0.032)
     static let homeRefresh = Animation.smooth(duration: 0.38, extraBounce: 0)
-    static let playerEntrance = Animation.spring(duration: 0.40, bounce: 0.034)
-    static let screenEntrance = Animation.spring(duration: 0.48, bounce: 0.028)
-    /// Fast horizontal text hand-off; smooth curve keeps motion fluid at short duration.
-    static let trackText = Animation.smooth(duration: 0.30, extraBounce: 0)
-    static let trackPage = Animation.spring(duration: 0.36, bounce: 0.048)
-    static let miniTrack = Animation.smooth(duration: 0.30, extraBounce: 0)
-    static let artworkTouch = Animation.spring(duration: 0.20, bounce: 0.10)
+    static let playerEntrance = Animation.smooth(duration: 0.20, extraBounce: 0)
+    /// One curve carries a whole track change. The artwork page, the header
+    /// text, the metadata text, and the mini player all hand off on this
+    /// timing, so a skip reads as a single movement rather than as several
+    /// independently timed pieces arriving one after another.
+    static let trackChange = Animation.smooth(duration: 0.34, extraBounce: 0)
+    static let trackText = BuFiMotion.trackChange
+    static let trackPage = BuFiMotion.trackChange
+    static let miniTrack = BuFiMotion.trackChange
     static let color = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let page = Animation.smooth(duration: 0.36, extraBounce: 0)
     static let miniLyricsScroll = Animation.smooth(duration: 0.48, extraBounce: 0)
-    static let miniLyrics = Animation.smooth(duration: 0.48, extraBounce: 0)
     static let lyricsCard = Animation.spring(duration: 0.40, bounce: 0.028)
     static let lyrics = Animation.smooth(duration: 0.38, extraBounce: 0)
     static let lyricsPanel = Animation.spring(duration: 0.36, bounce: 0.04)
-    /// Interpolates between periodic playback ticks (≈4 Hz) without stair-steps.
-    static let timeline = Animation.smooth(duration: 0.22, extraBounce: 0)
-    /// Mini-player bar: short enough to track audio, long enough to stay fluid.
-    static let miniTimeline = Animation.smooth(duration: 0.26, extraBounce: 0)
+    /// Rolls a clock digit without the overshoot a spring would add.
+    static let timeText = Animation.smooth(duration: 0.18, extraBounce: 0)
+
+    /// Carries a seek bar from one periodic playback tick to the next.
+    ///
+    /// Position arrives in discrete steps (4 Hz in the player, 1 Hz behind the
+    /// mini player), so the curve joining two steps decides whether playback
+    /// looks like motion or like a repeating twitch. An eased curve accelerates
+    /// and decelerates inside every step, which at 4 Hz reads as a stutter four
+    /// times a second. Spending exactly one tick moving linearly makes
+    /// consecutive steps join into constant, uninterrupted travel.
+    static func progress(tick: TimeInterval) -> Animation {
+        .linear(duration: max(0.05, min(tick, 2.0)))
+    }
 
     static func press(isPressed: Bool, tier: BuFiMotionTier = .full) -> Animation {
         let down = tier == .minimal
@@ -123,37 +134,29 @@ enum BuFiMotion {
         ).enablesAnimation
     }
 
-    static func trackText(for tier: BuFiMotionTier) -> Animation {
+    /// A track change is one movement, so every piece of it shares a timing at
+    /// any tier. Only the duration shortens as the tier drops.
+    static func trackChange(for tier: BuFiMotionTier) -> Animation {
         switch tier {
         case .off, .minimal:
             return .smooth(duration: 0.22, extraBounce: 0)
         case .reduced:
-            return .smooth(duration: 0.34, extraBounce: 0)
+            return .smooth(duration: 0.28, extraBounce: 0)
         case .full:
-            return trackText
+            return trackChange
         }
+    }
+
+    static func trackText(for tier: BuFiMotionTier) -> Animation {
+        trackChange(for: tier)
     }
 
     static func trackPage(for tier: BuFiMotionTier) -> Animation {
-        switch tier {
-        case .off, .minimal:
-            return .smooth(duration: 0.26, extraBounce: 0)
-        case .reduced:
-            return .smooth(duration: 0.40, extraBounce: 0)
-        case .full:
-            return trackPage
-        }
+        trackChange(for: tier)
     }
 
     static func miniTrack(for tier: BuFiMotionTier) -> Animation {
-        switch tier {
-        case .off, .minimal:
-            return .smooth(duration: 0.24, extraBounce: 0)
-        case .reduced:
-            return .smooth(duration: 0.36, extraBounce: 0)
-        case .full:
-            return miniTrack
-        }
+        trackChange(for: tier)
     }
 
     static func color(for tier: BuFiMotionTier) -> Animation {

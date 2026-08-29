@@ -1031,7 +1031,9 @@ private struct PlayerProgressView: View {
                 value: seekBinding(duration: duration),
                 range: 0...max(duration, 1),
                 appearance: appearance,
-                tint: tint
+                tint: tint,
+                progressTick: timeline.refreshInterval,
+                progressIsContinuous: timeline.advancesContinuously && !isScrubbing
             ) { editing in
                 if editing, !isScrubbing {
                     scrubValue = elapsed
@@ -1078,14 +1080,14 @@ private struct PlayerElapsedLabels: View {
             Text(elapsedText)
                 .contentTransition(.numericText(countsDown: false))
                 .animation(
-                    motionEnabled ? BuFiMotion.symbol : .none,
+                    motionEnabled ? BuFiMotion.timeText : .none,
                     value: elapsedText
                 )
             Spacer()
             Text(remainingText)
                 .contentTransition(.numericText(countsDown: true))
                 .animation(
-                    motionEnabled ? BuFiMotion.symbol : .none,
+                    motionEnabled ? BuFiMotion.timeText : .none,
                     value: remainingText
                 )
         }
