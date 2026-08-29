@@ -220,6 +220,10 @@ struct LibraryView: View {
                     .foregroundStyle(.white)
                     .frame(width: 30, height: 30)
                     .background(BuFiTheme.accent, in: Circle())
+                    // The badge stays 30pt; only what the finger has to hit
+                    // grows to the 44pt minimum.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("좋아요 취소")
@@ -254,7 +258,8 @@ struct LibraryView: View {
                 Image(systemName: "heart")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.secondary)
-                    .frame(width: 38, height: 38)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("좋아요 표시")
@@ -268,8 +273,11 @@ struct LibraryView: View {
     }
 
     private func librarySectionTitle(_ title: String) -> some View {
+        // Same size and weight as SectionTitle so the artist index headers read
+        // as the section headers they are, matching home and search.
         Text(LocalizedStringKey(title))
-            .font(.system(size: 21, weight: .bold))
+            .font(.system(size: 24, weight: .bold))
+            .tracking(-0.6)
             .padding(.horizontal, 18)
             .padding(.top, 6)
             .padding(.bottom, 8)

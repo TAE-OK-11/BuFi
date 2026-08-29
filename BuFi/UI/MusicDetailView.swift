@@ -194,6 +194,11 @@ struct MusicDetailView: View {
 
     private var artistHero: some View {
         let identity = MusicDetailArtworkIdentity(route: route, coverArtID: coverArt)
+        let stats = String(
+            format: String(localized: "%d개 발매작 · %d개 인기곡"),
+            max(artistAlbumCount, albums.count),
+            songs.count
+        )
         return ZStack(alignment: .bottomLeading) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
@@ -221,26 +226,22 @@ struct MusicDetailView: View {
                     .font(.system(size: 35, weight: .bold))
                     .tracking(-1.2)
                     .lineLimit(2)
+                    .minimumScaleFactor(0.82)
                     .contentTransition(.interpolate)
-                    .animation(
-                        motionEnabled ? BuFiMotion.content : .none,
-                        value: title
-                    )
-                Text(
-                    String(
-                        format: String(localized: "%d개 발매작 · %d개 인기곡"),
-                        max(artistAlbumCount, albums.count),
-                        songs.count
-                    )
-                )
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.82))
-                .contentTransition(.interpolate)
-                .animation(
-                    motionEnabled ? BuFiMotion.content : .none,
-                    value: artistAlbumCount
-                )
+                Text(stats)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .contentTransition(.interpolate)
             }
+            // Keyed on the rendered strings. Watching the album count alone
+            // meant the song half of the stats line snapped from zero to its
+            // real value while the album half interpolated.
+            .animation(
+                motionEnabled ? BuFiMotion.content : .none,
+                value: MusicDetailHeroText(title: title, detail: stats)
+            )
             .foregroundStyle(.white)
             .padding(.horizontal, 22)
             .padding(.bottom, 20)
@@ -276,24 +277,26 @@ struct MusicDetailView: View {
                     .tracking(-0.7)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
+                    .minimumScaleFactor(0.82)
                     .foregroundStyle(collectionTitleColor)
                     .contentTransition(.interpolate)
-                    .animation(
-                        motionEnabled ? BuFiMotion.content : .none,
-                        value: title
-                    )
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(collectionSubtitleColor)
                         .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.85)
                         .contentTransition(.interpolate)
                         .transition(.opacity.combined(with: .offset(y: 4)))
                 }
             }
+            // Canonical metadata usually replaces both lines at once, so one
+            // animation covers the pair rather than the title running its own
+            // curve underneath the container's.
             .animation(
                 motionEnabled ? BuFiMotion.content : .none,
-                value: subtitle
+                value: MusicDetailHeroText(title: title, detail: subtitle)
             )
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 18)
@@ -441,6 +444,8 @@ struct MusicDetailView: View {
         } label: {
             Label {
                 Text(hasCurrentArtistMix ? "Artist Mix에 추가됨" : "Artist Mix 만들기")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                     .contentTransition(.interpolate)
             } icon: {
                 Image(
@@ -455,8 +460,8 @@ struct MusicDetailView: View {
                 hasCurrentArtistMix ? Color.primary : BuFiTheme.accentSoft
             )
             .padding(.horizontal, 15)
-            .frame(height: 42)
-            .buFiSurface(cornerRadius: 21)
+            .frame(minHeight: 44)
+            .buFiSurface(cornerRadius: 22)
         }
         .buttonStyle(BuFiPressStyle())
         .animation(
@@ -625,6 +630,10 @@ struct MusicDetailView: View {
                 y: 4
             )
             .buFiGlass(cornerRadius: diameter / 2, interactive: true)
+            // The glass circle keeps its diameter; the tappable area around it
+            // grows to the 44pt minimum.
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
     }
 
     private var detailControlForeground: Color {
@@ -914,6 +923,12 @@ struct MusicDetailArtworkIdentity: Hashable, Sendable {
             "playlist-\(playlist.id)-\(coverArtID ?? "")"
         }
     }
+}
+
+/// The two hero labels animate as a pair, keyed on what is actually rendered.
+private struct MusicDetailHeroText: Equatable {
+    let title: String
+    let detail: String
 }
 
 private struct ArtistDetailPresentation: Sendable {

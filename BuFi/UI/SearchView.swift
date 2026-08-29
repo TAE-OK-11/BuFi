@@ -494,8 +494,8 @@ struct SearchView: View {
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .bold))
-                    .frame(width: 38, height: 38)
-                    .buFiGlass(cornerRadius: 19, interactive: true)
+                    .frame(width: 44, height: 44)
+                    .buFiGlass(cornerRadius: 22, interactive: true)
             }
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("검색 둘러보기로 돌아가기")

@@ -9,7 +9,7 @@ struct ServerLatencyBadge: View {
     @State private var measurementFailed = false
     @State private var measurementGeneration: UInt64 = 0
     @State private var measurementTask: Task<Void, Never>?
-    @State private var lastMeasuredAt: ContinuousClock.Instant?
+    @State private var lastProbedAt: ContinuousClock.Instant?
 
     var body: some View {
         Button {
@@ -31,6 +31,7 @@ struct ServerLatencyBadge: View {
                 }
                 .foregroundStyle(measurementFailed ? .secondary : BuFiTheme.accent)
             }
+            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
             .contentShape(Rectangle())
         }
         .buttonStyle(BuFiPressStyle())
@@ -103,11 +104,14 @@ struct ServerLatencyBadge: View {
         if !force, isMeasuring {
             return
         }
+        // The throttle counts attempts, not successes. Anchoring it on success
+        // alone meant a server that could not be reached was probed again on
+        // every return to the foreground, so the badge flipped between its
+        // failed and measuring states each time the app came back. Tapping the
+        // badge still forces an immediate retry.
         if !force,
-           latencyMilliseconds != nil,
-           !measurementFailed,
-           let lastMeasuredAt,
-           lastMeasuredAt.duration(to: now) < .seconds(60) {
+           let lastProbedAt,
+           lastProbedAt.duration(to: now) < .seconds(60) {
             return
         }
 
@@ -124,7 +128,7 @@ struct ServerLatencyBadge: View {
                       measurementGeneration == generation else { return }
                 latencyMilliseconds = latency
                 measurementFailed = false
-                lastMeasuredAt = ContinuousClock().now
+                lastProbedAt = ContinuousClock().now
                 isMeasuring = false
                 measurementTask = nil
             } catch is CancellationError {
@@ -137,7 +141,7 @@ struct ServerLatencyBadge: View {
                 // Preserve the last known-good number. A single transient probe
                 // failure should not erase useful state or make Settings flicker.
                 measurementFailed = true
-                lastMeasuredAt = nil
+                lastProbedAt = ContinuousClock().now
                 isMeasuring = false
                 measurementTask = nil
             }
@@ -150,7 +154,7 @@ struct ServerLatencyBadge: View {
         measurementTask = nil
         latencyMilliseconds = nil
         measurementFailed = false
-        lastMeasuredAt = nil
+        lastProbedAt = nil
         isMeasuring = false
     }
 

@@ -296,7 +296,7 @@ private struct PlaybackSettingsSection: View {
                     settingLabel("AirPlay", icon: "airplayaudio")
                     Spacer()
                     AirPlayButton()
-                        .frame(width: 42, height: 34)
+                        .frame(width: 44, height: 44)
                 }
             }
         }
@@ -757,8 +757,9 @@ private struct SettingsActionButtonStyle: ButtonStyle {
                 isEnabled ? BuFiTheme.accent : Color.secondary.opacity(0.28),
                 in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
-            .scaleEffect(configuration.isPressed && motionEnabled ? 0.985 : 1)
-            .brightness(configuration.isPressed ? -0.012 : 0)
+            // Matches BuFiPressStyle so a filled action button depresses by the
+            // same amount as every other control in the app.
+            .scaleEffect(configuration.isPressed && motionEnabled ? 0.982 : 1)
             .opacity(configuration.isPressed ? 0.96 : 1)
             .animation(
                 motionEnabled
