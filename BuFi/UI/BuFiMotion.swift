@@ -68,7 +68,6 @@ enum BuFiMotion {
     static let reveal = Animation.smooth(duration: 0.32, extraBounce: 0)
     static let content = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let homeEntrance = Animation.spring(duration: 0.52, bounce: 0.032)
-    static let homeRefresh = Animation.smooth(duration: 0.38, extraBounce: 0)
     static let playerEntrance = Animation.smooth(duration: 0.20, extraBounce: 0)
     /// One curve carries a whole track change. The artwork page, the header
     /// text, the metadata text, and the mini player all hand off on this

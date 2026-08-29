@@ -423,9 +423,11 @@ struct HomeView: View {
         guard !Task.isCancelled,
               revision == library.revision,
               selectedArtistsStorage == selectedArtistMixes else { return }
-        withAnimation(motionEnabled ? BuFiMotion.homeRefresh : .none) {
-            presentation = next
-        }
+        // The section list owns its own insertion and removal animation. An
+        // explicit animation here would additionally hand that curve to every
+        // row, cover, and label inside the sections that merely got new data,
+        // so a background refresh would set the whole page sliding.
+        presentation = next
         hasLoadedPresentation = true
     }
 

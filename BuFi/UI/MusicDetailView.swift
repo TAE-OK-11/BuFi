@@ -41,14 +41,13 @@ private struct MusicDetailFavoriteButtonContent: View {
         Button {
             Task { await action() }
         } label: {
-            Image(systemName: isFavorite ? "checkmark" : "plus")
+            favoriteIcon
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(
                     colorScheme == .dark
                         ? Color.white.opacity(0.92)
                         : Color.black.opacity(0.78)
                 )
-                .contentTransition(.symbolEffect(.replace))
                 .frame(width: 42, height: 42)
                 .shadow(
                     color: .black.opacity(colorScheme == .dark ? 0.12 : 0.045),
@@ -65,6 +64,16 @@ private struct MusicDetailFavoriteButtonContent: View {
         .accessibilityLabel(
             isFavorite ? "라이브러리에서 제거" : "라이브러리에 추가"
         )
+    }
+
+    @ViewBuilder
+    private var favoriteIcon: some View {
+        let image = Image(systemName: isFavorite ? "checkmark" : "plus")
+        if motionEnabled {
+            image.contentTransition(.symbolEffect(.replace))
+        } else {
+            image
+        }
     }
 }
 
@@ -147,10 +156,10 @@ struct MusicDetailView: View {
                     }
                 }
             }
-            .animation(
-                motionEnabled ? BuFiMotion.content : .none,
-                value: isLoading
-            )
+            // `load()` already wraps the flip out of the loading state in an
+            // explicit animation. Repeating it here would also hand that curve
+            // to every section mounting underneath, so each one would fade in
+            // twice: once under this animation and once under its own entrance.
             .buFiMiniPlayerContentClearance()
         }
         .background(background)
