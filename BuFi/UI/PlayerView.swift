@@ -429,14 +429,8 @@ struct PlayerView: View {
                         .frame(width: edge, height: edge)
                         // The cover deliberately does not react to touch. A
                         // press effect here fires on the first finger-down of
-                        // every swipe and then cancels, so each page change
-                        // began with the artwork flinching.
-                        .clipShape(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        )
-                        .contentShape(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        )
+                        // every swipe and then cancels, so every page change
+                        // used to begin with the artwork flinching.
                         .id(page.id)
                     }
                 }

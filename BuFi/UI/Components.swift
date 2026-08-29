@@ -1058,11 +1058,12 @@ private struct NativeLiquidGlassSeekBar: View {
         // iOS 26, including system interaction, accessibility, and contrast.
         Slider(
             value: clampedValue,
-            in: range
-        ) { editing in
-            isEditing = editing
-            onEditingChanged(editing)
-        }
+            in: range,
+            onEditingChanged: { editing in
+                isEditing = editing
+                onEditingChanged(editing)
+            }
+        )
         .tint(tint)
         .frame(height: 28)
         .animation(playbackAnimation, value: clamped(value))
