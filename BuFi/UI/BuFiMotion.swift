@@ -246,24 +246,22 @@ enum BuFiMotion {
 }
 
 enum BuFiTransition {
+    // Sub-percent scale terms read as no movement at all, yet each one puts a
+    // transform on content that is already crossfading. These transitions
+    // carry only the fade and the travel that are actually visible.
     static var scene: AnyTransition {
-        .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.994)),
-            removal: .opacity
-        )
+        .asymmetric(insertion: .opacity, removal: .opacity)
     }
 
     static var section: AnyTransition {
         .asymmetric(
-            insertion: .opacity
-                .combined(with: .offset(y: 8))
-                .combined(with: .scale(scale: 0.997, anchor: .top)),
+            insertion: .opacity.combined(with: .offset(y: 8)),
             removal: .opacity.combined(with: .offset(y: -3))
         )
     }
 
     static var artworkReveal: AnyTransition {
-        .opacity.combined(with: .scale(scale: 0.994))
+        .opacity
     }
 
     static var miniPlayer: AnyTransition {
@@ -298,17 +296,12 @@ private struct BuFiEntranceMotionModifier: ViewModifier {
 
     let delay: TimeInterval
     let offset: CGFloat
-    let initialScale: CGFloat
 
     func body(content: Content) -> some View {
         let enablesMotion = motionTier.enablesAnimation
         content
             .opacity(hasAppeared || !enablesMotion ? 1 : 0)
             .offset(y: hasAppeared || !enablesMotion ? 0 : offset)
-            .scaleEffect(
-                hasAppeared || !enablesMotion ? 1 : initialScale,
-                anchor: .top
-            )
             .animation(
                 enablesMotion
                     ? BuFiMotion.homeEntrance(for: motionTier).delay(delay)
@@ -332,31 +325,13 @@ private struct BuFiVerticalSectionMotionModifier: ViewModifier {
     let delay: TimeInterval
 
     func body(content: Content) -> some View {
-        content
-            .modifier(
-                BuFiEntranceMotionModifier(
-                    delay: delay,
-                    offset: 6,
-                    initialScale: 0.997
-                )
-            )
-            .modifier(BuFiVerticalScrollTransitionModifier())
-    }
-}
-
-private struct BuFiVerticalScrollTransitionModifier: ViewModifier {
-    @Environment(\.buFiMotionTier) private var motionTier
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if motionTier.enablesScrollTransition {
-            content.scrollTransition(.interactive, axis: .vertical) { view, phase in
-                view
-                    .opacity(phase.isIdentity ? 1 : 0.97)
-            }
-        } else {
-            content
-        }
+        // Sections fade up once as they mount. They deliberately carry no
+        // scroll transition: dimming every section to 0.97 while a finger is
+        // on the screen is too slight to read as an effect, yet it runs a
+        // transition body for each one on every frame of the scroll.
+        content.modifier(
+            BuFiEntranceMotionModifier(delay: delay, offset: 6)
+        )
     }
 }
 
@@ -367,14 +342,9 @@ extension View {
 
     func buFiEntranceMotion(
         delay: TimeInterval = 0,
-        offset: CGFloat = 6,
-        initialScale: CGFloat = 0.997
+        offset: CGFloat = 6
     ) -> some View {
-        modifier(BuFiEntranceMotionModifier(
-            delay: delay,
-            offset: offset,
-            initialScale: initialScale
-        ))
+        modifier(BuFiEntranceMotionModifier(delay: delay, offset: offset))
     }
 
     func buFiVerticalSectionMotion(delay: TimeInterval = 0) -> some View {

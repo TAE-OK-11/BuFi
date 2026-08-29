@@ -227,8 +227,10 @@ struct RootView: View {
     private func tabPage<Content: View>(_ content: Content, tag: AppTab) -> some View {
         let activeProgress = tab == tag && effectiveMotion ? pageProgress : 1
         return content
+            // A 0.4% scale is invisible but transforms the whole page tree for
+            // the length of the switch, so the arrival is only a fade and a
+            // short lift.
             .opacity(activeProgress)
-            .scaleEffect(0.996 + (0.004 * activeProgress))
             .offset(y: effectiveMotion ? CGFloat(1 - activeProgress) * 5 : 0)
             .safeAreaInset(edge: .bottom, spacing: 10) {
                 if currentPlayback.song != nil {

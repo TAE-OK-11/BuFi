@@ -218,7 +218,6 @@ struct BuFiPressStyle: ButtonStyle {
         let enablesPressScale = motionEnabled && motionTier != .minimal
         configuration.label
             .scaleEffect(configuration.isPressed && enablesPressScale ? 0.982 : 1)
-            .brightness(configuration.isPressed ? -0.008 : 0)
             .opacity(configuration.isPressed ? 0.97 : 1)
             .animation(
                 motionEnabled

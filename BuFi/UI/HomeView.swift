@@ -53,7 +53,6 @@ struct HomeView: View {
                                     : .none,
                                 value: hasRevealedContent
                             )
-                            .modifier(HomeSectionScrollTransitionModifier())
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity
                             )
@@ -726,21 +725,6 @@ private enum HomeFilter: Int, CaseIterable, Identifiable {
         case .all: "전체"
         case .playlists: "플레이리스트"
         case .personalized: "나만의 플레이리스트"
-        }
-    }
-}
-
-private struct HomeSectionScrollTransitionModifier: ViewModifier {
-    @Environment(\.buFiMotionTier) private var motionTier
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if motionTier.enablesScrollTransition {
-            content.scrollTransition(.interactive, axis: .vertical) { view, phase in
-                view.opacity(phase.isIdentity ? 1 : 0.97)
-            }
-        } else {
-            content
         }
     }
 }

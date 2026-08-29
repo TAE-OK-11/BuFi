@@ -55,7 +55,7 @@ struct MiniPlayerView: View {
                                     }
                                 )
                                 .id(artworkIdentity)
-                                .transition(trackArtworkTransition)
+                                .transition(trackTransition)
                             }
                             .frame(width: 50, height: 50)
                             .clipped()
@@ -73,7 +73,7 @@ struct MiniPlayerView: View {
                                         .minimumScaleFactor(0.76)
                                 }
                                 .id(item.id)
-                                .transition(trackTextTransition)
+                                .transition(trackTransition)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
@@ -148,23 +148,15 @@ struct MiniPlayerView: View {
         }
     }
 
-    private var trackTextTransition: AnyTransition {
+    /// The artwork and the labels leave and arrive together, over the same
+    /// distance, so the bar hands off as one strip rather than as three pieces
+    /// that each drift by a slightly different amount.
+    private var trackTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
+        let distance: CGFloat = 10 * transitionDirection
         return .asymmetric(
-            insertion: .offset(x: 10 * transitionDirection).combined(with: .opacity),
-            removal: .offset(x: -8 * transitionDirection).combined(with: .opacity)
-        )
-    }
-
-    private var trackArtworkTransition: AnyTransition {
-        guard motionEnabled else { return .opacity }
-        return .asymmetric(
-            insertion: .offset(x: 10 * transitionDirection)
-                .combined(with: .scale(scale: 0.988))
-                .combined(with: .opacity),
-            removal: .offset(x: -8 * transitionDirection)
-                .combined(with: .scale(scale: 0.994))
-                .combined(with: .opacity)
+            insertion: .offset(x: distance).combined(with: .opacity),
+            removal: .offset(x: -distance).combined(with: .opacity)
         )
     }
 

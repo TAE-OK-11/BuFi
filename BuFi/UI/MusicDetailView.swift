@@ -98,7 +98,7 @@ struct MusicDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
-                    .buFiEntranceMotion(offset: 10, initialScale: 0.994)
+                    .buFiEntranceMotion(offset: 10)
                 if isArtist, !isLoading {
                     artistMixControl
                         .buFiVerticalSectionMotion(delay: 0.025)
