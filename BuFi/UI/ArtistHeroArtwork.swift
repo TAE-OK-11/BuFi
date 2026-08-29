@@ -12,6 +12,7 @@ struct ArtistHeroArtwork: View {
     @Environment(\.displayScale) private var displayScale
 
     let coverArt: String?
+    var artistName: String? = nil
     var cacheRevision: String? = nil
     var onPalette: ((ArtworkPalette) -> Void)?
 
@@ -66,7 +67,7 @@ struct ArtistHeroArtwork: View {
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: artworkRequestIdentity) {
+        .task(id: artworkLoadTaskID) {
             await loadImage(requestID: artworkRequestIdentity)
         }
         .accessibilityHidden(true)
@@ -81,26 +82,44 @@ struct ArtistHeroArtwork: View {
             return
         }
 
-        // OpenSubsonic may include third-party artist-image URLs. Fetching those
-        // directly would disclose the user's IP address and viewing time to an
-        // unrelated image host, so artist art is loaded only through the user's
-        // authenticated OpenSubsonic server.
-        guard let sourceURL = await model.artworkURL(
-                  id: normalizedCoverArt,
-                  size: ArtworkRequestSizing.serverRequestSize(
-                      for: requestedPixelSize
-                  )
-              ),
-              !Task.isCancelled,
-              artworkRequestIdentity == requestID else {
-            guard !Task.isCancelled,
-                  artworkRequestIdentity == requestID else { return }
-            onPalette?(.fallback)
+        if let sourceURL = await model.artworkURL(
+            id: normalizedCoverArt,
+            size: ArtworkRequestSizing.serverRequestSize(
+                for: requestedPixelSize
+            )
+        ),
+           await storeLoadedImage(
+               from: sourceURL,
+               requestID: requestID,
+               revision: cacheRevision
+           ) {
             return
         }
+
+        if let artistName,
+           let sourceURL = await model.artistImageURL(name: artistName),
+           await storeLoadedImage(
+               from: sourceURL,
+               requestID: requestID,
+               revision: nil
+           ) {
+            return
+        }
+
+        guard !Task.isCancelled,
+              artworkRequestIdentity == requestID else { return }
+        onPalette?(.fallback)
+    }
+
+    @MainActor
+    private func storeLoadedImage(
+        from sourceURL: URL,
+        requestID: ArtworkLoadRequestIdentity,
+        revision: String?
+    ) async -> Bool {
         let coverURL = ArtworkStore.cacheURL(
             for: sourceURL,
-            revision: cacheRevision
+            revision: revision
         )
         guard let loaded = try? await ArtworkStore.shared.image(
                   for: coverURL,
@@ -108,24 +127,27 @@ struct ArtistHeroArtwork: View {
               ),
               !Task.isCancelled,
               artworkRequestIdentity == requestID else {
-            guard !Task.isCancelled,
-                  artworkRequestIdentity == requestID else { return }
-            onPalette?(.fallback)
-            return
+            return false
         }
 
         loadedArtwork = LoadedArtwork(
             requestIdentity: requestID,
             image: loaded.value
         )
-        guard let onPalette else { return }
+        guard let onPalette else { return true }
         let palette = await ArtworkStore.shared.palette(
             for: coverURL,
             image: loaded
         )
         guard !Task.isCancelled,
-              artworkRequestIdentity == requestID else { return }
+              artworkRequestIdentity == requestID else { return false }
         onPalette(palette)
+        return true
+    }
+
+    private var artworkLoadTaskID: String {
+        let artistKey = artistName.map(ArtistPersonaResolver.normalized) ?? ""
+        return "\(artworkRequestIdentity)-\(artistKey)"
     }
 
     private var artworkRequestIdentity: ArtworkLoadRequestIdentity {

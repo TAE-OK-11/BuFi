@@ -197,7 +197,8 @@ struct LibraryView: View {
                     ArtworkView(
                         coverArt: artist.coverArt,
                         size: 92,
-                        cornerRadius: 46
+                        cornerRadius: 46,
+                        artistName: artist.name
                     )
                     .frame(width: 92, height: 92)
                     Text(artist.name)
@@ -233,7 +234,8 @@ struct LibraryView: View {
                     ArtworkView(
                         coverArt: artist.coverArt,
                         size: 56,
-                        cornerRadius: 28
+                        cornerRadius: 28,
+                        artistName: artist.name
                     )
                     .frame(width: 56, height: 56)
                     Text(artist.name)

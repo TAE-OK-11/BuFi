@@ -188,6 +188,7 @@ struct MusicDetailView: View {
         return ZStack(alignment: .bottomLeading) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
+                artistName: currentArtistName,
                 cacheRevision: identity.cacheRevision,
                 onPalette: { nextPalette in
                     receivePalette(nextPalette, for: identity)
