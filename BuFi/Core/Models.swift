@@ -494,7 +494,9 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
         playlistAffinitySongs = other.playlistAffinitySongs
         serverRecommendedSongs = other.serverRecommendedSongs
         recommendedSongs = other.recommendedSongs
-        mostPlayedSongs = other.mostPlayedSongs
+        if !other.mostPlayedSongs.isEmpty {
+            mostPlayedSongs = other.mostPlayedSongs
+        }
         recommendedArtists = other.recommendedArtists
     }
 

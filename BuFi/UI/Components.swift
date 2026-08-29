@@ -389,6 +389,7 @@ struct ArtworkView: View {
     let coverArt: String?
     let size: CGFloat
     let cornerRadius: CGFloat
+    var artistName: String? = nil
     var minimumPixelSize: CGFloat = 0
     var cacheRevision: String? = nil
     var onPalette: ((ArtworkPalette) -> Void)?
@@ -423,55 +424,89 @@ struct ArtworkView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: artworkRequestIdentity) {
-            let requestID = artworkRequestIdentity
-            guard UIRenderPolicy.shouldReloadArtwork(
-                loadedIdentity: loadedArtwork?.requestIdentity,
-                requestedIdentity: requestID
-            ) else {
-                return
-            }
-            if let sourceURL = await model.artworkURL(
-                id: normalizedCoverArt,
-                size: ArtworkRequestSizing.serverRequestSize(
-                    for: requestedPixelSize
-                )
-            ) {
-                guard !Task.isCancelled else { return }
-                let coverURL = ArtworkStore.cacheURL(
-                    for: sourceURL,
-                    revision: cacheRevision
-                )
-                guard let loaded = try? await ArtworkStore.shared.image(
-                    for: coverURL,
-                    pixelSize: requestedPixelSize
-                ) else {
-                    guard !Task.isCancelled,
-                          artworkRequestIdentity == requestID else { return }
-                    onPalette?(.fallback)
-                    return
-                }
-                guard !Task.isCancelled,
-                      artworkRequestIdentity == requestID else { return }
-                loadedArtwork = LoadedArtwork(
-                    requestIdentity: requestID,
-                    image: loaded.value
-                )
-                guard let onPalette else { return }
-                let palette = await ArtworkStore.shared.palette(
-                    for: coverURL,
-                    image: loaded
-                )
-                guard !Task.isCancelled,
-                      artworkRequestIdentity == requestID else { return }
-                onPalette(palette)
-                return
-            }
-            guard !Task.isCancelled,
-                  artworkRequestIdentity == requestID else { return }
-            onPalette?(.fallback)
+        .task(id: artworkLoadTaskID) {
+            await loadImage()
         }
         .accessibilityHidden(true)
+    }
+
+    @MainActor
+    private func loadImage() async {
+        let requestID = artworkRequestIdentity
+        guard UIRenderPolicy.shouldReloadArtwork(
+            loadedIdentity: loadedArtwork?.requestIdentity,
+            requestedIdentity: requestID
+        ) else {
+            return
+        }
+
+        if let normalizedCoverArt,
+           let sourceURL = await model.artworkURL(
+               id: normalizedCoverArt,
+               size: ArtworkRequestSizing.serverRequestSize(
+                   for: requestedPixelSize
+               )
+           ),
+           await applyLoadedImage(
+               from: sourceURL,
+               requestID: requestID,
+               revision: cacheRevision
+           ) {
+            return
+        }
+
+        if let artistName,
+           let sourceURL = await model.artistImageURL(name: artistName),
+           await applyLoadedImage(
+               from: sourceURL,
+               requestID: requestID,
+               revision: nil
+           ) {
+            return
+        }
+
+        guard !Task.isCancelled,
+              artworkRequestIdentity == requestID else { return }
+        onPalette?(.fallback)
+    }
+
+    @MainActor
+    private func applyLoadedImage(
+        from sourceURL: URL,
+        requestID: ArtworkLoadRequestIdentity,
+        revision: String?
+    ) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let coverURL = ArtworkStore.cacheURL(
+            for: sourceURL,
+            revision: revision
+        )
+        guard let loaded = try? await ArtworkStore.shared.image(
+            for: coverURL,
+            pixelSize: requestedPixelSize
+        ) else {
+            return false
+        }
+        guard !Task.isCancelled,
+              artworkRequestIdentity == requestID else { return false }
+        loadedArtwork = LoadedArtwork(
+            requestIdentity: requestID,
+            image: loaded.value
+        )
+        guard let onPalette else { return true }
+        let palette = await ArtworkStore.shared.palette(
+            for: coverURL,
+            image: loaded
+        )
+        guard !Task.isCancelled,
+              artworkRequestIdentity == requestID else { return false }
+        onPalette(palette)
+        return true
+    }
+
+    private var artworkLoadTaskID: String {
+        let artistKey = artistName.map(ArtistPersonaResolver.normalized) ?? ""
+        return "\(artworkRequestIdentity)-\(artistKey)"
     }
 
     private var artworkRequestIdentity: ArtworkLoadRequestIdentity {

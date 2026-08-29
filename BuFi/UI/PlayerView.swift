@@ -722,17 +722,17 @@ struct PlayerView: View {
 
     private var trackTextTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
-        let distance: CGFloat = 10
+        let distance: CGFloat = 8
         return .asymmetric(
             insertion: .offset(
                 x: transitionDirection > 0 ? distance : -distance
             )
-            .combined(with: .scale(scale: 0.995))
+            .combined(with: .scale(scale: 0.997))
             .combined(with: .opacity),
             removal: .offset(
                 x: transitionDirection > 0 ? -distance : distance
             )
-            .combined(with: .scale(scale: 0.998))
+            .combined(with: .scale(scale: 0.999))
             .combined(with: .opacity)
         )
     }

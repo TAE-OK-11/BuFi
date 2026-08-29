@@ -192,7 +192,7 @@ struct HomeView: View {
             .buttonStyle(BuFiPressStyle())
 
             NavigationLink(
-                value: presentation.mostPlayedSongsMix
+                value: mostPlayedShortcutMix
             ) {
                 BuFiShortcutCard(
                     title: "자주 들은 곡",
@@ -302,7 +302,8 @@ struct HomeView: View {
                                     ArtworkView(
                                         coverArt: artist.coverArt,
                                         size: 132,
-                                        cornerRadius: 66
+                                        cornerRadius: 66,
+                                        artistName: artist.name
                                     )
                                     .frame(width: 132, height: 132)
                                     Text(artist.name)
@@ -386,6 +387,15 @@ struct HomeView: View {
                 }
             }
         }
+    }
+
+    private var mostPlayedShortcutMix: PersonalizedMix {
+        if !presentation.mostPlayedSongsMix.songs.isEmpty {
+            return presentation.mostPlayedSongsMix
+        }
+        return PersonalizedMixBuilder.mostPlayedSongs(
+            library.snapshot.mostPlayedSongs
+        )
     }
 
     private var presentationTaskIdentity: HomePresentationTaskIdentity {

@@ -287,7 +287,8 @@ struct SearchView: View {
             ArtworkView(
                 coverArt: artist.coverArt,
                 size: 58,
-                cornerRadius: 29
+                cornerRadius: 29,
+                artistName: artist.name
             )
             .frame(width: 58, height: 58)
             Text(artist.name)
@@ -369,7 +370,8 @@ struct SearchView: View {
                                 ArtworkView(
                                     coverArt: artist.coverArt,
                                     size: 120,
-                                    cornerRadius: 60
+                                    cornerRadius: 60,
+                                    artistName: artist.name
                                 )
                                 .frame(width: 120, height: 120)
                                 Text(artist.name)

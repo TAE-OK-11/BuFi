@@ -1388,6 +1388,10 @@ final class AppModel: ObservableObject {
         return url
     }
 
+    func artistImageURL(name: String) async -> URL? {
+        await ArtistImageClient.shared.imageURL(for: name)
+    }
+
     var artworkContextID: ArtworkContextIdentity {
         ArtworkContextIdentity(
             sessionGeneration: sessionGeneration,
@@ -2228,12 +2232,8 @@ final class AppModel: ObservableObject {
             offlineSongIDsRequest
         )
         var value = snapshot
-        if !value.mostPlayedSongs.isEmpty,
-           !value.recentlyPlayedAlbums.isEmpty {
-            value.offlineBackupSongs = history.recentlyPlayedSongs.filter {
-                offlineSongIDs.contains($0.id)
-            }
-            return value
+        value.offlineBackupSongs = history.recentlyPlayedSongs.filter {
+            offlineSongIDs.contains($0.id)
         }
         if value.mostPlayedSongs.isEmpty {
             value.mostPlayedSongs = history.mostPlayedSongs
@@ -2273,9 +2273,6 @@ final class AppModel: ObservableObject {
         }
         if value.recentlyPlayedAlbums.isEmpty {
             value.recentlyPlayedAlbums = localRecentAlbums
-        }
-        value.offlineBackupSongs = history.recentlyPlayedSongs.filter {
-            offlineSongIDs.contains($0.id)
         }
         return value
     }
@@ -2825,7 +2822,9 @@ final class AppModel: ObservableObject {
                 return
             }
 
-            let snapshot = cachedSnapshot ?? .empty
+            let snapshot = await mergingListeningHistory(
+                into: cachedSnapshot ?? .empty
+            )
             reconcileFavoriteStates(
                 in: snapshot,
                 authoritative: false

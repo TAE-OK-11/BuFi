@@ -7,11 +7,12 @@ struct PersonalizedMixArtwork: View {
 
     var body: some View {
         ZStack {
-            if mix.kind == .artist, let coverArt = mix.artworkCoverArt {
+            if mix.kind == .artist {
                 ArtworkView(
-                    coverArt: coverArt,
+                    coverArt: mix.artworkCoverArt,
                     size: size,
-                    cornerRadius: 0
+                    cornerRadius: 0,
+                    artistName: mix.title
                 )
                 .frame(width: size, height: size)
 

@@ -149,19 +149,19 @@ struct MiniPlayerView: View {
     private var trackTextTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(x: 12 * transitionDirection).combined(with: .opacity),
-            removal: .offset(x: -9 * transitionDirection).combined(with: .opacity)
+            insertion: .offset(x: 10 * transitionDirection).combined(with: .opacity),
+            removal: .offset(x: -8 * transitionDirection).combined(with: .opacity)
         )
     }
 
     private var trackArtworkTransition: AnyTransition {
         guard motionEnabled else { return .opacity }
         return .asymmetric(
-            insertion: .offset(x: 12 * transitionDirection)
-                .combined(with: .scale(scale: 0.985))
+            insertion: .offset(x: 10 * transitionDirection)
+                .combined(with: .scale(scale: 0.988))
                 .combined(with: .opacity),
-            removal: .offset(x: -9 * transitionDirection)
-                .combined(with: .scale(scale: 0.992))
+            removal: .offset(x: -8 * transitionDirection)
+                .combined(with: .scale(scale: 0.994))
                 .combined(with: .opacity)
         )
     }
