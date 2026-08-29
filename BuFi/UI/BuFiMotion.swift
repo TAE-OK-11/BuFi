@@ -169,7 +169,7 @@ enum BuFiMotion {
     static func content(for tier: BuFiMotionTier) -> Animation {
         switch tier {
         case .off:
-            return .none
+            return .linear(duration: 0)
         case .minimal:
             return .smooth(duration: 0.20, extraBounce: 0)
         case .reduced:
@@ -182,7 +182,7 @@ enum BuFiMotion {
     static func homeEntrance(for tier: BuFiMotionTier) -> Animation {
         switch tier {
         case .off:
-            return .none
+            return .linear(duration: 0)
         case .minimal:
             return .smooth(duration: 0.24, extraBounce: 0)
         case .reduced:
@@ -195,7 +195,7 @@ enum BuFiMotion {
     static func page(for tier: BuFiMotionTier) -> Animation {
         switch tier {
         case .off:
-            return .none
+            return .linear(duration: 0)
         case .minimal:
             return .smooth(duration: 0.20, extraBounce: 0)
         case .reduced:
@@ -208,7 +208,7 @@ enum BuFiMotion {
     static func fade(for tier: BuFiMotionTier) -> Animation {
         switch tier {
         case .off:
-            return .none
+            return .linear(duration: 0)
         case .minimal:
             return .smooth(duration: 0.18, extraBounce: 0)
         case .reduced:

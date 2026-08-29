@@ -290,7 +290,8 @@ struct PlayerView: View {
             palette: palette,
             playerAppearance: resolvedPlayerAppearance,
             appearance: resolvedBackgroundAppearance,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            useDrawingGroup: motionTier.enablesDrawingGroup
         )
         .equatable()
         .ignoresSafeArea()
@@ -1722,8 +1723,7 @@ private struct PlayerPaletteBackground: View, Equatable {
     let playerAppearance: PlayerAppearance
     let appearance: PlayerBackgroundAppearance
     let colorScheme: ColorScheme
-
-    @Environment(\.buFiMotionTier) private var motionTier
+    let useDrawingGroup: Bool
 
     @ViewBuilder
     var body: some View {
@@ -1746,7 +1746,7 @@ private struct PlayerPaletteBackground: View, Equatable {
                 }
             }
         }
-        if motionTier.enablesDrawingGroup {
+        if useDrawingGroup {
             content.drawingGroup(opaque: false, colorMode: .linear)
         } else {
             content

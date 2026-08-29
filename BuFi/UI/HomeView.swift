@@ -20,8 +20,6 @@ struct HomeView: View {
 
     var body: some View {
         let sections = visibleSections
-        let enablesMotion = motionEnabled
-        let revealsContent = hasRevealedContent
 
         NavigationStack {
             ScrollView {
