@@ -72,47 +72,6 @@ private struct PlayerBackgroundAnimationIdentity: Equatable {
     let backgroundAppearance: PlayerBackgroundAppearance
 }
 
-private struct PlayerArtworkPressEffect: ViewModifier {
-    @GestureState private var isPressed = false
-
-    let enabled: Bool
-    let cornerRadius: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .scaleEffect(isPressed && enabled ? 1.012 : 1)
-            .brightness(isPressed && enabled ? 0.018 : 0)
-            .animation(
-                enabled ? BuFiMotion.artworkTouch : .none,
-                value: isPressed
-            )
-            .clipShape(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-            .contentShape(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.01, maximumDistance: 12)
-                    .updating($isPressed) { pressed, state, _ in
-                        state = pressed
-                    }
-            )
-    }
-}
-
-private extension View {
-    func playerArtworkPressEffect(
-        enabled: Bool,
-        cornerRadius: CGFloat
-    ) -> some View {
-        modifier(PlayerArtworkPressEffect(
-            enabled: enabled,
-            cornerRadius: cornerRadius
-        ))
-    }
-}
-
 struct PlayerView: View {
     @EnvironmentObject private var playback: PlaybackState
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
@@ -175,16 +134,17 @@ struct PlayerView: View {
                         .padding(.horizontal, 22)
                         .padding(.bottom, max(proxy.safeAreaInsets.bottom, 18) + 10)
                     }
+                    // Held back for the one layout pass the cover pager needs to
+                    // reach the playing track, so the artwork is never seen
+                    // starting at the head of the queue and jumping. A plain
+                    // fade is all that hides it: adding a scale or an offset
+                    // would make the content settle a second time after the
+                    // presentation had already finished sliding it into place.
                     .opacity(
                         playerPresentation.showFullLyrics
                             ? 0
                             : (hasRevealedPlayerContent ? 1 : 0)
                     )
-                    .scaleEffect(
-                        hasRevealedPlayerContent ? 1 : 0.997,
-                        anchor: .center
-                    )
-                    .offset(y: hasRevealedPlayerContent ? 0 : 5)
                     .animation(
                         allowsMotion ? BuFiMotion.playerEntrance : .none,
                         value: hasRevealedPlayerContent
@@ -427,7 +387,6 @@ struct PlayerView: View {
         let currentPageIndex = pages.first { $0.id == artworkPage }?.queueIndex
             ?? pages.first { $0.id.queueEntryID == item.queueEntryID }?.queueIndex
             ?? 0
-        let animatesTransition = allowsMotion
         let pagerPosition = Binding<PlayerArtworkPageID?>(
             get: { artworkPage },
             set: { page in
@@ -468,20 +427,11 @@ struct PlayerView: View {
                                 : nil
                         )
                         .frame(width: edge, height: edge)
-                        .playerArtworkPressEffect(
-                            enabled: allowsMotion,
-                            cornerRadius: 14
-                        )
+                        // The cover deliberately does not react to touch. A
+                        // press effect here fires on the first finger-down of
+                        // every swipe and then cancels, so every page change
+                        // used to begin with the artwork flinching.
                         .id(page.id)
-                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                            content
-                                .opacity(
-                                    phase.isIdentity
-                                        || !animatesTransition
-                                        || !motionTier.enablesScrollTransition
-                                        ? 1 : 0.99
-                                )
-                        }
                     }
                 }
                 .scrollTargetLayout()
@@ -726,20 +676,16 @@ struct PlayerView: View {
         PlayerBackgroundAppearance.resolved(playerBackgroundAppearance)
     }
 
+    /// The title and artist travel the same direction as the cover so a skip
+    /// reads as one movement. The pair only slides and fades; a scale term
+    /// small enough to stay unnoticed still costs a transform on text that is
+    /// already crossfading, and a larger one would fight the cover.
     private var trackTextTransition: AnyTransition {
         guard allowsMotion else { return .opacity }
-        let distance: CGFloat = 10
+        let distance: CGFloat = 12 * transitionDirection
         return .asymmetric(
-            insertion: .offset(
-                x: transitionDirection > 0 ? distance : -distance
-            )
-            .combined(with: .scale(scale: 0.998))
-            .combined(with: .opacity),
-            removal: .offset(
-                x: transitionDirection > 0 ? -distance : distance
-            )
-            .combined(with: .scale(scale: 0.999))
-            .combined(with: .opacity)
+            insertion: .offset(x: distance).combined(with: .opacity),
+            removal: .offset(x: -distance).combined(with: .opacity)
         )
     }
 
@@ -1031,7 +977,9 @@ private struct PlayerProgressView: View {
                 value: seekBinding(duration: duration),
                 range: 0...max(duration, 1),
                 appearance: appearance,
-                tint: tint
+                tint: tint,
+                progressTick: timeline.refreshInterval,
+                progressIsContinuous: timeline.advancesContinuously && !isScrubbing
             ) { editing in
                 if editing, !isScrubbing {
                     scrubValue = elapsed
@@ -1078,14 +1026,14 @@ private struct PlayerElapsedLabels: View {
             Text(elapsedText)
                 .contentTransition(.numericText(countsDown: false))
                 .animation(
-                    motionEnabled ? BuFiMotion.symbol : .none,
+                    motionEnabled ? BuFiMotion.timeText : .none,
                     value: elapsedText
                 )
             Spacer()
             Text(remainingText)
                 .contentTransition(.numericText(countsDown: true))
                 .animation(
-                    motionEnabled ? BuFiMotion.symbol : .none,
+                    motionEnabled ? BuFiMotion.timeText : .none,
                     value: remainingText
                 )
         }
@@ -1746,11 +1694,20 @@ private struct PlayerPaletteBackground: View, Equatable {
                 }
             }
         }
-        if useDrawingGroup {
+        // Flattening pays off only for the fallback, which stacks four or five
+        // overlapping radial gradients. A mesh gradient is already a single GPU
+        // primitive, and forcing it through an offscreen buffer re-rasterizes
+        // the whole screen on every frame of a palette crossfade.
+        if useDrawingGroup, !usesMeshField {
             content.drawingGroup(opaque: false, colorMode: .linear)
         } else {
             content
         }
+    }
+
+    private var usesMeshField: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
     }
 
     @ViewBuilder

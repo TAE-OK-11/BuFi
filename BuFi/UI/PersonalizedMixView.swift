@@ -261,16 +261,21 @@ struct PersonalizedMixCard: View {
                 size: width,
                 cornerRadius: 16
             )
+            // The text block is a fixed height so every card in a rail lines
+            // up. Scaling down inside it keeps a long Korean title readable
+            // rather than letting the second line clip against the frame.
             Text(mix.title)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
+                .minimumScaleFactor(0.85)
                 .truncationMode(.tail)
                 .frame(height: 38, alignment: .topLeading)
             Text(mix.subtitle)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+                .minimumScaleFactor(0.85)
                 .truncationMode(.tail)
                 .frame(height: 34, alignment: .topLeading)
         }
@@ -288,7 +293,7 @@ struct PersonalizedMixDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
                 hero
-                    .buFiEntranceMotion(offset: 10, initialScale: 0.994)
+                    .buFiEntranceMotion(offset: 10)
                 controls
                     .buFiVerticalSectionMotion(delay: 0.025)
                 songs

@@ -99,6 +99,8 @@ struct SearchView: View {
                 Button(action: exitSearchSession) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(BuFiPressStyle())
                 .transition(.scale(scale: 0.84).combined(with: .opacity))
@@ -123,14 +125,22 @@ struct SearchView: View {
         .onTapGesture {
             isSearchFieldFocused = true
         }
-        .scaleEffect(!motionEnabled || isSearchFieldFocused ? 1 : 0.998)
-        .animation(motionEnabled ? BuFiMotion.fade : .none, value: isSearchFieldFocused)
-        .animation(motionEnabled ? BuFiMotion.symbol : .none, value: query.isEmpty)
+        // Focus and emptiness change together when the field is cleared, so
+        // they share one curve rather than running two at once on the same
+        // container.
+        .animation(
+            motionEnabled ? BuFiMotion.fade : .none,
+            value: SearchFieldState(
+                isFocused: isSearchFieldFocused,
+                isEmpty: query.isEmpty
+            )
+        )
     }
 
     @ViewBuilder
     private var content: some View {
         let surfaces = visibleSurfaces
+        resultStatusStrip
         ForEach(Array(surfaces.enumerated()), id: \.element) { index, surface in
             searchSurface(surface)
                 .frame(maxWidth: .infinity, alignment: .top)
@@ -148,6 +158,45 @@ struct SearchView: View {
         )
     }
 
+    /// The in-flight indicator and the local-fallback note live in a slot of
+    /// their own, reserved for as long as results are on screen.
+    ///
+    /// They used to be surfaces in the animated list, so every keystroke that
+    /// flipped `isSearching` inserted or removed a row above the results,
+    /// which relaid out and re-animated every result section underneath while
+    /// the user was still typing.
+    @ViewBuilder
+    private var resultStatusStrip: some View {
+        if isSearchSession, !searchContent.results.isEmpty {
+            let status = resultStatus
+            HStack(spacing: 8) {
+                if status == .searching {
+                    ProgressView()
+                }
+                Text(
+                    status == .searching
+                        ? LocalizedStringKey("검색 중…")
+                        : LocalizedStringKey("라이브러리에서 찾은 결과")
+                )
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .opacity(status == .idle ? 0 : 1)
+                Spacer(minLength: 0)
+            }
+            .frame(height: 22)
+            .padding(.horizontal, 16)
+            .animation(motionEnabled ? BuFiMotion.fade : .none, value: status)
+            .accessibilityHidden(status == .idle)
+        }
+    }
+
+    private var resultStatus: SearchResultStatus {
+        if searchContent.isSearching { return .searching }
+        if searchContent.isLocalFallback { return .localFallback }
+        return .idle
+    }
+
     private var visibleSurfaces: [SearchSurface] {
         if isSearchSession {
             let result = searchContent.results
@@ -158,11 +207,6 @@ struct SearchView: View {
                 return [.resultEmpty]
             }
             var surfaces: [SearchSurface] = []
-            if searchContent.isSearching {
-                surfaces.append(.resultProgress)
-            } else if searchContent.isLocalFallback {
-                surfaces.append(.resultLocalFallback)
-            }
             if !result.artists.isEmpty { surfaces.append(.resultArtists) }
             if !result.albums.isEmpty { surfaces.append(.resultAlbums) }
             if !result.songs.isEmpty { surfaces.append(.resultSongs) }
@@ -220,19 +264,6 @@ struct SearchView: View {
         case .resultEmpty:
             ContentUnavailableView.search(text: query)
                 .padding(.top, 42)
-        case .resultProgress:
-            HStack(spacing: 8) {
-                ProgressView()
-                Text("검색 중…")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 16)
-        case .resultLocalFallback:
-            Text("라이브러리에서 찾은 결과")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
         case .resultArtists:
             resultSection("아티스트") {
                 ForEach(Array(result.artists.enumerated()), id: \.element.id) { index, artist in
@@ -463,8 +494,8 @@ struct SearchView: View {
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .bold))
-                    .frame(width: 38, height: 38)
-                    .buFiGlass(cornerRadius: 19, interactive: true)
+                    .frame(width: 44, height: 44)
+                    .buFiGlass(cornerRadius: 22, interactive: true)
             }
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("검색 둘러보기로 돌아가기")
@@ -690,11 +721,20 @@ private enum SearchSurface: Hashable {
     case browseMostPlayed
     case resultLoading
     case resultEmpty
-    case resultProgress
-    case resultLocalFallback
     case resultArtists
     case resultAlbums
     case resultSongs
+}
+
+private enum SearchResultStatus: Hashable {
+    case idle
+    case searching
+    case localFallback
+}
+
+private struct SearchFieldState: Equatable {
+    let isFocused: Bool
+    let isEmpty: Bool
 }
 
 private enum SearchBrowseMode {

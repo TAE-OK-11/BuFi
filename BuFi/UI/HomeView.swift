@@ -53,7 +53,6 @@ struct HomeView: View {
                                     : .none,
                                 value: hasRevealedContent
                             )
-                            .modifier(HomeSectionScrollTransitionModifier())
                             .transition(
                                 motionEnabled ? BuFiTransition.section : .opacity
                             )
@@ -424,9 +423,11 @@ struct HomeView: View {
         guard !Task.isCancelled,
               revision == library.revision,
               selectedArtistsStorage == selectedArtistMixes else { return }
-        withAnimation(motionEnabled ? BuFiMotion.homeRefresh : .none) {
-            presentation = next
-        }
+        // The section list owns its own insertion and removal animation. An
+        // explicit animation here would additionally hand that curve to every
+        // row, cover, and label inside the sections that merely got new data,
+        // so a background refresh would set the whole page sliding.
+        presentation = next
         hasLoadedPresentation = true
     }
 
@@ -726,21 +727,6 @@ private enum HomeFilter: Int, CaseIterable, Identifiable {
         case .all: "전체"
         case .playlists: "플레이리스트"
         case .personalized: "나만의 플레이리스트"
-        }
-    }
-}
-
-private struct HomeSectionScrollTransitionModifier: ViewModifier {
-    @Environment(\.buFiMotionTier) private var motionTier
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if motionTier.enablesScrollTransition {
-            content.scrollTransition(.interactive, axis: .vertical) { view, phase in
-                view.opacity(phase.isIdentity ? 1 : 0.97)
-            }
-        } else {
-            content
         }
     }
 }

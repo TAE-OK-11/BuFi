@@ -30,117 +30,123 @@ struct LoginView: View {
             )
             .ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("BuFi")
-                        .font(.custom("Unbounded_800wght", fixedSize: 34))
-                        .tracking(-2.2)
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [.white, BuFiTheme.accentSoft],
-                                startPoint: .leading,
-                                endPoint: .trailing
+            // The form is pushed toward the bottom by stretching the content to
+            // the height of the scroll view itself. Measuring the container
+            // rather than the screen keeps that working when the window is not
+            // the full screen, such as in an iPad split view.
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("BuFi")
+                            .font(.custom("Unbounded_800wght", fixedSize: 34))
+                            .tracking(-2.2)
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [.white, BuFiTheme.accentSoft],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
                             )
-                        )
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                        .buFiGlass(cornerRadius: 20)
-                        .accessibilityLabel("BuFi")
-                        .padding(.top, 24)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .buFiGlass(cornerRadius: 20)
+                            .accessibilityLabel("BuFi")
+                            .padding(.top, 24)
 
-                    Spacer(minLength: 72)
+                        Spacer(minLength: 72)
 
-                    Text("내 음악은\n내 서버에.")
-                        .font(.system(size: 45, weight: .black))
-                        .tracking(-1.7)
-                        .lineSpacing(-2)
-                    Text("Navidrome과 OpenSubsonic 서버를 iPhone에서 빠르고 자연스럽게 스트리밍하세요.")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(4)
-                        .padding(.top, 18)
+                        Text("내 음악은\n내 서버에.")
+                            .font(.system(size: 45, weight: .black))
+                            .tracking(-1.7)
+                            .lineSpacing(-2)
+                        Text("Navidrome과 OpenSubsonic 서버를 iPhone에서 빠르고 자연스럽게 스트리밍하세요.")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                            .lineSpacing(4)
+                            .padding(.top, 18)
 
-                    VStack(spacing: 14) {
-                        input(
-                            "서버 주소",
-                            text: $server,
-                            icon: "server.rack",
-                            field: .server,
-                            contentType: .URL
-                        )
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
+                        VStack(spacing: 14) {
+                            input(
+                                "서버 주소",
+                                text: $server,
+                                icon: "server.rack",
+                                field: .server,
+                                contentType: .URL
+                            )
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
 
-                        if let serverHint {
-                            Text(serverHint)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 4)
-                        }
-
-                        input(
-                            "사용자 이름",
-                            text: $username,
-                            icon: "person.fill",
-                            field: .username,
-                            contentType: .username
-                        )
-                        .textInputAutocapitalization(.never)
-
-                        input(
-                            "비밀번호",
-                            text: $password,
-                            icon: "lock.fill",
-                            field: .password,
-                            contentType: .password,
-                            isSecure: true
-                        )
-                    }
-                    .padding(.top, 34)
-
-                    if let error = session.errorMessage {
-                        Text(error)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.red)
-                            .padding(.top, 12)
-                    }
-
-                    Button(action: connect) {
-                        HStack {
-                            if isSubmitting || session.phase == .connecting {
-                                ProgressView().tint(.white)
+                            if let serverHint {
+                                Text(serverHint)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 4)
                             }
-                            Text(
-                                isSubmitting || session.phase == .connecting
-                                    ? String(localized: "연결 중…")
-                                    : String(localized: "서버에 연결")
+
+                            input(
+                                "사용자 이름",
+                                text: $username,
+                                icon: "person.fill",
+                                field: .username,
+                                contentType: .username
+                            )
+                            .textInputAutocapitalization(.never)
+
+                            input(
+                                "비밀번호",
+                                text: $password,
+                                icon: "lock.fill",
+                                field: .password,
+                                contentType: .password,
+                                isSecure: true
                             )
                         }
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 56)
-                        .background(BuFiTheme.accent, in: Capsule())
-                    }
-                    .disabled(!canSubmit)
-                    .buttonStyle(BuFiPressStyle())
-                    .padding(.top, 22)
+                        .padding(.top, 34)
 
-                    Text("비밀번호는 Apple Keychain에만 저장됩니다.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 14)
+                        if let error = session.errorMessage {
+                            Text(error)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.red)
+                                .padding(.top, 12)
+                        }
+
+                        Button(action: connect) {
+                            HStack {
+                                if isSubmitting || session.phase == .connecting {
+                                    ProgressView().tint(.white)
+                                }
+                                Text(
+                                    isSubmitting || session.phase == .connecting
+                                        ? String(localized: "연결 중…")
+                                        : String(localized: "서버에 연결")
+                                )
+                            }
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 56)
+                            .background(BuFiTheme.accent, in: Capsule())
+                        }
+                        .disabled(!canSubmit)
+                        .buttonStyle(BuFiPressStyle())
+                        .padding(.top, 22)
+
+                        Text("비밀번호는 Apple Keychain에만 저장됩니다.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 14)
+                    }
+                    .padding(.horizontal, 24)
+                    .frame(minHeight: max(0, proxy.size.height - 30))
                 }
-                .padding(.horizontal, 24)
-                .frame(minHeight: UIScreen.main.bounds.height - 30)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .onDisappear {
-                loginTask?.cancel()
-                loginTask = nil
-                isSubmitting = false
+                .scrollDismissesKeyboard(.interactively)
+                .onDisappear {
+                    loginTask?.cancel()
+                    loginTask = nil
+                    isSubmitting = false
+                }
             }
         }
     }

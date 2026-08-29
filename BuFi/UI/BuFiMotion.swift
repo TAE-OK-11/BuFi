@@ -68,25 +68,35 @@ enum BuFiMotion {
     static let reveal = Animation.smooth(duration: 0.32, extraBounce: 0)
     static let content = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let homeEntrance = Animation.spring(duration: 0.52, bounce: 0.032)
-    static let homeRefresh = Animation.smooth(duration: 0.38, extraBounce: 0)
-    static let playerEntrance = Animation.spring(duration: 0.40, bounce: 0.034)
-    static let screenEntrance = Animation.spring(duration: 0.48, bounce: 0.028)
-    /// Fast horizontal text hand-off; smooth curve keeps motion fluid at short duration.
-    static let trackText = Animation.smooth(duration: 0.30, extraBounce: 0)
-    static let trackPage = Animation.spring(duration: 0.36, bounce: 0.048)
-    static let miniTrack = Animation.smooth(duration: 0.30, extraBounce: 0)
-    static let artworkTouch = Animation.spring(duration: 0.20, bounce: 0.10)
+    static let playerEntrance = Animation.smooth(duration: 0.20, extraBounce: 0)
+    /// One curve carries a whole track change. The artwork page, the header
+    /// text, the metadata text, and the mini player all hand off on this
+    /// timing, so a skip reads as a single movement rather than as several
+    /// independently timed pieces arriving one after another.
+    static let trackChange = Animation.smooth(duration: 0.34, extraBounce: 0)
+    static let trackText = BuFiMotion.trackChange
+    static let trackPage = BuFiMotion.trackChange
+    static let miniTrack = BuFiMotion.trackChange
     static let color = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let page = Animation.smooth(duration: 0.36, extraBounce: 0)
     static let miniLyricsScroll = Animation.smooth(duration: 0.48, extraBounce: 0)
-    static let miniLyrics = Animation.smooth(duration: 0.48, extraBounce: 0)
     static let lyricsCard = Animation.spring(duration: 0.40, bounce: 0.028)
     static let lyrics = Animation.smooth(duration: 0.38, extraBounce: 0)
     static let lyricsPanel = Animation.spring(duration: 0.36, bounce: 0.04)
-    /// Interpolates between periodic playback ticks (≈4 Hz) without stair-steps.
-    static let timeline = Animation.smooth(duration: 0.22, extraBounce: 0)
-    /// Mini-player bar: short enough to track audio, long enough to stay fluid.
-    static let miniTimeline = Animation.smooth(duration: 0.26, extraBounce: 0)
+    /// Rolls a clock digit without the overshoot a spring would add.
+    static let timeText = Animation.smooth(duration: 0.18, extraBounce: 0)
+
+    /// Carries a seek bar from one periodic playback tick to the next.
+    ///
+    /// Position arrives in discrete steps (4 Hz in the player, 1 Hz behind the
+    /// mini player), so the curve joining two steps decides whether playback
+    /// looks like motion or like a repeating twitch. An eased curve accelerates
+    /// and decelerates inside every step, which at 4 Hz reads as a stutter four
+    /// times a second. Spending exactly one tick moving linearly makes
+    /// consecutive steps join into constant, uninterrupted travel.
+    static func progress(tick: TimeInterval) -> Animation {
+        .linear(duration: max(0.05, min(tick, 2.0)))
+    }
 
     static func press(isPressed: Bool, tier: BuFiMotionTier = .full) -> Animation {
         let down = tier == .minimal
@@ -123,37 +133,29 @@ enum BuFiMotion {
         ).enablesAnimation
     }
 
-    static func trackText(for tier: BuFiMotionTier) -> Animation {
+    /// A track change is one movement, so every piece of it shares a timing at
+    /// any tier. Only the duration shortens as the tier drops.
+    static func trackChange(for tier: BuFiMotionTier) -> Animation {
         switch tier {
         case .off, .minimal:
             return .smooth(duration: 0.22, extraBounce: 0)
         case .reduced:
-            return .smooth(duration: 0.34, extraBounce: 0)
+            return .smooth(duration: 0.28, extraBounce: 0)
         case .full:
-            return trackText
+            return trackChange
         }
+    }
+
+    static func trackText(for tier: BuFiMotionTier) -> Animation {
+        trackChange(for: tier)
     }
 
     static func trackPage(for tier: BuFiMotionTier) -> Animation {
-        switch tier {
-        case .off, .minimal:
-            return .smooth(duration: 0.26, extraBounce: 0)
-        case .reduced:
-            return .smooth(duration: 0.40, extraBounce: 0)
-        case .full:
-            return trackPage
-        }
+        trackChange(for: tier)
     }
 
     static func miniTrack(for tier: BuFiMotionTier) -> Animation {
-        switch tier {
-        case .off, .minimal:
-            return .smooth(duration: 0.24, extraBounce: 0)
-        case .reduced:
-            return .smooth(duration: 0.36, extraBounce: 0)
-        case .full:
-            return miniTrack
-        }
+        trackChange(for: tier)
     }
 
     static func color(for tier: BuFiMotionTier) -> Animation {
@@ -243,24 +245,22 @@ enum BuFiMotion {
 }
 
 enum BuFiTransition {
+    // Sub-percent scale terms read as no movement at all, yet each one puts a
+    // transform on content that is already crossfading. These transitions
+    // carry only the fade and the travel that are actually visible.
     static var scene: AnyTransition {
-        .asymmetric(
-            insertion: .opacity.combined(with: .scale(scale: 0.994)),
-            removal: .opacity
-        )
+        .asymmetric(insertion: .opacity, removal: .opacity)
     }
 
     static var section: AnyTransition {
         .asymmetric(
-            insertion: .opacity
-                .combined(with: .offset(y: 8))
-                .combined(with: .scale(scale: 0.997, anchor: .top)),
+            insertion: .opacity.combined(with: .offset(y: 8)),
             removal: .opacity.combined(with: .offset(y: -3))
         )
     }
 
     static var artworkReveal: AnyTransition {
-        .opacity.combined(with: .scale(scale: 0.994))
+        .opacity
     }
 
     static var miniPlayer: AnyTransition {
@@ -295,17 +295,12 @@ private struct BuFiEntranceMotionModifier: ViewModifier {
 
     let delay: TimeInterval
     let offset: CGFloat
-    let initialScale: CGFloat
 
     func body(content: Content) -> some View {
         let enablesMotion = motionTier.enablesAnimation
         content
             .opacity(hasAppeared || !enablesMotion ? 1 : 0)
             .offset(y: hasAppeared || !enablesMotion ? 0 : offset)
-            .scaleEffect(
-                hasAppeared || !enablesMotion ? 1 : initialScale,
-                anchor: .top
-            )
             .animation(
                 enablesMotion
                     ? BuFiMotion.homeEntrance(for: motionTier).delay(delay)
@@ -329,31 +324,13 @@ private struct BuFiVerticalSectionMotionModifier: ViewModifier {
     let delay: TimeInterval
 
     func body(content: Content) -> some View {
-        content
-            .modifier(
-                BuFiEntranceMotionModifier(
-                    delay: delay,
-                    offset: 6,
-                    initialScale: 0.997
-                )
-            )
-            .modifier(BuFiVerticalScrollTransitionModifier())
-    }
-}
-
-private struct BuFiVerticalScrollTransitionModifier: ViewModifier {
-    @Environment(\.buFiMotionTier) private var motionTier
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if motionTier.enablesScrollTransition {
-            content.scrollTransition(.interactive, axis: .vertical) { view, phase in
-                view
-                    .opacity(phase.isIdentity ? 1 : 0.97)
-            }
-        } else {
-            content
-        }
+        // Sections fade up once as they mount. They deliberately carry no
+        // scroll transition: dimming every section to 0.97 while a finger is
+        // on the screen is too slight to read as an effect, yet it runs a
+        // transition body for each one on every frame of the scroll.
+        content.modifier(
+            BuFiEntranceMotionModifier(delay: delay, offset: 6)
+        )
     }
 }
 
@@ -364,14 +341,9 @@ extension View {
 
     func buFiEntranceMotion(
         delay: TimeInterval = 0,
-        offset: CGFloat = 6,
-        initialScale: CGFloat = 0.997
+        offset: CGFloat = 6
     ) -> some View {
-        modifier(BuFiEntranceMotionModifier(
-            delay: delay,
-            offset: offset,
-            initialScale: initialScale
-        ))
+        modifier(BuFiEntranceMotionModifier(delay: delay, offset: offset))
     }
 
     func buFiVerticalSectionMotion(delay: TimeInterval = 0) -> some View {
