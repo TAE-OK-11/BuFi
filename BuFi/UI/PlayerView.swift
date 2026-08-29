@@ -120,6 +120,7 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @Environment(\.buFiMotionTier) private var motionTier
 
     @State private var palette = ArtworkPalette.fallback
     @State private var showQueue = false
@@ -289,12 +290,13 @@ struct PlayerView: View {
             palette: palette,
             playerAppearance: resolvedPlayerAppearance,
             appearance: resolvedBackgroundAppearance,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            useDrawingGroup: motionTier.enablesDrawingGroup
         )
         .equatable()
         .ignoresSafeArea()
         .animation(
-            allowsMotion ? BuFiMotion.color : .none,
+            allowsMotion ? BuFiMotion.color(for: motionTier) : .none,
             value: PlayerBackgroundAnimationIdentity(
                 palette: palette,
                 playerAppearance: resolvedPlayerAppearance,
@@ -333,7 +335,7 @@ struct PlayerView: View {
             }
             .frame(maxWidth: 240)
             .clipped()
-            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
+            .animation(allowsMotion ? BuFiMotion.trackText(for: motionTier) : .none, value: item.id)
             Spacer()
 
             PlayerOverflowMenu(song: song, foreground: playerPrimary)
@@ -387,7 +389,7 @@ struct PlayerView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .clipped()
-            .animation(allowsMotion ? BuFiMotion.trackText : .none, value: item.id)
+            .animation(allowsMotion ? BuFiMotion.trackText(for: motionTier) : .none, value: item.id)
             Spacer(minLength: 4)
             PlayerFavoriteButton(
                 song: song,
@@ -451,7 +453,8 @@ struct PlayerView: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 18) {
                     ForEach(pages) { page in
-                        let extractsPalette = abs(page.queueIndex - currentPageIndex) <= 1
+                        let extractsPalette = motionTier.enablesPaletteExtraction
+                            && abs(page.queueIndex - currentPageIndex) <= 1
                         ArtworkView(
                             coverArt: page.id.coverArtID,
                             size: edge,
@@ -473,7 +476,10 @@ struct PlayerView: View {
                         .scrollTransition(.interactive, axis: .horizontal) { content, phase in
                             content
                                 .opacity(
-                                    phase.isIdentity || !animatesTransition ? 1 : 0.99
+                                    phase.isIdentity
+                                        || !animatesTransition
+                                        || !motionTier.enablesScrollTransition
+                                        ? 1 : 0.99
                                 )
                         }
                     }
@@ -614,7 +620,7 @@ struct PlayerView: View {
             artworkPage = currentPage
         }
         if animated && allowsMotion {
-            withAnimation(BuFiMotion.trackPage) { update() }
+            withAnimation(BuFiMotion.trackPage(for: motionTier)) { update() }
         } else {
             update()
         }
@@ -1717,10 +1723,11 @@ private struct PlayerPaletteBackground: View, Equatable {
     let playerAppearance: PlayerAppearance
     let appearance: PlayerBackgroundAppearance
     let colorScheme: ColorScheme
+    let useDrawingGroup: Bool
 
     @ViewBuilder
     var body: some View {
-        Group {
+        let content = Group {
             switch appearance {
             case .classic:
                 ZStack {
@@ -1739,7 +1746,11 @@ private struct PlayerPaletteBackground: View, Equatable {
                 }
             }
         }
-        .drawingGroup(opaque: false, colorMode: .linear)
+        if useDrawingGroup {
+            content.drawingGroup(opaque: false, colorMode: .linear)
+        } else {
+            content
+        }
     }
 
     @ViewBuilder

@@ -52,7 +52,9 @@ actor ArtistImageClient {
         if let cached = cache[key], cached.expiresAt > Date() {
             return cached.url
         }
-        guard EnergyConstraintsPolicy.allowsExternalRecommendationRefresh() else {
+        guard EnergyConstraintsPolicy.allowsExternalRecommendationRefresh(
+            thermalState: ProcessInfo.processInfo.thermalState
+        ) else {
             return cache[key]?.url
         }
         let resolved = await fetchImageURL(for: artistName, normalizedKey: key)

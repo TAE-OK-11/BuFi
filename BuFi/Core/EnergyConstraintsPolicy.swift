@@ -50,11 +50,24 @@ enum EnergyConstraintsPolicy {
         case .nominal:
             return 4
         case .fair:
-            return 2
+            return 1
         case .serious, .critical:
             return 1
         @unknown default:
             return 1
+        }
+    }
+
+    static func shouldTrimArtworkMemory(
+        thermalState: ProcessInfo.ThermalState
+    ) -> Bool {
+        switch thermalState {
+        case .nominal:
+            return false
+        case .fair, .serious, .critical:
+            return true
+        @unknown default:
+            return true
         }
     }
 }
