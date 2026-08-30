@@ -18,6 +18,7 @@ private struct MusicDetailFavoriteButton: View {
             MusicDetailFavoriteButtonContent(
                 overrideState: model.favoriteOverrideState(for: artist),
                 originalState: artist.isStarred,
+                favoriteSystemImage: ("star", "star.fill"),
                 action: { await model.toggleStar(artist: artist) }
             )
         case .playlist:
@@ -31,6 +32,7 @@ private struct MusicDetailFavoriteButtonContent: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @ObservedObject var overrideState: FavoriteOverrideValueState
     let originalState: Bool
+    var favoriteSystemImage: (String, String) = ("plus", "checkmark")
     let action: @MainActor @Sendable () async -> Void
 
     private var isFavorite: Bool {
@@ -68,7 +70,9 @@ private struct MusicDetailFavoriteButtonContent: View {
 
     @ViewBuilder
     private var favoriteIcon: some View {
-        let image = Image(systemName: isFavorite ? "checkmark" : "plus")
+        let image = Image(
+            systemName: isFavorite ? favoriteSystemImage.1 : favoriteSystemImage.0
+        )
         if motionEnabled {
             image.contentTransition(.symbolEffect(.replace))
         } else {
@@ -99,6 +103,9 @@ struct MusicDetailView: View {
     @State private var artistBiography = ""
     @State private var artistAlbumCount = 0
     @State private var discography = ArtistDiscographyPresentation.empty
+    @State private var similarArtists: [Artist] = []
+    @State private var showAllPopularSongs = false
+    @State private var showAboutSheet = false
     @State private var downloadAllTask: Task<Void, Never>?
     @State private var isDownloadingAll = false
     @State private var loadError: String?
@@ -108,10 +115,6 @@ struct MusicDetailView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
                     .buFiEntranceMotion(offset: 10)
-                if isArtist, !isLoading {
-                    artistMixControl
-                        .buFiVerticalSectionMotion(delay: 0.025)
-                }
                 if isLoading {
                     ProgressView("불러오는 중…")
                         .frame(maxWidth: .infinity)
@@ -137,14 +140,33 @@ struct MusicDetailView: View {
                     .padding(.top, 48)
                     .buFiEntranceMotion(delay: 0.03)
                 } else {
-                    controls
-                        .buFiVerticalSectionMotion()
                     if isArtist {
+                        artistNameHeader
+                            .buFiVerticalSectionMotion()
+                        artistPrimaryControls
+                            .buFiVerticalSectionMotion(delay: 0.015)
+                    } else {
+                        controls
+                            .buFiVerticalSectionMotion()
+                    }
+                    if isArtist {
+                        if let featured = featuredAlbum {
+                            artistFeaturedRelease(featured)
+                                .buFiVerticalSectionMotion(delay: 0.025)
+                        }
                         artistPopularSongs
-                            .buFiVerticalSectionMotion(delay: 0.03)
-                        if !albums.isEmpty {
+                            .buFiVerticalSectionMotion(delay: 0.035)
+                        if !discography.fullAlbums.isEmpty {
+                            artistTopAlbums
+                                .buFiVerticalSectionMotion(delay: 0.05)
+                        }
+                        if !discography.singleAlbums.isEmpty || !discography.epAlbums.isEmpty {
                             artistDiscography
-                                .buFiVerticalSectionMotion(delay: 0.055)
+                                .buFiVerticalSectionMotion(delay: 0.065)
+                        }
+                        if !similarArtists.isEmpty {
+                            artistSimilarArtists
+                                .buFiVerticalSectionMotion(delay: 0.08)
                         }
                     } else {
                         songList
@@ -152,7 +174,7 @@ struct MusicDetailView: View {
                     }
                     if isArtist, !artistBiography.isEmpty {
                         artistAbout
-                            .buFiVerticalSectionMotion(delay: 0.075)
+                            .buFiVerticalSectionMotion(delay: 0.095)
                     }
                 }
             }
@@ -166,6 +188,38 @@ struct MusicDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            if isArtist, !isLoading, loadError == nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            if let first = songs.first {
+                                audio.play(first, in: songs, origin: .manual)
+                            }
+                        } label: {
+                            Label("모두 재생", systemImage: "play.fill")
+                        }
+                        Button {
+                            guard !songs.isEmpty else { return }
+                            let shuffled = songs.shuffled()
+                            if let first = shuffled.first {
+                                audio.play(first, in: shuffled, origin: .manual)
+                            }
+                        } label: {
+                            Label("셔플 재생", systemImage: "shuffle")
+                        }
+                        Button { downloadAll() } label: {
+                            Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
+                        }
+                        .disabled(songs.isEmpty || isDownloadingAll)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
+                    .accessibilityLabel("더 보기")
+                }
+            }
+        }
         .onChange(of: coverArt) { _, _ in
             palette = .fallback
         }
@@ -175,6 +229,11 @@ struct MusicDetailView: View {
             downloadAllTask = nil
             isDownloadingAll = false
             model.cancelDetailRequest(for: route)
+        }
+        .sheet(isPresented: $showAboutSheet) {
+            artistAboutSheet
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         .sheet(item: $selectedSong) { song in
             SongActionsSheet(song: song)
@@ -194,16 +253,12 @@ struct MusicDetailView: View {
 
     private var artistHero: some View {
         let identity = MusicDetailArtworkIdentity(route: route, coverArtID: coverArt)
-        let stats = String(
-            format: String(localized: "%d개 발매작 · %d개 인기곡"),
-            max(artistAlbumCount, albums.count),
-            songs.count
-        )
-        return ZStack(alignment: .bottomLeading) {
+        return ZStack(alignment: .bottom) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
                 artistName: currentArtistName,
                 cacheRevision: identity.cacheRevision,
+                fullBleed: true,
                 onPalette: { nextPalette in
                     receivePalette(nextPalette, for: identity)
                 }
@@ -211,45 +266,159 @@ struct MusicDetailView: View {
 
             LinearGradient(
                 gradient: Gradient(stops: [
-                    .init(color: .clear, location: 0.48),
-                    .init(color: .black.opacity(0.14), location: 0.68),
-                    .init(color: .black.opacity(0.86), location: 1.0)
+                    .init(color: .clear, location: 0.35),
+                    .init(color: .black.opacity(0.22), location: 0.62),
+                    .init(color: .black.opacity(0.92), location: 1.0)
                 ]),
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .allowsHitTesting(false)
+        }
+        .padding(.bottom, 4)
+    }
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text(title.isEmpty ? " " : title)
-                    .font(.system(size: 35, weight: .bold))
-                    .tracking(-1.2)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
-                    .contentTransition(.interpolate)
-                Text(stats)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.82))
+    private var artistNameHeader: some View {
+        VStack(spacing: 6) {
+            Text(title.isEmpty ? " " : title)
+                .font(.system(size: 28, weight: .bold))
+                .tracking(-0.8)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .minimumScaleFactor(0.82)
+                .contentTransition(.interpolate)
+            if artistAlbumCount > 0 || !songs.isEmpty {
+                Text(artistStatsLine)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .contentTransition(.interpolate)
             }
-            // Keyed on the rendered strings. Watching the album count alone
-            // meant the song half of the stats line snapped from zero to its
-            // real value while the album half interpolated.
-            .animation(
-                motionEnabled ? BuFiMotion.content : .none,
-                value: MusicDetailHeroText(title: title, detail: stats)
-            )
-            .foregroundStyle(.white)
-            .padding(.horizontal, 22)
-            .padding(.bottom, 20)
         }
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.22 : 0.13), radius: 20, y: 10)
-        .padding(.horizontal, 16)
+        .animation(
+            motionEnabled ? BuFiMotion.content : .none,
+            value: MusicDetailHeroText(title: title, detail: artistStatsLine)
+        )
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+    }
+
+    private var artistStatsLine: String {
+        String(
+            format: String(localized: "%d개 발매작 · %d개 인기곡"),
+            max(artistAlbumCount, albums.count),
+            songs.count
+        )
+    }
+
+    private var artistPrimaryControls: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 36) {
+                Button {
+                    showAboutSheet = true
+                } label: {
+                    artistSecondaryControl(
+                        Image(systemName: "info")
+                            .font(.system(size: 18, weight: .semibold))
+                    )
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityLabel("아티스트 정보")
+                .opacity(artistBiography.isEmpty ? 0.45 : 1)
+                .disabled(artistBiography.isEmpty)
+
+                Button {
+                    if let first = songs.first {
+                        audio.play(
+                            first,
+                            in: songs,
+                            origin: .manual
+                        )
+                    }
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(.black)
+                        .offset(x: 2)
+                        .frame(width: 72, height: 72)
+                        .background(.white, in: Circle())
+                        .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .disabled(songs.isEmpty)
+                .accessibilityLabel("모두 재생")
+
+                if canFavorite {
+                    artistFavoriteControl
+                } else {
+                    Color.clear
+                        .frame(width: 44, height: 44)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            if isArtist, !isLoading {
+                artistMixControl
+            }
+        }
         .padding(.top, 6)
-        .padding(.bottom, 18)
+        .padding(.bottom, 8)
+    }
+
+    private var artistFavoriteControl: some View {
+        MusicDetailFavoriteButton(route: route)
+    }
+
+    private func artistSecondaryControl<Content: View>(_ content: Content) -> some View {
+        content
+            .foregroundStyle(detailControlForeground)
+            .frame(width: 44, height: 44)
+            .buFiGlass(cornerRadius: 22, interactive: true)
+    }
+
+    private func artistFeaturedRelease(_ album: Album) -> some View {
+        NavigationLink(value: MusicRoute.album(album)) {
+            HStack(spacing: 14) {
+                ArtworkView(coverArt: album.coverArt, size: 72, cornerRadius: 8)
+                    .frame(width: 72, height: 72)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let year = album.year {
+                        Text(String(format: String(localized: "%d년"), year))
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(album.name)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    if let count = album.songCount, count > 0 {
+                        Text(String(format: String(localized: "%d곡"), count))
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 8)
+                if album.isStarred {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .buFiSurface(
+                cornerRadius: 14,
+                fill: Color.white.opacity(colorScheme == .dark ? 0.07 : 0.55),
+                stroke: Color.white.opacity(colorScheme == .dark ? 0.08 : 0.12)
+            )
+        }
+        .buttonStyle(BuFiPressStyle())
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
     }
 
     private var collectionHero: some View {
@@ -455,21 +624,23 @@ struct MusicDetailView: View {
                 )
                 .contentTransition(.symbolEffect(.replace))
             }
-            .font(.system(size: 14, weight: .bold))
+            .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(
                 hasCurrentArtistMix ? Color.primary : BuFiTheme.accentSoft
             )
-            .padding(.horizontal, 15)
-            .frame(minHeight: 44)
-            .buFiSurface(cornerRadius: 22)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 36)
+            .buFiSurface(
+                cornerRadius: 18,
+                fill: Color.white.opacity(colorScheme == .dark ? 0.06 : 0.45),
+                stroke: Color.white.opacity(colorScheme == .dark ? 0.08 : 0.10)
+            )
         }
         .buttonStyle(BuFiPressStyle())
         .animation(
             motionEnabled ? BuFiMotion.symbol : .none,
             value: hasCurrentArtistMix
         )
-        .padding(.horizontal, 20)
-        .padding(.bottom, 12)
         .accessibilityLabel(
             hasCurrentArtistMix
                 ? "Artist Mix에서 제거"
@@ -484,48 +655,200 @@ struct MusicDetailView: View {
 
     private var artistAbout: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("아티스트 소개")
-                .font(.system(size: 22, weight: .bold))
+            artistSectionHeader("아티스트 소개", showsChevron: false)
             Text(artistBiography)
                 .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(.secondary)
                 .lineSpacing(5)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 20)
-        .buFiSurface(
-            cornerRadius: 20,
-            fill: BuFiTheme.elevated,
-            stroke: contrastSeparator,
-            lineWidth: 0.8
-        )
-        .shadow(color: .black.opacity(colorScheme == .dark ? 0.08 : 0.035), radius: 12, y: 5)
         .padding(.horizontal, 16)
         .padding(.top, 28)
+        .padding(.bottom, 8)
+    }
+
+    private var artistAboutSheet: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(title)
+                    .font(.system(size: 24, weight: .bold))
+                Text(artistBiography)
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(6)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(20)
+        }
     }
 
     private var artistPopularSongs: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("인기곡")
-                .font(.system(size: 23, weight: .bold))
-                .padding(.horizontal, 16)
-            songList
+        VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if songs.count > 5, !showAllPopularSongs {
+                    Button {
+                        withAnimation(allowsMotion ? BuFiMotion.reveal : .none) {
+                            showAllPopularSongs = true
+                        }
+                    } label: {
+                        artistSectionHeader("인기곡", showsChevron: true)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(BuFiPressStyle())
+                } else {
+                    artistSectionHeader("인기곡", showsChevron: false)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            artistPopularSongList
         }
-        .padding(.top, 10)
+        .padding(.top, 18)
+    }
+
+    @ViewBuilder
+    private var artistPopularSongList: some View {
+        let visibleSongs = showAllPopularSongs ? songs : Array(songs.prefix(5))
+        if visibleSongs.isEmpty {
+            ContentUnavailableView(
+                "인기곡이 없습니다",
+                systemImage: "music.note"
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.top, 24)
+        } else {
+            LazyVStack(spacing: 0) {
+                ForEach(IndexedSong.list(visibleSongs)) { item in
+                    ArtistPopularSongRow(
+                        song: item.song,
+                        queue: songs,
+                        queueIndex: item.index,
+                        albumYear: albumYear(for: item.song),
+                        onMore: { selectedSong = item.song }
+                    )
+                    if item.index < visibleSongs.count - 1 {
+                        Divider()
+                            .padding(.leading, 66)
+                            .opacity(0.35)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            if songs.count > 5, !showAllPopularSongs {
+                Button {
+                    withAnimation(allowsMotion ? BuFiMotion.reveal : .none) {
+                        showAllPopularSongs = true
+                    }
+                } label: {
+                    Text("더 보기")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(BuFiTheme.accentSoft)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                }
+                .buttonStyle(BuFiPressStyle())
+            }
+        }
+    }
+
+    private var artistTopAlbums: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            artistSectionHeader("대표 앨범", showsChevron: false)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            LazyVStack(spacing: 0) {
+                ForEach(Array(discography.fullAlbums.prefix(3).enumerated()), id: \.element.id) { index, album in
+                    NavigationLink(value: MusicRoute.album(album)) {
+                        HStack(spacing: 14) {
+                            ArtworkView(coverArt: album.coverArt, size: 100, cornerRadius: 8)
+                                .frame(width: 100, height: 100)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(album.name)
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+                                if let year = album.year {
+                                    Text(String(format: String(localized: "%d년"), year))
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(BuFiPressStyle())
+                    .padding(.horizontal, 16)
+                    if index < min(2, discography.fullAlbums.count - 1) {
+                        Divider()
+                            .padding(.leading, 130)
+                            .opacity(0.35)
+                    }
+                }
+            }
+        }
+        .padding(.top, 28)
+    }
+
+    private var artistSimilarArtists: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            artistSectionHeader("비슷한 아티스트", showsChevron: false)
+                .padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(similarArtists.prefix(12)) { artist in
+                        NavigationLink(value: MusicRoute.artist(artist)) {
+                            VStack(spacing: 9) {
+                                ArtworkView(
+                                    coverArt: artist.coverArt,
+                                    size: 120,
+                                    cornerRadius: 60,
+                                    artistName: artist.name
+                                )
+                                .frame(width: 120, height: 120)
+                                Text(artist.name)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.center)
+                                    .frame(width: 120)
+                            }
+                        }
+                        .buttonStyle(BuFiPressStyle())
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+        .padding(.top, 28)
+    }
+
+    private func artistSectionHeader(
+        _ title: LocalizedStringKey,
+        showsChevron: Bool
+    ) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.system(size: 22, weight: .bold))
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     @ViewBuilder
     private var artistDiscography: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            if !discography.fullAlbums.isEmpty {
-                albumRail("앨범", albums: discography.fullAlbums)
-            }
-            if !discography.epAlbums.isEmpty {
-                albumRail("EP", albums: discography.epAlbums)
-            }
-            if !discography.singleAlbums.isEmpty {
-                albumRail("싱글", albums: discography.singleAlbums)
+        VStack(alignment: .leading, spacing: 28) {
+            let singlesAndEPs = discography.singleAlbums + discography.epAlbums
+            if !singlesAndEPs.isEmpty {
+                albumRail("싱글 및 EP", albums: singlesAndEPs)
             }
         }
         .padding(.top, 28)
@@ -533,14 +856,13 @@ struct MusicDetailView: View {
 
     private func albumRail(_ heading: LocalizedStringKey, albums: [Album]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(heading)
-                .font(.system(size: 23, weight: .bold))
+            artistSectionHeader(heading, showsChevron: true)
                 .padding(.horizontal, 16)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 15) {
                     ForEach(albums) { album in
                         NavigationLink(value: MusicRoute.album(album)) {
-                            AlbumCard(album: album, width: 150)
+                            ArtistDiscographyCard(album: album, width: 150)
                         }
                         .buttonStyle(BuFiPressStyle())
                     }
@@ -597,7 +919,7 @@ struct MusicDetailView: View {
                     BuFiTheme.background
                 ],
                 startPoint: .top,
-                endPoint: .init(x: 0.5, y: 0.43)
+                endPoint: .init(x: 0.5, y: isArtist ? 0.52 : 0.43)
             )
             if colorScheme == .light {
                 LinearGradient(
@@ -650,6 +972,25 @@ struct MusicDetailView: View {
 
     private var contrastSeparator: Color {
         colorScheme == .dark ? .white.opacity(0.10) : .black.opacity(0.12)
+    }
+
+    private var featuredAlbum: Album? {
+        albums.max { lhs, rhs in
+            if lhs.year != rhs.year { return (lhs.year ?? 0) < (rhs.year ?? 0) }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedDescending
+        }
+    }
+
+    private func albumYear(for song: Song) -> Int? {
+        if let albumId = song.albumId,
+           let match = albums.first(where: { $0.id == albumId }) {
+            return match.year
+        }
+        let albumName = song.album.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !albumName.isEmpty else { return nil }
+        return albums.first {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == albumName
+        }?.year
     }
 
     private var allowsMotion: Bool { motionEnabled }
@@ -764,6 +1105,8 @@ struct MusicDetailView: View {
         artistBiography = ""
         artistAlbumCount = 0
         discography = .empty
+        similarArtists = []
+        showAllPopularSongs = false
         do {
             switch route {
             case .album(let album):
@@ -844,6 +1187,7 @@ struct MusicDetailView: View {
                 guard !Task.isCancelled, route == loadingRoute else { return }
                 artistBiography = preparedArtistContent.biography
                 discography = preparedArtistContent.discography
+                similarArtists = detail.info?.similarArtist ?? []
             }
         } catch {
             guard !Task.isCancelled, route == loadingRoute else { return }
@@ -1035,6 +1379,96 @@ private struct ArtistDiscographyPresentation: Sendable {
             return .ep
         }
         return .album
+    }
+}
+
+private struct ArtistPopularSongRow: View {
+    private let audio = AudioEngine.shared
+
+    let song: Song
+    let queue: [Song]
+    let queueIndex: Int
+    let albumYear: Int?
+    var onMore: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                audio.play(
+                    song,
+                    in: queue,
+                    queueIndex: queueIndex,
+                    origin: .manual
+                )
+            } label: {
+                HStack(spacing: 12) {
+                    ArtworkView(
+                        coverArt: song.artworkID,
+                        size: 50,
+                        cornerRadius: 6
+                    )
+                    .frame(width: 50, height: 50)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(song.title)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(songSubtitle)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(BuFiPressStyle())
+
+            if let onMore {
+                Button(action: onMore) {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(BuFiPressStyle())
+                .accessibilityLabel("\(song.title) 더 보기")
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private var songSubtitle: String {
+        if let albumYear {
+            return "\(song.album) · \(albumYear)"
+        }
+        return song.album
+    }
+}
+
+private struct ArtistDiscographyCard: View {
+    let album: Album
+    var width: CGFloat = 150
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ArtworkView(coverArt: album.coverArt, size: width, cornerRadius: 8)
+                .frame(width: width, height: width)
+            Text(album.name)
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(2)
+                .frame(height: 38, alignment: .topLeading)
+                .foregroundStyle(.primary)
+            if let year = album.year {
+                Text(String(format: String(localized: "%d년"), year))
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: width, alignment: .leading)
+        .buFiHorizontalScrollMotion()
+        .accessibilityElement(children: .combine)
     }
 }
 

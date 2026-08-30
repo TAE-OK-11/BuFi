@@ -14,10 +14,11 @@ struct ArtistHeroArtwork: View {
     let coverArt: String?
     var artistName: String? = nil
     var cacheRevision: String? = nil
+    var fullBleed = false
     var onPalette: ((ArtworkPalette) -> Void)?
 
-    private let height: CGFloat = 360
-    private let cornerRadius: CGFloat = 24
+    private var height: CGFloat { fullBleed ? 400 : 360 }
+    private var cornerRadius: CGFloat { fullBleed ? 0 : 24 }
 
     @State private var loadedArtwork: LoadedArtwork?
 
@@ -72,8 +73,7 @@ struct ArtistHeroArtwork: View {
         .frame(maxWidth: .infinity)
         .frame(height: height)
         .clipped()
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .modifier(ArtistHeroClipShape(cornerRadius: cornerRadius))
         .task(id: artworkLoadTaskID) {
             await loadImage(requestID: artworkRequestIdentity)
         }
@@ -180,5 +180,24 @@ struct ArtistHeroArtwork: View {
             return nil
         }
         return value
+    }
+}
+
+private struct ArtistHeroClipShape: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if cornerRadius > 0 {
+            content
+                .clipShape(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+                .contentShape(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+        } else {
+            content
+                .contentShape(Rectangle())
+        }
     }
 }
