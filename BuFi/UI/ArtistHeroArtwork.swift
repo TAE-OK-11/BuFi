@@ -39,35 +39,48 @@ struct ArtistHeroArtwork: View {
 
             if let loadedArtwork,
                loadedArtwork.requestIdentity == artworkRequestIdentity {
-                // Rasterized once. A live blur this large re-renders on every
-                // frame the hero moves, and the hero moves for the whole
-                // length of a scroll through the artist page.
-                ZStack {
+                if fullBleed {
                     Image(uiImage: loadedArtwork.image)
                         .resizable()
                         .scaledToFill()
-                        .scaleEffect(1.12)
-                        .blur(radius: 22)
-                        .saturation(0.92)
-                        .opacity(0.72)
-
-                    Rectangle()
-                        .fill(.black.opacity(0.08))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-                .drawingGroup(opaque: false)
-                .allowsHitTesting(false)
-
-                Image(uiImage: loadedArtwork.image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(
-                        BuFiTransition.artworkReveal.animation(
-                            motionEnabled ? BuFiMotion.reveal : .none
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                        .transition(
+                            BuFiTransition.artworkReveal.animation(
+                                motionEnabled ? BuFiMotion.reveal : .none
+                            )
                         )
-                    )
+                } else {
+                    // Rasterized once. A live blur this large re-renders on every
+                    // frame the hero moves, and the hero moves for the whole
+                    // length of a scroll through the artist page.
+                    ZStack {
+                        Image(uiImage: loadedArtwork.image)
+                            .resizable()
+                            .scaledToFill()
+                            .scaleEffect(1.12)
+                            .blur(radius: 22)
+                            .saturation(0.92)
+                            .opacity(0.72)
+
+                        Rectangle()
+                            .fill(.black.opacity(0.08))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    .drawingGroup(opaque: false)
+                    .allowsHitTesting(false)
+
+                    Image(uiImage: loadedArtwork.image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(
+                            BuFiTransition.artworkReveal.animation(
+                                motionEnabled ? BuFiMotion.reveal : .none
+                            )
+                        )
+                }
             }
         }
         .frame(maxWidth: .infinity)

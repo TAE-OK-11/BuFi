@@ -85,6 +85,7 @@ struct MusicDetailView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.buFiMotionEnabled) private var motionEnabled
+    @Environment(\.dismiss) private var dismiss
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
 
@@ -109,12 +110,13 @@ struct MusicDetailView: View {
     @State private var downloadAllTask: Task<Void, Never>?
     @State private var isDownloadingAll = false
     @State private var loadError: String?
+    @State private var topSafeAreaInset: CGFloat = 0
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 hero
-                    .buFiEntranceMotion(offset: 10)
+                    .buFiEntranceMotion(offset: isArtist ? 0 : 10)
                 if isLoading {
                     ProgressView("불러오는 중…")
                         .frame(maxWidth: .infinity)
@@ -184,42 +186,31 @@ struct MusicDetailView: View {
             // twice: once under this animation and once under its own entrance.
             .buFiMiniPlayerContentClearance()
         }
-        .background(background)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.visible, for: .navigationBar)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbar {
-            if isArtist, !isLoading, loadError == nil {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            if let first = songs.first {
-                                audio.play(first, in: songs, origin: .manual)
+        .modifier(ArtistScrollEdgeModifier(isArtist: isArtist))
+        .background {
+            ZStack {
+                background
+                if isArtist {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear {
+                                topSafeAreaInset = proxy.safeAreaInsets.top
                             }
-                        } label: {
-                            Label("모두 재생", systemImage: "play.fill")
-                        }
-                        Button {
-                            guard !songs.isEmpty else { return }
-                            let shuffled = songs.shuffled()
-                            if let first = shuffled.first {
-                                audio.play(first, in: shuffled, origin: .manual)
+                            .onChange(of: proxy.safeAreaInsets.top) { _, value in
+                                topSafeAreaInset = value
                             }
-                        } label: {
-                            Label("셔플 재생", systemImage: "shuffle")
-                        }
-                        Button { downloadAll() } label: {
-                            Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
-                        }
-                        .disabled(songs.isEmpty || isDownloadingAll)
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 17, weight: .semibold))
                     }
-                    .accessibilityLabel("더 보기")
                 }
             }
         }
+        .overlay(alignment: .top) {
+            if isArtist {
+                artistFloatingNavigation
+            }
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(isArtist ? .hidden : .visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .onChange(of: coverArt) { _, _ in
             palette = .fallback
         }
@@ -253,6 +244,7 @@ struct MusicDetailView: View {
 
     private var artistHero: some View {
         let identity = MusicDetailArtworkIdentity(route: route, coverArtID: coverArt)
+        let heroHeight: CGFloat = 400
         return ZStack(alignment: .bottom) {
             ArtistHeroArtwork(
                 coverArt: coverArt,
@@ -263,6 +255,7 @@ struct MusicDetailView: View {
                     receivePalette(nextPalette, for: identity)
                 }
             )
+            .frame(height: heroHeight + topSafeAreaInset)
 
             LinearGradient(
                 gradient: Gradient(stops: [
@@ -275,7 +268,64 @@ struct MusicDetailView: View {
             )
             .allowsHitTesting(false)
         }
-        .padding(.bottom, 4)
+        .frame(height: heroHeight)
+        .padding(.top, -topSafeAreaInset)
+        .clipped()
+    }
+
+    private var artistFloatingNavigation: some View {
+        HStack(spacing: 12) {
+            Button {
+                dismiss()
+            } label: {
+                artistNavControl(
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .bold))
+                )
+            }
+            .buttonStyle(BuFiPressStyle())
+            .accessibilityLabel("뒤로")
+
+            Spacer(minLength: 0)
+
+            if !isLoading, loadError == nil {
+                Menu {
+                    artistOverflowMenu
+                } label: {
+                    artistNavControl(
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 17, weight: .semibold))
+                    )
+                }
+                .accessibilityLabel("더 보기")
+            }
+        }
+        .padding(.horizontal, 16)
+        .safeAreaPadding(.top, 4)
+    }
+
+    @ViewBuilder
+    private var artistOverflowMenu: some View {
+        Button {
+            if let first = songs.first {
+                audio.play(first, in: songs, origin: .manual)
+            }
+        } label: {
+            Label("모두 재생", systemImage: "play.fill")
+        }
+        Button {
+            guard !songs.isEmpty else { return }
+            let shuffled = songs.shuffled()
+            if let first = shuffled.first {
+                audio.play(first, in: shuffled, origin: .manual)
+            }
+        } label: {
+            Label("셔플 재생", systemImage: "shuffle")
+        }
+        Button { downloadAll() } label: {
+            Label("모두 오프라인 저장", systemImage: "arrow.down.circle")
+        }
+        .disabled(songs.isEmpty || isDownloadingAll)
     }
 
     private var artistNameHeader: some View {
@@ -377,6 +427,15 @@ struct MusicDetailView: View {
             .foregroundStyle(detailControlForeground)
             .frame(width: 44, height: 44)
             .buFiGlass(cornerRadius: 22, interactive: true)
+    }
+
+    private func artistNavControl<Content: View>(_ content: Content) -> some View {
+        content
+            .foregroundStyle(.white.opacity(0.95))
+            .frame(width: 42, height: 42)
+            .buFiGlass(cornerRadius: 21, interactive: true)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
     }
 
     private func artistFeaturedRelease(_ album: Album) -> some View {
@@ -1469,6 +1528,24 @@ private struct ArtistDiscographyCard: View {
         .frame(width: width, alignment: .leading)
         .buFiHorizontalScrollMotion()
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct ArtistScrollEdgeModifier: ViewModifier {
+    let isArtist: Bool
+
+    func body(content: Content) -> some View {
+        if isArtist {
+            if #available(iOS 17.0, *) {
+                content
+                    .contentMargins(.top, 0, for: .scrollContent)
+                    .scrollContentBackground(.hidden)
+            } else {
+                content
+            }
+        } else {
+            content
+        }
     }
 }
 
