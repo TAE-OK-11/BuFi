@@ -832,25 +832,31 @@ actor AppDatabase {
         scope: String,
         maximumAge: TimeInterval,
         maximumBytes: Int
-    ) async -> HomeSnapshot? {
+    ) async -> (snapshot: HomeSnapshot, savedAt: Date)? {
         let cutoff = currentDate()
             .addingTimeInterval(-max(0, maximumAge))
             .timeIntervalSince1970
         guard let pool = await databasePool() else { return nil }
         do {
-            guard let data = try await pool.read({ db -> Data? in
+            guard let loaded = try await pool.read({ db -> (Data, TimeInterval)? in
                 guard let row = try Row.fetchOne(
                     db,
                     sql: """
-                    SELECT snapshot_data FROM home_snapshot
+                    SELECT snapshot_data, saved_at FROM home_snapshot
                     WHERE account_scope = ? AND saved_at >= ?
                     """,
                     arguments: [scope, cutoff]
                 ) else { return nil }
                 let data: Data = row["snapshot_data"]
-                return data
-            }), data.count <= max(0, maximumBytes) else { return nil }
-            return await Self.decodeHomeSnapshotConcurrently(data)
+                let savedAt: TimeInterval = row["saved_at"]
+                return (data, savedAt)
+            }) else { return nil }
+            let data = loaded.0
+            guard data.count <= max(0, maximumBytes) else { return nil }
+            guard let snapshot = await Self.decodeHomeSnapshotConcurrently(data) else {
+                return nil
+            }
+            return (snapshot, Date(timeIntervalSince1970: loaded.1))
         } catch {
             return nil
         }

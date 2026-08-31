@@ -391,6 +391,7 @@ final class AppModel: ObservableObject {
     private var pendingRefreshSilent = true
     private let runtimeClock = ContinuousClock()
     private var lastFullRefresh: ContinuousClock.Instant?
+    private static let connectSnapshotFreshness: TimeInterval = 300
     private var lastHomeSnapshotSave: ContinuousClock.Instant?
     private var lastExternalRecommendationIdentity:
         ExternalRecommendationRefreshIdentity?
@@ -440,7 +441,14 @@ final class AppModel: ObservableObject {
         hasListenBrainzToken = stored.hasListenBrainzToken
         LaunchDiagnostics.mark("credential-bootstrap-loaded")
         if let credentials = stored.credentials {
-            await connect(credentials, persist: false)
+            let seed = await OpenSubsonicPublicDiscovery.fetchExtensions(
+                serverURL: credentials.serverURL
+            )
+            await connect(
+                credentials,
+                persist: false,
+                seedExtensionRegistry: seed
+            )
         } else {
             sessionState = .signedOut
         }
@@ -2649,7 +2657,8 @@ final class AppModel: ObservableObject {
                 accountScope: accountScope
             )
 
-            let cachedSnapshot = await cachedSnapshotRequest
+            let cachedLoad = await cachedSnapshotRequest
+            let cachedSnapshot = cachedLoad?.snapshot
             let offlineSession = await offlineRequest
             let artworkSession = await artworkRequest
             let historySession = await historyRequest
@@ -2716,6 +2725,9 @@ final class AppModel: ObservableObject {
             }
 
             let snapshot = cachedSnapshot ?? .empty
+            let snapshotIsFresh = cachedLoad.map {
+                Date().timeIntervalSince($0.savedAt) < Self.connectSnapshotFreshness
+            } ?? false
             reconcileFavoriteStates(
                 in: snapshot,
                 authoritative: false
@@ -2734,7 +2746,11 @@ final class AppModel: ObservableObject {
             self.catalogSessionToken = catalogSession
             self.publishHome(applyingFavoriteOverrides(to: snapshot))
             self.scheduleLibraryCatalogRefresh(snapshot: snapshot)
-            self.lastFullRefresh = nil
+            if snapshotIsFresh {
+                self.lastFullRefresh = runtimeClock.now
+            } else {
+                self.lastFullRefresh = nil
+            }
             self.lastHomeSnapshotSave = nil
             self.connectedServerAddress = Self.serverDisplayAddress(
                 from: client.credentials.serverURL
@@ -2772,7 +2788,7 @@ final class AppModel: ObservableObject {
                     )
                 }
             )
-            if cachedSnapshot != nil {
+            if cachedSnapshot != nil, status == nil {
                 scheduleCachedHomePreparation(
                     snapshot,
                     generation: generation
@@ -2781,6 +2797,7 @@ final class AppModel: ObservableObject {
             if status != nil {
                 scheduleAutomaticRefresh(
                     silent: cachedSnapshot != nil,
+                    forceFull: !snapshotIsFresh,
                     generation: generation
                 )
             }
@@ -2975,7 +2992,11 @@ final class AppModel: ObservableObject {
         serverHomeEnrichmentToken = nil
     }
 
-    private func scheduleAutomaticRefresh(silent: Bool, generation: Int) {
+    private func scheduleAutomaticRefresh(
+        silent: Bool,
+        forceFull: Bool = true,
+        generation: Int
+    ) {
         cancelAutomaticRefresh()
         let token = UUID()
         automaticRefreshToken = token
@@ -2988,7 +3009,7 @@ final class AppModel: ObservableObject {
                 }
             }
             guard generation == self.sessionGeneration else { return }
-            await self.refresh(forceFull: true, silent: silent)
+            await self.refresh(forceFull: forceFull, silent: silent)
         }
     }
 

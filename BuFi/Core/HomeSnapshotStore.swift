@@ -1,9 +1,14 @@
 import Foundation
 
+struct CachedHomeSnapshot: Sendable {
+    let snapshot: HomeSnapshot
+    let savedAt: Date
+}
+
 actor HomeSnapshotStore {
     static let shared = HomeSnapshotStore()
 
-    private struct CachedSnapshot: Codable, Sendable {
+    private struct LegacyCachedSnapshot: Codable, Sendable {
         let savedAt: Date
         let snapshot: HomeSnapshot
     }
@@ -16,16 +21,19 @@ actor HomeSnapshotStore {
 
     private init() {}
 
-    func load(accountScope: String) async -> HomeSnapshot? {
+    func load(accountScope: String) async -> CachedHomeSnapshot? {
         let epoch = scopeEpochs[accountScope, default: 0]
-        if let snapshot = await AppDatabase.shared.loadHomeSnapshot(
+        if let loaded = await AppDatabase.shared.loadHomeSnapshot(
             scope: accountScope,
             maximumAge: maximumAge,
             maximumBytes: maximumBytes
         ) {
             guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
             removeLegacySnapshot(accountScope: accountScope)
-            return snapshot
+            return CachedHomeSnapshot(
+                snapshot: loaded.snapshot,
+                savedAt: loaded.savedAt
+            )
         }
         guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
         guard let cached = legacySnapshot(accountScope: accountScope) else { return nil }
@@ -38,7 +46,10 @@ actor HomeSnapshotStore {
             removeLegacySnapshot(accountScope: accountScope)
         }
         guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
-        return cached.snapshot
+        return CachedHomeSnapshot(
+            snapshot: cached.snapshot,
+            savedAt: cached.savedAt
+        )
     }
 
     func save(_ snapshot: HomeSnapshot, accountScope: String) async {
@@ -73,15 +84,12 @@ actor HomeSnapshotStore {
         )
     }
 
-    private func legacySnapshot(accountScope: String) -> CachedSnapshot? {
+    private func legacySnapshot(accountScope: String) -> LegacyCachedSnapshot? {
         for key in [storageKey(accountScope), "\(legacyKeyPrefix).\(accountScope)"] {
             guard let data = UserDefaults.standard.data(forKey: key),
                   data.count <= maximumBytes,
-                  let cached = try? JSONDecoder().decode(CachedSnapshot.self, from: data),
-                  CacheFreshnessPolicy.isFresh(
-                    savedAt: cached.savedAt,
-                    maximumAge: maximumAge
-                  ) else {
+                  let cached = try? JSONDecoder().decode(LegacyCachedSnapshot.self, from: data),
+                  Date().timeIntervalSince(cached.savedAt) < maximumAge else {
                 continue
             }
             return cached

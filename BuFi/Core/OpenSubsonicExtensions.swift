@@ -149,6 +149,13 @@ enum OpenSubsonicClientInfo {
 }
 
 enum OpenSubsonicPublicDiscovery {
+    private struct DecoderCapture: Decodable {
+        let decoder: Decoder
+        init(from decoder: Decoder) throws {
+            self.decoder = decoder
+        }
+    }
+
     private static let cacheLock = NSLock()
     nonisolated(unsafe) private static var cache: [String: CachedEntry] = [:]
     private static let cacheLifetime: TimeInterval = 5 * 60
@@ -196,16 +203,13 @@ enum OpenSubsonicPublicDiscovery {
                   (200..<300).contains(http.statusCode) else {
                 return nil
             }
-            let envelope = try JSONDecoder().decode(
-                StatusEnvelope.self,
-                from: data
-            )
+            let capture = try JSONDecoder().decode(DecoderCapture.self, from: data)
+            let envelope = try StatusEnvelope(from: capture.decoder)
             guard envelope.response.status == "ok" else {
                 return nil
             }
-            let payload = try JSONDecoder().decode(
-                APIEnvelope<OpenSubsonicExtensionsPayload>.self,
-                from: data
+            let payload = try APIEnvelope<OpenSubsonicExtensionsPayload>(
+                from: capture.decoder
             ).response
             let registry = OpenSubsonicExtensionRegistry(
                 extensions: payload.openSubsonicExtensions ?? []
