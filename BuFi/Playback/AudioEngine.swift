@@ -1927,7 +1927,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     }
                 }
                 if persistsQueue, finished {
-                    self.scheduleQueueSave()
+                    self.scheduleQueueSave(syncServer: false)
                 }
             }
         }
