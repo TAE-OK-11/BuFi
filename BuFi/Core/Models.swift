@@ -4,6 +4,15 @@ struct ServerCredentials: Codable, Equatable, Sendable {
     var serverURL: String
     var username: String
     var password: String
+    var authMethod: ServerAuthMethod?
+
+    var resolvedAuthMethod: ServerAuthMethod {
+        authMethod ?? .password
+    }
+
+    var usesAPIKey: Bool {
+        resolvedAuthMethod == .apiKey
+    }
 }
 
 enum StreamQuality: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -728,12 +737,14 @@ struct LyricsDocument: Equatable, Codable, Sendable {
 struct ServerPlayQueue: Sendable {
     var songs: [Song]
     var currentID: String?
+    var currentIndex: Int?
     var position: TimeInterval
 }
 
 struct APIErrorBody: Decodable, Sendable {
     let code: Int?
     let message: String?
+    let helpUrl: String?
 }
 
 struct StatusEnvelope: Decodable, Sendable {

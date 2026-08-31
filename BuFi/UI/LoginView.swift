@@ -7,14 +7,18 @@ struct LoginView: View {
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""
+    @State private var authMethod: ServerAuthMethod = .password
+    @State private var serverSupportsAPIKey = false
     @State private var isSubmitting = false
     @State private var loginTask: Task<Void, Never>?
+    @State private var extensionDiscoveryTask: Task<Void, Never>?
     @FocusState private var focus: Field?
 
     private enum Field {
         case server
         case username
         case password
+        case apiKey
     }
 
     var body: some View {
@@ -70,6 +74,9 @@ struct LoginView: View {
                         )
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                        .onChange(of: server) { _, _ in
+                            refreshServerCapabilities()
+                        }
 
                         if let serverHint {
                             Text(serverHint)
@@ -79,26 +86,54 @@ struct LoginView: View {
                                 .padding(.horizontal, 4)
                         }
 
-                        input(
-                            "사용자 이름",
-                            text: $username,
-                            icon: "person.fill",
-                            field: .username,
-                            contentType: .username
-                        )
-                        .textInputAutocapitalization(.never)
+                        Picker("인증 방식", selection: $authMethod) {
+                            Text("사용자 이름 + 비밀번호").tag(ServerAuthMethod.password)
+                            Text("API 키").tag(ServerAuthMethod.apiKey)
+                        }
+                        .pickerStyle(.segmented)
 
-                        SecureField("비밀번호", text: $password)
-                            .textContentType(.password)
-                            .focused($focus, equals: .password)
-                            .submitLabel(.go)
-                            .onSubmit(connect)
-                            .padding(.horizontal, 16)
-                            .frame(height: 56)
-                            .background(
-                                BuFiTheme.elevated,
-                                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        if serverSupportsAPIKey {
+                            Text("이 서버는 OpenSubsonic API 키 인증을 지원합니다.")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(BuFiTheme.accent)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 4)
+                        }
+
+                        if authMethod == .password {
+                            input(
+                                "사용자 이름",
+                                text: $username,
+                                icon: "person.fill",
+                                field: .username,
+                                contentType: .username
                             )
+                            .textInputAutocapitalization(.never)
+
+                            SecureField("비밀번호", text: $password)
+                                .textContentType(.password)
+                                .focused($focus, equals: .password)
+                                .submitLabel(.go)
+                                .onSubmit(connect)
+                                .padding(.horizontal, 16)
+                                .frame(height: 56)
+                                .background(
+                                    BuFiTheme.elevated,
+                                    in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                )
+                        } else {
+                            SecureField("API 키", text: $password)
+                                .textContentType(.password)
+                                .focused($focus, equals: .apiKey)
+                                .submitLabel(.go)
+                                .onSubmit(connect)
+                                .padding(.horizontal, 16)
+                                .frame(height: 56)
+                                .background(
+                                    BuFiTheme.elevated,
+                                    in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                )
+                        }
                     }
                     .padding(.top, 34)
 
@@ -130,11 +165,15 @@ struct LoginView: View {
                     .buttonStyle(BuFiPressStyle())
                     .padding(.top, 22)
 
-                    Text("비밀번호는 Apple Keychain에만 저장됩니다.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 14)
+                    Text(
+                        authMethod == .apiKey
+                            ? String(localized: "API 키는 Apple Keychain에만 저장됩니다.")
+                            : String(localized: "비밀번호는 Apple Keychain에만 저장됩니다.")
+                    )
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 14)
                 }
                 .padding(.horizontal, 24)
                 .frame(minHeight: UIScreen.main.bounds.height - 30)
@@ -160,7 +199,14 @@ struct LoginView: View {
                 .focused($focus, equals: field)
                 .submitLabel(.next)
                 .onSubmit {
-                    focus = field == .server ? .username : .password
+                    switch field {
+                    case .server:
+                        focus = authMethod == .password ? .username : .apiKey
+                    case .username:
+                        focus = .password
+                    case .password, .apiKey:
+                        break
+                    }
                 }
         }
         .padding(.horizontal, 16)
@@ -173,8 +219,9 @@ struct LoginView: View {
 
     private var canSubmit: Bool {
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasIdentity = authMethod == .apiKey || !trimmedUsername.isEmpty
         if case .success = ServerURLNormalization.normalize(server),
-           !trimmedUsername.isEmpty,
+           hasIdentity,
            !password.isEmpty,
            !isSubmitting,
            session.phase != .connecting {
@@ -206,13 +253,31 @@ struct LoginView: View {
         }
     }
 
+    private func refreshServerCapabilities() {
+        extensionDiscoveryTask?.cancel()
+        serverSupportsAPIKey = false
+        guard case .success(let url) = ServerURLNormalization.normalize(server) else {
+            return
+        }
+        let persisted = ServerURLNormalization.persistedServerURL(from: url)
+        extensionDiscoveryTask = Task {
+            let registry = await OpenSubsonicPublicDiscovery.fetchExtensions(
+                serverURL: persisted
+            )
+            guard !Task.isCancelled else { return }
+            serverSupportsAPIKey = registry.supports(
+                OpenSubsonicExtensionName.apiKeyAuthentication
+            )
+        }
+    }
+
     private func connect() {
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let outcome = ServerURLNormalization.normalize(server)
         guard !isSubmitting,
               session.phase != .connecting,
-              !trimmedUsername.isEmpty,
               !password.isEmpty else { return }
+        if authMethod == .password, trimmedUsername.isEmpty { return }
         guard case .success(let url) = outcome else {
             session.errorMessage = serverHint
                 ?? OpenSubsonicError.invalidServerURL.localizedDescription
@@ -223,11 +288,13 @@ struct LoginView: View {
         isSubmitting = true
         session.errorMessage = nil
         let submittedPassword = password
+        let submittedAuthMethod = authMethod
         loginTask = Task {
             await model.login(
                 serverURL: ServerURLNormalization.persistedServerURL(from: url),
                 username: trimmedUsername,
-                password: submittedPassword
+                password: submittedPassword,
+                authMethod: submittedAuthMethod
             )
             isSubmitting = false
             loginTask = nil

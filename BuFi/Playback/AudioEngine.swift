@@ -1044,7 +1044,7 @@ enum PlaybackResourceResolver {
             )
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let url = try client.streamURL(
+        let url = try await client.playbackStreamURL(
             songID: song.id,
             quality: request.quality,
             compatibilityFormat: request.compatibilityFormat
@@ -1103,6 +1103,7 @@ final class AudioEngine: NSObject, ObservableObject {
         let revision: UInt64
         let songIDs: [String]
         let currentID: String
+        let currentIndex: Int
         let position: TimeInterval
     }
 
@@ -1567,9 +1568,9 @@ final class AudioEngine: NSObject, ObservableObject {
                   !self.wantsPlayback else {
                 return
             }
-            let restoredIndex = serverQueue.songs.firstIndex {
-                $0.id == serverQueue.currentID
-            } ?? 0
+            let restoredIndex = serverQueue.currentIndex
+                ?? serverQueue.songs.firstIndex { $0.id == serverQueue.currentID }
+                ?? 0
             self.replacePlayback(serverQueue.songs, index: restoredIndex)
             self.queueMutationGeneration &+= 1
             self.behaviorStartRecordedForSongID = nil
@@ -5294,6 +5295,7 @@ final class AudioEngine: NSObject, ObservableObject {
                     revision: saveRevision,
                     songIDs: snapshot.queue.map(\.id),
                     currentID: current,
+                    currentIndex: snapshot.index,
                     position: snapshot.elapsed
                 )
             )
@@ -5327,7 +5329,8 @@ final class AudioEngine: NSObject, ObservableObject {
                     try await request.client.savePlayQueue(
                         songIDs: request.songIDs,
                         current: request.currentID,
-                        position: request.position
+                        position: request.position,
+                        currentIndex: request.currentIndex
                     )
                     guard !Task.isCancelled,
                           request.sessionGeneration == self.playbackSessionGeneration,

@@ -453,7 +453,12 @@ final class AppModel: ObservableObject {
     }
 
 
-    func login(serverURL: String, username: String, password: String) async {
+    func login(
+        serverURL: String,
+        username: String,
+        password: String,
+        authMethod: ServerAuthMethod = .password
+    ) async {
         guard !loginInFlight else { return }
         loginInFlight = true
         defer { loginInFlight = false }
@@ -465,11 +470,38 @@ final class AppModel: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
-        let credentials = ServerCredentials(
+        var credentials = ServerCredentials(
             serverURL: ServerURLNormalization.persistedServerURL(from: normalizedURL),
             username: username,
-            password: password
+            password: password,
+            authMethod: authMethod
         )
+        if authMethod == .apiKey {
+            do {
+                let probe = try OpenSubsonicClient(
+                    credentials: credentials,
+                    waitsForConnectivity: false,
+                    requestTimeout: 18,
+                    resourceTimeout: 30
+                )
+                let resolvedUsername = try await probe.tokenInfo()
+                await probe.shutdown()
+                guard !resolvedUsername.isEmpty else {
+                    sessionState = .signedOut
+                    errorMessage = OpenSubsonicError.invalidAPIKey.localizedDescription
+                    return
+                }
+                credentials.username = resolvedUsername
+            } catch let error as OpenSubsonicError {
+                sessionState = .signedOut
+                errorMessage = error.localizedDescription
+                return
+            } catch {
+                sessionState = .signedOut
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
         await connect(credentials, persist: true)
     }
 
@@ -2693,6 +2725,7 @@ final class AppModel: ObservableObject {
             provisionalClient = nil
             if let status {
                 await client.applyPingStatus(status)
+                await client.refreshExtensionRegistry()
             }
             self.offlineSessionToken = offlineSession
             self.artworkSessionToken = artworkSession
