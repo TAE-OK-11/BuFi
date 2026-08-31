@@ -2724,7 +2724,7 @@ final class AppModel: ObservableObject {
             provisionalClient = nil
             if let status {
                 await client.applyPingStatus(status)
-                if !client.hasSeededExtensionRegistry {
+                if !await client.hasSeededExtensionRegistry {
                     await client.refreshExtensionRegistry()
                 }
             }

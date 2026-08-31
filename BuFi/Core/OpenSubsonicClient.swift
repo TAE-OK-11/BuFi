@@ -3,6 +3,16 @@ import Foundation
 import OSLog
 import SwiftSonic
 
+/// BuFi only uses SwiftSonic for authenticated media URL construction.
+/// Network I/O stays in `OpenSubsonicClient`.
+private struct SwiftSonicURLBuilderTransport: HTTPTransport, Sendable {
+    enum Unavailable: Error, Sendable {}
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        throw Unavailable()
+    }
+}
+
 enum OpenSubsonicError: LocalizedError, Equatable {
     case invalidServerURL
     case insecureServerURL

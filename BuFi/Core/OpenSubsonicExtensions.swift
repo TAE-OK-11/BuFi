@@ -1,15 +1,4 @@
 import Foundation
-import SwiftSonic
-
-/// BuFi only uses SwiftSonic for authenticated media URL construction.
-/// Network I/O stays in `OpenSubsonicClient`.
-private struct SwiftSonicURLBuilderTransport: HTTPTransport, Sendable {
-    enum Unavailable: Error, Sendable {}
-
-    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        throw Unavailable()
-    }
-}
 
 enum OpenSubsonicExtensionName {
     static let apiKeyAuthentication = "apiKeyAuthentication"
@@ -103,7 +92,7 @@ struct TranscodeDecision: Decodable, Sendable {
 
 enum OpenSubsonicClientInfo {
     /// Client capabilities advertised to OpenSubsonic transcoding servers.
-    static let jsonBody: [String: Any] = [
+    nonisolated(unsafe) static let jsonBody: [String: Any] = [
         "name": OpenSubsonicClient.clientName,
         "platform": "iOS",
         "maxAudioBitrate": 1_024_000,

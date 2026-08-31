@@ -44,7 +44,11 @@ enum TransientServiceFailurePolicy {
                 return true
             case .invalidServerURL,
                     .insecureServerURL,
-                    .credentialsEmbeddedInServerURL:
+                    .credentialsEmbeddedInServerURL,
+                    .unsupportedTokenAuthentication,
+                    .unsupportedAuthentication,
+                    .conflictingAuthenticationParameters,
+                    .invalidAPIKey:
                 return false
             }
         }
@@ -65,7 +69,7 @@ enum TransientServiceFailurePolicy {
 
     private static func isAuthenticationFailure(code: Int?) -> Bool {
         guard let code else { return false }
-        return (40...41).contains(code)
+        return (40...44).contains(code)
     }
 }
 

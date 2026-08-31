@@ -108,7 +108,11 @@ enum SubsonicCompatibilityPolicy {
             return true
         case .invalidServerURL,
                 .insecureServerURL,
-                .credentialsEmbeddedInServerURL:
+                .credentialsEmbeddedInServerURL,
+                .unsupportedTokenAuthentication,
+                .unsupportedAuthentication,
+                .conflictingAuthenticationParameters,
+                .invalidAPIKey:
             return false
         }
     }
