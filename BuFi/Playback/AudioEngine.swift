@@ -1105,7 +1105,13 @@ final class AudioEngine: NSObject, ObservableObject {
         let currentID: String
         let currentIndex: Int
         let position: TimeInterval
+        let attempt: Int
     }
+
+    private static let serverQueueLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "BuFi",
+        category: "ServerQueue"
+    )
 
     static let shared = AudioEngine()
 
@@ -5296,7 +5302,8 @@ final class AudioEngine: NSObject, ObservableObject {
                     songIDs: snapshot.queue.map(\.id),
                     currentID: current,
                     currentIndex: snapshot.index,
-                    position: snapshot.elapsed
+                    position: snapshot.elapsed,
+                    attempt: 0
                 )
             )
         }
@@ -5341,6 +5348,33 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.lastServerQueueSaveRequest = Date()
                 } catch {
                     if Task.isCancelled { break }
+                    Self.serverQueueLogger.error(
+                        "Server queue save failed on attempt \(request.attempt + 1, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                    guard request.attempt < 2,
+                          CoreRequestClassifier.shouldRetry(error: error),
+                          request.sessionGeneration == self.playbackSessionGeneration,
+                          request.accountScope == self.currentAccountScope,
+                          self.client === request.client else {
+                        continue
+                    }
+                    try? await Task.sleep(
+                        for: NetworkResiliencePolicy.retryDelay(
+                            afterAttempt: request.attempt
+                        )
+                    )
+                    guard !Task.isCancelled else { break }
+                    self.pendingServerQueueSave = ServerQueueSaveRequest(
+                        client: request.client,
+                        accountScope: request.accountScope,
+                        sessionGeneration: request.sessionGeneration,
+                        revision: request.revision,
+                        songIDs: request.songIDs,
+                        currentID: request.currentID,
+                        currentIndex: request.currentIndex,
+                        position: request.position,
+                        attempt: request.attempt + 1
+                    )
                 }
             }
             self.serverQueueSaveTask = nil

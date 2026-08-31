@@ -9,6 +9,7 @@ struct LoginView: View {
     @State private var password = ""
     @State private var authMethod: ServerAuthMethod = .password
     @State private var serverSupportsAPIKey = false
+    @State private var discoveredExtensions: OpenSubsonicExtensionRegistry?
     @State private var isSubmitting = false
     @State private var loginTask: Task<Void, Never>?
     @State private var extensionDiscoveryTask: Task<Void, Never>?
@@ -256,15 +257,19 @@ struct LoginView: View {
     private func refreshServerCapabilities() {
         extensionDiscoveryTask?.cancel()
         serverSupportsAPIKey = false
+        discoveredExtensions = nil
         guard case .success(let url) = ServerURLNormalization.normalize(server) else {
             return
         }
         let persisted = ServerURLNormalization.persistedServerURL(from: url)
         extensionDiscoveryTask = Task {
-            let registry = await OpenSubsonicPublicDiscovery.fetchExtensions(
+            guard let registry = await OpenSubsonicPublicDiscovery.fetchExtensions(
                 serverURL: persisted
-            )
+            ) else {
+                return
+            }
             guard !Task.isCancelled else { return }
+            discoveredExtensions = registry
             serverSupportsAPIKey = registry.supports(
                 OpenSubsonicExtensionName.apiKeyAuthentication
             )
@@ -294,7 +299,8 @@ struct LoginView: View {
                 serverURL: ServerURLNormalization.persistedServerURL(from: url),
                 username: trimmedUsername,
                 password: submittedPassword,
-                authMethod: submittedAuthMethod
+                authMethod: submittedAuthMethod,
+                discoveredExtensions: discoveredExtensions
             )
             isSubmitting = false
             loginTask = nil

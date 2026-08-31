@@ -1,4 +1,15 @@
 import Foundation
+import SwiftSonic
+
+/// BuFi only uses SwiftSonic for authenticated media URL construction.
+/// Network I/O stays in `OpenSubsonicClient`.
+private struct SwiftSonicURLBuilderTransport: HTTPTransport, Sendable {
+    enum Unavailable: Error, Sendable {}
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        throw Unavailable()
+    }
+}
 
 enum OpenSubsonicExtensionName {
     static let apiKeyAuthentication = "apiKeyAuthentication"
@@ -149,33 +160,91 @@ enum OpenSubsonicClientInfo {
 }
 
 enum OpenSubsonicPublicDiscovery {
-    static func fetchExtensions(serverURL: String) async -> OpenSubsonicExtensionRegistry {
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: CachedEntry] = [:]
+    private static let cacheLifetime: TimeInterval = 5 * 60
+
+    private struct CachedEntry {
+        let registry: OpenSubsonicExtensionRegistry
+        let storedAt: Date
+    }
+
+    private static let session: URLSession = {
+        let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
+            requestTimeout: 12,
+            resourceTimeout: 20,
+            maximumConnectionsPerHost: 2,
+            allowsExpensiveNetworkAccess: true,
+            allowsConstrainedNetworkAccess: true,
+            waitsForConnectivity: false
+        )
+        return URLSession(
+            configuration: configuration,
+            delegate: HTTPSOnlyURLSessionDelegate(),
+            delegateQueue: nil
+        )
+    }()
+
+    static func fetchExtensions(serverURL: String) async -> OpenSubsonicExtensionRegistry? {
+        let normalized = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let cached = cachedRegistry(for: normalized) {
+            return cached
+        }
         guard let url = URL(
-            string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            string: normalized
                 + "/rest/getOpenSubsonicExtensions.view?f=json&v="
                 + OpenSubsonicClient.apiVersion
                 + "&c="
                 + OpenSubsonicClient.clientName
         ), url.scheme?.lowercased() == "https" else {
-            return .empty
+            return nil
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 12
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
-                return .empty
+                return nil
             }
-            let payload: OpenSubsonicExtensionsPayload = try JSONDecoder().decode(
+            let envelope = try JSONDecoder().decode(
+                StatusEnvelope.self,
+                from: data
+            )
+            guard envelope.response.status == "ok" else {
+                return nil
+            }
+            let payload = try JSONDecoder().decode(
                 APIEnvelope<OpenSubsonicExtensionsPayload>.self,
                 from: data
             ).response
-            return OpenSubsonicExtensionRegistry(
+            let registry = OpenSubsonicExtensionRegistry(
                 extensions: payload.openSubsonicExtensions ?? []
             )
+            store(registry: registry, for: normalized)
+            return registry
         } catch {
-            return .empty
+            return nil
         }
+    }
+
+    private static func cachedRegistry(for serverURL: String) -> OpenSubsonicExtensionRegistry? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        guard let entry = cache[serverURL],
+              Date().timeIntervalSince(entry.storedAt) < cacheLifetime else {
+            cache.removeValue(forKey: serverURL)
+            return nil
+        }
+        return entry.registry
+    }
+
+    private static func store(
+        registry: OpenSubsonicExtensionRegistry,
+        for serverURL: String
+    ) {
+        cacheLock.lock()
+        cache[serverURL] = CachedEntry(registry: registry, storedAt: Date())
+        cacheLock.unlock()
     }
 }

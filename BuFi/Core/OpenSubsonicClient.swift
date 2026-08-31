@@ -304,12 +304,7 @@ enum OpenSubsonicRequestPolicy {
         case "getPodcastEpisode":
             return OpenSubsonicResponseCachePolicy(lifetime: 30 * 60)
         case "getTranscodeDecision":
-            return OpenSubsonicResponseCachePolicy(lifetime: 30)
-            return OpenSubsonicResponseCachePolicy(
-                lifetime: 5 * 60,
-                staleGrace: 30 * 60,
-                dependencies: [.libraryLists]
-            )
+            return OpenSubsonicResponseCachePolicy(lifetime: 0)
         case "getArtists":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 15 * 60,
@@ -815,6 +810,17 @@ actor OpenSubsonicClient {
     private let retryPolicy = ReadRequestRetryPolicy()
     private let authenticationQueryItems: [URLQueryItem]
     private var extensionRegistry: OpenSubsonicExtensionRegistry?
+    private var extensionRegistryBackoffUntil: ContinuousClock.Instant?
+    private static let extensionRegistryBackoff: Duration = .seconds(90)
+    private struct TranscodeDecisionKey: Hashable, Sendable {
+        let mediaID: String
+        let mediaType: String
+    }
+    private var transcodeDecisionCache:
+        [TranscodeDecisionKey: (decision: TranscodeDecision?, storedAt: ContinuousClock.Instant)] = [:]
+    private var inFlightTranscodeDecisions:
+        [TranscodeDecisionKey: Task<TranscodeDecision?, Error>] = [:]
+    private static let transcodeDecisionCacheLifetime: Duration = .seconds(45)
     private var apiFamily: SubsonicAPIFamily = .openSubsonic
     private var allowsZstandardResponses = true
     private var preferredFallbackEndpoints: [String: String] = [:]
@@ -916,7 +922,8 @@ actor OpenSubsonicClient {
         credentials: ServerCredentials,
         waitsForConnectivity: Bool = true,
         requestTimeout: TimeInterval = 18,
-        resourceTimeout: TimeInterval = 60
+        resourceTimeout: TimeInterval = 60,
+        seedExtensionRegistry: OpenSubsonicExtensionRegistry? = nil
     ) throws {
         let normalized = try ServerURLNormalization.resolvedURL(
             from: credentials.serverURL
@@ -952,8 +959,11 @@ actor OpenSubsonicClient {
                 apiVersion: Self.apiVersion,
                 requestTimeout: requestTimeout,
                 resourceTimeout: resourceTimeout
-            )
+            ),
+            transport: SwiftSonicURLBuilderTransport(),
+            retryPolicy: .none
         )
+        self.extensionRegistry = seedExtensionRegistry
 
         let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
             requestTimeout: requestTimeout,
@@ -990,7 +1000,31 @@ actor OpenSubsonicClient {
         decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
         playbackMetadataCache.removeAll(keepingCapacity: false)
+        transcodeDecisionCache.removeAll(keepingCapacity: false)
+        for task in inFlightTranscodeDecisions.values {
+            task.cancel()
+        }
+        inFlightTranscodeDecisions.removeAll(keepingCapacity: false)
         session.invalidateAndCancel()
+    }
+
+    static func resolveAPIKeyUsername(
+        credentials: ServerCredentials,
+        requestTimeout: TimeInterval = 12,
+        resourceTimeout: TimeInterval = 20
+    ) async throws -> String {
+        let client = try OpenSubsonicClient(
+            credentials: credentials,
+            waitsForConnectivity: false,
+            requestTimeout: requestTimeout,
+            resourceTimeout: resourceTimeout
+        )
+        defer { Task { await client.shutdown() } }
+        let username = try await client.tokenInfo()
+        guard !username.isEmpty else {
+            throw OpenSubsonicError.invalidAPIKey
+        }
+        return username
     }
 
     private static func makeAuthenticationItems(
@@ -2308,6 +2342,7 @@ actor OpenSubsonicClient {
             || endpoint == "unstar"
             || endpoint == "savePlayQueue"
             || endpoint == "savePlayQueueByIndex"
+            || endpoint == "getTranscodeDecision"
     }
 
     func home(
@@ -2821,17 +2856,19 @@ actor OpenSubsonicClient {
         minimumVersion: Int = 1,
         limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> Bool {
-        guard let registry = await loadExtensionRegistry(limiter: limiter) else {
-            return false
-        }
+        let registry = await loadExtensionRegistry(limiter: limiter)
         return registry.supports(name, minimumVersion: minimumVersion)
     }
 
     private func loadExtensionRegistry(
         limiter: HomeEnrichmentRequestLimiter? = nil
-    ) async -> OpenSubsonicExtensionRegistry? {
+    ) async -> OpenSubsonicExtensionRegistry {
         if let extensionRegistry {
             return extensionRegistry
+        }
+        if let extensionRegistryBackoffUntil,
+           extensionRegistryBackoffUntil > ContinuousClock.now {
+            return .empty
         }
         do {
             let payload: OpenSubsonicExtensionsPayload = try await withEnrichmentPermit(
@@ -2843,18 +2880,26 @@ actor OpenSubsonicClient {
                 extensions: payload.openSubsonicExtensions ?? []
             )
             extensionRegistry = registry
+            extensionRegistryBackoffUntil = nil
             return registry
         } catch {
-            // A transient/auth/cancellation failure is not an authoritative
-            // statement that the server supports no extensions. Leave the
-            // cache unresolved so a later healthy request can recover.
-            return nil
+            // Cache a short negative result so transient failures do not fan
+            // out into one discovery request per feature gate.
+            extensionRegistry = .empty
+            extensionRegistryBackoffUntil =
+                ContinuousClock.now + Self.extensionRegistryBackoff
+            return .empty
         }
     }
 
     func refreshExtensionRegistry() async {
         extensionRegistry = nil
+        extensionRegistryBackoffUntil = nil
         _ = await loadExtensionRegistry()
+    }
+
+    var hasSeededExtensionRegistry: Bool {
+        extensionRegistry != nil
     }
 
     func tokenInfo() async throws -> String {
@@ -2887,19 +2932,43 @@ actor OpenSubsonicClient {
         guard await supportsExtension(OpenSubsonicExtensionName.transcoding) else {
             return nil
         }
-        let payload: TranscodeDecisionPayload = try await jsonMutationRequest(
-            "getTranscodeDecision",
-            queryParameters: [
-                "mediaId": mediaID,
-                "mediaType": mediaType
-            ]
-        )
-        return payload.transcodeDecision
+        let key = TranscodeDecisionKey(mediaID: mediaID, mediaType: mediaType)
+        if let cached = transcodeDecisionCache[key],
+           cached.storedAt > ContinuousClock.now - Self.transcodeDecisionCacheLifetime {
+            return cached.decision
+        }
+        if let existing = inFlightTranscodeDecisions[key] {
+            return try await existing.value
+        }
+        let task = Task<TranscodeDecision?, Error> { [self] in
+            let payload: TranscodeDecisionPayload = try await jsonMutationRequest(
+                "getTranscodeDecision",
+                queryParameters: [
+                    "mediaId": mediaID,
+                    "mediaType": mediaType
+                ],
+                allowsRetry: true
+            )
+            return payload.transcodeDecision
+        }
+        inFlightTranscodeDecisions[key] = task
+        defer { inFlightTranscodeDecisions[key] = nil }
+        do {
+            let decision = try await task.value
+            transcodeDecisionCache[key] = (
+                decision: decision,
+                storedAt: ContinuousClock.now
+            )
+            return decision
+        } catch {
+            throw error
+        }
     }
 
     private func jsonMutationRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
-        queryParameters: [String: String]
+        queryParameters: [String: String],
+        allowsRetry: Bool
     ) async throws -> Payload {
         let queryItems = queryParameters
             .sorted { $0.key < $1.key }
@@ -2919,7 +2988,10 @@ actor OpenSubsonicClient {
         request.httpBody = try JSONSerialization.data(
             withJSONObject: OpenSubsonicClientInfo.jsonBody
         )
-        let response = try await responseData(from: request, allowsRetry: false)
+        let response = try await responseData(
+            from: request,
+            allowsRetry: allowsRetry
+        )
         return try await decodeResponse(response)
     }
 
@@ -3591,6 +3663,7 @@ actor OpenSubsonicClient {
         // when their last waiter goes away.
         clearResponseCache()
         lyricsCache.removeAll(keepingCapacity: true)
+        transcodeDecisionCache.removeAll(keepingCapacity: false)
     }
 
     nonisolated func streamURL(
@@ -3629,12 +3702,15 @@ actor OpenSubsonicClient {
         compatibilityFormat: String? = nil,
         offsetSeconds: Int = 0
     ) async throws -> URL {
-        if let decision = try await transcodeDecision(mediaID: songID),
+        let requestsTranscodePath = compatibilityFormat?.lowercased() != "raw"
+            && quality != .original
+        if requestsTranscodePath,
+           let decision = try await transcodeDecision(mediaID: songID),
            decision.canDirectPlay != true,
            decision.canTranscode == true,
            let params = decision.transcodeParams,
            !params.isEmpty {
-            return try transcodedStreamURL(
+            return try await transcodedStreamURL(
                 mediaID: songID,
                 mediaType: "song",
                 transcodeParams: params,
@@ -3654,14 +3730,14 @@ actor OpenSubsonicClient {
         mediaType: String,
         transcodeParams: String,
         offsetSeconds: Int
-    ) throws -> URL {
+    ) async throws -> URL {
         var queryItems = [
             URLQueryItem(name: "mediaId", value: mediaID),
             URLQueryItem(name: "mediaType", value: mediaType),
             URLQueryItem(name: "transcodeParams", value: transcodeParams)
         ]
         if offsetSeconds > 0,
-           extensionRegistry?.supports(OpenSubsonicExtensionName.transcodeOffset) == true {
+           await supportsExtension(OpenSubsonicExtensionName.transcodeOffset) {
             queryItems.append(URLQueryItem(name: "offset", value: String(offsetSeconds)))
         }
         let url = try endpointURL(
@@ -3854,7 +3930,7 @@ actor OpenSubsonicClient {
         let songs = queue?.entry ?? []
         let currentID = queue?.current
         let currentIndex = currentID.flatMap { id in
-            songs.firstIndex { $0.id == id }
+            songs.indices.last { songs[$0].id == id }
         }
         return ServerPlayQueue(
             songs: songs,
