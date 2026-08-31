@@ -31,10 +31,19 @@ Sonic 대체 엔진이나 서버 임베딩을 추가할 때 점수·다양성 �
   이름 대신 아티스트 ID를 우선 사용한다.
 - `getAlbumList2`: `newest`, `highest`, `frequent`, `random`, `recent`
 - `getPlaylist`: 최대 3개 플레이리스트에서 함께 등장한 횟수
-- `getOpenSubsonicExtensions`: Sonic, artist-ID top songs, playback report
+- `getOpenSubsonicExtensions`: Sonic, artist-ID top songs, playback report,
+  index-based queue, API key auth, HTTP form POST, transcoding, podcast episode
   기능 협상
 - `reportPlayback`: 지원 서버에 시작/재생/일시정지/종료 상태 변화만 전송한다.
   주기적 폴링은 하지 않는다.
+- `getPlayQueueByIndex` / `savePlayQueueByIndex`: `indexBasedQueue` 확장이 있으면
+  인덱스 기반 큐 동기화를 우선 사용한다.
+- `getTranscodeDecision` / `getTranscodeStream`: `transcoding` 확장이 있으면
+  서버 결정에 따라 트랜스코딩 스트림을 사용한다.
+- `tokenInfo`: API 키 로그인 시 사용자 이름을 확인한다.
+- `getPodcastEpisode`: `getPodcastEpisode` 확장이 있으면 단일 에피소드 메타데이터를
+  조회할 수 있다.
+- `getLyricsBySongId`: 다국어 가사가 있으면 기기 언어 우선순위로 선택한다.
 
 전체 홈 새로고침에서만 제한된 앨범·아티스트·플레이리스트 상세 정보를
 병렬 요청한다. 증분 동기화와 저전력/고온 상태에서는 기존 캐시를 재사용해

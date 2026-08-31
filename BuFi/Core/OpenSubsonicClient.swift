@@ -3,11 +3,25 @@ import Foundation
 import OSLog
 import SwiftSonic
 
+/// BuFi only uses SwiftSonic for authenticated media URL construction.
+/// Network I/O stays in `OpenSubsonicClient`.
+private struct SwiftSonicURLBuilderTransport: HTTPTransport, Sendable {
+    private struct Unavailable: Error, Sendable {}
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        throw Unavailable()
+    }
+}
+
 enum OpenSubsonicError: LocalizedError, Equatable {
     case invalidServerURL
     case insecureServerURL
     case credentialsEmbeddedInServerURL
     case invalidResponse
+    case unsupportedTokenAuthentication
+    case unsupportedAuthentication
+    case conflictingAuthenticationParameters
+    case invalidAPIKey
     case server(code: Int?, message: String)
     case http(Int)
 
@@ -21,6 +35,14 @@ enum OpenSubsonicError: LocalizedError, Equatable {
             String(localized: "서버 주소에 아이디나 비밀번호를 넣지 마세요.")
         case .invalidResponse:
             String(localized: "OpenSubsonic 응답 형식이 올바르지 않습니다.")
+        case .unsupportedTokenAuthentication:
+            String(localized: "이 서버는 토큰 인증을 지원하지 않습니다.")
+        case .unsupportedAuthentication:
+            String(localized: "이 서버는 지원되는 인증 방식이 없습니다.")
+        case .conflictingAuthenticationParameters:
+            String(localized: "인증 파라미터가 충돌했습니다. 한 가지 방식만 사용하세요.")
+        case .invalidAPIKey:
+            String(localized: "API 키가 올바르지 않습니다.")
         case .server(_, let message):
             message
         case .http(let status):
@@ -28,6 +50,21 @@ enum OpenSubsonicError: LocalizedError, Equatable {
                 format: String(localized: "서버가 HTTP %d로 응답했습니다."),
                 status
             )
+        }
+    }
+
+    static func fromSubsonicErrorCode(_ code: Int?, message: String) -> OpenSubsonicError {
+        switch code {
+        case 41:
+            return .unsupportedTokenAuthentication
+        case 42:
+            return .unsupportedAuthentication
+        case 43:
+            return .conflictingAuthenticationParameters
+        case 44:
+            return .invalidAPIKey
+        default:
+            return .server(code: code, message: message)
         }
     }
 }
@@ -267,17 +304,17 @@ enum OpenSubsonicRequestPolicy {
                 staleGrace: 30 * 60,
                 dependencies: [.libraryLists]
             )
-        case "getPlayQueue":
+        case "getPlayQueue", "getPlayQueueByIndex":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 15,
                 dependencies: [.playQueue]
             )
-        case "search2", "search3":
-            return OpenSubsonicResponseCachePolicy(
-                lifetime: 5 * 60,
-                staleGrace: 30 * 60,
-                dependencies: [.libraryLists]
-            )
+        case "tokenInfo":
+            return OpenSubsonicResponseCachePolicy(lifetime: 5 * 60)
+        case "getPodcastEpisode":
+            return OpenSubsonicResponseCachePolicy(lifetime: 30 * 60)
+        case "getTranscodeDecision":
+            return OpenSubsonicResponseCachePolicy(lifetime: 0)
         case "getArtists":
             return OpenSubsonicResponseCachePolicy(
                 lifetime: 15 * 60,
@@ -331,9 +368,9 @@ enum OpenSubsonicRequestPolicy {
         queryItems: [URLQueryItem] = []
     ) -> OpenSubsonicMutationImpact {
         switch endpoint {
-        case "reportPlayback", "scrobble":
+        case "reportPlayback", "scrobble", "getTranscodeDecision":
             return .none
-        case "savePlayQueue":
+        case "savePlayQueue", "savePlayQueueByIndex":
             return .invalidating([.playQueue])
         case "star", "unstar":
             let names = Set(queryItems.map(\.name))
@@ -574,14 +611,32 @@ struct LyricsDocumentCache: Sendable {
 }
 
 enum LyricsDocumentParser {
-    static func parse(_ payload: LyricsPayload) -> LyricsDocument {
+    static var defaultPreferredLanguageCodes: [String] {
+        var codes: [String] = []
+        if let current = Locale.current.language.languageCode?.identifier,
+           !current.isEmpty {
+            codes.append(current)
+        }
+        for fallback in ["ko", "en", "ja", "und", "xxx"] where !codes.contains(fallback) {
+            codes.append(fallback)
+        }
+        return codes
+    }
+
+    static func parse(
+        _ payload: LyricsPayload,
+        preferredLanguageCodes: [String] = LyricsDocumentParser.defaultPreferredLanguageCodes
+    ) -> LyricsDocument {
         guard let sources = payload.lyricsList?.structuredLyrics else {
             return .empty
         }
 
         // OpenSubsonic may return independent lyric representations. Preserve
-        // server preference order, but skip empty or whitespace-only entries.
-        for source in sources {
+        // server preference order after applying the user's language priority.
+        for source in orderedSources(
+            sources,
+            preferredLanguageCodes: preferredLanguageCodes
+        ) {
             let validLines = (source.line ?? []).enumerated().compactMap {
                 index, item -> (index: Int, start: Int?, text: String)? in
                 guard let text = item.value?.trimmingCharacters(
@@ -613,6 +668,46 @@ enum LyricsDocumentParser {
             return LyricsDocument(synced: isSynced, lines: lines)
         }
         return .empty
+    }
+
+    private static func orderedSources(
+        _ sources: [StructuredLyrics],
+        preferredLanguageCodes: [String]
+    ) -> [StructuredLyrics] {
+        guard !sources.isEmpty else { return [] }
+        var remaining = sources
+        var ordered: [StructuredLyrics] = []
+        for code in preferredLanguageCodes {
+            let matches = remaining.filter { matchesLanguage($0.lang, code: code) }
+            ordered.append(contentsOf: matches)
+            remaining.removeAll { candidate in
+                matches.contains { $0.lang == candidate.lang }
+            }
+        }
+        ordered.append(contentsOf: remaining)
+        return ordered
+    }
+
+    private static func matchesLanguage(_ value: String?, code: String) -> Bool {
+        let normalized = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let target = code.lowercased()
+        if normalized.isEmpty {
+            return target == "und" || target == "xxx"
+        }
+        if normalized == target { return true }
+        if normalized.hasPrefix(target) || target.hasPrefix(normalized) { return true }
+        switch target {
+        case "ko":
+            return normalized == "kor" || normalized == "korean"
+        case "en":
+            return normalized == "eng" || normalized == "english"
+        case "ja":
+            return normalized == "jpn" || normalized == "japanese"
+        default:
+            return false
+        }
     }
 
     static func parse(_ payload: LegacyLyricsPayload) -> LyricsDocument {
@@ -724,7 +819,18 @@ actor OpenSubsonicClient {
     private nonisolated let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
     private let authenticationQueryItems: [URLQueryItem]
-    private var supportedExtensions: Set<String>?
+    private var extensionRegistry: OpenSubsonicExtensionRegistry?
+    private var extensionRegistryBackoffUntil: ContinuousClock.Instant?
+    private static let extensionRegistryBackoff: Duration = .seconds(90)
+    private struct TranscodeDecisionKey: Hashable, Sendable {
+        let mediaID: String
+        let mediaType: String
+    }
+    private var transcodeDecisionCache:
+        [TranscodeDecisionKey: (decision: TranscodeDecision?, storedAt: ContinuousClock.Instant)] = [:]
+    private var inFlightTranscodeDecisions:
+        [TranscodeDecisionKey: Task<TranscodeDecision?, Error>] = [:]
+    private static let transcodeDecisionCacheLifetime: Duration = .seconds(45)
     private var apiFamily: SubsonicAPIFamily = .openSubsonic
     private var allowsZstandardResponses = true
     private var preferredFallbackEndpoints: [String: String] = [:]
@@ -826,7 +932,8 @@ actor OpenSubsonicClient {
         credentials: ServerCredentials,
         waitsForConnectivity: Bool = true,
         requestTimeout: TimeInterval = 18,
-        resourceTimeout: TimeInterval = 60
+        resourceTimeout: TimeInterval = 60,
+        seedExtensionRegistry: OpenSubsonicExtensionRegistry? = nil
     ) throws {
         let normalized = try ServerURLNormalization.resolvedURL(
             from: credentials.serverURL
@@ -835,25 +942,38 @@ actor OpenSubsonicClient {
         let normalizedCredentials = ServerCredentials(
             serverURL: ServerURLNormalization.persistedServerURL(from: normalized),
             username: username,
-            password: credentials.password
+            password: credentials.password,
+            authMethod: credentials.resolvedAuthMethod
         )
         self.credentials = normalizedCredentials
         self.accountScope = AccountScope.identifier(for: normalizedCredentials)
         self.authenticationQueryItems = Self.makeAuthenticationItems(
             for: normalizedCredentials
         )
+        let auth: AuthMethod
+        switch normalizedCredentials.resolvedAuthMethod {
+        case .password:
+            auth = .tokenAuth(
+                username: username,
+                password: credentials.password,
+                reusesSalt: true
+            )
+        case .apiKey:
+            auth = .apiKey(credentials.password)
+        }
         self.swiftSonic = SwiftSonicClient(
             configuration: ServerConfiguration(
                 serverURL: normalized,
-                username: username,
-                password: credentials.password,
-                reusesSalt: true,
+                auth: auth,
                 clientName: Self.clientName,
                 apiVersion: Self.apiVersion,
                 requestTimeout: requestTimeout,
                 resourceTimeout: resourceTimeout
-            )
+            ),
+            transport: SwiftSonicURLBuilderTransport(),
+            retryPolicy: .none
         )
+        self.extensionRegistry = seedExtensionRegistry
 
         let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
             requestTimeout: requestTimeout,
@@ -890,29 +1010,62 @@ actor OpenSubsonicClient {
         decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
         playbackMetadataCache.removeAll(keepingCapacity: false)
+        transcodeDecisionCache.removeAll(keepingCapacity: false)
+        for task in inFlightTranscodeDecisions.values {
+            task.cancel()
+        }
+        inFlightTranscodeDecisions.removeAll(keepingCapacity: false)
         session.invalidateAndCancel()
+    }
+
+    static func resolveAPIKeyUsername(
+        credentials: ServerCredentials,
+        requestTimeout: TimeInterval = 12,
+        resourceTimeout: TimeInterval = 20
+    ) async throws -> String {
+        let client = try OpenSubsonicClient(
+            credentials: credentials,
+            waitsForConnectivity: false,
+            requestTimeout: requestTimeout,
+            resourceTimeout: resourceTimeout
+        )
+        defer { Task { await client.shutdown() } }
+        let username = try await client.tokenInfo()
+        guard !username.isEmpty else {
+            throw OpenSubsonicError.invalidAPIKey
+        }
+        return username
     }
 
     private static func makeAuthenticationItems(
         for credentials: ServerCredentials
     ) -> [URLQueryItem] {
-        // Subsonic token authentication does not require a new salt for every
-        // request. Keep one random pair for this client session, matching the
-        // SwiftSonic `reusesSalt` configuration used by the same account.
-        let salt = (0..<12)
-            .map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }
-            .joined()
-        let tokenData = Data((credentials.password + salt).utf8)
-        let token = Insecure.MD5.hash(data: tokenData)
-            .map { String(format: "%02hhx", $0) }
-            .joined()
-        return [
-            URLQueryItem(name: "u", value: credentials.username),
-            URLQueryItem(name: "s", value: salt),
-            URLQueryItem(name: "t", value: token),
-            URLQueryItem(name: "v", value: Self.apiVersion),
-            URLQueryItem(name: "c", value: Self.clientName)
-        ]
+        switch credentials.resolvedAuthMethod {
+        case .apiKey:
+            return [
+                URLQueryItem(name: "apiKey", value: credentials.password),
+                URLQueryItem(name: "v", value: Self.apiVersion),
+                URLQueryItem(name: "c", value: Self.clientName)
+            ]
+        case .password:
+            // Subsonic token authentication does not require a new salt for every
+            // request. Keep one random pair for this client session, matching the
+            // SwiftSonic `reusesSalt` configuration used by the same account.
+            let salt = (0..<12)
+                .map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }
+                .joined()
+            let tokenData = Data((credentials.password + salt).utf8)
+            let token = Insecure.MD5.hash(data: tokenData)
+                .map { String(format: "%02hhx", $0) }
+                .joined()
+            return [
+                URLQueryItem(name: "u", value: credentials.username),
+                URLQueryItem(name: "s", value: salt),
+                URLQueryItem(name: "t", value: token),
+                URLQueryItem(name: "v", value: Self.apiVersion),
+                URLQueryItem(name: "c", value: Self.clientName)
+            ]
+        }
     }
 
     private func authenticationItems() -> [URLQueryItem] {
@@ -1029,6 +1182,16 @@ actor OpenSubsonicClient {
     }
 
     private func formMutationRequest<Payload: Decodable & Sendable>(
+        _ endpoint: String,
+        queryItems: [URLQueryItem]
+    ) async throws -> Payload {
+        if await supportsExtension(OpenSubsonicExtensionName.httpFormPost) {
+            return try await postFormMutationRequest(endpoint, queryItems: queryItems)
+        }
+        return try await mutationRequest(endpoint, queryItems: queryItems)
+    }
+
+    private func postFormMutationRequest<Payload: Decodable & Sendable>(
         _ endpoint: String,
         queryItems: [URLQueryItem]
     ) async throws -> Payload {
@@ -1341,8 +1504,8 @@ actor OpenSubsonicClient {
         let capture = try decoder.decode(DecoderCapture.self, from: data)
         let statusEnvelope = try StatusEnvelope(from: capture.decoder)
         guard statusEnvelope.response.status == "ok" else {
-            throw OpenSubsonicError.server(
-                code: statusEnvelope.response.error?.code,
+            throw OpenSubsonicError.fromSubsonicErrorCode(
+                statusEnvelope.response.error?.code,
                 message: statusEnvelope.response.error?.message
                     ?? String(localized: "서버 요청이 실패했습니다.")
             )
@@ -1367,8 +1530,8 @@ actor OpenSubsonicClient {
             }
             let envelope = try await Self.decodeStatusEnvelope(response.data)
             guard envelope.response.status == "ok" else {
-                throw OpenSubsonicError.server(
-                    code: envelope.response.error?.code,
+                throw OpenSubsonicError.fromSubsonicErrorCode(
+                    envelope.response.error?.code,
                     message: envelope.response.error?.message
                         ?? String(localized: "서버 연결에 실패했습니다.")
                 )
@@ -2188,6 +2351,8 @@ actor OpenSubsonicClient {
         endpoint == "star"
             || endpoint == "unstar"
             || endpoint == "savePlayQueue"
+            || endpoint == "savePlayQueueByIndex"
+            || endpoint == "getTranscodeDecision"
     }
 
     func home(
@@ -2606,8 +2771,7 @@ actor OpenSubsonicClient {
             for: apiFamily
         )
         let supportsSonicExtension = await supportsExtension(
-            "sonicSimilarity",
-            limiter: limiter
+            OpenSubsonicExtensionName.sonicSimilarity
         )
         let supportsSonic = similarEndpoints.contains("getSonicSimilarTracks")
             && supportsSonicExtension
@@ -2699,29 +2863,146 @@ actor OpenSubsonicClient {
 
     private func supportsExtension(
         _ name: String,
+        minimumVersion: Int = 1,
         limiter: HomeEnrichmentRequestLimiter? = nil
     ) async -> Bool {
-        if let supportedExtensions {
-            return supportedExtensions.contains(name)
+        let registry = await loadExtensionRegistry(limiter: limiter)
+        return registry.supports(name, minimumVersion: minimumVersion)
+    }
+
+    private func loadExtensionRegistry(
+        limiter: HomeEnrichmentRequestLimiter? = nil
+    ) async -> OpenSubsonicExtensionRegistry {
+        if let extensionRegistry {
+            return extensionRegistry
         }
-        let payload: OpenSubsonicExtensionsPayload
+        if let extensionRegistryBackoffUntil,
+           extensionRegistryBackoffUntil > ContinuousClock.now {
+            return .empty
+        }
         do {
-            payload = try await withEnrichmentPermit(limiter) { [self] in
+            let payload: OpenSubsonicExtensionsPayload = try await withEnrichmentPermit(
+                limiter
+            ) { [self] in
                 try await readRequest("getOpenSubsonicExtensions")
             }
+            let registry = OpenSubsonicExtensionRegistry(
+                extensions: payload.openSubsonicExtensions ?? []
+            )
+            extensionRegistry = registry
+            extensionRegistryBackoffUntil = nil
+            return registry
         } catch {
-            // A transient/auth/cancellation failure is not an authoritative
-            // statement that the server supports no extensions. Leave the
-            // cache unresolved so a later healthy request can recover.
-            return false
+            // Cache a short negative result so transient failures do not fan
+            // out into one discovery request per feature gate.
+            extensionRegistry = .empty
+            extensionRegistryBackoffUntil =
+                ContinuousClock.now + Self.extensionRegistryBackoff
+            return .empty
         }
-        let names = Set(
-            (payload.openSubsonicExtensions ?? []).compactMap { value in
-                value.versions.isEmpty ? nil : value.name
-            }
+    }
+
+    func refreshExtensionRegistry() async {
+        extensionRegistry = nil
+        extensionRegistryBackoffUntil = nil
+        _ = await loadExtensionRegistry()
+    }
+
+    var hasSeededExtensionRegistry: Bool {
+        extensionRegistry != nil
+    }
+
+    func tokenInfo() async throws -> String {
+        let payload: TokenInfoPayload = try await readRequest("tokenInfo")
+        return payload.tokenInfo?.username?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    func podcastEpisode(id: String) async throws -> PodcastEpisode {
+        guard await supportsExtension(OpenSubsonicExtensionName.getPodcastEpisode) else {
+            throw OpenSubsonicError.server(
+                code: nil,
+                message: String(localized: "이 서버는 팟캐스트 에피소드 조회를 지원하지 않습니다.")
+            )
+        }
+        let payload: PodcastEpisodePayload = try await readRequest(
+            "getPodcastEpisode",
+            parameters: ["id": id]
         )
-        supportedExtensions = names
-        return names.contains(name)
+        guard let episode = payload.podcastEpisode else {
+            throw OpenSubsonicError.invalidResponse
+        }
+        return episode
+    }
+
+    func transcodeDecision(
+        mediaID: String,
+        mediaType: String = "song"
+    ) async throws -> TranscodeDecision? {
+        guard await supportsExtension(OpenSubsonicExtensionName.transcoding) else {
+            return nil
+        }
+        let key = TranscodeDecisionKey(mediaID: mediaID, mediaType: mediaType)
+        if let cached = transcodeDecisionCache[key],
+           cached.storedAt > ContinuousClock.now - Self.transcodeDecisionCacheLifetime {
+            return cached.decision
+        }
+        if let existing = inFlightTranscodeDecisions[key] {
+            return try await existing.value
+        }
+        let task = Task<TranscodeDecision?, Error> { [self] in
+            let payload: TranscodeDecisionPayload = try await jsonMutationRequest(
+                "getTranscodeDecision",
+                queryParameters: [
+                    "mediaId": mediaID,
+                    "mediaType": mediaType
+                ],
+                allowsRetry: true
+            )
+            return payload.transcodeDecision
+        }
+        inFlightTranscodeDecisions[key] = task
+        defer { inFlightTranscodeDecisions[key] = nil }
+        do {
+            let decision = try await task.value
+            transcodeDecisionCache[key] = (
+                decision: decision,
+                storedAt: ContinuousClock.now
+            )
+            return decision
+        } catch {
+            throw error
+        }
+    }
+
+    private func jsonMutationRequest<Payload: Decodable & Sendable>(
+        _ endpoint: String,
+        queryParameters: [String: String],
+        allowsRetry: Bool
+    ) async throws -> Payload {
+        let queryItems = queryParameters
+            .sorted { $0.key < $1.key }
+            .map { URLQueryItem(name: $0.key, value: $0.value) }
+        let impact = OpenSubsonicRequestPolicy.mutationImpact(
+            for: endpoint,
+            queryItems: queryItems
+        )
+        beginMutation(impact)
+        defer { finishMutation(impact) }
+        guard let url = try? endpointURL(endpoint, queryItems: queryItems) else {
+            throw OpenSubsonicError.invalidServerURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: OpenSubsonicClientInfo.jsonBody
+        )
+        let response = try await responseData(
+            from: request,
+            allowsRetry: allowsRetry
+        )
+        return try await decodeResponse(response)
     }
 
     private func withEnrichmentPermit<Value: Sendable>(
@@ -2781,7 +3062,7 @@ actor OpenSubsonicClient {
     ) async -> [Song] {
         guard !artists.isEmpty else { return fallback }
         let usesArtistID = await supportsExtension(
-            "topSongsByArtistId",
+            OpenSubsonicExtensionName.topSongsByArtistId,
             limiter: limiter
         )
         let values = await withTaskGroup(
@@ -3173,7 +3454,9 @@ actor OpenSubsonicClient {
     }
 
     func artist(id: String, name: String) async throws -> ArtistDetail {
-        let usesArtistID = await supportsExtension("topSongsByArtistId")
+        let usesArtistID = await supportsExtension(
+            OpenSubsonicExtensionName.topSongsByArtistId
+        )
         if usesArtistID {
             async let albumsPayload: ArtistAlbumsPayload = readRequest(
                 "getArtist",
@@ -3390,12 +3673,14 @@ actor OpenSubsonicClient {
         // when their last waiter goes away.
         clearResponseCache()
         lyricsCache.removeAll(keepingCapacity: true)
+        transcodeDecisionCache.removeAll(keepingCapacity: false)
     }
 
     nonisolated func streamURL(
         songID: String,
         quality: StreamQuality,
-        compatibilityFormat: String? = nil
+        compatibilityFormat: String? = nil,
+        offsetSeconds: Int = 0
     ) throws -> URL {
         let requestedFormat = compatibilityFormat ?? quality.parameters["format"]
         let requestedBitRate: Int?
@@ -3413,8 +3698,64 @@ actor OpenSubsonicClient {
             id: songID,
             maxBitRate: requestedBitRate,
             format: requestedFormat,
+            timeOffset: offsetSeconds > 0 ? offsetSeconds : nil,
             estimateContentLength: true
         ), url.scheme?.lowercased() == "https" else {
+            throw OpenSubsonicError.insecureServerURL
+        }
+        return url
+    }
+
+    func playbackStreamURL(
+        songID: String,
+        quality: StreamQuality,
+        compatibilityFormat: String? = nil,
+        offsetSeconds: Int = 0
+    ) async throws -> URL {
+        let requestsTranscodePath = compatibilityFormat?.lowercased() != "raw"
+            && quality != .original
+        if requestsTranscodePath,
+           let decision = try await transcodeDecision(mediaID: songID),
+           decision.canDirectPlay != true,
+           decision.canTranscode == true,
+           let params = decision.transcodeParams,
+           !params.isEmpty {
+            return try await transcodedStreamURL(
+                mediaID: songID,
+                mediaType: "song",
+                transcodeParams: params,
+                offsetSeconds: offsetSeconds
+            )
+        }
+        return try streamURL(
+            songID: songID,
+            quality: quality,
+            compatibilityFormat: compatibilityFormat,
+            offsetSeconds: offsetSeconds
+        )
+    }
+
+    private func transcodedStreamURL(
+        mediaID: String,
+        mediaType: String,
+        transcodeParams: String,
+        offsetSeconds: Int
+    ) async throws -> URL {
+        var queryItems = [
+            URLQueryItem(name: "mediaId", value: mediaID),
+            URLQueryItem(name: "mediaType", value: mediaType),
+            URLQueryItem(name: "transcodeParams", value: transcodeParams)
+        ]
+        if offsetSeconds > 0,
+           await supportsExtension(OpenSubsonicExtensionName.transcodeOffset) {
+            queryItems.append(URLQueryItem(name: "offset", value: String(offsetSeconds)))
+        }
+        let url = try endpointURL(
+            "getTranscodeStream",
+            queryItems: queryItems,
+            json: false
+        )
+        guard url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
         return url
@@ -3554,21 +3895,9 @@ actor OpenSubsonicClient {
         position: TimeInterval,
         state: String
     ) async throws {
-        let extensionNames: Set<String>
-        if let supportedExtensions {
-            extensionNames = supportedExtensions
-        } else {
-            let payload: OpenSubsonicExtensionsPayload = try await readRequest(
-                "getOpenSubsonicExtensions"
-            )
-            extensionNames = Set(
-                (payload.openSubsonicExtensions ?? []).compactMap { value in
-                    value.versions.isEmpty ? nil : value.name
-                }
-            )
-            supportedExtensions = extensionNames
+        guard await supportsExtension(OpenSubsonicExtensionName.playbackReport) else {
+            return
         }
-        guard extensionNames.contains("playbackReport") else { return }
         let allowedStates = ["starting", "playing", "paused", "stopped"]
         guard allowedStates.contains(state) else { return }
         let positionMs = Self.boundedMilliseconds(from: position)
@@ -3586,16 +3915,62 @@ actor OpenSubsonicClient {
     }
 
     func playQueue() async throws -> ServerPlayQueue {
+        if await supportsExtension(OpenSubsonicExtensionName.indexBasedQueue) {
+            let payload: PlayQueueByIndexPayload = try await readRequest(
+                "getPlayQueueByIndex"
+            )
+            let queue = payload.playQueueByIndex
+            let songs = queue?.entry ?? []
+            let currentIndex = queue?.currentIndex
+            let currentID: String?
+            if let currentIndex, songs.indices.contains(currentIndex) {
+                currentID = songs[currentIndex].id
+            } else {
+                currentID = queue?.entry?.first?.id
+            }
+            return ServerPlayQueue(
+                songs: songs,
+                currentID: currentID,
+                currentIndex: currentIndex,
+                position: TimeInterval(queue?.position ?? 0) / 1_000
+            )
+        }
         let payload: PlayQueuePayload = try await readRequest("getPlayQueue")
         let queue = payload.playQueue
+        let songs = queue?.entry ?? []
+        let currentID = queue?.current
+        let currentIndex = currentID.flatMap { id in
+            songs.indices.last { songs[$0].id == id }
+        }
         return ServerPlayQueue(
-            songs: queue?.entry ?? [],
-            currentID: queue?.current,
+            songs: songs,
+            currentID: currentID,
+            currentIndex: currentIndex,
             position: TimeInterval(queue?.position ?? 0) / 1_000
         )
     }
 
-    func savePlayQueue(songIDs: [String], current: String, position: TimeInterval) async throws {
+    func savePlayQueue(
+        songIDs: [String],
+        current: String,
+        position: TimeInterval,
+        currentIndex: Int
+    ) async throws {
+        if await supportsExtension(OpenSubsonicExtensionName.indexBasedQueue) {
+            var queryItems = songIDs.map { URLQueryItem(name: "id", value: $0) }
+            queryItems += [
+                URLQueryItem(name: "currentIndex", value: String(currentIndex)),
+                URLQueryItem(
+                    name: "position",
+                    value: String(Self.boundedMilliseconds(from: position))
+                )
+            ]
+            let _: EmptyPayload = try await formMutationRequest(
+                "savePlayQueueByIndex",
+                queryItems: queryItems
+            )
+            return
+        }
         var queryItems = songIDs.map { URLQueryItem(name: "id", value: $0) }
         queryItems += [
             URLQueryItem(name: "current", value: current),

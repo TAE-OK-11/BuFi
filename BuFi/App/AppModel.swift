@@ -453,7 +453,13 @@ final class AppModel: ObservableObject {
     }
 
 
-    func login(serverURL: String, username: String, password: String) async {
+    func login(
+        serverURL: String,
+        username: String,
+        password: String,
+        authMethod: ServerAuthMethod = .password,
+        discoveredExtensions: OpenSubsonicExtensionRegistry? = nil
+    ) async {
         guard !loginInFlight else { return }
         loginInFlight = true
         defer { loginInFlight = false }
@@ -465,12 +471,32 @@ final class AppModel: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
-        let credentials = ServerCredentials(
+        var credentials = ServerCredentials(
             serverURL: ServerURLNormalization.persistedServerURL(from: normalizedURL),
             username: username,
-            password: password
+            password: password,
+            authMethod: authMethod
         )
-        await connect(credentials, persist: true)
+        if authMethod == .apiKey {
+            do {
+                credentials.username = try await OpenSubsonicClient.resolveAPIKeyUsername(
+                    credentials: credentials
+                )
+            } catch let error as OpenSubsonicError {
+                sessionState = .signedOut
+                errorMessage = error.localizedDescription
+                return
+            } catch {
+                sessionState = .signedOut
+                errorMessage = error.localizedDescription
+                return
+            }
+        }
+        await connect(
+            credentials,
+            persist: true,
+            seedExtensionRegistry: discoveredExtensions
+        )
     }
 
     func logout() async {
@@ -2528,7 +2554,11 @@ final class AppModel: ObservableObject {
         return String(flattened.prefix(80))
     }
 
-    private func connect(_ credentials: ServerCredentials, persist: Bool) async {
+    private func connect(
+        _ credentials: ServerCredentials,
+        persist: Bool,
+        seedExtensionRegistry: OpenSubsonicExtensionRegistry? = nil
+    ) async {
         sessionGeneration += 1
         let generation = sessionGeneration
         lastFMKeyOperationGeneration &+= 1
@@ -2597,7 +2627,8 @@ final class AppModel: ObservableObject {
                 credentials: credentials,
                 waitsForConnectivity: !persist,
                 requestTimeout: persist ? 12 : 18,
-                resourceTimeout: persist ? 20 : 60
+                resourceTimeout: persist ? 20 : 60,
+                seedExtensionRegistry: seedExtensionRegistry
             )
             provisionalClient = client
             let accountScope = AccountScope.identifier(for: client.credentials)
@@ -2693,6 +2724,9 @@ final class AppModel: ObservableObject {
             provisionalClient = nil
             if let status {
                 await client.applyPingStatus(status)
+                if await !client.hasSeededExtensionRegistry {
+                    await client.refreshExtensionRegistry()
+                }
             }
             self.offlineSessionToken = offlineSession
             self.artworkSessionToken = artworkSession

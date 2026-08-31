@@ -1044,7 +1044,7 @@ enum PlaybackResourceResolver {
             )
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let url = try client.streamURL(
+        let url = try await client.playbackStreamURL(
             songID: song.id,
             quality: request.quality,
             compatibilityFormat: request.compatibilityFormat
@@ -1103,8 +1103,15 @@ final class AudioEngine: NSObject, ObservableObject {
         let revision: UInt64
         let songIDs: [String]
         let currentID: String
+        let currentIndex: Int
         let position: TimeInterval
+        let attempt: Int
     }
+
+    private static let serverQueueLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "BuFi",
+        category: "ServerQueue"
+    )
 
     static let shared = AudioEngine()
 
@@ -1567,9 +1574,9 @@ final class AudioEngine: NSObject, ObservableObject {
                   !self.wantsPlayback else {
                 return
             }
-            let restoredIndex = serverQueue.songs.firstIndex {
-                $0.id == serverQueue.currentID
-            } ?? 0
+            let restoredIndex = serverQueue.currentIndex
+                ?? serverQueue.songs.firstIndex { $0.id == serverQueue.currentID }
+                ?? 0
             self.replacePlayback(serverQueue.songs, index: restoredIndex)
             self.queueMutationGeneration &+= 1
             self.behaviorStartRecordedForSongID = nil
@@ -5294,7 +5301,9 @@ final class AudioEngine: NSObject, ObservableObject {
                     revision: saveRevision,
                     songIDs: snapshot.queue.map(\.id),
                     currentID: current,
-                    position: snapshot.elapsed
+                    currentIndex: snapshot.index,
+                    position: snapshot.elapsed,
+                    attempt: 0
                 )
             )
         }
@@ -5327,7 +5336,8 @@ final class AudioEngine: NSObject, ObservableObject {
                     try await request.client.savePlayQueue(
                         songIDs: request.songIDs,
                         current: request.currentID,
-                        position: request.position
+                        position: request.position,
+                        currentIndex: request.currentIndex
                     )
                     guard !Task.isCancelled,
                           request.sessionGeneration == self.playbackSessionGeneration,
@@ -5338,6 +5348,33 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.lastServerQueueSaveRequest = Date()
                 } catch {
                     if Task.isCancelled { break }
+                    Self.serverQueueLogger.error(
+                        "Server queue save failed on attempt \(request.attempt + 1, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                    guard request.attempt < 2,
+                          CoreRequestClassifier.shouldRetry(error: error),
+                          request.sessionGeneration == self.playbackSessionGeneration,
+                          request.accountScope == self.currentAccountScope,
+                          self.client === request.client else {
+                        continue
+                    }
+                    try? await Task.sleep(
+                        for: NetworkResiliencePolicy.retryDelay(
+                            afterAttempt: request.attempt
+                        )
+                    )
+                    guard !Task.isCancelled else { break }
+                    self.pendingServerQueueSave = ServerQueueSaveRequest(
+                        client: request.client,
+                        accountScope: request.accountScope,
+                        sessionGeneration: request.sessionGeneration,
+                        revision: request.revision,
+                        songIDs: request.songIDs,
+                        currentID: request.currentID,
+                        currentIndex: request.currentIndex,
+                        position: request.position,
+                        attempt: request.attempt + 1
+                    )
                 }
             }
             self.serverQueueSaveTask = nil
