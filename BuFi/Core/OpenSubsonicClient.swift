@@ -3687,6 +3687,19 @@ actor OpenSubsonicClient {
         }
     }
 
+    /// Warms canonical metadata, lyrics, and transcode decisions for upcoming
+    /// playback. Failures retain provisional queue metadata.
+    func prefetchUpcomingPlaybackContext(songs: [Song]) async -> [Song] {
+        var seen = Set<String>()
+        let uniqueSongs = songs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize)
+            .filter { seen.insert($0.id).inserted }
+        async let metadata = prefetchPlaybackMetadata(songs: uniqueSongs)
+        async let lyrics: Void = prefetchLyrics(songs: uniqueSongs)
+        let resolved = await metadata
+        await lyrics
+        return resolved
+    }
+
     /// Warms the same canonical getSong representation consumed by playback.
     /// Failures retain provisional queue metadata so speculative work can
     /// never make a playable queue entry unavailable.
