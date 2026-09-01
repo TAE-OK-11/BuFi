@@ -390,26 +390,62 @@ actor AppDatabase {
         targetLanguage: String,
         sourceLines: [Int: String]
     ) async -> [Int: String] {
+        await loadLyricsTranslations(
+            scope: scope,
+            songID: songID,
+            targetLanguages: [targetLanguage],
+            sourceLines: sourceLines
+        )
+    }
+
+    func loadLyricsTranslations(
+        scope: String,
+        songID: String,
+        targetLanguages: [String],
+        sourceLines: [Int: String]
+    ) async -> [Int: String] {
+        let languages = Array(
+            Set(
+                targetLanguages.map {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                }.filter { !$0.isEmpty }
+            )
+        )
         guard !sourceLines.isEmpty,
+              !languages.isEmpty,
               let pool = await databasePool() else { return [:] }
         do {
             return try await pool.read { db in
+                let placeholders = Array(repeating: "?", count: languages.count)
+                    .joined(separator: ", ")
+                var arguments: [DatabaseValueConvertible] = [scope, songID]
+                arguments.append(contentsOf: languages)
                 let rows = try Row.fetchAll(
                     db,
                     sql: """
-                    SELECT line_id, source_text, translated_text
+                    SELECT line_id, source_text, translated_text, target_language
                     FROM lyrics_translation_cache
                     WHERE account_scope = ?
                       AND song_id = ?
-                      AND target_language = ?
+                      AND target_language IN (\(placeholders))
                     """,
-                    arguments: [scope, songID, targetLanguage]
+                    arguments: StatementArguments(arguments)
                 )
-                var translations = [Int: String](minimumCapacity: rows.count)
+                var translations = [Int: String](minimumCapacity: sourceLines.count)
                 var translationsBySource = [String: String](
-                    minimumCapacity: rows.count
+                    minimumCapacity: sourceLines.count
                 )
-                for row in rows {
+                let languagePriority = Dictionary(
+                    uniqueKeysWithValues: languages.enumerated().map {
+                        ($0.element, $0.offset)
+                    }
+                )
+                let sortedRows = rows.sorted {
+                    let left = languagePriority[$0["target_language"]] ?? Int.max
+                    let right = languagePriority[$1["target_language"]] ?? Int.max
+                    return left < right
+                }
+                for row in sortedRows {
                     let lineID: Int = row["line_id"]
                     let sourceText: String = row["source_text"]
                     let translatedText: String = row["translated_text"]
@@ -420,13 +456,11 @@ actor AppDatabase {
                         translationsBySource[normalizedSource] = translatedText
                     }
                     if let currentSource = sourceLines[lineID],
-                       Self.normalizedLyricSource(currentSource) == normalizedSource {
+                       Self.normalizedLyricSource(currentSource) == normalizedSource,
+                       translations[lineID] == nil {
                         translations[lineID] = translatedText
                     }
                 }
-                // Servers can reindex the same lyrics when blank/timestamp-only
-                // lines change. Reuse an exact normalized source match for any
-                // missing ID instead of retranslating unchanged text.
                 for (lineID, sourceText) in sourceLines
                     where translations[lineID] == nil {
                     let normalizedSource = Self.normalizedLyricSource(sourceText)

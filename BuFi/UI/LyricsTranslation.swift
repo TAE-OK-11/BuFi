@@ -247,22 +247,23 @@ private enum LyricsTranslationCachePolicy {
         })
         guard !sourceLines.isEmpty else { return [:] }
         let canonicalKey = languageKey(for: targetLanguageCode)
+        let legacyKeys = legacyLanguageKeys(for: targetLanguageCode)
         let canonical = await AppDatabase.shared.loadLyricsTranslations(
             scope: scope,
             songID: songID,
             targetLanguage: canonicalKey,
             sourceLines: sourceLines
         )
-        var merged = canonical
-        for legacyKey in legacyLanguageKeys(for: targetLanguageCode) {
-            guard merged.count < sourceLines.count else { break }
-            let legacy = await AppDatabase.shared.loadLyricsTranslations(
+        let merged: [Int: String]
+        if legacyKeys.isEmpty {
+            merged = canonical
+        } else {
+            merged = await AppDatabase.shared.loadLyricsTranslations(
                 scope: scope,
                 songID: songID,
-                targetLanguage: legacyKey,
+                targetLanguages: [canonicalKey] + legacyKeys,
                 sourceLines: sourceLines
             )
-            merged.merge(legacy) { current, _ in current }
         }
 
         // Migrate compatible old results once. Subsequent presentations need

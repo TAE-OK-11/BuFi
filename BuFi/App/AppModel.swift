@@ -398,6 +398,15 @@ final class AppModel: ObservableObject {
     private var sessionGeneration = 0
     private var searchGeneration = 0
     private var homeRevision = 0
+    private var localSearchIndex: LocalLibrarySearchIndex?
+    private var localSearchIndexRevision = -1
+    private struct StarredIDIndex {
+        var songIDs: Set<String> = []
+        var albumIDs: Set<String> = []
+        var artistIDs: Set<String> = []
+    }
+    private var starredIDIndex: StarredIDIndex?
+    private var starredIDIndexToken: UInt64 = 0
     private var albumDetailCache: [String: CachedValue<AlbumDetail>] = [:]
     private var playlistDetailCache: [String: CachedValue<PlaylistDetail>] = [:]
     private var artistDetailCache: [String: CachedValue<ArtistDetail>] = [:]
@@ -755,7 +764,7 @@ final class AppModel: ObservableObject {
             nextQuery: query
         )
         let local = applyingFavoriteOverrides(
-            to: LocalLibrarySearch.results(for: query, in: home)
+            to: localSearchResults(for: query)
         )
         let provisionalResults = local.isEmpty ? retained : local
         let provisionalIsLocal = !local.isEmpty
@@ -831,7 +840,7 @@ final class AppModel: ObservableObject {
             nextQuery: query
         )
         let local = applyingFavoriteOverrides(
-            to: LocalLibrarySearch.results(for: query, in: home)
+            to: localSearchResults(for: query)
         )
         if !local.isEmpty {
             return (local, true)
@@ -1749,90 +1758,46 @@ final class AppModel: ObservableObject {
         for target: OpenSubsonicClient.StarTarget,
         including snapshot: HomeSnapshot
     ) -> [String] {
-        var ids = Set<String>()
+        ensureStarredIDIndex()
+        var ids: Set<String>
         switch target {
         case .song:
+            ids = starredIDIndex?.songIDs ?? []
             func addStarredSongs(_ songs: [Song]) {
-                ids.formUnion(songs.lazy.filter(\.isStarred).map(\.id))
+                for song in songs where song.isStarred {
+                    ids.insert(song.id)
+                }
             }
-            addStarredSongs(home.starredSongs)
-            addStarredSongs(home.randomSongs)
-            addStarredSongs(home.recommendedSongs)
-            addStarredSongs(home.sonicRecommendedSongs)
-            addStarredSongs(home.similarArtistSongs)
-            addStarredSongs(home.genreRecommendedSongs)
-            addStarredSongs(home.topArtistSongs)
-            addStarredSongs(home.recentlyAddedSongs)
-            addStarredSongs(home.popularSongs)
-            addStarredSongs(home.playlistAffinitySongs)
-            addStarredSongs(home.serverRecommendedSongs)
-            addStarredSongs(home.lastFMRecommendedSongs)
-            addStarredSongs(home.listenBrainzRecommendedSongs)
-            addStarredSongs(home.mostPlayedSongs)
-            addStarredSongs(home.daylistSongs)
-            addStarredSongs(home.offlineBackupSongs)
-            addStarredSongs(snapshot.starredSongs)
-            addStarredSongs(snapshot.randomSongs)
-            addStarredSongs(snapshot.sonicRecommendedSongs)
-            addStarredSongs(snapshot.similarArtistSongs)
-            addStarredSongs(snapshot.genreRecommendedSongs)
-            addStarredSongs(snapshot.topArtistSongs)
-            addStarredSongs(snapshot.recentlyAddedSongs)
-            addStarredSongs(snapshot.popularSongs)
-            addStarredSongs(snapshot.playlistAffinitySongs)
-            addStarredSongs(snapshot.serverRecommendedSongs)
-            addStarredSongs(snapshot.lastFMRecommendedSongs)
-            addStarredSongs(snapshot.listenBrainzRecommendedSongs)
-            addStarredSongs(snapshot.recommendedSongs)
-            addStarredSongs(snapshot.mostPlayedSongs)
-            addStarredSongs(snapshot.daylistSongs)
-            addStarredSongs(snapshot.offlineBackupSongs)
+            for collection in HomeSnapshot.songCollections {
+                addStarredSongs(snapshot[keyPath: collection])
+            }
             addStarredSongs(searchResults.songs)
             addStarredSongs(AudioEngine.shared.queue)
             if let song = AudioEngine.shared.currentSong, song.isStarred {
                 ids.insert(song.id)
             }
-            for cached in albumDetailCache.values {
-                addStarredSongs(cached.value.songs)
-            }
-            for cached in playlistDetailCache.values {
-                addStarredSongs(cached.value.songs)
-            }
-            for cached in artistDetailCache.values {
-                addStarredSongs(cached.value.topSongs)
-            }
         case .album:
+            ids = starredIDIndex?.albumIDs ?? []
             func addStarredAlbums(_ albums: [Album]) {
-                ids.formUnion(albums.lazy.filter(\.isStarred).map(\.id))
+                for album in albums where album.isStarred {
+                    ids.insert(album.id)
+                }
             }
-            addStarredAlbums(home.starredAlbums)
-            addStarredAlbums(home.recentAlbums)
-            addStarredAlbums(home.recentlyPlayedAlbums)
-            addStarredAlbums(home.frequentAlbums)
-            addStarredAlbums(home.randomAlbums)
-            addStarredAlbums(snapshot.starredAlbums)
-            addStarredAlbums(snapshot.recentAlbums)
-            addStarredAlbums(snapshot.recentlyPlayedAlbums)
-            addStarredAlbums(snapshot.frequentAlbums)
-            addStarredAlbums(snapshot.randomAlbums)
+            for collection in HomeSnapshot.albumCollections {
+                addStarredAlbums(snapshot[keyPath: collection])
+            }
             addStarredAlbums(searchResults.albums)
-            for cached in artistDetailCache.values {
-                addStarredAlbums(cached.value.albums)
-            }
         case .artist:
+            ids = starredIDIndex?.artistIDs ?? []
             func addStarredArtists(_ artists: [Artist]) {
-                ids.formUnion(artists.lazy.filter(\.isStarred).map(\.id))
+                for artist in artists where artist.isStarred {
+                    ids.insert(artist.id)
+                }
             }
-            addStarredArtists(home.starredArtists)
-            addStarredArtists(home.artists)
-            addStarredArtists(home.recommendedArtists)
-            addStarredArtists(snapshot.starredArtists)
-            addStarredArtists(snapshot.artists)
-            addStarredArtists(snapshot.recommendedArtists)
+            for collection in HomeSnapshot.artistCollections {
+                addStarredArtists(snapshot[keyPath: collection])
+            }
             addStarredArtists(searchResults.artists)
-            for cached in artistDetailCache.values where cached.value.artist.isStarred {
-                ids.insert(cached.value.artist.id)
-            }
         }
 
         let prefix = starKeyPrefix(for: target) + ":"
@@ -2181,18 +2146,106 @@ final class AppModel: ObservableObject {
     private func preparedHomeSnapshot(
         _ snapshot: HomeSnapshot
     ) async -> HomeSnapshot {
-        var value = await mergingListeningHistory(into: snapshot)
-        let behavior = await ListeningHistoryStore.shared.recommendationSnapshot()
+        let merged = await mergingListeningHistory(into: snapshot)
+        return await applyRecommendationSections(to: merged)
+    }
+
+    private func applyRecommendationSections(
+        to snapshot: HomeSnapshot,
+        behavior: RecommendationBehaviorSnapshot? = nil
+    ) async -> HomeSnapshot {
+        var value = snapshot
+        let resolvedBehavior = if let behavior {
+            behavior
+        } else {
+            await ListeningHistoryStore.shared.recommendationSnapshot()
+        }
         let weights = RecommendationWeights.current()
         let sections = await Self.recommendationSections(
             snapshot: value,
+            snapshotRevision: library.revision,
             weights: weights,
-            behavior: behavior
+            behavior: resolvedBehavior
         )
         value.recommendedSongs = sections.recommended
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
         value.daylistSongs = sections.daylist
         return value
+    }
+
+    private func localSearchResults(for query: String) -> SearchResults {
+        if localSearchIndexRevision != homeRevision {
+            localSearchIndex = LocalLibrarySearchIndex.build(from: home)
+            localSearchIndexRevision = homeRevision
+        }
+        guard let index = localSearchIndex else { return .empty }
+        return LocalLibrarySearch.results(for: query, using: index)
+    }
+
+    private func starredIDIndexTokenValue() -> UInt64 {
+        UInt64(bitPattern: Int64(homeRevision))
+            ^ UInt64(albumDetailCache.count) &* 1_001
+            ^ UInt64(playlistDetailCache.count) &* 10_007
+            ^ UInt64(artistDetailCache.count) &* 100_003
+    }
+
+    private func ensureStarredIDIndex() {
+        let token = starredIDIndexTokenValue()
+        guard starredIDIndexToken != token else { return }
+        starredIDIndex = Self.buildStarredIDIndex(
+            home: home,
+            albumDetailCache: albumDetailCache,
+            playlistDetailCache: playlistDetailCache,
+            artistDetailCache: artistDetailCache
+        )
+        starredIDIndexToken = token
+    }
+
+    private static func buildStarredIDIndex(
+        home: HomeSnapshot,
+        albumDetailCache: [String: CachedValue<AlbumDetail>],
+        playlistDetailCache: [String: CachedValue<PlaylistDetail>],
+        artistDetailCache: [String: CachedValue<ArtistDetail>]
+    ) -> StarredIDIndex {
+        var index = StarredIDIndex()
+        func addStarredSongs(_ songs: [Song]) {
+            for song in songs where song.isStarred {
+                index.songIDs.insert(song.id)
+            }
+        }
+        func addStarredAlbums(_ albums: [Album]) {
+            for album in albums where album.isStarred {
+                index.albumIDs.insert(album.id)
+            }
+        }
+        func addStarredArtists(_ artists: [Artist]) {
+            for artist in artists where artist.isStarred {
+                index.artistIDs.insert(artist.id)
+            }
+        }
+        for collection in HomeSnapshot.songCollections {
+            addStarredSongs(home[keyPath: collection])
+        }
+        for collection in HomeSnapshot.albumCollections {
+            addStarredAlbums(home[keyPath: collection])
+        }
+        for collection in HomeSnapshot.artistCollections {
+            addStarredArtists(home[keyPath: collection])
+        }
+        for cached in albumDetailCache.values {
+            addStarredSongs(cached.value.songs)
+        }
+        for cached in playlistDetailCache.values {
+            addStarredSongs(cached.value.songs)
+        }
+        for cached in artistDetailCache.values {
+            addStarredSongs(cached.value.topSongs)
+            addStarredAlbums(cached.value.albums)
+            if cached.value.artist.isStarred {
+                index.artistIDs.insert(cached.value.artist.id)
+            }
+        }
+        return index
     }
 
     nonisolated private static func recommendations(
@@ -2944,7 +2997,7 @@ final class AppModel: ObservableObject {
 
                 var enriched = self.home
                 enriched.adoptServerEnrichment(from: result.snapshot)
-                enriched = await self.preparedHomeSnapshot(enriched)
+                enriched = await self.applyRecommendationSections(to: enriched)
                 guard !Task.isCancelled,
                       generation == self.sessionGeneration,
                       self.client === client,
