@@ -1,29 +1,35 @@
 import Foundation
 
-/// Local fallback over the already-loaded home snapshot. Search stays useful
-/// when the server is slow or unreachable, and while the user is still typing.
-enum LocalLibrarySearch {
-    static func results(
+/// Precomputed catalog for local search over the home snapshot.
+struct LocalLibrarySearchIndex: Sendable {
+    let songs: [Song]
+    let albums: [Album]
+    let artists: [Artist]
+
+    static func build(from snapshot: HomeSnapshot) -> LocalLibrarySearchIndex {
+        LocalLibrarySearchIndex(
+            songs: MediaIdentity.uniqueSongs(
+                from: HomeSnapshot.songCollections.map { snapshot[keyPath: $0] },
+                limit: 400
+            ),
+            albums: MediaIdentity.unique(
+                HomeSnapshot.albumCollections.flatMap { snapshot[keyPath: $0] },
+                id: \.id
+            ),
+            artists: MediaIdentity.uniqueArtists(
+                HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
+            )
+        )
+    }
+
+    func results(
         for rawQuery: String,
-        in snapshot: HomeSnapshot,
         artistLimit: Int = 8,
         albumLimit: Int = 14,
         songLimit: Int = 30
     ) -> SearchResults {
         let query = PreparedSearchQuery(rawQuery)
         guard !query.value.isEmpty else { return .empty }
-
-        let songs = MediaIdentity.uniqueSongs(
-            from: HomeSnapshot.songCollections.map { snapshot[keyPath: $0] },
-            limit: 400
-        )
-        let albums = MediaIdentity.unique(
-            HomeSnapshot.albumCollections.flatMap { snapshot[keyPath: $0] },
-            id: \.id
-        )
-        let artists = MediaIdentity.uniqueArtists(
-            HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
-        )
 
         return SearchResults(
             artists: ranked(artists, limit: artistLimit) {
@@ -42,6 +48,40 @@ enum LocalLibrarySearch {
                     fieldMatch(song.album, query: query, field: 2)
                 )
             }
+        )
+    }
+}
+
+/// Local fallback over the already-loaded home snapshot. Search stays useful
+/// when the server is slow or unreachable, and while the user is still typing.
+enum LocalLibrarySearch {
+    static func results(
+        for rawQuery: String,
+        in snapshot: HomeSnapshot,
+        artistLimit: Int = 8,
+        albumLimit: Int = 14,
+        songLimit: Int = 30
+    ) -> SearchResults {
+        LocalLibrarySearchIndex.build(from: snapshot).results(
+            for: rawQuery,
+            artistLimit: artistLimit,
+            albumLimit: albumLimit,
+            songLimit: songLimit
+        )
+    }
+
+    static func results(
+        for rawQuery: String,
+        using index: LocalLibrarySearchIndex,
+        artistLimit: Int = 8,
+        albumLimit: Int = 14,
+        songLimit: Int = 30
+    ) -> SearchResults {
+        index.results(
+            for: rawQuery,
+            artistLimit: artistLimit,
+            albumLimit: albumLimit,
+            songLimit: songLimit
         )
     }
 }
