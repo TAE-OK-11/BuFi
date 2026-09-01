@@ -2795,6 +2795,9 @@ final class AppModel: ObservableObject {
                 )
             }
             if status != nil {
+                Task(priority: .utility) {
+                    await AppDatabase.shared.warmupIfNeeded()
+                }
                 scheduleAutomaticRefresh(
                     silent: cachedSnapshot != nil,
                     forceFull: !snapshotIsFresh,

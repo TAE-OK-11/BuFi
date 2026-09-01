@@ -1328,6 +1328,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastVisualPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastOfflinePrefetchKey: PlaybackPrefetchPlan.Key?
+    private var upcomingMetadataPrefetchTask: Task<[Song], Never>?
+    private var upcomingMetadataPrefetchKey: PlaybackPrefetchPlan.Key?
     private var preparedPlaybackAssets: [PreparedPlaybackKey: PreparedPlaybackAsset] = [:]
     private var preparedPlaybackAssetOrder: [PreparedPlaybackKey] = []
     private var preparedPlaybackWarmupTasks: [PreparedPlaybackKey: Task<Void, Never>] = [:]
@@ -3149,14 +3151,42 @@ final class AudioEngine: NSObject, ObservableObject {
         networkPrefetchTask?.cancel()
         networkPrefetchTask = nil
         networkPrefetchToken = nil
-        if resetKey { lastNetworkPrefetchKey = nil }
+        if resetKey {
+            lastNetworkPrefetchKey = nil
+            cancelUpcomingMetadataPrefetch()
+        }
     }
 
     private func cancelVisualPrefetch(resetKey: Bool) {
         visualPrefetchTask?.cancel()
         visualPrefetchTask = nil
         visualPrefetchToken = nil
-        if resetKey { lastVisualPrefetchKey = nil }
+        if resetKey {
+            lastVisualPrefetchKey = nil
+            cancelUpcomingMetadataPrefetch()
+        }
+    }
+
+    private func cancelUpcomingMetadataPrefetch() {
+        upcomingMetadataPrefetchTask?.cancel()
+        upcomingMetadataPrefetchTask = nil
+        upcomingMetadataPrefetchKey = nil
+    }
+
+    private func prefetchedUpcomingSongs(
+        plan: PlaybackPrefetchPlan,
+        client: OpenSubsonicClient
+    ) async -> [Song] {
+        if upcomingMetadataPrefetchKey == plan.key,
+           let task = upcomingMetadataPrefetchTask {
+            return await task.value
+        }
+        upcomingMetadataPrefetchTask?.cancel()
+        let songs = plan.upcomingSongs
+        let task = Task { await client.prefetchPlaybackMetadata(songs: songs) }
+        upcomingMetadataPrefetchKey = plan.key
+        upcomingMetadataPrefetchTask = task
+        return await task.value
     }
 
     private func cancelOfflinePrefetch(resetKey: Bool) {
@@ -3287,8 +3317,9 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.currentAccountScope == accountScope,
                   self.wantsPlayback else { return }
 
-            let songs = await client.prefetchPlaybackMetadata(
-                songs: plan.upcomingSongs
+            let songs = await self.prefetchedUpcomingSongs(
+                plan: plan,
+                client: client
             )
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
@@ -3316,11 +3347,9 @@ final class AudioEngine: NSObject, ObservableObject {
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
 
-            // Reuse the now-cached source bytes for background colors too, so
-            // a rapid transition never flashes the fallback gradient.
-            for url in coverURLs {
-                guard !Task.isCancelled else { return }
-                _ = await ArtworkStore.shared.palette(for: url)
+            // Only warm the next cover's palette; the network pass does the same.
+            if let firstCoverURL = coverURLs.first {
+                _ = await ArtworkStore.shared.palette(for: firstCoverURL)
             }
         }
     }
@@ -3362,8 +3391,9 @@ final class AudioEngine: NSObject, ObservableObject {
                     self.networkPrefetchToken = nil
                 }
             }
-            let prefetchedSongs = await client.prefetchPlaybackMetadata(
-                songs: plan.upcomingSongs
+            let prefetchedSongs = await self.prefetchedUpcomingSongs(
+                plan: plan,
+                client: client
             )
             guard !Task.isCancelled else { return }
             async let lyricsPrefetch: Void = client.prefetchLyrics(
