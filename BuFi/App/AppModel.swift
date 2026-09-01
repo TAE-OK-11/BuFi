@@ -1115,6 +1115,10 @@ final class AppModel: ObservableObject {
         clearDetailCaches()
         RecommendationMixer.invalidateCache()
         lastCatalogIngestRevision = nil
+        localSearchIndex = nil
+        localSearchIndexRevision = -1
+        starredIDIndex = nil
+        starredIDIndexToken = 0
         albumsByIDCache.removeAll(keepingCapacity: false)
         albumsByIDCacheRevision = -1
         knownSongsCache.removeAll(keepingCapacity: false)

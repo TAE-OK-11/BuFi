@@ -2377,10 +2377,12 @@ struct PersonalizedMix: Identifiable, Hashable, Sendable {
 enum ArtistMixPreferences {
     static let storageKey = "artist-mix-selected-artists-v1"
     static let maximumCount = 4
+    private static let jsonDecoder = JSONDecoder()
+    private static let jsonEncoder = JSONEncoder()
 
     static func decode(_ value: String) -> [String] {
         guard let data = value.data(using: .utf8),
-              let artists = try? JSONDecoder().decode([String].self, from: data) else {
+              let artists = try? jsonDecoder.decode([String].self, from: data) else {
             return []
         }
         var seen = Set<String>()
@@ -2400,7 +2402,7 @@ enum ArtistMixPreferences {
             normalized($0) != key
         }
         let result = Array(artists.prefix(maximumCount))
-        guard let data = try? JSONEncoder().encode(result),
+        guard let data = try? jsonEncoder.encode(result),
               let encoded = String(data: data, encoding: .utf8) else {
             return value
         }
@@ -3120,6 +3122,8 @@ struct ExternalRecommendationCandidate: Sendable {
 actor ExternalRecommendationClient {
     static let shared = ExternalRecommendationClient()
 
+    private nonisolated static let payloadDecoder = JSONDecoder()
+
     private let publicSession: URLSession
     private let privateSession: URLSession
     private let retryPolicy = ReadRequestRetryPolicy()
@@ -3386,7 +3390,7 @@ actor ExternalRecommendationClient {
         from data: Data
     ) async throws -> Value {
         try Task.checkCancellation()
-        return try JSONDecoder().decode(type, from: data)
+        return try payloadDecoder.decode(type, from: data)
     }
 
     private func responseData(

@@ -1756,8 +1756,7 @@ actor AppDatabase {
     }
 
     private static func encode<Value: Encodable>(_ value: Value) throws -> Data {
-        let encoder = propertyListEncoder
-        return try encoder.encode(value)
+        try propertyListEncoder.encode(value)
     }
 
     private static func decode<Value: Decodable>(
