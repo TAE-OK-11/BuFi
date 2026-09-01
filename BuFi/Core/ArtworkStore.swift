@@ -26,8 +26,27 @@ enum ArtworkRequestSizing {
     }
 }
 
+enum UpcomingPlaybackPrefetchPolicy {
+  static let maximumBatchSize = 5
+
+  /// Returns how many upcoming streamable tracks to warm, capped at five and
+  /// never exceeding the songs still left in the queue.
+  static func upcomingCount(
+    queue: [Song],
+    queueIndex: Int
+  ) -> Int {
+    guard queue.indices.contains(queueIndex) else { return 0 }
+    let remaining = queue[(queueIndex + 1)...]
+      .lazy
+      .filter { $0.externalStreamURL == nil }
+      .count
+    return min(maximumBatchSize, remaining)
+  }
+}
+
+@available(*, deprecated, renamed: "UpcomingPlaybackPrefetchPolicy")
 enum UpcomingArtworkPrefetchPolicy {
-    static let upcomingCount = 3
+  static var upcomingCount: Int { UpcomingPlaybackPrefetchPolicy.maximumBatchSize }
 }
 
 struct RGBAColor: Codable, Equatable, Sendable {
@@ -126,8 +145,9 @@ actor ArtworkStore {
     static let shared = ArtworkStore()
 
     private static let legacyCacheName = "cloud.tae00217.BuFi.Artwork"
-    private static let cacheSchemaRevision = "media-v2"
-    private static let artworkFreshnessInterval: TimeInterval = 12 * 60 * 60
+    private static let cacheSchemaRevision = "media-v3"
+    private static let artworkDiskCacheLimit = 384 * 1_024 * 1_024
+    private static let artworkPrefetchURLCap = 10
     private static let paletteEngineVersion = 9
     private static let sampleSide = 72
     private static let acceleratedSamplePixelLimit = 512 * 512
@@ -174,12 +194,9 @@ actor ArtworkStore {
         ) else {
             return url
         }
-        // OpenSubsonic does not standardize an artwork validator. Keep the
-        // twelve-hour freshness bound, but deterministically stagger each URL's
-        // epoch. A wall-clock boundary can no longer expire every visible cover
-        // at once and trigger a burst of radio, decode, and palette work.
-        let freshnessEpoch = artworkFreshnessEpoch(for: url, at: date)
-        let boundedRevision = "\(revision ?? "unversioned")-\(freshnessEpoch)"
+        // Disk identity follows artwork revision only. Once a cover is cached it
+        // stays on disk until the revision changes or storage is reclaimed.
+        let boundedRevision = revision ?? "unversioned"
         components.fragment = [cacheSchemaRevision, boundedRevision]
             .joined(separator: "-")
         return components.url ?? url
@@ -189,12 +206,13 @@ actor ArtworkStore {
         for url: URL,
         at date: Date
     ) -> Int {
+        // Retained for callers that still want staggered network revalidation.
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in url.absoluteString.utf8 {
             hash ^= UInt64(byte)
             hash &*= 1_099_511_628_211
         }
-        let interval = artworkFreshnessInterval
+        let interval: TimeInterval = 12 * 60 * 60
         let offset = Double(hash % UInt64(Int(interval)))
         return Int(floor((date.timeIntervalSince1970 + offset) / interval))
     }
@@ -311,7 +329,9 @@ actor ArtworkStore {
     ) async {
         guard activeScope != nil else { return }
         var seen = Set<URL>()
-        let uniqueURLs = urls.prefix(8).filter { seen.insert($0).inserted }
+        let uniqueURLs = urls.prefix(Self.artworkPrefetchURLCap).filter {
+            seen.insert($0).inserted
+        }
         // Wi-Fi can fill three HTTP/2/3 streams together. Expensive or
         // constrained paths pass one here so cover warming never crowds the
         // active AVFoundation byte-range request.
@@ -646,7 +666,7 @@ actor ArtworkStore {
     private static func makePipeline(name: String) -> ImagePipeline {
         var configuration = ImagePipeline.Configuration.withDataCache(
             name: name,
-            sizeLimit: 256 * 1_024 * 1_024
+            sizeLimit: artworkDiskCacheLimit
         )
         let dataLoader = DataLoader(
             configuration: ModernNetworkPolicy.makeEphemeralConfiguration(
@@ -669,7 +689,7 @@ actor ArtworkStore {
         configuration.maximumResponseDataSize = 32 * 1_024 * 1_024
         configuration.isTaskCoalescingEnabled = true
         configuration.isProgressiveDecodingEnabled = false
-        configuration.dataCachePolicy = .automatic
+        configuration.dataCachePolicy = .storeOriginalData
         return ImagePipeline(
             configuration: configuration,
             delegate: ArtworkPipelineDelegate()

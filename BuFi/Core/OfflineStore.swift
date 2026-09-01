@@ -264,6 +264,34 @@ actor OfflineStore {
     }
 
     func download(song: Song, client: OpenSubsonicClient) async throws -> URL {
+        try await download(song: song, client: client, source: .manual)
+    }
+
+    /// Idempotent playback lookahead cache. Returns whether the song is stored
+    /// locally after this call, without starting duplicate transfers.
+    func prefetchPlaybackCache(
+        song: Song,
+        client: OpenSubsonicClient
+    ) async -> Bool {
+        if localURL(for: song) != nil { return true }
+        do {
+            _ = try await download(song: song, client: client, source: .playbackPrefetch)
+            return localURL(for: song) != nil
+        } catch {
+            return localURL(for: song) != nil
+        }
+    }
+
+    private enum DownloadSource: Sendable {
+        case manual
+        case playbackPrefetch
+    }
+
+    private func download(
+        song: Song,
+        client: OpenSubsonicClient,
+        source: DownloadSource
+    ) async throws -> URL {
         try Task.checkCancellation()
         guard let scope = activeScope,
               client.accountScope == scope,
@@ -271,6 +299,7 @@ actor OfflineStore {
             throw OpenSubsonicError.invalidResponse
         }
         let mediaRevision = song.offlineMediaRevision
+        let _ = source
         if let existing = localURL(for: song) { return existing }
 
         let generation = scopeGeneration

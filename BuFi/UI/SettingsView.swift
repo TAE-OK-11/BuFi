@@ -18,7 +18,6 @@ struct SettingsView: View {
     @AppStorage("haptics-enabled") private var hapticsEnabled = true
     @AppStorage("server-sync-interval") private var syncInterval = 300.0
     @AppStorage("offline-wifi-only") private var offlineWiFiOnly = true
-    @AppStorage("offline-prefetch-count") private var offlinePrefetchCount = 0
     @AppStorage("offline-storage-limit-gb") private var offlineStorageLimitGB = 10.0
 
     var body: some View {
@@ -318,18 +317,7 @@ extension SettingsView {
 
                 SettingsDivider()
 
-                HStack(spacing: 12) {
-                    settingLabel("다음 곡 선캐시", icon: "arrow.down.circle")
-                    Spacer(minLength: 8)
-                    Picker("다음 곡 선캐시", selection: $offlinePrefetchCount) {
-                        Text("끔").tag(0)
-                        Text("1곡").tag(1)
-                        Text("3곡").tag(3)
-                    }
-                    .labelsHidden()
-                    .tint(.secondary)
-                }
-                settingsNote("선캐시는 곡 전환을 빠르게 하지만 전체 음원을 미리 저장합니다. 저전력·고온 상태에서는 자동으로 제한됩니다.")
+                settingsNote("재생 중에는 대기열 뒤 최대 5곡(남은 곡이 더 적으면 그만큼)을 자동으로 선캐시합니다. 앨범 커버는 디스크에 영구 저장되며, 선캐시된 음원은 중복 다운로드 없이 재사용됩니다. 저전력·고온 상태에서는 자동으로 제한됩니다.")
 
                 HStack(spacing: 12) {
                     settingLabel("용량 제한", icon: "externaldrive")
