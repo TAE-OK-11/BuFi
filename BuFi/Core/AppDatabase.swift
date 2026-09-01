@@ -185,6 +185,11 @@ actor AppDatabase {
         return openedPool
     }
 
+    /// Opens the GRDB pool off the connect critical path when possible.
+    func warmupIfNeeded() async {
+        _ = await databasePool()
+    }
+
     func loadLyricsDocument(
         scope: String,
         songID: String,

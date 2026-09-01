@@ -821,6 +821,106 @@ enum ExternalRecommendationRefreshPolicy {
 enum RecommendationMixer {
     private static let cache = RecommendationMixCache()
 
+    private struct SharedCorpus: Sendable {
+        let allBehaviors: [SongBehavior]
+        let starredSongIDs: Set<String>
+        let knownArtists: Set<String>
+        let favoriteGenres: Set<String>
+        let knownSongIDs: Set<String>
+        let recentArtists: Set<String>
+        let maxRepeat: Double
+        let behaviorMaxPlayCount: Int
+        let totalPlayCount: Int
+        let playedAlbumCounts: [String: Int]
+        let sourceIndex: RecommendationSourceIndex
+        let sourceLists: [[Song]]
+    }
+
+    private static func buildSharedCorpus(
+        snapshot: HomeSnapshot,
+        behavior: RecommendationBehaviorSnapshot
+    ) -> SharedCorpus {
+        let allBehaviors = behavior.songs.values.sorted {
+            if $0.song.id == $1.song.id {
+                return $0.lastPlayed < $1.lastPlayed
+            }
+            return $0.song.id < $1.song.id
+        }
+        var starredSongIDs = Set<String>()
+        starredSongIDs.reserveCapacity(snapshot.starredSongs.count)
+        var knownArtists = Set<String>()
+        var favoriteGenres = Set<String>()
+        for (index, song) in snapshot.starredSongs.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled {
+                break
+            }
+            starredSongIDs.insert(song.id)
+            let artist = RecommendationCandidateMetadata.artistKey(for: song)
+            if !artist.isEmpty { knownArtists.insert(artist) }
+            favoriteGenres.formUnion(
+                RecommendationCandidateMetadata.genreKeys(for: song)
+            )
+        }
+        for song in snapshot.mostPlayedSongs {
+            let artist = RecommendationCandidateMetadata.artistKey(for: song)
+            if !artist.isEmpty { knownArtists.insert(artist) }
+        }
+        var knownSongIDs = starredSongIDs
+        knownSongIDs.formUnion(snapshot.mostPlayedSongs.lazy.map(\.id))
+        knownSongIDs.formUnion(behavior.songs.keys)
+        let recentArtists = Set(
+            behavior.recentSongs.prefix(10).compactMap {
+                let artist = RecommendationCandidateMetadata.artistKey(for: $0)
+                return artist.isEmpty ? nil : artist
+            }
+        )
+        var maxRepeat = 1.0
+        var behaviorMaxPlayCount = 0
+        var totalPlayCount = 0
+        var playedAlbumCounts: [String: Int] = [:]
+        for (index, value) in allBehaviors.enumerated() {
+            if index.isMultiple(of: 64), Task.isCancelled { break }
+            maxRepeat = max(maxRepeat, log1p(Double(value.repeatCount)))
+            behaviorMaxPlayCount = max(behaviorMaxPlayCount, value.playCount)
+            totalPlayCount += value.playCount
+            let artist = RecommendationCandidateMetadata.artistKey(for: value.song)
+            if !artist.isEmpty { knownArtists.insert(artist) }
+            if value.playCount > 0 {
+                let album = RecommendationCandidateMetadata.albumKey(for: value.song)
+                if !album.isEmpty { playedAlbumCounts[album, default: 0] += 1 }
+            }
+        }
+        let sourceLists: [[Song]] = [
+            snapshot.serverRecommendedSongs,
+            snapshot.sonicRecommendedSongs,
+            snapshot.similarArtistSongs,
+            snapshot.genreRecommendedSongs,
+            snapshot.topArtistSongs,
+            snapshot.lastFMRecommendedSongs,
+            snapshot.listenBrainzRecommendedSongs,
+            snapshot.playlistAffinitySongs,
+            snapshot.recentlyAddedSongs,
+            snapshot.popularSongs,
+            snapshot.randomSongs,
+            snapshot.mostPlayedSongs,
+            snapshot.starredSongs
+        ]
+        return SharedCorpus(
+            allBehaviors: allBehaviors,
+            starredSongIDs: starredSongIDs,
+            knownArtists: knownArtists,
+            favoriteGenres: favoriteGenres,
+            knownSongIDs: knownSongIDs,
+            recentArtists: recentArtists,
+            maxRepeat: maxRepeat,
+            behaviorMaxPlayCount: behaviorMaxPlayCount,
+            totalPlayCount: totalPlayCount,
+            playedAlbumCounts: playedAlbumCounts,
+            sourceIndex: RecommendationSourceIndex(snapshot: snapshot),
+            sourceLists: sourceLists
+        )
+    }
+
     /// CPU-heavy recommendation scoring deliberately leaves the caller's
     /// actor. The async boundary stays structured, so cancellation belongs to
     /// the request that asked for the mix instead of an orphan detached task.
@@ -861,6 +961,7 @@ enum RecommendationMixer {
     ) async -> (recommended: [Song], daylist: [Song]) {
         guard !Task.isCancelled else { return ([], []) }
         let seed = behavior.recentSongs.first
+        let corpus = buildSharedCorpus(snapshot: snapshot, behavior: behavior)
         let recommended = mix(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
@@ -868,7 +969,8 @@ enum RecommendationMixer {
             behavior: behavior,
             seed: seed,
             limit: 40,
-            date: date
+            date: date,
+            sharedCorpus: corpus
         )
         guard !Task.isCancelled else { return (recommended, []) }
         let daylist = mix(
@@ -879,12 +981,13 @@ enum RecommendationMixer {
             behavior: behavior,
             seed: seed,
             limit: 32,
-            date: date
+            date: date,
+            sharedCorpus: corpus
         )
         return (recommended, daylist)
     }
 
-    static func mix(
+    private static func mix(
         snapshot: HomeSnapshot,
         snapshotRevision: HomeSnapshotRevision? = nil,
         weights: RecommendationWeights,
@@ -892,7 +995,8 @@ enum RecommendationMixer {
         behavior: RecommendationBehaviorSnapshot = .empty,
         seed: Song? = nil,
         limit: Int = 40,
-        date: Date = Date()
+        date: Date = Date(),
+        sharedCorpus: SharedCorpus? = nil
     ) -> [Song] {
         guard limit > 0, !Task.isCancelled else { return [] }
         guard let key = cacheKey(
@@ -916,12 +1020,11 @@ enum RecommendationMixer {
 
         let evaluationDate = temporalEvaluationDate(for: purpose, date: date)
         let preset = RecommendationPreset.value(for: purpose)
-        let allBehaviors = behavior.songs.values.sorted {
-            if $0.song.id == $1.song.id {
-                return $0.lastPlayed < $1.lastPlayed
-            }
-            return $0.song.id < $1.song.id
-        }
+        let corpus = sharedCorpus ?? buildSharedCorpus(
+            snapshot: snapshot,
+            behavior: behavior
+        )
+        let allBehaviors = corpus.allBehaviors
         let shortCutoff = evaluationDate.addingTimeInterval(-14 * 86_400)
         let longCutoff = evaluationDate.addingTimeInterval(-365 * 86_400)
         let profiles = temporalProfiles(
@@ -949,66 +1052,16 @@ enum RecommendationMixer {
         )
         guard !Task.isCancelled else { return [] }
 
-        var starredSongIDs = Set<String>()
-        starredSongIDs.reserveCapacity(snapshot.starredSongs.count)
-        var knownArtists = Set<String>()
-        var favoriteGenres = Set<String>()
-        for (index, song) in snapshot.starredSongs.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { return [] }
-            starredSongIDs.insert(song.id)
-            let artist = RecommendationCandidateMetadata.artistKey(for: song)
-            if !artist.isEmpty { knownArtists.insert(artist) }
-            favoriteGenres.formUnion(
-                RecommendationCandidateMetadata.genreKeys(for: song)
-            )
-        }
-        for song in snapshot.mostPlayedSongs {
-            let artist = RecommendationCandidateMetadata.artistKey(for: song)
-            if !artist.isEmpty { knownArtists.insert(artist) }
-        }
-
-        var knownSongIDs = starredSongIDs
-        knownSongIDs.formUnion(snapshot.mostPlayedSongs.lazy.map(\.id))
-        knownSongIDs.formUnion(behavior.songs.keys)
-        let recentArtists = Set(
-            behavior.recentSongs.prefix(10).compactMap {
-                let artist = RecommendationCandidateMetadata.artistKey(for: $0)
-                return artist.isEmpty ? nil : artist
-            }
-        )
-
-        var maxRepeat = 1.0
-        var behaviorMaxPlayCount = 0
-        var totalPlayCount = 0
-        var playedAlbumCounts: [String: Int] = [:]
-        for (index, value) in allBehaviors.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { return [] }
-            maxRepeat = max(maxRepeat, log1p(Double(value.repeatCount)))
-            behaviorMaxPlayCount = max(behaviorMaxPlayCount, value.playCount)
-            totalPlayCount += value.playCount
-            let artist = RecommendationCandidateMetadata.artistKey(for: value.song)
-            if !artist.isEmpty { knownArtists.insert(artist) }
-            if value.playCount > 0 {
-                let album = RecommendationCandidateMetadata.albumKey(for: value.song)
-                if !album.isEmpty { playedAlbumCounts[album, default: 0] += 1 }
-            }
-        }
-
-        let sourceLists: [[Song]] = [
-            snapshot.serverRecommendedSongs,
-            snapshot.sonicRecommendedSongs,
-            snapshot.similarArtistSongs,
-            snapshot.genreRecommendedSongs,
-            snapshot.topArtistSongs,
-            snapshot.lastFMRecommendedSongs,
-            snapshot.listenBrainzRecommendedSongs,
-            snapshot.playlistAffinitySongs,
-            snapshot.recentlyAddedSongs,
-            snapshot.popularSongs,
-            snapshot.randomSongs,
-            snapshot.mostPlayedSongs,
-            snapshot.starredSongs
-        ]
+        let starredSongIDs = corpus.starredSongIDs
+        let knownArtists = corpus.knownArtists
+        let favoriteGenres = corpus.favoriteGenres
+        let knownSongIDs = corpus.knownSongIDs
+        let recentArtists = corpus.recentArtists
+        let maxRepeat = corpus.maxRepeat
+        let behaviorMaxPlayCount = corpus.behaviorMaxPlayCount
+        let totalPlayCount = corpus.totalPlayCount
+        let playedAlbumCounts = corpus.playedAlbumCounts
+        let sourceLists = corpus.sourceLists
         let candidateLimit = RecommendationScoringPolicy.candidateLimit(
             outputLimit: limit,
             sourceCount: sourceLists.count
@@ -1037,7 +1090,7 @@ enum RecommendationMixer {
             maxPlayCount = max(maxPlayCount, Double(song.playCount ?? 0))
         }
 
-        let sourceIndex = RecommendationSourceIndex(snapshot: snapshot)
+        let sourceIndex = corpus.sourceIndex
         guard !Task.isCancelled else { return [] }
         let isColdStart = totalPlayCount < 5
         let scoringPlan = scoringPlan(

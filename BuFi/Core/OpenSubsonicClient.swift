@@ -677,12 +677,18 @@ enum LyricsDocumentParser {
         guard !sources.isEmpty else { return [] }
         var remaining = sources
         var ordered: [StructuredLyrics] = []
+        ordered.reserveCapacity(sources.count)
         for code in preferredLanguageCodes {
-            let matches = remaining.filter { matchesLanguage($0.lang, code: code) }
-            ordered.append(contentsOf: matches)
-            remaining.removeAll { candidate in
-                matches.contains { $0.lang == candidate.lang }
+            var nextRemaining: [StructuredLyrics] = []
+            nextRemaining.reserveCapacity(remaining.count)
+            for source in remaining {
+                if matchesLanguage(source.lang, code: code) {
+                    ordered.append(source)
+                } else {
+                    nextRemaining.append(source)
+                }
             }
+            remaining = nextRemaining
         }
         ordered.append(contentsOf: remaining)
         return ordered
@@ -919,7 +925,12 @@ actor OpenSubsonicClient {
         DecodedResponseRequestKey: InFlightDecodedResponse
     ] = [:]
     private var lyricsCache = LyricsDocumentCache(countLimit: 96)
-    private var playbackMetadataCache: [String: Song] = [:]
+    private struct PlaybackMetadataCacheEntry {
+        var song: Song
+        var accessOrdinal: UInt64
+    }
+    private var playbackMetadataCache: [String: PlaybackMetadataCacheEntry] = [:]
+    private var playbackMetadataAccessClock: UInt64 = 0
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -1501,11 +1512,12 @@ actor OpenSubsonicClient {
         return try decodePayload(data)
     }
 
+    private nonisolated static let payloadDecoder = JSONDecoder()
+
     private nonisolated static func decodePayload<Payload: Decodable & Sendable>(
         _ data: Data
     ) throws -> Payload {
-        let decoder = JSONDecoder()
-        let capture = try decoder.decode(DecoderCapture.self, from: data)
+        let capture = try payloadDecoder.decode(DecoderCapture.self, from: data)
         let statusEnvelope = try StatusEnvelope(from: capture.decoder)
         guard statusEnvelope.response.status == "ok" else {
             throw OpenSubsonicError.fromSubsonicErrorCode(
@@ -3396,8 +3408,11 @@ actor OpenSubsonicClient {
     func song(id: String, forceRefresh: Bool = false) async throws -> Song {
         if forceRefresh {
             playbackMetadataCache[id] = nil
-        } else if let cached = playbackMetadataCache[id] {
-            return cached
+        } else if var cached = playbackMetadataCache[id] {
+            playbackMetadataAccessClock &+= 1
+            cached.accessOrdinal = playbackMetadataAccessClock
+            playbackMetadataCache[id] = cached
+            return cached.song
         } else if let persisted = await AppDatabase.shared.loadPlaybackMetadata(
             scope: accountScope,
             songID: id,
@@ -3423,12 +3438,18 @@ actor OpenSubsonicClient {
     }
 
     private func cachePlaybackMetadata(_ song: Song) {
-        playbackMetadataCache[song.id] = song
-        guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit,
-              let victim = playbackMetadataCache.keys.first(where: {
-                  $0 != song.id
-              }) else { return }
-        playbackMetadataCache[victim] = nil
+        playbackMetadataAccessClock &+= 1
+        playbackMetadataCache[song.id] = PlaybackMetadataCacheEntry(
+            song: song,
+            accessOrdinal: playbackMetadataAccessClock
+        )
+        while playbackMetadataCache.count > Self.playbackMetadataMemoryLimit,
+              let victim = playbackMetadataCache.min(by: {
+                  $0.value.accessOrdinal < $1.value.accessOrdinal
+              })?.key,
+              victim != song.id {
+            playbackMetadataCache.removeValue(forKey: victim)
+        }
     }
 
     /// Canonical API boundary for an active playback occurrence. The caller's
@@ -3689,9 +3710,38 @@ actor OpenSubsonicClient {
         // Memory pressure should not turn a visible, awaited request into a
         // user-facing cancellation. Shared transfers are released naturally
         // when their last waiter goes away.
-        clearResponseCache()
+        trimDecodedResponseCache(keepFraction: 0.5)
+        trimPlaybackMetadataCache(keepFraction: 0.5)
         lyricsCache.removeAll(keepingCapacity: true)
         transcodeDecisionCache.removeAll(keepingCapacity: false)
+    }
+
+    private func trimDecodedResponseCache(keepFraction: Double) {
+        let fraction = min(1, max(0, keepFraction))
+        let targetCount = max(
+            0,
+            Int((Double(decodedResponseCache.count) * fraction).rounded(.down))
+        )
+        while decodedResponseCache.count > targetCount,
+              let oldestKey = decodedResponseCache.min(by: {
+                  $0.value.accessOrdinal < $1.value.accessOrdinal
+              })?.key {
+            removeDecodedResponse(for: oldestKey)
+        }
+    }
+
+    private func trimPlaybackMetadataCache(keepFraction: Double) {
+        let fraction = min(1, max(0, keepFraction))
+        let targetCount = max(
+            0,
+            Int((Double(playbackMetadataCache.count) * fraction).rounded(.down))
+        )
+        while playbackMetadataCache.count > targetCount,
+              let oldestKey = playbackMetadataCache.min(by: {
+                  $0.value.accessOrdinal < $1.value.accessOrdinal
+              })?.key {
+            playbackMetadataCache.removeValue(forKey: oldestKey)
+        }
     }
 
     nonisolated func streamURL(
