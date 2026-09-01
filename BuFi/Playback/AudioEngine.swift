@@ -1341,14 +1341,11 @@ final class AudioEngine: NSObject, ObservableObject {
     private var latestServerQueueSaveRevision: UInt64 = 0
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var offlinePrefetchTask: Task<Void, Never>?
-    private var networkPrefetchTask: Task<Void, Never>?
     private var visualPrefetchTask: Task<Void, Never>?
     private var speculativePrefetchStartTask: Task<Void, Never>?
     private var speculativePrefetchStartToken: UUID?
-    private var networkPrefetchToken: UUID?
     private var visualPrefetchToken: UUID?
     private var offlinePrefetchToken: UUID?
-    private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastVisualPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastOfflinePrefetchKey: PlaybackPrefetchPlan.Key?
     private var playbackPrefetchInFlightSongIDs: Set<String> = []
@@ -3204,16 +3201,6 @@ final class AudioEngine: NSObject, ObservableObject {
         preparedPlaybackAssetOrder.removeAll(keepingCapacity: false)
     }
 
-    private func cancelNetworkPrefetch(resetKey: Bool) {
-        networkPrefetchTask?.cancel()
-        networkPrefetchTask = nil
-        networkPrefetchToken = nil
-        if resetKey {
-            lastNetworkPrefetchKey = nil
-            cancelUpcomingMetadataPrefetch()
-        }
-    }
-
     private func cancelVisualPrefetch(resetKey: Bool) {
         visualPrefetchTask?.cancel()
         visualPrefetchTask = nil
@@ -3240,7 +3227,9 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         upcomingMetadataPrefetchTask?.cancel()
         let songs = plan.upcomingSongs
-        let task = Task { await client.prefetchPlaybackMetadata(songs: songs) }
+        let task = Task {
+            await client.prefetchUpcomingPlaybackContext(songs: songs)
+        }
         upcomingMetadataPrefetchKey = plan.key
         upcomingMetadataPrefetchTask = task
         return await task.value
@@ -3258,7 +3247,6 @@ final class AudioEngine: NSObject, ObservableObject {
         speculativePrefetchStartTask = nil
         speculativePrefetchStartToken = nil
         cancelVisualPrefetch(resetKey: true)
-        cancelNetworkPrefetch(resetKey: true)
         cancelOfflinePrefetch(resetKey: true)
         discardPreparedPlaybackAssets()
     }
@@ -3279,7 +3267,6 @@ final class AudioEngine: NSObject, ObservableObject {
                 - currentPlayerPosition()
         )
         if remainingDelay <= 0.05 {
-            scheduleNetworkPrefetch()
             scheduleOfflinePrefetch()
             return
         }
@@ -3301,7 +3288,6 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             self.speculativePrefetchStartTask = nil
             self.speculativePrefetchStartToken = nil
-            self.scheduleNetworkPrefetch()
             self.scheduleOfflinePrefetch()
         }
     }
@@ -3345,12 +3331,11 @@ final class AudioEngine: NSObject, ObservableObject {
         }
     }
 
-    /// Cover art and canonical metadata are presentation-critical even when a
-    /// user skips several tracks before the two-second audio stability window.
-    /// Warm exactly the full-player decode size for the next entries (up to
-    /// five, or fewer when the queue is shorter).
-    /// The request remains background-class traffic, and constrained links run
-    /// one cover at a time so AVFoundation keeps transport priority.
+    /// Cover art, metadata, lyrics, and palettes for upcoming entries are
+    /// presentation-critical even when a user skips several tracks before the
+    /// two-second audio stability window. Warm up to five entries (or fewer
+    /// when the queue is shorter). Traffic stays background-class; constrained
+    /// links run one cover at a time so AVFoundation keeps transport priority.
     private func scheduleUpcomingVisualPrefetch() {
         guard networkPathIsSatisfied,
               wantsPlayback,
@@ -3425,105 +3410,10 @@ final class AudioEngine: NSObject, ObservableObject {
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
 
-            // Only warm the next cover's palette; the network pass does the same.
-            if let firstCoverURL = coverURLs.first {
-                _ = await ArtworkStore.shared.palette(for: firstCoverURL)
-            }
-        }
-    }
-
-    private func scheduleNetworkPrefetch() {
-        // Metadata, lyrics, and artwork are tiny compared with media bytes.
-        // This second pass starts only after the stream's uncontested opening
-        // window; the presentation-critical first pass has already warmed the
-        // next covers at background network priority.
-        guard allowsSpeculativeNetworkPrefetch,
-              let client,
-              let plan = playbackPrefetchPlan() else {
-            cancelNetworkPrefetch(resetKey: true)
-            return
-        }
-
-        let processInfo = ProcessInfo.processInfo
-        guard !processInfo.isLowPowerModeEnabled,
-              processInfo.thermalState != .serious,
-              processInfo.thermalState != .critical else {
-            cancelNetworkPrefetch(resetKey: true)
-            return
-        }
-
-        guard lastNetworkPrefetchKey != plan.key else { return }
-        cancelNetworkPrefetch(resetKey: false)
-        lastNetworkPrefetchKey = plan.key
-
-        let token = UUID()
-        networkPrefetchToken = token
-        networkPrefetchTask = Task(priority: .utility) { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.networkPrefetchToken == token {
-                    self.networkPrefetchTask = nil
-                    self.networkPrefetchToken = nil
-                }
-            }
-            let prefetchedSongs = await self.prefetchedUpcomingSongs(
-                plan: plan,
-                client: client
-            )
-            guard !Task.isCancelled else { return }
-            async let lyricsPrefetch: Void = client.prefetchLyrics(
-                songs: prefetchedSongs
-            )
-
-            let screenSize = UIScreen.main.bounds.size
-            let artworkEdge = max(
-                220,
-                min(
-                    max(240, screenSize.width - 44),
-                    max(264, screenSize.height * 0.47)
-                )
-            )
-            let artworkPixelSize = max(
-                ArtworkRequestSizing.fullPlayerPixelSize,
-                ArtworkRequestSizing.pixelSize(
-                    pointSize: artworkEdge,
-                    displayScale: UIScreen.main.scale
-                )
-            )
-            var coverURLs: [URL] = []
-            var seenArtworkRevisions = Set<String>()
-            for song in prefetchedSongs {
-                guard !Task.isCancelled else { return }
-                let revision = song.artworkRevision
-                guard let coverID = song.artworkID,
-                      seenArtworkRevisions.insert("\(coverID)|\(revision)").inserted,
-                      let sourceURL = try? client.coverURL(
-                          id: coverID,
-                          size: ArtworkRequestSizing.serverRequestSize(
-                              for: artworkPixelSize
-                          )
-                      ) else {
-                    continue
-                }
-                coverURLs.append(ArtworkStore.cacheURL(
-                    for: sourceURL,
-                    revision: revision
-                ))
-            }
-            await ArtworkStore.shared.prefetch(
-                urls: coverURLs,
-                pixelSize: artworkPixelSize,
-                concurrencyLimit: 3
-            )
-            await lyricsPrefetch
-            guard !Task.isCancelled else { return }
-            // Only the immediately upcoming cover needs its palette ready.
-            // Run this after network caches are warm so CPU clustering never
-            // competes with the active stream's first seconds.
-            if let firstCoverURL = coverURLs.first {
-                try? await Task.sleep(for: .milliseconds(350))
-                guard !Task.isCancelled else { return }
-                _ = await ArtworkStore.shared.palette(for: firstCoverURL)
+            for coverURL in coverURLs.prefix(isConstrained ? 1 : coverURLs.count) {
+                guard !Task.isCancelled,
+                      self.visualPrefetchToken == token else { return }
+                _ = await ArtworkStore.shared.palette(for: coverURL)
             }
         }
     }
