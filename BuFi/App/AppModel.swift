@@ -407,6 +407,11 @@ final class AppModel: ObservableObject {
     }
     private var starredIDIndex: StarredIDIndex?
     private var starredIDIndexToken: UInt64 = 0
+    private var lastCatalogIngestRevision: HomeSnapshotRevision?
+    private var albumsByIDCache: [String: Album] = [:]
+    private var albumsByIDCacheRevision = -1
+    private var knownSongsCache: [Song] = []
+    private var knownSongsCacheRevision = -1
     private var albumDetailCache: [String: CachedValue<AlbumDetail>] = [:]
     private var playlistDetailCache: [String: CachedValue<PlaylistDetail>] = [:]
     private var artistDetailCache: [String: CachedValue<ArtistDetail>] = [:]
@@ -1106,13 +1111,21 @@ final class AppModel: ObservableObject {
     }
 
     func handleMemoryPressure() {
-        // In-flight detail requests belong to visible screens and are allowed
-        // to finish. Optional catalog/home preparation is cancelled because a
-        // later refresh can rebuild it without retaining another large snapshot.
         cancelBackgroundPreparation()
-        albumDetailCache.removeAll(keepingCapacity: false)
-        playlistDetailCache.removeAll(keepingCapacity: false)
-        artistDetailCache.removeAll(keepingCapacity: false)
+        clearDetailCaches()
+        RecommendationMixer.invalidateCache()
+        lastCatalogIngestRevision = nil
+        localSearchIndex = nil
+        localSearchIndexRevision = -1
+        starredIDIndex = nil
+        starredIDIndexToken = 0
+        albumsByIDCache.removeAll(keepingCapacity: false)
+        albumsByIDCacheRevision = -1
+        knownSongsCache.removeAll(keepingCapacity: false)
+        knownSongsCacheRevision = -1
+        Task(priority: .utility) {
+            await ArtworkStore.shared.clearMemory()
+        }
     }
 
     func cancelDetailRequest(for route: MusicRoute) {
@@ -1763,42 +1776,27 @@ final class AppModel: ObservableObject {
         switch target {
         case .song:
             ids = starredIDIndex?.songIDs ?? []
-            func addStarredSongs(_ songs: [Song]) {
-                for song in songs where song.isStarred {
-                    ids.insert(song.id)
-                }
+            for song in searchResults.songs where song.isStarred {
+                ids.insert(song.id)
             }
-            for collection in HomeSnapshot.songCollections {
-                addStarredSongs(snapshot[keyPath: collection])
+            for song in AudioEngine.shared.queue where song.isStarred {
+                ids.insert(song.id)
             }
-            addStarredSongs(searchResults.songs)
-            addStarredSongs(AudioEngine.shared.queue)
             if let song = AudioEngine.shared.currentSong, song.isStarred {
                 ids.insert(song.id)
             }
         case .album:
             ids = starredIDIndex?.albumIDs ?? []
-            func addStarredAlbums(_ albums: [Album]) {
-                for album in albums where album.isStarred {
-                    ids.insert(album.id)
-                }
+            for album in searchResults.albums where album.isStarred {
+                ids.insert(album.id)
             }
-            for collection in HomeSnapshot.albumCollections {
-                addStarredAlbums(snapshot[keyPath: collection])
-            }
-            addStarredAlbums(searchResults.albums)
         case .artist:
             ids = starredIDIndex?.artistIDs ?? []
-            func addStarredArtists(_ artists: [Artist]) {
-                for artist in artists where artist.isStarred {
-                    ids.insert(artist.id)
-                }
+            for artist in searchResults.artists where artist.isStarred {
+                ids.insert(artist.id)
             }
-            for collection in HomeSnapshot.artistCollections {
-                addStarredArtists(snapshot[keyPath: collection])
-            }
-            addStarredArtists(searchResults.artists)
         }
+        _ = snapshot
 
         let prefix = starKeyPrefix(for: target) + ":"
         for (key, enabled) in favoriteOverrides
@@ -2014,6 +2012,11 @@ final class AppModel: ObservableObject {
         localSearchIndexRevision = -1
         starredIDIndex = nil
         starredIDIndexToken = 0
+        lastCatalogIngestRevision = nil
+        albumsByIDCache.removeAll(keepingCapacity: false)
+        albumsByIDCacheRevision = -1
+        knownSongsCache.removeAll(keepingCapacity: false)
+        knownSongsCacheRevision = -1
     }
 
     private static func cachedDetail<Value>(
@@ -2106,15 +2109,7 @@ final class AppModel: ObservableObject {
             value.mostPlayedSongs = history.mostPlayedSongs
         }
 
-        let albums = snapshot.recentlyPlayedAlbums +
-            snapshot.frequentAlbums +
-            snapshot.recentAlbums +
-            snapshot.randomAlbums +
-            snapshot.starredAlbums
-        var albumsByID: [String: Album] = [:]
-        for album in albums where albumsByID[album.id] == nil {
-            albumsByID[album.id] = album
-        }
+        var albumsByID = albumsLookup(for: snapshot)
         var localRecentAlbums: [Album] = []
         var seenAlbumIDs = Set<String>()
         for song in history.recentlyPlayedSongs {
@@ -2175,6 +2170,31 @@ final class AppModel: ObservableObject {
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
         value.daylistSongs = sections.daylist
         return value
+    }
+
+    private func knownSongs(for snapshot: HomeSnapshot) -> [Song] {
+        if knownSongsCacheRevision == homeRevision, !knownSongsCache.isEmpty {
+            return knownSongsCache
+        }
+        let songs = snapshot.knownSongs()
+        knownSongsCache = songs
+        knownSongsCacheRevision = homeRevision
+        return songs
+    }
+
+    private func albumsLookup(for snapshot: HomeSnapshot) -> [String: Album] {
+        if albumsByIDCacheRevision == homeRevision, !albumsByIDCache.isEmpty {
+            return albumsByIDCache
+        }
+        var map: [String: Album] = [:]
+        for collection in HomeSnapshot.albumCollections {
+            for album in snapshot[keyPath: collection] where map[album.id] == nil {
+                map[album.id] = album
+            }
+        }
+        albumsByIDCache = map
+        albumsByIDCacheRevision = homeRevision
+        return map
     }
 
     private func localSearchResults(for query: String) -> SearchResults {
@@ -3117,7 +3137,12 @@ final class AppModel: ObservableObject {
     }
 
     private func scheduleLibraryCatalogRefresh(snapshot: HomeSnapshot) {
-        let seedSongs = snapshot.knownSongs()
+        let revision = library.revision
+        if lastCatalogIngestRevision == revision {
+            return
+        }
+        lastCatalogIngestRevision = revision
+        let seedSongs = knownSongs(for: snapshot)
         catalogRefreshTask?.cancel()
         guard allowsBackgroundPreparation else {
             catalogRefreshTask = nil

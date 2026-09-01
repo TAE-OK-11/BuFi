@@ -650,23 +650,55 @@ actor ListeningHistoryStore {
     }
 
     private func trimEntriesIfNeeded() {
-        if entries.count > 700 {
-            let retained = entries.values
-                .sorted { $0.lastPlayed > $1.lastPlayed }
-                .prefix(600)
-            var retainedEntries: [String: SongBehavior] = [:]
-            for value in retained {
-                let id = value.song.id
-                guard !id.isEmpty else { continue }
-                if let existing = retainedEntries[id],
-                   existing.lastPlayed >= value.lastPlayed {
-                    continue
+        guard entries.count > 700 else { return }
+        var retainedHeap: [(lastPlayed: Date, id: String, value: SongBehavior)] = []
+        retainedHeap.reserveCapacity(600)
+        for (id, value) in entries {
+            guard !id.isEmpty else { continue }
+            if retainedHeap.count < 600 {
+                retainedHeap.append((value.lastPlayed, id, value))
+                if retainedHeap.count == 600 {
+                    retainedHeap.sort { $0.lastPlayed < $1.lastPlayed }
                 }
-                retainedEntries[id] = value
+                continue
             }
-            deletedSongIDs.formUnion(entries.keys.filter { retainedEntries[$0] == nil })
-            dirtySongIDs.subtract(deletedSongIDs)
-            entries = retainedEntries
+            guard value.lastPlayed > retainedHeap[0].lastPlayed else { continue }
+            retainedHeap[0] = (value.lastPlayed, id, value)
+            siftRetainedHeapRoot(&retainedHeap)
+        }
+        var retainedEntries: [String: SongBehavior] = [:]
+        retainedEntries.reserveCapacity(retainedHeap.count)
+        for item in retainedHeap {
+            if let existing = retainedEntries[item.id],
+               existing.lastPlayed >= item.value.lastPlayed {
+                continue
+            }
+            retainedEntries[item.id] = item.value
+        }
+        deletedSongIDs.formUnion(entries.keys.filter { retainedEntries[$0] == nil })
+        dirtySongIDs.subtract(deletedSongIDs)
+        entries = retainedEntries
+    }
+
+    private func siftRetainedHeapRoot(
+        _ heap: inout [(lastPlayed: Date, id: String, value: SongBehavior)]
+    ) {
+        var index = 0
+        while true {
+            let left = index * 2 + 1
+            let right = left + 1
+            var smallest = index
+            if left < heap.count,
+               heap[left].lastPlayed < heap[smallest].lastPlayed {
+                smallest = left
+            }
+            if right < heap.count,
+               heap[right].lastPlayed < heap[smallest].lastPlayed {
+                smallest = right
+            }
+            guard smallest != index else { return }
+            heap.swapAt(index, smallest)
+            index = smallest
         }
     }
 

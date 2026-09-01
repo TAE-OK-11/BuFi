@@ -2,24 +2,85 @@ import Foundation
 
 /// Precomputed catalog for local search over the home snapshot.
 struct LocalLibrarySearchIndex: Sendable {
-    let songs: [Song]
-    let albums: [Album]
-    let artists: [Artist]
+    fileprivate struct IndexedSong: Sendable {
+        let song: Song
+        let titleKey: String
+        let artistKey: String
+        let albumKey: String
+    }
+
+    fileprivate struct IndexedAlbum: Sendable {
+        let album: Album
+        let nameKey: String
+        let artistKey: String
+    }
+
+    fileprivate struct IndexedArtist: Sendable {
+        let artist: Artist
+        let nameKey: String
+    }
+
+    fileprivate let songs: [IndexedSong]
+    fileprivate let albums: [IndexedAlbum]
+    fileprivate let artists: [IndexedArtist]
+    fileprivate let songTokenIndex: [String: [Int]]
 
     static func build(from snapshot: HomeSnapshot) -> LocalLibrarySearchIndex {
-        LocalLibrarySearchIndex(
-            songs: MediaIdentity.uniqueSongs(
-                from: HomeSnapshot.songCollections.map { snapshot[keyPath: $0] },
-                limit: 400
-            ),
-            albums: MediaIdentity.unique(
-                HomeSnapshot.albumCollections.flatMap { snapshot[keyPath: $0] },
-                id: \.id
-            ),
-            artists: MediaIdentity.uniqueArtists(
-                HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
-            )
+        let uniqueSongs = MediaIdentity.uniqueSongs(
+            from: HomeSnapshot.songCollections.map { snapshot[keyPath: $0] },
+            limit: 400
         )
+        let uniqueAlbums = MediaIdentity.unique(
+            HomeSnapshot.albumCollections.flatMap { snapshot[keyPath: $0] },
+            id: \.id
+        )
+        let uniqueArtists = MediaIdentity.uniqueArtists(
+            HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
+        )
+        let indexedSongs = uniqueSongs.map {
+            IndexedSong(
+                song: $0,
+                titleKey: normalizedSearchKey($0.title),
+                artistKey: normalizedSearchKey($0.artist),
+                albumKey: normalizedSearchKey($0.album)
+            )
+        }
+        return LocalLibrarySearchIndex(
+            songs: indexedSongs,
+            albums: uniqueAlbums.map {
+                IndexedAlbum(
+                    album: $0,
+                    nameKey: normalizedSearchKey($0.name),
+                    artistKey: normalizedSearchKey($0.artist)
+                )
+            },
+            artists: uniqueArtists.map {
+                IndexedArtist(
+                    artist: $0,
+                    nameKey: normalizedSearchKey($0.name)
+                )
+            },
+            songTokenIndex: Self.buildSongTokenIndex(for: indexedSongs)
+        )
+    }
+
+    private static func buildSongTokenIndex(
+        for songs: [IndexedSong]
+    ) -> [String: [Int]] {
+        var buckets: [String: [Int]] = [:]
+        buckets.reserveCapacity(songs.count * 2)
+        for (index, entry) in songs.enumerated() {
+            var tokens = Set<String>()
+            for key in [entry.titleKey, entry.artistKey, entry.albumKey] where !key.isEmpty {
+                for token in key.split(whereSeparator: \.isWhitespace) {
+                    tokens.insert(String(token))
+                }
+            }
+            for token in tokens {
+                buckets[token, default: []].append(index)
+            }
+        }
+        return buckets
     }
 
     func results(
@@ -32,22 +93,14 @@ struct LocalLibrarySearchIndex: Sendable {
         guard !query.value.isEmpty else { return .empty }
 
         return SearchResults(
-            artists: ranked(artists, limit: artistLimit) {
-                fieldMatch($0.name, query: query, field: 0)
-            },
-            albums: ranked(albums, limit: albumLimit) { album in
-                bestFieldMatch(
-                    fieldMatch(album.name, query: query, field: 0),
-                    fieldMatch(album.artist, query: query, field: 1)
-                )
-            },
-            songs: ranked(songs, limit: songLimit) { song in
-                bestFieldMatch(
-                    fieldMatch(song.title, query: query, field: 0),
-                    fieldMatch(song.artist, query: query, field: 1),
-                    fieldMatch(song.album, query: query, field: 2)
-                )
-            }
+            artists: rankedIndexedArtists(artists, limit: artistLimit, query: query),
+            albums: rankedIndexedAlbums(albums, limit: albumLimit, query: query),
+            songs: rankedIndexedSongs(
+                songs,
+                tokenIndex: songTokenIndex,
+                limit: songLimit,
+                query: query
+            )
         )
     }
 }
@@ -87,16 +140,14 @@ enum LocalLibrarySearch {
 }
 
 enum SearchPresentationPolicy {
-    /// Keep the last useful result set on screen while the query is still
-    /// growing or shrinking, so typing does not flash an empty search page.
     static func retainedResults(
         previousQuery: String,
         previousResults: SearchResults,
         nextQuery: String
     ) -> SearchResults {
         guard !previousResults.isEmpty else { return .empty }
-        let previous = normalized(previousQuery)
-        let next = normalized(nextQuery)
+        let previous = normalizedSearchKey(previousQuery)
+        let next = normalizedSearchKey(nextQuery)
         guard !previous.isEmpty, !next.isEmpty else { return .empty }
         if next.hasPrefix(previous) || previous.hasPrefix(next) {
             return previousResults
@@ -130,7 +181,7 @@ private struct PreparedSearchQuery {
     let tokens: [String]
 
     init(_ rawValue: String) {
-        let normalizedValue = normalized(rawValue)
+        let normalizedValue = normalizedSearchKey(rawValue)
         value = normalizedValue
         tokens = normalizedValue
             .split(whereSeparator: \.isWhitespace)
@@ -138,21 +189,96 @@ private struct PreparedSearchQuery {
     }
 }
 
-private func ranked<Item>(
-    _ items: [Item],
+private func rankedIndexedSongs(
+    _ items: [LocalLibrarySearchIndex.IndexedSong],
+    tokenIndex: [String: [Int]],
     limit: Int,
-    rank: (Item) -> FieldMatch?
-) -> [Item] {
+    query: PreparedSearchQuery
+) -> [Song] {
     guard limit > 0 else { return [] }
-    // FieldMatch has only a handful of possible ranks. Stable buckets avoid
-    // sorting every match when the UI only needs a small prefix.
-    var buckets: [FieldMatch: [Item]] = [:]
-    for item in items {
-        guard let match = rank(item) else { continue }
-        buckets[match, default: []].append(item)
+    let candidates = candidateSongIndices(for: query, tokenIndex: tokenIndex)
+    let searchItems: [LocalLibrarySearchIndex.IndexedSong]
+    if let candidates {
+        searchItems = candidates.compactMap { index in
+            guard items.indices.contains(index) else { return nil }
+            return items[index]
+        }
+    } else {
+        searchItems = items
     }
+    var buckets: [FieldMatch: [Song]] = [:]
+    for entry in searchItems {
+        guard let match = bestFieldMatch(
+            fieldMatch(entry.titleKey, query: query, field: 0),
+            fieldMatch(entry.artistKey, query: query, field: 1),
+            fieldMatch(entry.albumKey, query: query, field: 2)
+        ) else { continue }
+        buckets[match, default: []].append(entry.song)
+    }
+    return takeRankedMatches(from: buckets, limit: limit)
+}
+
+private func candidateSongIndices(
+    for query: PreparedSearchQuery,
+    tokenIndex: [String: [Int]]
+) -> [Int]? {
+    guard !query.tokens.isEmpty else { return nil }
+    if query.tokens.count == 1, let token = query.tokens.first {
+        return tokenIndex[token]
+    }
+    var candidates: Set<Int>?
+    for token in query.tokens {
+        guard let indices = tokenIndex[token] else { return [] }
+        let bucket = Set(indices)
+        if let existing = candidates {
+            candidates = existing.intersection(bucket)
+        } else {
+            candidates = bucket
+        }
+        if candidates?.isEmpty == true { return [] }
+    }
+    return candidates.map(Array.init)
+}
+
+private func rankedIndexedAlbums(
+    _ items: [LocalLibrarySearchIndex.IndexedAlbum],
+    limit: Int,
+    query: PreparedSearchQuery
+) -> [Album] {
+    guard limit > 0 else { return [] }
+    var buckets: [FieldMatch: [Album]] = [:]
+    for entry in items {
+        guard let match = bestFieldMatch(
+            fieldMatch(entry.nameKey, query: query, field: 0),
+            fieldMatch(entry.artistKey, query: query, field: 1)
+        ) else { continue }
+        buckets[match, default: []].append(entry.album)
+    }
+    return takeRankedMatches(from: buckets, limit: limit)
+}
+
+private func rankedIndexedArtists(
+    _ items: [LocalLibrarySearchIndex.IndexedArtist],
+    limit: Int,
+    query: PreparedSearchQuery
+) -> [Artist] {
+    guard limit > 0 else { return [] }
+    var buckets: [FieldMatch: [Artist]] = [:]
+    for entry in items {
+        guard let match = fieldMatch(entry.nameKey, query: query, field: 0) else {
+            continue
+        }
+        buckets[match, default: []].append(entry.artist)
+    }
+    return takeRankedMatches(from: buckets, limit: limit)
+}
+
+private func takeRankedMatches<Item>(
+    from buckets: [FieldMatch: [Item]],
+    limit: Int
+) -> [Item] {
     var result: [Item] = []
-    result.reserveCapacity(min(limit, items.count))
+    result.reserveCapacity(limit)
     for match in buckets.keys.sorted() {
         for item in buckets[match, default: []] {
             result.append(item)
@@ -163,10 +289,9 @@ private func ranked<Item>(
 }
 
 private func matches(
-    _ value: String,
+    _ haystack: String,
     query: PreparedSearchQuery
 ) -> SearchMatchRank? {
-    let haystack = normalized(value)
     guard !haystack.isEmpty else { return nil }
     if haystack == query.value { return .exact }
     if haystack.hasPrefix(query.value) { return .prefix }
@@ -180,11 +305,11 @@ private func matches(
 }
 
 private func fieldMatch(
-    _ value: String,
+    _ haystack: String,
     query: PreparedSearchQuery,
     field: Int
 ) -> FieldMatch? {
-    matches(value, query: query).map { FieldMatch(match: $0, field: field) }
+    matches(haystack, query: query).map { FieldMatch(match: $0, field: field) }
 }
 
 private func bestFieldMatch(
@@ -204,7 +329,7 @@ private func bestFieldMatch(
     bestFieldMatch(bestFieldMatch(first, second), third)
 }
 
-private func normalized(_ value: String) -> String {
+private func normalizedSearchKey(_ value: String) -> String {
     value
         .folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],

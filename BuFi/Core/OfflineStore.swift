@@ -597,23 +597,68 @@ actor OfflineStore {
         var total = indexedByteCount
         guard total > limit else { return }
 
+        let excess = total - limit
+        let averageEntrySize = max(1, total / Int64(max(entries.count, 1)))
+        let estimatedEvictions = Int(excess / averageEntrySize) + 1
+        if estimatedEvictions < entries.count / 4 {
+            while total > limit {
+                guard let oldest = oldestEvictionCandidate(excluding: protectedID) else { break }
+                try evictEntry(
+                    id: oldest.id,
+                    entry: oldest.entry,
+                    directory: directory,
+                    total: &total
+                )
+            }
+            return
+        }
+
         let candidates = entries
             .filter { $0.key != protectedID }
             .sorted { $0.value.lastAccessedAt < $1.value.lastAccessedAt }
         for (id, entry) in candidates where total > limit {
-            let url = directory.appendingPathComponent(entry.fileName)
-            do {
-                if FileManager.default.fileExists(atPath: url.path) {
-                    try FileManager.default.removeItem(at: url)
-                }
-                entries[id] = nil
-                markDeleted(id)
-                total -= entry.byteCount
-                indexedByteCount = max(0, indexedByteCount - entry.byteCount)
-            } catch {
-                // Keep the index entry when deletion fails so storage accounting
-                // remains truthful and a later cleanup can retry.
+            try evictEntry(
+                id: id,
+                entry: entry,
+                directory: directory,
+                total: &total
+            )
+        }
+    }
+
+    private func oldestEvictionCandidate(
+        excluding protectedID: String
+    ) -> (id: String, entry: Entry)? {
+        var oldestID: String?
+        var oldestDate = Date.distantFuture
+        for (id, entry) in entries where id != protectedID {
+            if entry.lastAccessedAt < oldestDate {
+                oldestDate = entry.lastAccessedAt
+                oldestID = id
             }
+        }
+        guard let oldestID, let entry = entries[oldestID] else { return nil }
+        return (oldestID, entry)
+    }
+
+    private func evictEntry(
+        id: String,
+        entry: Entry,
+        directory: URL,
+        total: inout Int64
+    ) throws {
+        let url = directory.appendingPathComponent(entry.fileName)
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+            entries[id] = nil
+            markDeleted(id)
+            total -= entry.byteCount
+            indexedByteCount = max(0, indexedByteCount - entry.byteCount)
+        } catch {
+            // Keep the index entry when deletion fails so storage accounting
+            // remains truthful and a later cleanup can retry.
         }
     }
 

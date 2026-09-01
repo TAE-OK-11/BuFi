@@ -9,6 +9,9 @@ import Foundation
 actor LocalLibraryCatalog {
     static let shared = LocalLibraryCatalog()
 
+    private nonisolated static let songDecoder = JSONDecoder()
+    private nonisolated static let songEncoder = JSONEncoder()
+
     static let maximumSongs = 2_500
 
     private struct Entry: Sendable, Equatable {
@@ -298,7 +301,7 @@ actor LocalLibraryCatalog {
         var entries: [Entry] = []
         entries.reserveCapacity(records.count)
         var invalidSongIDs = Set<String>()
-        let decoder = JSONDecoder()
+        let decoder = songDecoder
         for (index, record) in records.enumerated() {
             if index.isMultiple(of: 32) { try Task.checkCancellation() }
             guard let song = try? decoder.decode(Song.self, from: record.songData),
@@ -452,7 +455,7 @@ actor LocalLibraryCatalog {
         try Task.checkCancellation()
         var records: [LibraryCatalogRecord] = []
         records.reserveCapacity(entries.count)
-        let encoder = JSONEncoder()
+        let encoder = songEncoder
         for (index, pair) in entries.enumerated() {
             if index.isMultiple(of: 32) {
                 try Task.checkCancellation()

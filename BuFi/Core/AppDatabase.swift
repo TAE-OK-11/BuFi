@@ -30,6 +30,12 @@ struct LibraryCatalogRecord: Sendable {
 actor AppDatabase {
     static let shared = AppDatabase()
 
+    private nonisolated static let propertyListEncoder: PropertyListEncoder = {
+        let encoder = propertyListEncoder
+        return encoder
+    }()
+    private nonisolated static let propertyListDecoder = PropertyListDecoder()
+
     private struct StoredQueueItem: Sendable {
         let position: Int
         let queueEntryID: String?
@@ -1632,7 +1638,7 @@ actor AppDatabase {
         guard !Task.isCancelled else { return [:] }
         var result: [String: SongBehavior] = [:]
         result.reserveCapacity(stored.count)
-        let decoder = PropertyListDecoder()
+        let decoder = propertyListDecoder
         for (index, item) in stored.enumerated() {
             if index.isMultiple(of: 32), Task.isCancelled { return [:] }
             guard let song = try? decoder.decode(Song.self, from: item.songData),
@@ -1672,8 +1678,7 @@ actor AppDatabase {
         try Task.checkCancellation()
         var result: [EncodedListeningBehavior] = []
         result.reserveCapacity(values.count)
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
+        let encoder = propertyListEncoder
         for (index, pair) in values.enumerated() {
             if index.isMultiple(of: 32) { try Task.checkCancellation() }
             guard pair.key == pair.value.song.id else { continue }
@@ -1694,7 +1699,7 @@ actor AppDatabase {
         var values: [DecodedQueueItem] = []
         values.reserveCapacity(items.count)
         var repairedItems = false
-        let decoder = PropertyListDecoder()
+        let decoder = propertyListDecoder
         for (index, item) in items.enumerated() {
             if index.isMultiple(of: 32) { try Task.checkCancellation() }
             guard let song = try? decoder.decode(Song.self, from: item.songData) else {
@@ -1736,8 +1741,7 @@ actor AppDatabase {
         try Task.checkCancellation()
         var encoded: [EncodedQueueItem] = []
         encoded.reserveCapacity(entries.count)
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
+        let encoder = propertyListEncoder
         for (position, entry) in entries.enumerated() {
             if position.isMultiple(of: 32) {
                 try Task.checkCancellation()
@@ -1752,16 +1756,14 @@ actor AppDatabase {
     }
 
     private static func encode<Value: Encodable>(_ value: Value) throws -> Data {
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
-        return try encoder.encode(value)
+        try propertyListEncoder.encode(value)
     }
 
     private static func decode<Value: Decodable>(
         _ type: Value.Type,
         from data: Data
     ) throws -> Value {
-        try PropertyListDecoder().decode(type, from: data)
+        try propertyListDecoder.decode(type, from: data)
     }
 
     private static func normalizedLyricSource(_ value: String) -> String {
