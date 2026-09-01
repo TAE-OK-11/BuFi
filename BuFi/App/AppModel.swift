@@ -2010,6 +2010,10 @@ final class AppModel: ObservableObject {
         albumDetailCache.removeAll(keepingCapacity: false)
         playlistDetailCache.removeAll(keepingCapacity: false)
         artistDetailCache.removeAll(keepingCapacity: false)
+        localSearchIndex = nil
+        localSearchIndexRevision = -1
+        starredIDIndex = nil
+        starredIDIndexToken = 0
     }
 
     private static func cachedDetail<Value>(
