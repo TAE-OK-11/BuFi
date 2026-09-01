@@ -658,6 +658,27 @@ struct PlaybackPrefetchPlan: Equatable, Sendable {
         queue: [Song],
         queueIndex: Int,
         quality: StreamQuality,
+        isActivelyPlaying: Bool
+    ) -> PlaybackPrefetchPlan? {
+        let maximumUpcoming = UpcomingPlaybackPrefetchPolicy.upcomingCount(
+            queue: queue,
+            queueIndex: queueIndex
+        )
+        return make(
+            currentSong: currentSong,
+            queue: queue,
+            queueIndex: queueIndex,
+            quality: quality,
+            maximumUpcoming: maximumUpcoming,
+            isActivelyPlaying: isActivelyPlaying
+        )
+    }
+
+    static func make(
+        currentSong: Song?,
+        queue: [Song],
+        queueIndex: Int,
+        quality: StreamQuality,
         maximumUpcoming: Int,
         isActivelyPlaying: Bool
     ) -> PlaybackPrefetchPlan? {
@@ -1330,6 +1351,8 @@ final class AudioEngine: NSObject, ObservableObject {
     private var lastNetworkPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastVisualPrefetchKey: PlaybackPrefetchPlan.Key?
     private var lastOfflinePrefetchKey: PlaybackPrefetchPlan.Key?
+    private var playbackPrefetchInFlightSongIDs: Set<String> = []
+    private var playbackPrefetchCompletedSongIDs: Set<String> = []
     private var upcomingMetadataPrefetchTask: Task<[Song], Never>?
     private var upcomingMetadataPrefetchKey: PlaybackPrefetchPlan.Key?
     private var preparedPlaybackAssets: [PreparedPlaybackKey: PreparedPlaybackAsset] = [:]
@@ -1688,6 +1711,9 @@ final class AudioEngine: NSObject, ObservableObject {
         // An explicit selection supersedes a pending server queue restore,
         // including the interval before AVPlayer reaches the playing state.
         serverQueueTask?.cancel()
+        if !reusesCurrentQueue {
+            resetPlaybackPrefetchTracking()
+        }
         let previousSongID = currentSong?.id
         finalizeCurrentPlayback(reason: transitionReason)
         var normalizedEntries = sourceEntries.isEmpty
@@ -3281,7 +3307,6 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func playbackPrefetchPlan(
-        maximumUpcoming: Int,
         permitsPendingPlayback: Bool = false
     ) -> PlaybackPrefetchPlan? {
         PlaybackPrefetchPlan.make(
@@ -3289,7 +3314,6 @@ final class AudioEngine: NSObject, ObservableObject {
             queue: queue,
             queueIndex: queueIndex,
             quality: quality,
-            maximumUpcoming: maximumUpcoming,
             isActivelyPlaying:
                 wantsPlayback && (
                     permitsPendingPlayback
@@ -3298,9 +3322,33 @@ final class AudioEngine: NSObject, ObservableObject {
         )
     }
 
+    private func resetPlaybackPrefetchTracking() {
+        playbackPrefetchInFlightSongIDs.removeAll(keepingCapacity: false)
+        playbackPrefetchCompletedSongIDs.removeAll(keepingCapacity: false)
+    }
+
+    private func shouldPrefetchPlaybackCache(for song: Song) -> Bool {
+        guard song.externalStreamURL == nil else { return false }
+        if playbackPrefetchCompletedSongIDs.contains(song.id) { return false }
+        if playbackPrefetchInFlightSongIDs.contains(song.id) { return false }
+        return true
+    }
+
+    private func markPlaybackPrefetchStarted(for songID: String) {
+        playbackPrefetchInFlightSongIDs.insert(songID)
+    }
+
+    private func markPlaybackPrefetchFinished(for songID: String, cached: Bool) {
+        playbackPrefetchInFlightSongIDs.remove(songID)
+        if cached {
+            playbackPrefetchCompletedSongIDs.insert(songID)
+        }
+    }
+
     /// Cover art and canonical metadata are presentation-critical even when a
     /// user skips several tracks before the two-second audio stability window.
-    /// Warm exactly the full-player decode size for the next three entries.
+    /// Warm exactly the full-player decode size for the next entries (up to
+    /// five, or fewer when the queue is shorter).
     /// The request remains background-class traffic, and constrained links run
     /// one cover at a time so AVFoundation keeps transport priority.
     private func scheduleUpcomingVisualPrefetch() {
@@ -3308,7 +3356,6 @@ final class AudioEngine: NSObject, ObservableObject {
               wantsPlayback,
               let client,
               let plan = playbackPrefetchPlan(
-                  maximumUpcoming: UpcomingArtworkPrefetchPolicy.upcomingCount,
                   permitsPendingPlayback: true
               ) else {
             cancelVisualPrefetch(resetKey: true)
@@ -3389,13 +3436,10 @@ final class AudioEngine: NSObject, ObservableObject {
         // Metadata, lyrics, and artwork are tiny compared with media bytes.
         // This second pass starts only after the stream's uncontested opening
         // window; the presentation-critical first pass has already warmed the
-        // next three covers at background network priority.
-        let metadataPrefetchCount = UpcomingArtworkPrefetchPolicy.upcomingCount
+        // next covers at background network priority.
         guard allowsSpeculativeNetworkPrefetch,
               let client,
-              let plan = playbackPrefetchPlan(
-                maximumUpcoming: metadataPrefetchCount
-              ) else {
+              let plan = playbackPrefetchPlan() else {
             cancelNetworkPrefetch(resetKey: true)
             return
         }
@@ -3489,11 +3533,6 @@ final class AudioEngine: NSObject, ObservableObject {
             cancelOfflinePrefetch(resetKey: true)
             return
         }
-        let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
-        let defaultCount =
-            UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
-                ? 0
-                : configured
         let thermalState = ProcessInfo.processInfo.thermalState
         guard !ProcessInfo.processInfo.isLowPowerModeEnabled,
               thermalState != .serious,
@@ -3501,12 +3540,9 @@ final class AudioEngine: NSObject, ObservableObject {
             cancelOfflinePrefetch(resetKey: true)
             return
         }
-        let cappedCount = min(max(defaultCount, 0), 3)
         guard allowsSpeculativeNetworkPrefetch,
               let client,
-              let plan = playbackPrefetchPlan(
-                maximumUpcoming: cappedCount
-              ) else {
+              let plan = playbackPrefetchPlan() else {
             cancelOfflinePrefetch(resetKey: true)
             return
         }
@@ -3517,17 +3553,29 @@ final class AudioEngine: NSObject, ObservableObject {
         let token = UUID()
         offlinePrefetchToken = token
         offlinePrefetchTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
             defer {
-                if let self, self.offlinePrefetchToken == token {
+                if self.offlinePrefetchToken == token {
                     self.offlinePrefetchTask = nil
                     self.offlinePrefetchToken = nil
                 }
             }
-            for song in plan.upcomingSongs {
+            let candidates = plan.upcomingSongs.filter {
+                self.shouldPrefetchPlaybackCache(for: $0)
+            }
+            guard !candidates.isEmpty else { return }
+            for song in candidates {
                 guard !Task.isCancelled else { return }
-                if await OfflineStore.shared.localURL(for: song) == nil {
-                    _ = try? await OfflineStore.shared.download(song: song, client: client)
+                if await OfflineStore.shared.localURL(for: song) != nil {
+                    self.markPlaybackPrefetchFinished(for: song.id, cached: true)
+                    continue
                 }
+                self.markPlaybackPrefetchStarted(for: song.id)
+                let cached = await OfflineStore.shared.prefetchPlaybackCache(
+                    song: song,
+                    client: client
+                )
+                self.markPlaybackPrefetchFinished(for: song.id, cached: cached)
             }
         }
     }

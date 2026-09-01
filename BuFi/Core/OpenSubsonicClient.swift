@@ -3675,7 +3675,7 @@ actor OpenSubsonicClient {
             return
         }
         var seen = Set<String>()
-        let uniqueIDs = songIDs.prefix(3).filter { seen.insert($0).inserted }
+        let uniqueIDs = songIDs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize).filter { seen.insert($0).inserted }
         await withTaskGroup(of: Void.self) { group in
             for songID in uniqueIDs {
                 group.addTask { [self] in
@@ -3692,7 +3692,7 @@ actor OpenSubsonicClient {
     /// never make a playable queue entry unavailable.
     func prefetchPlaybackMetadata(songs: [Song]) async -> [Song] {
         var seen = Set<String>()
-        let uniqueSongs = songs.prefix(3).filter {
+        let uniqueSongs = songs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize).filter {
             seen.insert($0.id).inserted
         }
         let songIDs = uniqueSongs.map(\.id)
@@ -3723,7 +3723,7 @@ actor OpenSubsonicClient {
 
     func prefetchLyrics(songs: [Song]) async {
         var seen = Set<String>()
-        let uniqueSongs = songs.prefix(2).filter {
+        let uniqueSongs = songs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize).filter {
             seen.insert($0.id).inserted
         }
         await withTaskGroup(of: Void.self) { group in
