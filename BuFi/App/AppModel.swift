@@ -410,6 +410,8 @@ final class AppModel: ObservableObject {
     private var lastCatalogIngestRevision: HomeSnapshotRevision?
     private var albumsByIDCache: [String: Album] = [:]
     private var albumsByIDCacheRevision = -1
+    private var knownSongsCache: [Song] = []
+    private var knownSongsCacheRevision = -1
     private var albumDetailCache: [String: CachedValue<AlbumDetail>] = [:]
     private var playlistDetailCache: [String: CachedValue<PlaylistDetail>] = [:]
     private var artistDetailCache: [String: CachedValue<ArtistDetail>] = [:]
@@ -1115,6 +1117,8 @@ final class AppModel: ObservableObject {
         lastCatalogIngestRevision = nil
         albumsByIDCache.removeAll(keepingCapacity: false)
         albumsByIDCacheRevision = -1
+        knownSongsCache.removeAll(keepingCapacity: false)
+        knownSongsCacheRevision = -1
         Task(priority: .utility) {
             await ArtworkStore.shared.clearMemory()
         }
@@ -2007,6 +2011,8 @@ final class AppModel: ObservableObject {
         lastCatalogIngestRevision = nil
         albumsByIDCache.removeAll(keepingCapacity: false)
         albumsByIDCacheRevision = -1
+        knownSongsCache.removeAll(keepingCapacity: false)
+        knownSongsCacheRevision = -1
     }
 
     private static func cachedDetail<Value>(
@@ -2099,7 +2105,7 @@ final class AppModel: ObservableObject {
             value.mostPlayedSongs = history.mostPlayedSongs
         }
 
-        let albumsByID = albumsLookup(for: snapshot)
+        var albumsByID = albumsLookup(for: snapshot)
         var localRecentAlbums: [Album] = []
         var seenAlbumIDs = Set<String>()
         for song in history.recentlyPlayedSongs {
@@ -2160,6 +2166,16 @@ final class AppModel: ObservableObject {
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
         value.daylistSongs = sections.daylist
         return value
+    }
+
+    private func knownSongs(for snapshot: HomeSnapshot) -> [Song] {
+        if knownSongsCacheRevision == homeRevision, !knownSongsCache.isEmpty {
+            return knownSongsCache
+        }
+        let songs = snapshot.knownSongs()
+        knownSongsCache = songs
+        knownSongsCacheRevision = homeRevision
+        return songs
     }
 
     private func albumsLookup(for snapshot: HomeSnapshot) -> [String: Album] {
@@ -3122,7 +3138,7 @@ final class AppModel: ObservableObject {
             return
         }
         lastCatalogIngestRevision = revision
-        let seedSongs = snapshot.knownSongs()
+        let seedSongs = knownSongs(for: snapshot)
         catalogRefreshTask?.cancel()
         guard allowsBackgroundPreparation else {
             catalogRefreshTask = nil

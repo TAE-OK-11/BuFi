@@ -930,6 +930,7 @@ actor OpenSubsonicClient {
         var accessOrdinal: UInt64
     }
     private var playbackMetadataCache: [String: PlaybackMetadataCacheEntry] = [:]
+    private var playbackMetadataAccessClock: UInt64 = 0
     private var inFlightSongRequests: [String: Task<Song, Error>] = [:]
 
     private struct ServerRecommendationSources: Sendable {

@@ -23,6 +23,7 @@ struct LocalLibrarySearchIndex: Sendable {
     fileprivate let songs: [IndexedSong]
     fileprivate let albums: [IndexedAlbum]
     fileprivate let artists: [IndexedArtist]
+    fileprivate let songTokenIndex: [String: [Int]]
 
     static func build(from snapshot: HomeSnapshot) -> LocalLibrarySearchIndex {
         let uniqueSongs = MediaIdentity.uniqueSongs(
@@ -36,15 +37,16 @@ struct LocalLibrarySearchIndex: Sendable {
         let uniqueArtists = MediaIdentity.uniqueArtists(
             HomeSnapshot.artistCollections.flatMap { snapshot[keyPath: $0] }
         )
+        let indexedSongs = uniqueSongs.map {
+            IndexedSong(
+                song: $0,
+                titleKey: normalizedSearchKey($0.title),
+                artistKey: normalizedSearchKey($0.artist),
+                albumKey: normalizedSearchKey($0.album)
+            )
+        }
         return LocalLibrarySearchIndex(
-            songs: uniqueSongs.map {
-                IndexedSong(
-                    song: $0,
-                    titleKey: normalizedSearchKey($0.title),
-                    artistKey: normalizedSearchKey($0.artist),
-                    albumKey: normalizedSearchKey($0.album)
-                )
-            },
+            songs: indexedSongs,
             albums: uniqueAlbums.map {
                 IndexedAlbum(
                     album: $0,
@@ -57,8 +59,28 @@ struct LocalLibrarySearchIndex: Sendable {
                     artist: $0,
                     nameKey: normalizedSearchKey($0.name)
                 )
-            }
+            },
+            songTokenIndex: Self.buildSongTokenIndex(for: indexedSongs)
         )
+    }
+
+    private static func buildSongTokenIndex(
+        for songs: [IndexedSong]
+    ) -> [String: [Int]] {
+        var buckets: [String: [Int]] = [:]
+        buckets.reserveCapacity(songs.count * 2)
+        for (index, entry) in songs.enumerated() {
+            var tokens = Set<String>()
+            for key in [entry.titleKey, entry.artistKey, entry.albumKey] where !key.isEmpty {
+                for token in key.split(whereSeparator: \.isWhitespace) {
+                    tokens.insert(String(token))
+                }
+            }
+            for token in tokens {
+                buckets[token, default: []].append(index)
+            }
+        }
+        return buckets
     }
 
     func results(
@@ -73,7 +95,12 @@ struct LocalLibrarySearchIndex: Sendable {
         return SearchResults(
             artists: rankedIndexedArtists(artists, limit: artistLimit, query: query),
             albums: rankedIndexedAlbums(albums, limit: albumLimit, query: query),
-            songs: rankedIndexedSongs(songs, limit: songLimit, query: query)
+            songs: rankedIndexedSongs(
+                songs,
+                tokenIndex: songTokenIndex,
+                limit: songLimit,
+                query: query
+            )
         )
     }
 }
@@ -164,12 +191,23 @@ private struct PreparedSearchQuery {
 
 private func rankedIndexedSongs(
     _ items: [LocalLibrarySearchIndex.IndexedSong],
+    tokenIndex: [String: [Int]],
     limit: Int,
     query: PreparedSearchQuery
 ) -> [Song] {
     guard limit > 0 else { return [] }
+    let candidates = candidateSongIndices(for: query, tokenIndex: tokenIndex)
+    let searchItems: [LocalLibrarySearchIndex.IndexedSong]
+    if let candidates {
+        searchItems = candidates.compactMap { index in
+            guard items.indices.contains(index) else { return nil }
+            return items[index]
+        }
+    } else {
+        searchItems = items
+    }
     var buckets: [FieldMatch: [Song]] = [:]
-    for entry in items {
+    for entry in searchItems {
         guard let match = bestFieldMatch(
             fieldMatch(entry.titleKey, query: query, field: 0),
             fieldMatch(entry.artistKey, query: query, field: 1),
@@ -178,6 +216,28 @@ private func rankedIndexedSongs(
         buckets[match, default: []].append(entry.song)
     }
     return takeRankedMatches(from: buckets, limit: limit)
+}
+
+private func candidateSongIndices(
+    for query: PreparedSearchQuery,
+    tokenIndex: [String: [Int]]
+) -> [Int]? {
+    guard !query.tokens.isEmpty else { return nil }
+    if query.tokens.count == 1, let token = query.tokens.first {
+        return tokenIndex[token]
+    }
+    var candidates: Set<Int>?
+    for token in query.tokens {
+        guard let indices = tokenIndex[token] else { return [] }
+        let bucket = Set(indices)
+        if let existing = candidates {
+            candidates = existing.intersection(bucket)
+        } else {
+            candidates = bucket
+        }
+        if candidates?.isEmpty == true { return [] }
+    }
+    return candidates.map(Array.init)
 }
 
 private func rankedIndexedAlbums(
