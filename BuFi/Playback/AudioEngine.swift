@@ -1011,6 +1011,7 @@ struct PlaybackResourceRequest: Sendable {
     let quality: StreamQuality
     let compatibilityFormat: String?
     let allowLocalSource: Bool
+    let offsetSeconds: Int
 }
 
 struct PlaybackResourceDescriptor: Sendable {
@@ -1047,7 +1048,8 @@ enum PlaybackResourceResolver {
         let url = try await client.playbackStreamURL(
             songID: song.id,
             quality: request.quality,
-            compatibilityFormat: request.compatibilityFormat
+            compatibilityFormat: request.compatibilityFormat,
+            offsetSeconds: request.offsetSeconds
         )
         try Task.checkCancellation()
         return PlaybackResourceDescriptor(
@@ -1370,6 +1372,10 @@ final class AudioEngine: NSObject, ObservableObject {
     private var recentShuffleIDs: [String] = []
     private var shuffleSessionPlayedEntryIDs: Set<UUID> = []
     private var pendingSeekPosition: TimeInterval?
+    /// Absolute playback position when the active stream URL already encodes a
+    /// server-side offset. AVPlayer time stays relative to the partial stream.
+    private var streamBaseOffset: TimeInterval = 0
+    private static let streamURLOffsetThreshold: TimeInterval = 5
     private var lastQueueSaveRequest = Date.distantPast
     private var lastServerQueueSaveRequest = Date.distantPast
     private var lastMaintenanceSecond = -1
@@ -2535,18 +2541,38 @@ final class AudioEngine: NSObject, ObservableObject {
     private func playbackResource(
         for song: Song,
         compatibilityFormat: String?,
-        allowLocalSource: Bool = true
+        allowLocalSource: Bool = true,
+        offsetSeconds: Int = 0
     ) async throws -> PlaybackResourceDescriptor {
         let request = PlaybackResourceRequest(
             song: song,
             quality: quality,
             compatibilityFormat: compatibilityFormat,
-            allowLocalSource: allowLocalSource
+            allowLocalSource: allowLocalSource,
+            offsetSeconds: offsetSeconds
         )
         return try await PlaybackResourceResolver.resolve(
             request,
             client: client
         )
+    }
+
+    private func streamOffsetSeconds(
+        for song: Song,
+        resumePosition: TimeInterval,
+        compatibilityFormat: String?,
+        allowLocalSource: Bool
+    ) -> Int {
+        guard resumePosition >= Self.streamURLOffsetThreshold,
+              song.externalStreamURL == nil else {
+            return 0
+        }
+        if allowLocalSource,
+           compatibilityFormat?.lowercased() == "raw" {
+            // Local offline files seek efficiently after install.
+            return 0
+        }
+        return max(0, Int(resumePosition.rounded(.down)))
     }
 
     private func currentPlaybackAudioProfile() -> PlaybackAudioProfile {
@@ -2879,11 +2905,16 @@ final class AudioEngine: NSObject, ObservableObject {
                 }
             }
             do {
+                let decisionWarmup = Task(priority: .utility) { [weak self] in
+                    guard let client = self?.client else { return }
+                    _ = try? await client.transcodeDecision(mediaID: song.id)
+                }
                 let resource = try await self.playbackResource(
                     for: song,
                     compatibilityFormat: compatibilityFormat,
                     allowLocalSource: true
                 )
+                _ = await decisionWarmup.value
                 guard !Task.isCancelled,
                       self.quality == preparedQuality,
                       self.playbackState.entries.contains(where: {
@@ -3531,6 +3562,15 @@ final class AudioEngine: NSObject, ObservableObject {
         let song = playbackItem.song
         let playbackItemID = playbackItem.id
         let resumePosition = max(0, requestedPosition ?? elapsed)
+        let resourceOffset = streamOffsetSeconds(
+            for: song,
+            resumePosition: resumePosition,
+            compatibilityFormat: compatibilityFormat,
+            allowLocalSource: fallbackIndex == 0
+        )
+        streamBaseOffset = resourceOffset > 0
+            ? TimeInterval(resourceOffset)
+            : 0
         prolongedStallRecoveryTask?.cancel()
         prolongedStallRecoveryTask = nil
         itemLoadTask?.cancel()
@@ -3538,13 +3578,20 @@ final class AudioEngine: NSObject, ObservableObject {
         let generation = itemLoadGeneration
         seekGeneration &+= 1
         isSeekInFlight = false
-        if pendingSeekPosition == nil, resumePosition > 0 {
+        if resourceOffset == 0,
+           pendingSeekPosition == nil,
+           resumePosition > 0 {
             pendingSeekPosition = resumePosition
+        } else if resourceOffset > 0 {
+            pendingSeekPosition = nil
+            elapsed = TimeInterval(resourceOffset)
         }
         activeCompatibilityFormat = compatibilityFormat
         isBuffering = wantsPlayback
 
-        if let prepared = takePreparedPlaybackAsset(
+        if resumePosition <= 0.05,
+           resourceOffset == 0,
+           let prepared = takePreparedPlaybackAsset(
             for: playbackItem,
             compatibilityFormat: compatibilityFormat
         ) {
@@ -3567,7 +3614,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 let resource = try await self.playbackResource(
                     for: song,
                     compatibilityFormat: compatibilityFormat,
-                    allowLocalSource: self.fallbackIndex == 0
+                    allowLocalSource: self.fallbackIndex == 0,
+                    offsetSeconds: resourceOffset
                 )
                 guard !Task.isCancelled,
                       self.itemLoadGeneration == generation,
@@ -3683,6 +3731,21 @@ final class AudioEngine: NSObject, ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     self.updateDuration(using: item.duration.seconds)
+                    if self.streamBaseOffset > 0 {
+                        self.elapsed = self.streamBaseOffset
+                        self.pendingSeekPosition = nil
+                        self.isBuffering = false
+                        self.recomputeTimelineFromPlayer()
+                        self.installNextLyricBoundary(after: self.elapsed)
+                        if self.wantsPlayback {
+                            self.configureAudioSession()
+                            self.player.isMuted = false
+                            self.player.volume = 1
+                            self.activateNowPlayingSession()
+                            self.requestPlayback()
+                        }
+                        return
+                    }
                     let targetPosition = self.pendingSeekPosition ?? resumePosition
                     let needsPositioning = targetPosition > 0.05
                     if needsPositioning {
@@ -4331,13 +4394,13 @@ final class AudioEngine: NSObject, ObservableObject {
             guard let logicalCurrentItem = self.logicalCurrentItem,
                   self.player.currentItem === logicalCurrentItem else { return }
             let seconds = time.seconds
-            let lyricPosition = seconds.isFinite
-                ? max(0, seconds)
-                : self.elapsed
+            let relativeSeconds = seconds.isFinite ? max(0, seconds) : 0
+            let absoluteSeconds = self.streamBaseOffset + relativeSeconds
+            let lyricPosition = seconds.isFinite ? absoluteSeconds : self.elapsed
             if !self.isSeekInFlight,
                self.pendingSeekPosition == nil,
                seconds.isFinite {
-                self.elapsed = max(0, seconds)
+                self.elapsed = absoluteSeconds
             }
             if self.duration > 0 {
                 self.elapsed = min(self.elapsed, self.duration)
@@ -4392,7 +4455,7 @@ final class AudioEngine: NSObject, ObservableObject {
         if pendingSeekPosition == nil, !isSeekInFlight {
             let seconds = player.currentTime().seconds
             if seconds.isFinite {
-                lyricPosition = max(0, seconds)
+                lyricPosition = max(0, streamBaseOffset + seconds)
                 elapsed = lyricPosition
                 if duration > 0 { elapsed = min(elapsed, duration) }
             }
@@ -4402,7 +4465,9 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func currentPlayerPosition() -> TimeInterval {
         let seconds = player.currentTime().seconds
-        return seconds.isFinite ? max(0, seconds) : max(0, elapsed)
+        return seconds.isFinite
+            ? max(0, streamBaseOffset + seconds)
+            : max(0, elapsed)
     }
 
     private func invalidateLyricBoundaryObserver() {

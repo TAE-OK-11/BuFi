@@ -3669,6 +3669,24 @@ actor OpenSubsonicClient {
         }
     }
 
+    /// Warms transcode decisions for upcoming playback without blocking callers.
+    func prefetchTranscodeDecisions(songIDs: [String]) async {
+        guard await supportsExtension(OpenSubsonicExtensionName.transcoding) else {
+            return
+        }
+        var seen = Set<String>()
+        let uniqueIDs = songIDs.prefix(3).filter { seen.insert($0).inserted }
+        await withTaskGroup(of: Void.self) { group in
+            for songID in uniqueIDs {
+                group.addTask { [self] in
+                    guard !Task.isCancelled else { return }
+                    _ = try? await transcodeDecision(mediaID: songID)
+                }
+            }
+            await group.waitForAll()
+        }
+    }
+
     /// Warms the same canonical getSong representation consumed by playback.
     /// Failures retain provisional queue metadata so speculative work can
     /// never make a playable queue entry unavailable.
@@ -3677,7 +3695,9 @@ actor OpenSubsonicClient {
         let uniqueSongs = songs.prefix(3).filter {
             seen.insert($0.id).inserted
         }
-        return await withTaskGroup(of: (Int, Song).self) { group in
+        let songIDs = uniqueSongs.map(\.id)
+        async let transcodeWarmup: Void = prefetchTranscodeDecisions(songIDs: songIDs)
+        let resolved = await withTaskGroup(of: (Int, Song).self) { group in
             for (index, provisional) in uniqueSongs.enumerated() {
                 group.addTask { [self] in
                     guard !Task.isCancelled,
@@ -3697,6 +3717,8 @@ actor OpenSubsonicClient {
             for await value in group { values.append(value) }
             return values.sorted { $0.0 < $1.0 }.map { $0.1 }
         }
+        await transcodeWarmup
+        return resolved
     }
 
     func prefetchLyrics(songs: [Song]) async {
