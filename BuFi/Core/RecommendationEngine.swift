@@ -840,12 +840,7 @@ enum RecommendationMixer {
         snapshot: HomeSnapshot,
         behavior: RecommendationBehaviorSnapshot
     ) -> SharedCorpus {
-        let allBehaviors = behavior.songs.values.sorted {
-            if $0.song.id == $1.song.id {
-                return $0.lastPlayed < $1.lastPlayed
-            }
-            return $0.song.id < $1.song.id
-        }
+        let allBehaviors = Array(behavior.songs.values)
         var starredSongIDs = Set<String>()
         starredSongIDs.reserveCapacity(snapshot.starredSongs.count)
         var knownArtists = Set<String>()

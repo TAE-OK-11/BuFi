@@ -930,7 +930,7 @@ actor OpenSubsonicClient {
         var accessOrdinal: UInt64
     }
     private var playbackMetadataCache: [String: PlaybackMetadataCacheEntry] = [:]
-    private var playbackMetadataAccessClock: UInt64 = 0
+    private var inFlightSongRequests: [String: Task<Song, Error>] = [:]
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -1030,6 +1030,7 @@ actor OpenSubsonicClient {
         inFlightTranscodeDecisions.removeAll(keepingCapacity: false)
         inFlightExtensionRegistryLoad?.cancel()
         inFlightExtensionRegistryLoad = nil
+        inFlightSongRequests.removeAll(keepingCapacity: false)
         session.invalidateAndCancel()
     }
 
@@ -1625,7 +1626,7 @@ actor OpenSubsonicClient {
     @concurrent
     private static func decodeStatusEnvelope(_ data: Data) async throws -> StatusEnvelope {
         try Task.checkCancellation()
-        return try JSONDecoder().decode(StatusEnvelope.self, from: data)
+        return try payloadDecoder.decode(StatusEnvelope.self, from: data)
     }
 
     private func coalescedReadResponse(
@@ -3408,11 +3409,15 @@ actor OpenSubsonicClient {
     func song(id: String, forceRefresh: Bool = false) async throws -> Song {
         if forceRefresh {
             playbackMetadataCache[id] = nil
+            inFlightSongRequests[id]?.cancel()
+            inFlightSongRequests[id] = nil
         } else if var cached = playbackMetadataCache[id] {
             playbackMetadataAccessClock &+= 1
             cached.accessOrdinal = playbackMetadataAccessClock
             playbackMetadataCache[id] = cached
             return cached.song
+        } else if let existing = inFlightSongRequests[id] {
+            return try await existing.value
         } else if let persisted = await AppDatabase.shared.loadPlaybackMetadata(
             scope: accountScope,
             songID: id,
@@ -3421,6 +3426,13 @@ actor OpenSubsonicClient {
             cachePlaybackMetadata(persisted)
             return persisted
         }
+        let task = Task { try await self.fetchSong(id: id, forceRefresh: forceRefresh) }
+        inFlightSongRequests[id] = task
+        defer { inFlightSongRequests[id] = nil }
+        return try await task.value
+    }
+
+    private func fetchSong(id: String, forceRefresh: Bool) async throws -> Song {
         let payload: SongPayload = try await readRequest(
             "getSong",
             parameters: ["id": id],
