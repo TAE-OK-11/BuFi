@@ -987,7 +987,7 @@ enum RecommendationMixer {
         return (recommended, daylist)
     }
 
-    static func mix(
+    private static func mix(
         snapshot: HomeSnapshot,
         snapshotRevision: HomeSnapshotRevision? = nil,
         weights: RecommendationWeights,
