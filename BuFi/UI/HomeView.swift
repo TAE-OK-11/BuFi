@@ -13,9 +13,11 @@ struct HomeView: View {
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
     @State private var filter = HomeFilter.all
-    @State private var presentation = HomePresentation.empty
-    @State private var hasLoadedPresentation = false
     @State private var hasRevealedContent = false
+
+    private var presentation: HomePresentation {
+        library.homePresentation
+    }
 
     var body: some View {
         let sections = visibleSections
@@ -88,8 +90,15 @@ struct HomeView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
-        .task(id: presentationTaskIdentity) {
-            await updatePresentation()
+        .onAppear {
+            model.syncHomePresentation(
+                selectedArtists: ArtistMixPreferences.decode(selectedArtistMixes)
+            )
+        }
+        .onChange(of: selectedArtistMixes) { _, newValue in
+            model.syncHomePresentation(
+                selectedArtists: ArtistMixPreferences.decode(newValue)
+            )
         }
         .task {
             guard !hasRevealedContent else { return }
@@ -422,54 +431,9 @@ struct HomeView: View {
         }
     }
 
-    private var presentationTaskIdentity: HomePresentationTaskIdentity {
-        HomePresentationTaskIdentity(
-            revision: library.revision,
-            selectedArtists: selectedArtistMixes
-        )
-    }
-
-    @MainActor
-    private func updatePresentation() async {
-        let revision = library.revision
-        let snapshot = library.snapshot
-        let selectedArtistsStorage = selectedArtistMixes
-        guard revision == library.revision else { return }
-
-        let input = HomePresentationInput(
-            snapshot: snapshot,
-            revision: revision,
-            selectedArtists: ArtistMixPreferences.decode(selectedArtistsStorage)
-        )
-
-        if hasLoadedPresentation {
-            do {
-                try await Task.sleep(for: .milliseconds(120))
-            } catch {
-                return
-            }
-            guard revision == library.revision,
-                  selectedArtistsStorage == selectedArtistMixes else { return }
-        }
-
-        let next = await HomePresentation.makeConcurrently(input: input)
-        guard !Task.isCancelled,
-              revision == library.revision,
-              selectedArtistsStorage == selectedArtistMixes else { return }
-        withAnimation(motionEnabled ? BuFiMotion.homeRefresh : .none) {
-            presentation = next
-        }
-        hasLoadedPresentation = true
-    }
-
     private func countText(_ count: Int) -> String {
         String(format: String(localized: "%d곡"), count)
     }
-}
-
-private struct HomePresentationTaskIdentity: Hashable, Sendable {
-    let revision: HomeSnapshotRevision
-    let selectedArtists: String
 }
 
 struct HomePresentationInput: Equatable, Sendable {
@@ -493,7 +457,7 @@ struct HomePresentationInput: Equatable, Sendable {
     }
 }
 
-struct HomePresentation: Sendable {
+struct HomePresentation: Equatable, Sendable {
     let personalizedMixes: [PersonalizedMix]
     let favoriteSongsMix: PersonalizedMix
     let mostPlayedSongsMix: PersonalizedMix

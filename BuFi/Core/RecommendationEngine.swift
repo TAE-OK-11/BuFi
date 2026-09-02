@@ -526,6 +526,94 @@ private struct RecommendationSourceIndex: Sendable {
     }
 }
 
+private struct RecommendationSectionsValue: Sendable {
+    let recommended: [Song]
+    let daylist: [Song]
+}
+
+private final class RecommendationSectionsCache: @unchecked Sendable {
+    struct Value {
+        let createdAt: Date
+        var accessOrdinal: UInt64
+        let sections: RecommendationSectionsValue
+    }
+
+    private let lock = NSLock()
+    private var values: [RecommendationMixCacheKey: Value] = [:]
+    private var nextAccessOrdinal: UInt64 = 0
+
+    func value(
+        for key: RecommendationMixCacheKey,
+        lifetime: TimeInterval,
+        now: Date
+    ) -> RecommendationSectionsValue? {
+        lock.lock()
+        defer { lock.unlock() }
+        let maximumAge = max(0, lifetime)
+        guard var value = values[key] else { return nil }
+        let age = now.timeIntervalSince(value.createdAt)
+        guard age >= 0, age < maximumAge else {
+            values[key] = nil
+            return nil
+        }
+        nextAccessOrdinal &+= 1
+        value.accessOrdinal = nextAccessOrdinal
+        values[key] = value
+        return value.sections
+    }
+
+    func insert(
+        _ sections: RecommendationSectionsValue,
+        for key: RecommendationMixCacheKey,
+        now: Date
+    ) {
+        lock.lock()
+        nextAccessOrdinal &+= 1
+        values[key] = Value(
+            createdAt: now,
+            accessOrdinal: nextAccessOrdinal,
+            sections: sections
+        )
+        if values.count > 24 {
+            let retained = values.sorted {
+                $0.value.accessOrdinal > $1.value.accessOrdinal
+            }
+            values = Dictionary(
+                uniqueKeysWithValues: retained.prefix(16).map {
+                    ($0.key, $0.value)
+                }
+            )
+        }
+        lock.unlock()
+    }
+
+    func removeAll() {
+        lock.lock()
+        values.removeAll(keepingCapacity: false)
+        nextAccessOrdinal = 0
+        lock.unlock()
+    }
+
+    func trim(keepFraction: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        let fraction = min(1, max(0, keepFraction))
+        let targetCount = max(
+            0,
+            Int((Double(values.count) * fraction).rounded(.down))
+        )
+        guard values.count > targetCount else { return }
+        let retained = values.sorted {
+            $0.value.accessOrdinal > $1.value.accessOrdinal
+        }
+        values = Dictionary(
+            uniqueKeysWithValues: retained.prefix(targetCount).map {
+                ($0.key, $0.value)
+            }
+        )
+    }
+}
+
 private struct RecommendationMixCacheKey: Hashable {
     let algorithmVersion: Int
     let purpose: RecommendationPurpose
@@ -837,6 +925,7 @@ enum ExternalRecommendationRefreshPolicy {
 
 enum RecommendationMixer {
     private static let cache = RecommendationMixCache()
+    private static let sectionsCache = RecommendationSectionsCache()
 
     private struct SharedCorpus: Sendable {
         let allBehaviors: [SongBehavior]
@@ -973,6 +1062,26 @@ enum RecommendationMixer {
     ) async -> (recommended: [Song], daylist: [Song]) {
         guard !Task.isCancelled else { return ([], []) }
         let seed = behavior.recentSongs.first
+        let evaluationDate = temporalEvaluationDate(for: .home, date: date)
+        if let key = cacheKey(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            purpose: .home,
+            behavior: behavior,
+            seed: seed,
+            limit: 40,
+            date: evaluationDate
+        ),
+           let cached = sectionsCache.value(
+            for: key,
+            lifetime: cacheLifetime(for: .home),
+            now: evaluationDate
+           ) {
+            return Task.isCancelled
+                ? ([], [])
+                : (cached.recommended, cached.daylist)
+        }
         let corpus = buildSharedCorpus(snapshot: snapshot, behavior: behavior)
         let recommended = mix(
             snapshot: snapshot,
@@ -986,6 +1095,25 @@ enum RecommendationMixer {
         )
         guard !Task.isCancelled else { return ([], []) }
         let daylist = DaylistBuilder.make(snapshot: snapshot, date: date)
+        if let key = cacheKey(
+            snapshot: snapshot,
+            snapshotRevision: snapshotRevision,
+            weights: weights,
+            purpose: .home,
+            behavior: behavior,
+            seed: seed,
+            limit: 40,
+            date: evaluationDate
+        ) {
+            sectionsCache.insert(
+                RecommendationSectionsValue(
+                    recommended: recommended,
+                    daylist: daylist
+                ),
+                for: key,
+                now: evaluationDate
+            )
+        }
         return (recommended, daylist)
     }
 
@@ -1324,10 +1452,12 @@ enum RecommendationMixer {
 
     static func invalidateCache() {
         cache.removeAll()
+        sectionsCache.removeAll()
     }
 
     static func trimCache(keepFraction: Double = 0.25) {
         cache.trim(keepFraction: keepFraction)
+        sectionsCache.trim(keepFraction: keepFraction)
     }
 
     private static func scoringPlan(
