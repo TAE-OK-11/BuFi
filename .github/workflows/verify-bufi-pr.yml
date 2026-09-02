@@ -42,6 +42,16 @@ jobs:
           path: ${{ runner.temp }}/BuFiSourcePackages
           key: ${{ runner.os }}-xcode27-swift6.4-spm-${{ hashFiles('project.yml', 'Package.resolved') }}
 
+      - name: Cache compilation artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/DerivedData/CompilationCache.noindex
+            build/DerivedData/ModuleCache.noindex
+          key: ${{ runner.os }}-xcode27-compilation-${{ hashFiles('project.yml', 'Package.resolved', 'BuFi/**/*.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-xcode27-compilation-
+
       - name: Install XcodeGen
         run: |
           brew install xcodegen

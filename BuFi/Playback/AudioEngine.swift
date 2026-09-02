@@ -3428,16 +3428,14 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             await ArtworkStore.shared.prefetch(
                 urls: coverURLs,
-                pixelSize: ArtworkRequestSizing.fullPlayerPixelSize,
-                concurrencyLimit: isConstrained ? 1 : 3
+                pixelSize: UpcomingPlaybackPrefetchPolicy.upcomingArtworkPixelSize,
+                concurrencyLimit: isConstrained ? 1 : 2
             )
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
 
-            for coverURL in coverURLs.prefix(isConstrained ? 1 : coverURLs.count) {
-                guard !Task.isCancelled,
-                      self.visualPrefetchToken == token else { return }
-                _ = await ArtworkStore.shared.palette(for: coverURL)
+            if let firstCover = coverURLs.first {
+                _ = await ArtworkStore.shared.palette(for: firstCover)
             }
         }
     }
@@ -3477,20 +3475,18 @@ final class AudioEngine: NSObject, ObservableObject {
             let candidates = plan.upcomingSongs.filter {
                 self.shouldPrefetchPlaybackCache(for: $0)
             }
-            guard !candidates.isEmpty else { return }
-            for song in candidates {
-                guard !Task.isCancelled else { return }
-                if await OfflineStore.shared.localURL(for: song) != nil {
-                    self.markPlaybackPrefetchFinished(for: song.id, cached: true)
-                    continue
-                }
-                self.markPlaybackPrefetchStarted(for: song.id)
-                let cached = await OfflineStore.shared.prefetchPlaybackCache(
-                    song: song,
-                    client: client
-                )
-                self.markPlaybackPrefetchFinished(for: song.id, cached: cached)
+            guard let song = candidates.first else { return }
+            guard !Task.isCancelled else { return }
+            if await OfflineStore.shared.localURL(for: song) != nil {
+                self.markPlaybackPrefetchFinished(for: song.id, cached: true)
+                return
             }
+            self.markPlaybackPrefetchStarted(for: song.id)
+            let cached = await OfflineStore.shared.prefetchPlaybackCache(
+                song: song,
+                client: client
+            )
+            self.markPlaybackPrefetchFinished(for: song.id, cached: cached)
         }
     }
 

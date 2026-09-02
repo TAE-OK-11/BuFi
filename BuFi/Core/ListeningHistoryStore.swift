@@ -400,7 +400,7 @@ actor ListeningHistoryStore {
         value.song = song
         entries[song.id] = value
         markDirty(song.id)
-        didMutate()
+        didMutate(invalidatesRecommendations: false)
     }
 
     func recordEnd(
@@ -454,7 +454,7 @@ actor ListeningHistoryStore {
         }
         entries[song.id] = value
         markDirty(song.id)
-        didMutate()
+        didMutate(invalidatesRecommendations: false)
     }
 
     func recordQueueRemoval(
@@ -475,7 +475,7 @@ actor ListeningHistoryStore {
         value.queueRemovalCount += 1
         entries[song.id] = value
         markDirty(song.id)
-        didMutate()
+        didMutate(invalidatesRecommendations: false)
     }
 
     func recordFavorite(
@@ -499,7 +499,7 @@ actor ListeningHistoryStore {
         value.favoriteCount = max(0, value.favoriteCount + (enabled ? 1 : -1))
         entries[song.id] = value
         markDirty(song.id)
-        didMutate()
+        didMutate(invalidatesRecommendations: false)
     }
 
     func snapshot(limit: Int = 30) -> ListeningHistorySnapshot {
@@ -614,9 +614,20 @@ actor ListeningHistoryStore {
         revision &+= 1
         trimEntriesIfNeeded()
         schedulePersistence()
+        // RecommendationMixer keys mixes by behavior.revision, so routine
+        // playback mutations do not need to flush the entire in-memory cache.
         if invalidatesRecommendations {
             RecommendationMixer.invalidateCache()
         }
+    }
+
+    func recentSongs(limit: Int = 20) -> [Song] {
+        guard activeScope != nil else { return [] }
+        return Self.leadingBehaviors(
+            in: entries,
+            limit: max(0, limit),
+            orderedBefore: Self.recentlyPlayedBefore
+        ).map(\.song)
     }
 
     func flushPendingWrites() async {

@@ -3714,57 +3714,84 @@ actor OpenSubsonicClient {
         return resolved
     }
 
+    private static let playbackMetadataPrefetchConcurrency = 2
+
     /// Warms the same canonical getSong representation consumed by playback.
     /// Failures retain provisional queue metadata so speculative work can
     /// never make a playable queue entry unavailable.
     func prefetchPlaybackMetadata(songs: [Song]) async -> [Song] {
         var seen = Set<String>()
-        let uniqueSongs = songs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize).filter {
-            seen.insert($0.id).inserted
-        }
+        let uniqueSongs = Array(
+            songs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize).filter {
+                seen.insert($0.id).inserted
+            }
+        )
         let songIDs = uniqueSongs.map(\.id)
-        async let transcodeWarmup: Void = prefetchTranscodeDecisions(songIDs: songIDs)
-        let resolved = await withTaskGroup(of: (Int, Song).self) { group in
-            for (index, provisional) in uniqueSongs.enumerated() {
-                group.addTask { [self] in
-                    guard !Task.isCancelled,
-                          let canonical = try? await song(id: provisional.id) else {
-                        return (index, provisional)
-                    }
-                    return (
-                        index,
-                        PlaybackMetadataResolver.resolve(
-                            canonical: canonical,
-                            provisional: provisional
+        await prefetchTranscodeDecisions(
+            songIDs: Array(songIDs.prefix(1))
+        )
+        var resolved: [(Int, Song)] = []
+        resolved.reserveCapacity(uniqueSongs.count)
+        var batchStart = 0
+        while batchStart < uniqueSongs.count {
+            let batchEnd = min(
+                batchStart + Self.playbackMetadataPrefetchConcurrency,
+                uniqueSongs.count
+            )
+            await withTaskGroup(of: (Int, Song).self) { group in
+                for index in batchStart..<batchEnd {
+                    let provisional = uniqueSongs[index]
+                    group.addTask { [self] in
+                        guard !Task.isCancelled,
+                              let canonical = try? await song(id: provisional.id) else {
+                            return (index, provisional)
+                        }
+                        return (
+                            index,
+                            PlaybackMetadataResolver.resolve(
+                                canonical: canonical,
+                                provisional: provisional
+                            )
                         )
-                    )
+                    }
+                }
+                for await value in group {
+                    resolved.append(value)
                 }
             }
-            var values: [(Int, Song)] = []
-            for await value in group { values.append(value) }
-            return values.sorted { $0.0 < $1.0 }.map { $0.1 }
+            batchStart = batchEnd
         }
-        await transcodeWarmup
-        return resolved
+        return resolved.sorted { $0.0 < $1.0 }.map { $0.1 }
     }
 
     func prefetchLyrics(songs: [Song]) async {
         var seen = Set<String>()
-        let uniqueSongs = songs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize).filter {
-            seen.insert($0.id).inserted
-        }
-        await withTaskGroup(of: Void.self) { group in
-            for song in uniqueSongs {
-                group.addTask { [self] in
-                    guard !Task.isCancelled else { return }
-                    _ = try? await lyrics(
-                        songID: song.id,
-                        artist: song.artist,
-                        title: song.title
-                    )
-                }
+        let uniqueSongs = Array(
+            songs.prefix(UpcomingPlaybackPrefetchPolicy.maximumBatchSize).filter {
+                seen.insert($0.id).inserted
             }
-            await group.waitForAll()
+        )
+        var batchStart = 0
+        while batchStart < uniqueSongs.count {
+            let batchEnd = min(
+                batchStart + Self.playbackMetadataPrefetchConcurrency,
+                uniqueSongs.count
+            )
+            await withTaskGroup(of: Void.self) { group in
+                for index in batchStart..<batchEnd {
+                    let song = uniqueSongs[index]
+                    group.addTask { [self] in
+                        guard !Task.isCancelled else { return }
+                        _ = try? await lyrics(
+                            songID: song.id,
+                            artist: song.artist,
+                            title: song.title
+                        )
+                    }
+                }
+                await group.waitForAll()
+            }
+            batchStart = batchEnd
         }
     }
 
@@ -3772,6 +3799,7 @@ actor OpenSubsonicClient {
         // Memory pressure should not turn a visible, awaited request into a
         // user-facing cancellation. Shared transfers are released naturally
         // when their last waiter goes away.
+        responseCache.trim(keepFraction: 0.5)
         trimDecodedResponseCache(keepFraction: 0.5)
         trimPlaybackMetadataCache(keepFraction: 0.5)
         lyricsCache.removeAll(keepingCapacity: true)

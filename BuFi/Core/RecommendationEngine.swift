@@ -17,7 +17,6 @@ struct RecommendationWeights: Sendable {
     var albumCompletion: Double
     var forgottenFavorites: Double
     var artistRotation: Double
-    var timeAwareness: Double
     var discoveryRatio: Double
 
     static func current(_ defaults: UserDefaults = .standard) -> RecommendationWeights {
@@ -60,7 +59,6 @@ enum RecommendationTasteControls {
             albumCompletion: 0.32 + now * 0.28,
             forgottenFavorites: 0.22 + taste * 0.28,
             artistRotation: 0.22 + (1 - now) * 0.28,
-            timeAwareness: 0.22,
             discoveryRatio: fresh
         )
     }
@@ -603,6 +601,25 @@ private final class RecommendationMixCache: @unchecked Sendable {
         nextAccessOrdinal = 0
         lock.unlock()
     }
+
+    func trim(keepFraction: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        let fraction = min(1, max(0, keepFraction))
+        let targetCount = max(
+            0,
+            Int((Double(values.count) * fraction).rounded(.down))
+        )
+        guard values.count > targetCount else { return }
+        let retained = values.sorted {
+            $0.value.accessOrdinal > $1.value.accessOrdinal
+        }
+        values = Dictionary(
+            uniqueKeysWithValues: retained.prefix(targetCount).map {
+                ($0.key, $0.value)
+            }
+        )
+    }
 }
 
 /// Home snapshots can carry thousands of starred songs. Scoring every
@@ -845,7 +862,7 @@ enum RecommendationMixer {
         starredSongIDs.reserveCapacity(snapshot.starredSongs.count)
         var knownArtists = Set<String>()
         var favoriteGenres = Set<String>()
-        for (index, song) in snapshot.starredSongs.enumerated() {
+        for (index, song) in snapshot.starredSongs.prefix(512).enumerated() {
             if index.isMultiple(of: 64), Task.isCancelled {
                 break
             }
@@ -967,18 +984,8 @@ enum RecommendationMixer {
             date: date,
             sharedCorpus: corpus
         )
-        guard !Task.isCancelled else { return (recommended, []) }
-        let daylist = mix(
-            snapshot: snapshot,
-            snapshotRevision: snapshotRevision,
-            weights: weights,
-            purpose: .daylist,
-            behavior: behavior,
-            seed: seed,
-            limit: 32,
-            date: date,
-            sharedCorpus: corpus
-        )
+        guard !Task.isCancelled else { return ([], []) }
+        let daylist = DaylistBuilder.make(snapshot: snapshot, date: date)
         return (recommended, daylist)
     }
 
@@ -1317,6 +1324,10 @@ enum RecommendationMixer {
 
     static func invalidateCache() {
         cache.removeAll()
+    }
+
+    static func trimCache(keepFraction: Double = 0.25) {
+        cache.trim(keepFraction: keepFraction)
     }
 
     private static func scoringPlan(
@@ -2119,7 +2130,7 @@ enum RecommendationMixer {
             weights.recency, weights.context, weights.localMetadata,
             weights.playlistAffinity, weights.albumCompletion,
             weights.forgottenFavorites, weights.artistRotation,
-            weights.timeAwareness, weights.discoveryRatio
+            weights.discoveryRatio
         ]
         for value in weightValues { weightsFingerprint.append(value) }
 
@@ -2132,7 +2143,7 @@ enum RecommendationMixer {
         }
         let calendar = Calendar.current
         return RecommendationMixCacheKey(
-            algorithmVersion: 3,
+            algorithmVersion: 4,
             purpose: purpose,
             limit: limit,
             snapshotIdentity: snapshotIdentity,

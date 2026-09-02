@@ -33,6 +33,7 @@ settings:
     Debug:
       SWIFT_OPTIMIZATION_LEVEL: "-Onone"
       SWIFT_COMPILATION_MODE: incremental
+      ASSETCATALOG_COMPILER_OPTIMIZATION: time
       OTHER_SWIFT_FLAGS: "$(inherited) -enable-upcoming-feature NonisolatedNonsendingByDefault -enable-actor-data-race-checks"
       LLVM_LTO: NO
       ONLY_ACTIVE_ARCH: YES
