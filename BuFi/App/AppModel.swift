@@ -99,6 +99,7 @@ final class HomeLibraryState: ObservableObject {
     }
 
     @Published private(set) var presentation: Presentation
+    @Published private(set) var homePresentation: HomePresentation = .empty
 
     var snapshot: HomeSnapshot { presentation.snapshot }
     var revision: HomeSnapshotRevision { presentation.revision }
@@ -118,6 +119,11 @@ final class HomeLibraryState: ObservableObject {
             revision: revision.advanced()
         )
         return true
+    }
+
+    func setHomePresentation(_ value: HomePresentation) {
+        guard homePresentation != value else { return }
+        homePresentation = value
     }
 }
 
@@ -382,7 +388,11 @@ final class AppModel: ObservableObject {
     private var catalogSessionToken: AccountSessionToken?
     private let secureStore = SecureStore()
     private var searchTask: Task<Void, Never>?
-    private var recommendationTask: Task<Void, Never>?
+    private var localRecommendationTask: Task<Void, Never>?
+    private var externalRecommendationTask: Task<Void, Never>?
+    private var homePresentationTask: Task<Void, Never>?
+    private var homePresentationGeneration: UInt64 = 0
+    private var homePresentationSelectedArtists: [String] = []
     private var automaticRefreshTask: Task<Void, Never>?
     private var automaticRefreshToken: UUID?
     private var cachedHomePreparationTask: Task<Void, Never>?
@@ -391,7 +401,8 @@ final class AppModel: ObservableObject {
     private var serverHomeEnrichmentToken: UUID?
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogRefreshToken: UUID?
-    private var recommendationGeneration: UInt64 = 0
+    private var localRecommendationGeneration: UInt64 = 0
+    private var externalRecommendationGeneration: UInt64 = 0
     private var recommendationRebuildTask: Task<Void, Never>?
     private var deferredRecommendationRebuild = false
     private var lastFMKeyOperationGeneration: UInt64 = 0
@@ -551,8 +562,14 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         searchTask?.cancel()
         searchTask = nil
-        recommendationTask?.cancel()
-        recommendationTask = nil
+        localRecommendationTask?.cancel()
+        localRecommendationTask = nil
+        externalRecommendationTask?.cancel()
+        externalRecommendationTask = nil
+        homePresentationTask?.cancel()
+        homePresentationTask = nil
+        homePresentationGeneration &+= 1
+        library.setHomePresentation(.empty)
         cancelAutomaticRefresh()
         cancelBackgroundPreparation()
         clearFavoriteState()
@@ -1065,7 +1082,7 @@ final class AppModel: ObservableObject {
                     generation: sessionGeneration
                 )
             } else {
-                recommendationTask?.cancel()
+                localRecommendationTask?.cancel()
                 rebuildRecommendations()
             }
             return true
@@ -1082,24 +1099,24 @@ final class AppModel: ObservableObject {
     func rebuildRecommendations() {
         recommendationRebuildTask?.cancel()
         recommendationRebuildTask = nil
-        recommendationTask?.cancel()
-        recommendationGeneration &+= 1
-        let requestGeneration = recommendationGeneration
+        localRecommendationTask?.cancel()
+        localRecommendationGeneration &+= 1
+        let requestGeneration = localRecommendationGeneration
         let session = sessionGeneration
         let source = home
         let sourceRevision = library.revision
         let weights = RecommendationWeights.current()
-        recommendationTask = Task { [weak self] in
+        localRecommendationTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                if requestGeneration == self.recommendationGeneration {
-                    self.recommendationTask = nil
+                if requestGeneration == self.localRecommendationGeneration {
+                    self.localRecommendationTask = nil
                 }
             }
             let behavior = await ListeningHistoryStore.shared
                 .recommendationSnapshot()
             guard !Task.isCancelled,
-                  requestGeneration == self.recommendationGeneration,
+                  requestGeneration == self.localRecommendationGeneration,
                   session == self.sessionGeneration,
                   sourceRevision == self.library.revision else { return }
             var snapshot = source
@@ -1114,7 +1131,7 @@ final class AppModel: ObservableObject {
             snapshot.recommendedSongs = sections.recommended
             snapshot.daylistSongs = sections.daylist
             guard !Task.isCancelled,
-                  requestGeneration == self.recommendationGeneration,
+                  requestGeneration == self.localRecommendationGeneration,
                   session == self.sessionGeneration,
                   behavior.revision == latestBehaviorRevision,
                   sourceRevision == self.library.revision else { return }
@@ -1190,8 +1207,12 @@ final class AppModel: ObservableObject {
         deferredRecommendationRebuild = true
         recommendationRebuildTask?.cancel()
         recommendationRebuildTask = nil
-        recommendationTask?.cancel()
-        recommendationTask = nil
+        localRecommendationTask?.cancel()
+        localRecommendationTask = nil
+        externalRecommendationTask?.cancel()
+        externalRecommendationTask = nil
+        homePresentationTask?.cancel()
+        homePresentationTask = nil
         cancelBackgroundPreparation()
     }
 
@@ -2135,7 +2156,59 @@ final class AppModel: ObservableObject {
     private func publishHome(_ snapshot: HomeSnapshot) -> Bool {
         guard library.setSnapshot(snapshot) else { return false }
         homeRevision &+= 1
+        scheduleHomePresentationRebuild()
         return true
+    }
+
+    func syncHomePresentation(selectedArtists: [String]) {
+        homePresentationSelectedArtists = selectedArtists
+        scheduleHomePresentationRebuild()
+    }
+
+    private func scheduleHomePresentationRebuild() {
+        guard allowsBackgroundPreparation else {
+            homePresentationTask?.cancel()
+            homePresentationTask = nil
+            return
+        }
+        homePresentationGeneration &+= 1
+        let generation = homePresentationGeneration
+        let revision = library.revision
+        let snapshot = home
+        let selectedArtists = homePresentationSelectedArtists
+        let shouldDebounce = library.homePresentation != .empty
+        homePresentationTask?.cancel()
+        homePresentationTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            defer {
+                if generation == self.homePresentationGeneration {
+                    self.homePresentationTask = nil
+                }
+            }
+            if shouldDebounce {
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+            guard !Task.isCancelled,
+                  generation == self.homePresentationGeneration,
+                  revision == self.library.revision,
+                  selectedArtists == self.homePresentationSelectedArtists else {
+                return
+            }
+            let presentation = await HomePresentation.makeConcurrently(
+                input: HomePresentationInput(
+                    snapshot: snapshot,
+                    revision: revision,
+                    selectedArtists: selectedArtists
+                )
+            )
+            guard !Task.isCancelled,
+                  generation == self.homePresentationGeneration,
+                  revision == self.library.revision,
+                  selectedArtists == self.homePresentationSelectedArtists else {
+                return
+            }
+            self.library.setHomePresentation(presentation)
+        }
     }
 
     private func mergingListeningHistory(
@@ -2568,23 +2641,23 @@ final class AppModel: ObservableObject {
         ) else {
             return
         }
-        recommendationTask?.cancel()
-        recommendationGeneration &+= 1
-        let requestGeneration = recommendationGeneration
+        externalRecommendationTask?.cancel()
+        externalRecommendationGeneration &+= 1
+        let requestGeneration = externalRecommendationGeneration
         let source = home
         let sourceRevision = library.revision
-        recommendationTask = Task { [weak self] in
+        externalRecommendationTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                if requestGeneration == self.recommendationGeneration {
-                    self.recommendationTask = nil
+                if requestGeneration == self.externalRecommendationGeneration {
+                    self.externalRecommendationTask = nil
                 }
             }
             let enriched = await self.enrichingExternalRecommendations(
                 in: source
             )
             guard !Task.isCancelled,
-                  requestGeneration == self.recommendationGeneration,
+                  requestGeneration == self.externalRecommendationGeneration,
                   generation == self.sessionGeneration,
                   self.client === client,
                   sourceRevision == self.library.revision else {
@@ -2603,7 +2676,7 @@ final class AppModel: ObservableObject {
             let behavior = await ListeningHistoryStore.shared
                 .recommendationSnapshot()
             guard !Task.isCancelled,
-                  requestGeneration == self.recommendationGeneration,
+                  requestGeneration == self.externalRecommendationGeneration,
                   generation == self.sessionGeneration,
                   self.client === client,
                   publicationRevision == self.library.revision else {
@@ -2622,15 +2695,14 @@ final class AppModel: ObservableObject {
                 weights: weights,
                 behavior: behavior
             )
-            let latestBehaviorRevision = await ListeningHistoryStore.shared
-                .recommendationRevision()
+            let latestBehaviorRevision = behavior.revision
             value.recommendedSongs = sections.recommended
             value.recommendedArtists = self.resolvedRecommendedArtists(
                 in: value
             )
             value.daylistSongs = sections.daylist
             guard !Task.isCancelled,
-                  requestGeneration == self.recommendationGeneration,
+                  requestGeneration == self.externalRecommendationGeneration,
                   generation == self.sessionGeneration,
                   self.client === client,
                   behavior.revision == latestBehaviorRevision,
@@ -2648,7 +2720,7 @@ final class AppModel: ObservableObject {
                     accountScope: accountScope
                 )
             }
-            if requestGeneration == self.recommendationGeneration {
+            if requestGeneration == self.externalRecommendationGeneration {
                 self.lastExternalRecommendationIdentity =
                     ExternalRecommendationRefreshIdentity(
                         sessionGeneration: generation,
@@ -2705,8 +2777,14 @@ final class AppModel: ObservableObject {
         searchGeneration += 1
         searchTask?.cancel()
         searchTask = nil
-        recommendationTask?.cancel()
-        recommendationTask = nil
+        localRecommendationTask?.cancel()
+        localRecommendationTask = nil
+        externalRecommendationTask?.cancel()
+        externalRecommendationTask = nil
+        homePresentationTask?.cancel()
+        homePresentationTask = nil
+        homePresentationGeneration &+= 1
+        library.setHomePresentation(.empty)
         lastExternalRecommendationIdentity = nil
         cancelAutomaticRefresh()
         cancelBackgroundPreparation()
@@ -3165,6 +3243,8 @@ final class AppModel: ObservableObject {
         catalogRefreshTask?.cancel()
         catalogRefreshTask = nil
         catalogRefreshToken = nil
+        homePresentationTask?.cancel()
+        homePresentationTask = nil
     }
 
     private var allowsBackgroundPreparation: Bool {
@@ -3220,13 +3300,12 @@ final class AppModel: ObservableObject {
                     self.catalogRefreshToken = nil
                 }
             }
-            await LocalLibraryCatalog.shared.ingest(seedSongs)
-            guard !Task.isCancelled,
-                  generation == self.sessionGeneration else { return }
             let historySongs = await ListeningHistoryStore.shared.catalogSongs()
             guard !Task.isCancelled,
                   generation == self.sessionGeneration else { return }
-            await LocalLibraryCatalog.shared.ingest(historySongs)
+            await LocalLibraryCatalog.shared.ingest(
+                Self.uniqueSongs(seedSongs + historySongs)
+            )
             guard !Task.isCancelled,
                   generation == self.sessionGeneration else { return }
             await LocalLibraryCatalog.shared.persistNow()
