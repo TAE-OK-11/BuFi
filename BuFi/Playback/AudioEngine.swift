@@ -3433,10 +3433,6 @@ final class AudioEngine: NSObject, ObservableObject {
             )
             guard !Task.isCancelled,
                   self.visualPrefetchToken == token else { return }
-
-            if let firstCover = coverURLs.first {
-                _ = await ArtworkStore.shared.palette(for: firstCover)
-            }
         }
     }
 

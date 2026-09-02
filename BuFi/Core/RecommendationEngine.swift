@@ -2246,14 +2246,14 @@ enum DaylistBuilder {
             familiarSlots = 3
         }
         let seed = day * 3 + period
+        let songsByAlbumID = albumSongIndex(from: snapshot.recommendedSongs)
+        let familiarSource = snapshot.mostPlayedSongs +
+            snapshot.starredSongs +
+            snapshot.recentlyPlayedAlbums.flatMap { album in
+                songsByAlbumID[album.id] ?? []
+            }
         let familiar = ordered(
-            unique(
-                snapshot.mostPlayedSongs +
-                snapshot.starredSongs +
-                snapshot.recentlyPlayedAlbums.flatMap { album in
-                    snapshot.recommendedSongs.filter { $0.albumId == album.id }
-                }
-            ),
+            unique(familiarSource),
             seed: seed
         )
         let discovery = ordered(
@@ -2327,6 +2327,16 @@ enum DaylistBuilder {
 
     private static func unique(_ songs: [Song]) -> [Song] {
         MediaIdentity.uniqueSongs(songs)
+    }
+
+    private static func albumSongIndex(from songs: [Song]) -> [String: [Song]] {
+        var index: [String: [Song]] = [:]
+        index.reserveCapacity(min(songs.count, 256))
+        for song in songs {
+            guard let albumID = song.albumId, !albumID.isEmpty else { continue }
+            index[albumID, default: []].append(song)
+        }
+        return index
     }
 
     private static func normalized(_ value: String) -> String {
@@ -2449,6 +2459,39 @@ private struct PersonalizedMixCacheKey: Equatable {
     let localeIdentifier: String
     let songLimit: Int
     let selectedArtists: [String]
+
+    var coalescingID: String {
+        [
+            String(describing: snapshot),
+            String(year),
+            String(day),
+            period,
+            calendarIdentifier,
+            timeZoneIdentifier,
+            localeIdentifier,
+            String(songLimit),
+            selectedArtists.joined(separator: "\u{1F}")
+        ].joined(separator: "\u{1E}")
+    }
+}
+
+private actor PersonalizedMixBuildCoordinator {
+    static let shared = PersonalizedMixBuildCoordinator()
+    private var tasks: [String: Task<[PersonalizedMix], Never>] = [:]
+
+    func build(
+        key: String,
+        operation: @Sendable @escaping () -> [PersonalizedMix]
+    ) async -> [PersonalizedMix] {
+        if let existing = tasks[key] {
+            return await existing.value
+        }
+        let task = Task(operation: operation)
+        tasks[key] = task
+        let value = await task.value
+        tasks.removeValue(forKey: key)
+        return value
+    }
 }
 
 private final class PersonalizedMixResultCache: @unchecked Sendable {
@@ -2599,15 +2642,16 @@ enum PersonalizedMixBuilder {
         }
 
         let dailySeed = year * 1_000 + day
+        let daylistPreferred = snapshot.daylistSongs.isEmpty
+            ? DaylistBuilder.make(
+                snapshot: snapshot,
+                date: date,
+                calendar: calendar,
+                limit: songLimit
+            )
+            : snapshot.daylistSongs
         let daylist = filled(
-            preferred: canonicalized(
-                DaylistBuilder.make(
-                    snapshot: snapshot,
-                    date: date,
-                    calendar: calendar,
-                    limit: songLimit
-                )
-            ),
+            preferred: canonicalized(daylistPreferred),
             from: pool,
             seed: dailySeed,
             limit: songLimit
@@ -2789,6 +2833,47 @@ enum PersonalizedMixBuilder {
         let result = mixes.filter { !$0.songs.isEmpty }
         cache.insert(result, for: cacheKey)
         return result
+    }
+
+    static func makeConcurrently(
+        snapshot: HomeSnapshot,
+        snapshotRevision: HomeSnapshotRevision? = nil,
+        date: Date = Date(),
+        calendar: Calendar = .current,
+        songLimit: Int = 32,
+        selectedArtists: [String] = []
+    ) async -> [PersonalizedMix] {
+        guard songLimit > 0 else { return [] }
+        let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 0
+        let year = calendar.component(.year, from: date)
+        let period = dayPeriod(date, calendar: calendar)
+        let snapshotKey = snapshotRevision.map(PersonalizedSnapshotCacheKey.revision)
+            ?? .snapshot(snapshot)
+        let cacheKey = PersonalizedMixCacheKey(
+            snapshot: snapshotKey,
+            year: year,
+            day: day,
+            period: period.id,
+            calendarIdentifier: String(describing: calendar.identifier),
+            timeZoneIdentifier: calendar.timeZone.identifier,
+            localeIdentifier: Locale.current.identifier,
+            songLimit: songLimit,
+            selectedArtists: selectedArtists
+        )
+        if let cached = cache.value(for: cacheKey) { return cached }
+        guard !Task.isCancelled else { return [] }
+        return await PersonalizedMixBuildCoordinator.shared.build(
+            key: cacheKey.coalescingID
+        ) {
+            make(
+                snapshot: snapshot,
+                snapshotRevision: snapshotRevision,
+                date: date,
+                calendar: calendar,
+                songLimit: songLimit,
+                selectedArtists: selectedArtists
+            )
+        }
     }
 
     static func favoriteSongs(_ songs: [Song]) -> PersonalizedMix {

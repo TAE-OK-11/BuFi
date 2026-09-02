@@ -2289,13 +2289,25 @@ actor OpenSubsonicClient {
             accessOrdinal: decodedResponseAccessClock
         )
         decodedResponseCacheByteCount += byteCost
-        while decodedResponseCache.count > Self.decodedResponseCacheLimit
+        enforceDecodedResponseCacheLimits()
+    }
+
+    private func enforceDecodedResponseCacheLimits() {
+        guard decodedResponseCache.count > Self.decodedResponseCacheLimit
                 || decodedResponseCacheByteCount
-                    > Self.decodedResponseCacheByteLimit,
-              let oldestKey = decodedResponseCache.min(by: {
-                  $0.value.accessOrdinal < $1.value.accessOrdinal
-              })?.key {
-            removeDecodedResponse(for: oldestKey)
+                    > Self.decodedResponseCacheByteLimit else {
+            return
+        }
+        let victims = decodedResponseCache
+            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            .map(\.key)
+        for key in victims {
+            guard decodedResponseCache.count > Self.decodedResponseCacheLimit
+                    || decodedResponseCacheByteCount
+                        > Self.decodedResponseCacheByteLimit else {
+                break
+            }
+            removeDecodedResponse(for: key)
         }
     }
 
@@ -2553,6 +2565,16 @@ actor OpenSubsonicClient {
                 limit: OpenSubsonicRequestPolicy.homeEnrichmentConcurrencyLimit
             )
             let resultLimit = OpenSubsonicRequestPolicy.homeEnrichmentResultLimit
+            async let earlyPopularSongsRequest = songs(
+                from: Array(
+                    frequentAlbums.prefix(
+                        OpenSubsonicRequestPolicy.homeAlbumTrackLimit
+                    )
+                ),
+                fallback: fallback.popularSongs,
+                count: resultLimit,
+                limiter: enrichmentLimiter
+            )
 
             async let recommendationsRequest = recommendationSources(
                 seeds: Array(
@@ -2607,13 +2629,13 @@ actor OpenSubsonicClient {
             )
             let popularAlbumsValue = try await popularAlbumsRequest
             let popularAlbumValues = albums(from: popularAlbumsValue, fallback: [])
-            async let popularSongsRequest = songs(
+            async let highestPopularSongsRequest = songs(
                 from: Array(
                     popularAlbumValues.prefix(
                         OpenSubsonicRequestPolicy.homeAlbumTrackLimit
                     )
                 ),
-                fallback: fallback.popularSongs,
+                fallback: [],
                 count: resultLimit,
                 limiter: enrichmentLimiter
             )
@@ -2634,7 +2656,8 @@ actor OpenSubsonicClient {
                 genreSongs,
                 topArtistSongs,
                 recentlyAddedSongs,
-                popularSongs,
+                earlyPopularSongs,
+                highestPopularSongs,
                 playlistAffinitySongs
             ) = await (
                 recommendationsRequest,
@@ -2643,8 +2666,12 @@ actor OpenSubsonicClient {
                 genreSongsRequest,
                 topArtistSongsRequest,
                 recentlyAddedSongsRequest,
-                popularSongsRequest,
+                earlyPopularSongsRequest,
+                highestPopularSongsRequest,
                 playlistAffinityRequest
+            )
+            let popularSongs = Self.uniqueSongs(
+                highestPopularSongs + earlyPopularSongs
             )
             let serverRecommendations = Self.uniqueSongs(
                 recommendationSources.combined
@@ -2666,7 +2693,6 @@ actor OpenSubsonicClient {
             snapshot.mostPlayedSongs = rankedServerSongs
             snapshot.recommendedArtists = artistRecommendations
         }
-        snapshot.daylistSongs = DaylistBuilder.make(snapshot: snapshot)
         return HomeLoadResult(
             snapshot: snapshot,
             hasAuthoritativeStarredState: starredValue?.container != nil
@@ -3493,12 +3519,22 @@ actor OpenSubsonicClient {
             song: song,
             accessOrdinal: playbackMetadataAccessClock
         )
-        while playbackMetadataCache.count > Self.playbackMetadataMemoryLimit,
-              let victim = playbackMetadataCache.min(by: {
-                  $0.value.accessOrdinal < $1.value.accessOrdinal
-              })?.key,
-              victim != song.id {
-            playbackMetadataCache.removeValue(forKey: victim)
+        enforcePlaybackMetadataCacheLimits(excluding: song.id)
+    }
+
+    private func enforcePlaybackMetadataCacheLimits(excluding protectedID: String) {
+        guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit else {
+            return
+        }
+        let victims = playbackMetadataCache
+            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            .map(\.key)
+            .filter { $0 != protectedID }
+        for key in victims {
+            guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit else {
+                break
+            }
+            playbackMetadataCache.removeValue(forKey: key)
         }
     }
 
@@ -3750,9 +3786,7 @@ actor OpenSubsonicClient {
             }
         )
         let songIDs = uniqueSongs.map(\.id)
-        await prefetchTranscodeDecisions(
-            songIDs: Array(songIDs.prefix(1))
-        )
+        await prefetchTranscodeDecisions(songIDs: songIDs)
         var resolved: [(Int, Song)] = []
         resolved.reserveCapacity(uniqueSongs.count)
         var batchStart = 0
@@ -3835,11 +3869,14 @@ actor OpenSubsonicClient {
             0,
             Int((Double(decodedResponseCache.count) * fraction).rounded(.down))
         )
-        while decodedResponseCache.count > targetCount,
-              let oldestKey = decodedResponseCache.min(by: {
-                  $0.value.accessOrdinal < $1.value.accessOrdinal
-              })?.key {
-            removeDecodedResponse(for: oldestKey)
+        let removeCount = decodedResponseCache.count - targetCount
+        guard removeCount > 0 else { return }
+        let victims = decodedResponseCache
+            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            .prefix(removeCount)
+            .map(\.key)
+        for key in victims {
+            removeDecodedResponse(for: key)
         }
     }
 
@@ -3849,11 +3886,14 @@ actor OpenSubsonicClient {
             0,
             Int((Double(playbackMetadataCache.count) * fraction).rounded(.down))
         )
-        while playbackMetadataCache.count > targetCount,
-              let oldestKey = playbackMetadataCache.min(by: {
-                  $0.value.accessOrdinal < $1.value.accessOrdinal
-              })?.key {
-            playbackMetadataCache.removeValue(forKey: oldestKey)
+        let removeCount = playbackMetadataCache.count - targetCount
+        guard removeCount > 0 else { return }
+        let victims = playbackMetadataCache
+            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            .prefix(removeCount)
+            .map(\.key)
+        for key in victims {
+            playbackMetadataCache.removeValue(forKey: key)
         }
     }
 
