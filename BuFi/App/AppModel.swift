@@ -1124,7 +1124,7 @@ final class AppModel: ObservableObject {
     func handleMemoryPressure() {
         cancelBackgroundPreparation()
         clearDetailCaches()
-        RecommendationMixer.invalidateCache()
+        RecommendationMixer.trimCache()
         lastCatalogIngestRevision = nil
         localSearchIndex = nil
         localSearchIndexRevision = -1
@@ -1134,6 +1134,7 @@ final class AppModel: ObservableObject {
         albumsByIDCacheRevision = -1
         knownSongsCache.removeAll(keepingCapacity: false)
         knownSongsCacheRevision = -1
+        client?.trimTransientNetworkCaches()
         Task(priority: .utility) {
             await ArtworkStore.shared.clearMemory()
         }
@@ -2373,8 +2374,8 @@ final class AppModel: ObservableObject {
         let listenBrainzToken = await secureStore.loadSecret(
             account: Self.listenBrainzTokenAccount
         )
-        let recent = await ListeningHistoryStore.shared.recommendationSnapshot()
-        let seed = recent.recentSongs.first
+        let recent = await ListeningHistoryStore.shared.recentSongs()
+        let seed = recent.first
             ?? snapshot.starredSongs.first
             ?? snapshot.mostPlayedSongs.first
             ?? snapshot.randomSongs.first

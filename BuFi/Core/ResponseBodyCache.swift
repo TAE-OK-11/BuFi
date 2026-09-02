@@ -175,6 +175,22 @@ struct ResponseBodyCache: Sendable {
         }
     }
 
+    mutating func trim(keepFraction: Double) {
+        let fraction = min(1, max(0, keepFraction))
+        let targetCount = max(
+            0,
+            Int((Double(entries.count) * fraction).rounded(.down))
+        )
+        while entries.count > targetCount {
+            guard let leastRecentlyUsed = entries.min(by: {
+                $0.value.accessOrdinal < $1.value.accessOrdinal
+            })?.key else {
+                break
+            }
+            removeValue(for: leastRecentlyUsed)
+        }
+    }
+
     private mutating func nextAccessOrdinal() -> UInt64 {
         accessClock &+= 1
         return accessClock

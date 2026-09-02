@@ -205,7 +205,7 @@ actor LocalLibraryCatalog {
     ) -> [Song] {
         let bounded = max(0, limit)
         guard bounded > 0 else { return [] }
-        if !additionalSongs.isEmpty {
+        if !additionalSongs.isEmpty, entries.count < 256 {
             ingest(additionalSongs)
         }
 

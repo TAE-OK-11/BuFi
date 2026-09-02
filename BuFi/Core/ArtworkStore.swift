@@ -28,6 +28,9 @@ enum ArtworkRequestSizing {
 
 enum UpcomingPlaybackPrefetchPolicy {
   static let maximumBatchSize = 5
+  static let metadataPrefetchConcurrency = 2
+  static let offlinePrefetchCount = 1
+  static let upcomingArtworkPixelSize: CGFloat = 384
 
   /// Returns how many upcoming streamable tracks to warm, capped at five and
   /// never exceeding the songs still left in the queue.

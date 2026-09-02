@@ -11,6 +11,9 @@ struct BuFiApp: App {
         LaunchDiagnostics.mark("app-model-created")
         _audio = StateObject(wrappedValue: AudioEngine.shared)
         LaunchDiagnostics.mark("audio-model-created")
+        Task(priority: .utility) {
+            await AppDatabase.shared.warmupIfNeeded()
+        }
     }
 
     var body: some Scene {
