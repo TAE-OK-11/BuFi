@@ -387,6 +387,23 @@ actor AppDatabase {
         }
     }
 
+    @discardableResult
+    func clearPlaybackMetadata(scope: String) async -> Bool {
+        guard !scope.isEmpty, scope.utf8.count <= 512,
+              let pool = await databasePool() else { return false }
+        do {
+            try await pool.write { db in
+                try db.execute(
+                    sql: "DELETE FROM playback_metadata_cache WHERE account_scope = ?",
+                    arguments: [scope]
+                )
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func loadLyricsTranslations(
         scope: String,
         songID: String,

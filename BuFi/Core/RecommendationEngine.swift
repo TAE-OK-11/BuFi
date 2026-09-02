@@ -3115,6 +3115,7 @@ struct ExternalRecommendationCandidate: Sendable {
     let artist: String
     let album: String?
     let recordingMBID: String?
+    let isrc: String?
     let score: Double
     let source: Source
 }
@@ -3193,6 +3194,7 @@ actor ExternalRecommendationClient {
                     artist: item.artist.name,
                     album: nil,
                     recordingMBID: nil,
+                    isrc: nil,
                     score: Double(item.match) ?? 0.5,
                     source: .lastFM
                 )
@@ -3339,6 +3341,7 @@ actor ExternalRecommendationClient {
                 artist: artist,
                 album: value.release?.name,
                 recordingMBID: mbid,
+                isrc: nil,
                 score: scores[mbid] ?? 0.5,
                 source: .listenBrainz
             )

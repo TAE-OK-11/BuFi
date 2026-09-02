@@ -392,6 +392,8 @@ final class AppModel: ObservableObject {
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogRefreshToken: UUID?
     private var recommendationGeneration: UInt64 = 0
+    private var recommendationRebuildTask: Task<Void, Never>?
+    private var deferredRecommendationRebuild = false
     private var lastFMKeyOperationGeneration: UInt64 = 0
     private var listenBrainzOperationGeneration: UInt64 = 0
     private var bootstrapState = BootstrapState.idle
@@ -1078,6 +1080,8 @@ final class AppModel: ObservableObject {
     }
 
     func rebuildRecommendations() {
+        recommendationRebuildTask?.cancel()
+        recommendationRebuildTask = nil
         recommendationTask?.cancel()
         recommendationGeneration &+= 1
         let requestGeneration = recommendationGeneration
@@ -1121,6 +1125,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func scheduleRecommendationRebuild() {
+        guard client != nil, sessionState == .ready else { return }
+        guard !ProcessInfo.processInfo.isLowPowerModeEnabled,
+              ProcessInfo.processInfo.thermalState.rawValue <
+                ProcessInfo.ThermalState.serious.rawValue else {
+            deferredRecommendationRebuild = true
+            return
+        }
+        recommendationRebuildTask?.cancel()
+        recommendationRebuildTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            self.recommendationRebuildTask = nil
+            self.rebuildRecommendations()
+        }
+    }
+
     func handleMemoryPressure() {
         cancelBackgroundPreparation()
         clearDetailCaches()
@@ -1157,8 +1178,15 @@ final class AppModel: ObservableObject {
         guard lowPowerMode
                 || thermalState == .serious
                 || thermalState == .critical else {
+            if deferredRecommendationRebuild {
+                deferredRecommendationRebuild = false
+                scheduleRecommendationRebuild()
+            }
             return
         }
+        deferredRecommendationRebuild = true
+        recommendationRebuildTask?.cancel()
+        recommendationRebuildTask = nil
         recommendationTask?.cancel()
         recommendationTask = nil
         cancelBackgroundPreparation()
@@ -1920,6 +1948,7 @@ final class AppModel: ObservableObject {
         if enabled { snapshot.starredSongs.insert(updated, at: 0) }
         publishHome(snapshot)
         stampSearchSong(id: song.id, starred: starredValue)
+        scheduleRecommendationRebuild()
     }
 
     private func updateStarredAlbum(_ album: Album, enabled: Bool) {
@@ -2164,6 +2193,7 @@ final class AppModel: ObservableObject {
         to snapshot: HomeSnapshot,
         behavior: RecommendationBehaviorSnapshot? = nil
     ) async -> HomeSnapshot {
+        let sourceRevision = library.revision
         var value = snapshot
         let resolvedBehavior = if let behavior {
             behavior
@@ -2173,10 +2203,11 @@ final class AppModel: ObservableObject {
         let weights = RecommendationWeights.current()
         let sections = await Self.recommendationSections(
             snapshot: value,
-            snapshotRevision: library.revision,
+            snapshotRevision: sourceRevision,
             weights: weights,
             behavior: resolvedBehavior
         )
+        guard sourceRevision == library.revision else { return snapshot }
         value.recommendedSongs = sections.recommended
         value.recommendedArtists = resolvedRecommendedArtists(in: value)
         value.daylistSongs = sections.daylist
@@ -2382,9 +2413,16 @@ final class AppModel: ObservableObject {
         let knownSongs = Self.uniqueSongs(
             snapshot.serverRecommendedSongs +
             snapshot.recommendedSongs +
+            snapshot.daylistSongs +
             snapshot.randomSongs +
             snapshot.starredSongs +
-            snapshot.mostPlayedSongs
+            snapshot.mostPlayedSongs +
+            snapshot.recentlyAddedSongs +
+            snapshot.popularSongs +
+            snapshot.sonicRecommendedSongs +
+            snapshot.similarArtistSongs +
+            snapshot.genreRecommendedSongs +
+            snapshot.topArtistSongs
         )
         async let lastFMSongs = Self.resolvedLastFMSongs(
             seed: seed,
@@ -2401,6 +2439,8 @@ final class AppModel: ObservableObject {
         let matches = await (lastFMSongs, listenBrainzSongs)
         if !matches.0.isEmpty {
             value.lastFMRecommendedSongs = matches.0
+        } else if !lastFMKey.isEmpty, seed != nil {
+            value.lastFMRecommendedSongs = []
         }
         if !matches.1.isEmpty {
             value.listenBrainzRecommendedSongs = Self.songsRankedNearSeed(
@@ -2550,7 +2590,7 @@ final class AppModel: ObservableObject {
             let publicationSource = self.home
             let publicationRevision = self.library.revision
             var value = publicationSource
-            if !enriched.lastFMRecommendedSongs.isEmpty {
+            if hasLastFMAPIKey {
                 value.lastFMRecommendedSongs = enriched.lastFMRecommendedSongs
             }
             if !enriched.listenBrainzRecommendedSongs.isEmpty {
@@ -2875,6 +2915,9 @@ final class AppModel: ObservableObject {
                         client: client,
                         enqueue: enqueue
                     )
+                },
+                playbackHistoryMutationHandler: { [weak self] in
+                    self?.scheduleRecommendationRebuild()
                 }
             )
             if cachedSnapshot != nil, status == nil {
