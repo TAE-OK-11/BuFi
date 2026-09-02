@@ -293,12 +293,18 @@ private func matches(
     query: PreparedSearchQuery
 ) -> SearchMatchRank? {
     guard !haystack.isEmpty else { return nil }
-    if haystack == query.value { return .exact }
-    if haystack.hasPrefix(query.value) { return .prefix }
-    if haystack.contains(query.value) { return .contains }
+    let haystackText = haystack as NSString
+    if haystackText.localizedStandardCompare(query.value) == .orderedSame {
+        return .exact
+    }
+    let prefixRange = haystackText.localizedStandardRange(of: query.value)
+    if prefixRange.location == 0 { return .prefix }
+    if haystackText.localizedStandardContains(query.value) { return .contains }
 
     guard query.tokens.count > 1,
-          query.tokens.allSatisfy({ haystack.contains($0) }) else {
+          query.tokens.allSatisfy({
+              haystackText.localizedStandardContains($0)
+          }) else {
         return nil
     }
     return .contains
