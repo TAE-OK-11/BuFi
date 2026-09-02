@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-08-22
+Audit date: 2026-08-31 (dependency versions reverified)
 
 ## Decisions
 
@@ -13,6 +13,13 @@ Audit date: 2026-08-22
 | [Amperfy](https://github.com/BLeeEZ/amperfy) | GPLv3 | Continue using selected compatibility and audio-session patterns with attribution. Do not add the complete app as a package. |
 | [Cassette](https://github.com/CassetteLab/cassette) | MPL-2.0 for current source | Continue as an architectural reference only. It is an application, not a reusable package required by BuFi. |
 | [TIDAL iOS SDK](https://github.com/tidal-music/tidal-sdk-ios) | Apache-2.0 | Architecture reference only at revision `41aed3a`. Adopt bounded task scheduling, keyed in-flight request coalescing, jittered retry, and observer ownership patterns without linking or copying the SDK. |
+
+All four linked packages were reverified on 2026-08-31 against their upstream
+release feeds. GRDB.swift 7.11.1, Nuke 13.2.0, SwiftSonic 0.9.0, and Zstandard
+1.5.7 remain the latest stable pins compatible with BuFi's iOS 17 floor and
+Xcode 27 / Swift 6.4 CI lane. `Package.resolved` revisions still match those
+tags. The bundled Unbounded font checksum also matches the current
+`google/fonts` `main` artifact. No dependency bumps were required for this audit.
 
 The linked packages fit BuFi's iOS 17 floor: SwiftSonic supports iOS 16, GRDB
 supports iOS 13, Nuke 13 supports iOS 15, and zstd's manifest supports iOS 9.
