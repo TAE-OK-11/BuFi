@@ -30,10 +30,7 @@ struct LibraryCatalogRecord: Sendable {
 actor AppDatabase {
     static let shared = AppDatabase()
 
-    private nonisolated static let propertyListEncoder: PropertyListEncoder = {
-        let encoder = propertyListEncoder
-        return encoder
-    }()
+    private nonisolated static let propertyListEncoder = PropertyListEncoder()
     private nonisolated static let propertyListDecoder = PropertyListDecoder()
 
     private struct StoredQueueItem: Sendable {
