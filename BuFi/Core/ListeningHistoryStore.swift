@@ -545,29 +545,66 @@ actor ListeningHistoryStore {
         orderedBefore: (SongBehavior, SongBehavior) -> Bool
     ) -> [SongBehavior] {
         guard limit > 0, !entries.isEmpty else { return [] }
-        var leading: [SongBehavior] = []
-        leading.reserveCapacity(min(limit, entries.count))
+        var heap: [SongBehavior] = []
+        heap.reserveCapacity(limit)
         for value in entries.values {
-            if leading.count == limit,
-               let last = leading.last,
-               !orderedBefore(value, last) {
+            if heap.count < limit {
+                heap.append(value)
+                if heap.count == limit {
+                    buildLeadingHeap(&heap, orderedBefore: orderedBefore)
+                }
                 continue
             }
-            var lowerBound = 0
-            var upperBound = leading.count
-            while lowerBound < upperBound {
-                let middle = lowerBound + (upperBound - lowerBound) / 2
-                if orderedBefore(value, leading[middle]) {
-                    upperBound = middle
-                } else {
-                    lowerBound = middle + 1
-                }
+            guard let worst = heap.first,
+                  orderedBefore(value, worst) else {
+                continue
             }
-            guard lowerBound < limit else { continue }
-            leading.insert(value, at: lowerBound)
-            if leading.count > limit { leading.removeLast() }
+            heap[0] = value
+            siftLeadingHeapDown(&heap, orderedBefore: orderedBefore)
         }
-        return leading
+        return heap.sorted { orderedBefore($0, $1) }
+    }
+
+    private static func isWorse(
+        _ lhs: SongBehavior,
+        than rhs: SongBehavior,
+        orderedBefore: (SongBehavior, SongBehavior) -> Bool
+    ) -> Bool {
+        orderedBefore(rhs, lhs)
+    }
+
+    private static func buildLeadingHeap(
+        _ heap: inout [SongBehavior],
+        orderedBefore: (SongBehavior, SongBehavior) -> Bool
+    ) {
+        guard !heap.isEmpty else { return }
+        for index in stride(from: heap.count / 2 - 1, through: 0, by: -1) {
+            siftLeadingHeapDown(&heap, from: index, orderedBefore: orderedBefore)
+        }
+    }
+
+    private static func siftLeadingHeapDown(
+        _ heap: inout [SongBehavior],
+        from index: Int = 0,
+        orderedBefore: (SongBehavior, SongBehavior) -> Bool
+    ) {
+        var parent = index
+        while true {
+            let left = parent * 2 + 1
+            let right = left + 1
+            var worst = parent
+            if left < heap.count,
+               isWorse(heap[worst], than: heap[left], orderedBefore: orderedBefore) {
+                worst = left
+            }
+            if right < heap.count,
+               isWorse(heap[worst], than: heap[right], orderedBefore: orderedBefore) {
+                worst = right
+            }
+            guard worst != parent else { return }
+            heap.swapAt(parent, worst)
+            parent = worst
+        }
     }
 
     private static func mostPlayedBefore(

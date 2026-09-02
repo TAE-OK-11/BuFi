@@ -674,24 +674,23 @@ actor AppDatabase {
                         arguments: [scope, id]
                     )
                 }
+                let statement = try db.makeStatement(sql: Self.listeningUpsertSQL)
                 for item in encoded {
                     let value = item.value
-                    try db.execute(
-                        sql: Self.listeningUpsertSQL,
-                        arguments: [
-                            scope, item.songID, item.songData, value.playCount,
-                            value.firstPlayed.timeIntervalSince1970,
-                            value.lastPlayed.timeIntervalSince1970,
-                            value.completedCount, value.skipCount,
-                            value.earlySkipCount, value.repeatedSkipCount,
-                            value.repeatCount, value.manualPlayCount,
-                            value.searchPlayCount, value.albumSelectionCount,
-                            value.playlistPlayCount, value.autoplayCount,
-                            value.queueRemovalCount, value.playlistAddCount,
-                            value.favoriteCount, value.totalCompletion,
-                            value.completionSamples, value.consecutiveSkips
-                        ]
-                    )
+                    try statement.setArguments([
+                        scope, item.songID, item.songData, value.playCount,
+                        value.firstPlayed.timeIntervalSince1970,
+                        value.lastPlayed.timeIntervalSince1970,
+                        value.completedCount, value.skipCount,
+                        value.earlySkipCount, value.repeatedSkipCount,
+                        value.repeatCount, value.manualPlayCount,
+                        value.searchPlayCount, value.albumSelectionCount,
+                        value.playlistPlayCount, value.autoplayCount,
+                        value.queueRemovalCount, value.playlistAddCount,
+                        value.favoriteCount, value.totalCompletion,
+                        value.completionSamples, value.consecutiveSkips
+                    ])
+                    try statement.execute()
                 }
             }
             return true
@@ -1029,31 +1028,15 @@ actor AppDatabase {
                         arguments: [scope, id]
                     )
                 }
+                let statement = try db.makeStatement(sql: Self.libraryCatalogUpsertSQL)
                 for record in records {
-                    try db.execute(
-                        sql: """
-                        INSERT INTO library_catalog (
-                            account_scope, song_id, song_data, title_key,
-                            artist_key, album_key, mbid, isrc,
-                            hash_embedding, neural_embedding
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(account_scope, song_id) DO UPDATE SET
-                            song_data = excluded.song_data,
-                            title_key = excluded.title_key,
-                            artist_key = excluded.artist_key,
-                            album_key = excluded.album_key,
-                            mbid = excluded.mbid,
-                            isrc = excluded.isrc,
-                            hash_embedding = excluded.hash_embedding,
-                            neural_embedding = excluded.neural_embedding
-                        """,
-                        arguments: [
-                            scope, record.songID, record.songData,
-                            record.titleKey, record.artistKey, record.albumKey,
-                            record.mbid, record.isrc,
-                            record.hashEmbedding, record.neuralEmbedding
-                        ]
-                    )
+                    try statement.setArguments([
+                        scope, record.songID, record.songData,
+                        record.titleKey, record.artistKey, record.albumKey,
+                        record.mbid, record.isrc,
+                        record.hashEmbedding, record.neuralEmbedding
+                    ])
+                    try statement.execute()
                 }
             }
             return true
@@ -2079,6 +2062,23 @@ actor AppDatabase {
             total_completion = excluded.total_completion,
             completion_samples = excluded.completion_samples,
             consecutive_skips = excluded.consecutive_skips
+        """
+
+    private static let libraryCatalogUpsertSQL = """
+        INSERT INTO library_catalog (
+            account_scope, song_id, song_data, title_key,
+            artist_key, album_key, mbid, isrc,
+            hash_embedding, neural_embedding
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(account_scope, song_id) DO UPDATE SET
+            song_data = excluded.song_data,
+            title_key = excluded.title_key,
+            artist_key = excluded.artist_key,
+            album_key = excluded.album_key,
+            mbid = excluded.mbid,
+            isrc = excluded.isrc,
+            hash_embedding = excluded.hash_embedding,
+            neural_embedding = excluded.neural_embedding
         """
 
     private static var migrator: DatabaseMigrator {

@@ -515,14 +515,14 @@ struct HomePresentation: Sendable {
         input: HomePresentationInput
     ) async -> HomePresentation {
         guard !Task.isCancelled else { return .empty }
-        let value = make(input: input)
+        let value = await make(input: input)
         return Task.isCancelled ? .empty : value
     }
 
-    static func make(input: HomePresentationInput) -> HomePresentation {
+    static func make(input: HomePresentationInput) async -> HomePresentation {
         let snapshot = input.snapshot
         return HomePresentation(
-            personalizedMixes: PersonalizedMixBuilder.make(
+            personalizedMixes: await PersonalizedMixBuilder.makeConcurrently(
                 snapshot: snapshot,
                 snapshotRevision: input.revision,
                 selectedArtists: input.selectedArtists

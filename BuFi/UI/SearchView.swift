@@ -716,7 +716,7 @@ private enum SearchPersonalizedMixWork {
         selectedArtists: [String]
     ) async -> [PersonalizedMix] {
         guard !Task.isCancelled else { return [] }
-        let value = PersonalizedMixBuilder.make(
+        let value = await PersonalizedMixBuilder.makeConcurrently(
             snapshot: snapshot,
             snapshotRevision: revision,
             selectedArtists: selectedArtists
