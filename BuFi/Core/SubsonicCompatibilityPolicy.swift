@@ -106,6 +106,8 @@ enum SubsonicCompatibilityPolicy {
                 || normalized.contains("not supported")
         case .invalidResponse:
             return true
+        case .staleReadInterrupted:
+            return false
         case .invalidServerURL,
                 .insecureServerURL,
                 .credentialsEmbeddedInServerURL,
