@@ -514,6 +514,7 @@ actor OfflineStore {
             options: [.skipsHiddenFiles]
         )
         var firstError: Error?
+        let previousIDs = Set(entries.keys)
         for file in files {
             do {
                 try FileManager.default.removeItem(at: file)
@@ -531,7 +532,14 @@ actor OfflineStore {
         accessRecency.seed(
             lastAccess: entries.values.map(\.lastAccessedAt).max()
         )
-        await AppDatabase.shared.clearOfflineEntries(scope: scope)
+        let removedIDs = previousIDs.subtracting(entries.keys)
+        if !removedIDs.isEmpty {
+            _ = await AppDatabase.shared.applyOfflineEntries(
+                [:],
+                deletedIDs: removedIDs,
+                scope: scope
+            )
+        }
         guard token.matches(
             accountScope: activeScope,
             generation: scopeGeneration

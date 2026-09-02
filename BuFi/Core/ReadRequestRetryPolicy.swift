@@ -40,7 +40,8 @@ enum TransientServiceFailurePolicy {
                     return false
                 }
                 return true
-            case .invalidResponse:
+            case .invalidResponse,
+                    .staleReadInterrupted:
                 return true
             case .invalidServerURL,
                     .insecureServerURL,
