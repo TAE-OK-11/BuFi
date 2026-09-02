@@ -1134,7 +1134,9 @@ final class AppModel: ObservableObject {
         albumsByIDCacheRevision = -1
         knownSongsCache.removeAll(keepingCapacity: false)
         knownSongsCacheRevision = -1
-        client?.trimTransientNetworkCaches()
+        if let client {
+            Task { await client.trimTransientNetworkCaches() }
+        }
         Task(priority: .utility) {
             await ArtworkStore.shared.clearMemory()
         }
