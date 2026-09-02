@@ -55,7 +55,18 @@ jobs:
       - name: Install XcodeGen
         run: |
           brew install xcodegen
-          xcodegen --version
+          xcodegen_version="$(xcodegen --version | sed -E 's/^Version:[[:space:]]*//')"
+          printf 'XcodeGen %s\n' "$xcodegen_version"
+          case "$xcodegen_version" in
+            2.46.*) ;;
+            *)
+              printf 'Expected XcodeGen 2.46.x, found %s\n' "$xcodegen_version" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Verify dependency pins
+        run: sh Scripts/verify-dependency-versions.sh
 
       - name: Prepare generated assets
         run: sh Scripts/prepare-assets.sh

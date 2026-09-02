@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-08-22
+Audit date: 2026-09-02
 
 ## Decisions
 
@@ -33,6 +33,22 @@ their exact Git revisions are recorded in the repository-level
 before dependency resolution. This prevents a moved tag from silently changing
 a local or CI build. Updates must change both files deliberately and pass both
 toolchain jobs.
+
+`Scripts/verify-dependency-versions.sh` verifies that `project.yml` and
+`Package.resolved` stay aligned. CI runs the local check on every pull request
+and release build; pass `--check-upstream` locally (with the GitHub CLI) to
+confirm the pinned versions still match each package's latest GitHub release.
+
+As of the 2026-09-02 audit, every linked package and the XcodeGen 2.46.0
+build tool are already on their latest stable releases:
+
+| Package | Pinned | Latest release |
+| --- | --- | --- |
+| SwiftSonic | 0.9.0 | 0.9.0 |
+| GRDB.swift | 7.11.1 | 7.11.1 |
+| Nuke | 13.2.0 | 13.2.0 |
+| Zstandard | 1.5.7 | 1.5.7 |
+| XcodeGen | 2.46.0 | 2.46.0 |
 
 ## Distribution notices
 
