@@ -931,6 +931,7 @@ actor OpenSubsonicClient {
     }
     private var playbackMetadataCache: [String: PlaybackMetadataCacheEntry] = [:]
     private var playbackMetadataAccessClock: UInt64 = 0
+    private var playbackMetadataMutationGeneration: UInt64 = 0
     private var inFlightSongRequests: [String: Task<Song, Error>] = [:]
 
     private struct ServerRecommendationSources: Sendable {
@@ -1023,6 +1024,7 @@ actor OpenSubsonicClient {
         decodedResponseCache.removeAll(keepingCapacity: false)
         decodedResponseCacheByteCount = 0
         decodedResponseAccessClock = 0
+        clearResponseCache()
         playbackMetadataCache.removeAll(keepingCapacity: false)
         transcodeDecisionCache.removeAll(keepingCapacity: false)
         for task in inFlightTranscodeDecisions.values {
@@ -1829,6 +1831,14 @@ actor OpenSubsonicClient {
         cacheRevisionState.begin(impact)
         let dependencies = impact.invalidatedDependencies
         guard !dependencies.isEmpty else { return }
+        playbackMetadataMutationGeneration &+= 1
+        inFlightSongRequests.values.forEach { $0.cancel() }
+        inFlightSongRequests.removeAll(keepingCapacity: false)
+        playbackMetadataCache.removeAll(keepingCapacity: false)
+        let scope = accountScope
+        Task(priority: .utility) {
+            await AppDatabase.shared.clearPlaybackMetadata(scope: scope)
+        }
         responseCache.removeAll(affecting: dependencies)
         let invalidDecodedKeys = decodedResponseCache.compactMap { key, entry in
             entry.dependencies.isDisjoint(with: dependencies) ? nil : key
@@ -3434,6 +3444,7 @@ actor OpenSubsonicClient {
     }
 
     private func fetchSong(id: String, forceRefresh: Bool) async throws -> Song {
+        let mutationGeneration = playbackMetadataMutationGeneration
         let payload: SongPayload = try await readRequest(
             "getSong",
             parameters: ["id": id],
@@ -3441,6 +3452,9 @@ actor OpenSubsonicClient {
         )
         guard let song = payload.song, song.id == id else {
             throw OpenSubsonicError.invalidResponse
+        }
+        guard mutationGeneration == playbackMetadataMutationGeneration else {
+            return song
         }
         cachePlaybackMetadata(song)
         _ = await AppDatabase.shared.savePlaybackMetadata(
@@ -3822,29 +3836,40 @@ actor OpenSubsonicClient {
         return url
     }
 
+    struct PlaybackStreamResource: Sendable {
+        let url: URL
+        let appliedOffsetSeconds: Int
+    }
+
     func playbackStreamURL(
         songID: String,
         quality: StreamQuality,
         compatibilityFormat: String? = nil,
         offsetSeconds: Int = 0
-    ) async throws -> URL {
+    ) async throws -> PlaybackStreamResource {
         let requestsTranscodePath = compatibilityFormat?.lowercased() != "raw"
             && quality != .original
         guard requestsTranscodePath else {
-            return try streamURL(
-                songID: songID,
-                quality: quality,
-                compatibilityFormat: compatibilityFormat,
-                offsetSeconds: offsetSeconds
+            return PlaybackStreamResource(
+                url: try streamURL(
+                    songID: songID,
+                    quality: quality,
+                    compatibilityFormat: compatibilityFormat,
+                    offsetSeconds: offsetSeconds
+                ),
+                appliedOffsetSeconds: max(0, offsetSeconds)
             )
         }
         if let registry = extensionRegistry,
            !registry.supports(OpenSubsonicExtensionName.transcoding) {
-            return try streamURL(
-                songID: songID,
-                quality: quality,
-                compatibilityFormat: compatibilityFormat,
-                offsetSeconds: offsetSeconds
+            return PlaybackStreamResource(
+                url: try streamURL(
+                    songID: songID,
+                    quality: quality,
+                    compatibilityFormat: compatibilityFormat,
+                    offsetSeconds: offsetSeconds
+                ),
+                appliedOffsetSeconds: max(0, offsetSeconds)
             )
         }
         let decisionKey = TranscodeDecisionKey(mediaID: songID, mediaType: "song")
@@ -3877,11 +3902,14 @@ actor OpenSubsonicClient {
                 offsetSeconds: offsetSeconds
             )
         }
-        return try streamURL(
-            songID: songID,
-            quality: quality,
-            compatibilityFormat: compatibilityFormat,
-            offsetSeconds: offsetSeconds
+        return PlaybackStreamResource(
+            url: try streamURL(
+                songID: songID,
+                quality: quality,
+                compatibilityFormat: compatibilityFormat,
+                offsetSeconds: offsetSeconds
+            ),
+            appliedOffsetSeconds: max(0, offsetSeconds)
         )
     }
 
@@ -3900,15 +3928,17 @@ actor OpenSubsonicClient {
         mediaType: String,
         transcodeParams: String,
         offsetSeconds: Int
-    ) async throws -> URL {
+    ) async throws -> PlaybackStreamResource {
         var queryItems = [
             URLQueryItem(name: "mediaId", value: mediaID),
             URLQueryItem(name: "mediaType", value: mediaType),
             URLQueryItem(name: "transcodeParams", value: transcodeParams)
         ]
+        var appliedOffset = 0
         if offsetSeconds > 0,
            await supportsExtension(OpenSubsonicExtensionName.transcodeOffset) {
             queryItems.append(URLQueryItem(name: "offset", value: String(offsetSeconds)))
+            appliedOffset = offsetSeconds
         }
         let url = try endpointURL(
             "getTranscodeStream",
@@ -3918,7 +3948,10 @@ actor OpenSubsonicClient {
         guard url.scheme?.lowercased() == "https" else {
             throw OpenSubsonicError.insecureServerURL
         }
-        return url
+        return PlaybackStreamResource(
+            url: url,
+            appliedOffsetSeconds: appliedOffset
+        )
     }
 
     func writeStreamSample(

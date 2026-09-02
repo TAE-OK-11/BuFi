@@ -1038,6 +1038,9 @@ struct PlaybackResourceRequest: Sendable {
 struct PlaybackResourceDescriptor: Sendable {
     let url: URL
     let mimeType: String?
+    /// Seconds encoded in the stream URL, if any. AVPlayer time stays relative
+    /// to this offset while `streamBaseOffset` tracks the absolute position.
+    let streamStartOffset: Int
 }
 
 enum PlaybackResourceResolver {
@@ -1053,7 +1056,8 @@ enum PlaybackResourceResolver {
            url.scheme?.lowercased() == "https" {
             return PlaybackResourceDescriptor(
                 url: url,
-                mimeType: song.contentType
+                mimeType: song.contentType,
+                streamStartOffset: 0
             )
         }
         if request.allowLocalSource,
@@ -1062,11 +1066,12 @@ enum PlaybackResourceResolver {
             try Task.checkCancellation()
             return PlaybackResourceDescriptor(
                 url: local,
-                mimeType: sourceMIMEType(for: song)
+                mimeType: sourceMIMEType(for: song),
+                streamStartOffset: 0
             )
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
-        let url = try await client.playbackStreamURL(
+        let stream = try await client.playbackStreamURL(
             songID: song.id,
             quality: request.quality,
             compatibilityFormat: request.compatibilityFormat,
@@ -1074,11 +1079,12 @@ enum PlaybackResourceResolver {
         )
         try Task.checkCancellation()
         return PlaybackResourceDescriptor(
-            url: url,
+            url: stream.url,
             mimeType: mimeType(
                 for: request.compatibilityFormat,
                 sourceSong: song
-            )
+            ),
+            streamStartOffset: stream.appliedOffsetSeconds
         )
     }
 
@@ -1306,6 +1312,7 @@ final class AudioEngine: NSObject, ObservableObject {
             @escaping @MainActor (Song) -> Void
         ) async -> [Song])?
     private var songChangeHandler: (@MainActor (Song) -> Void)?
+    private var playbackHistoryMutationHandler: (@MainActor () -> Void)?
     private var itemObservation: NSKeyValueObservation?
     private weak var logicalCurrentItem: AVPlayerItem?
     private var currentItemTransitionObservation: NSKeyValueObservation?
@@ -1475,7 +1482,8 @@ final class AudioEngine: NSObject, ObservableObject {
                 Set<String>,
                 @escaping @MainActor (Song) -> Void
             ) async -> [Song])? = nil,
-        songChangeHandler: (@MainActor (Song) -> Void)? = nil
+        songChangeHandler: (@MainActor (Song) -> Void)? = nil,
+        playbackHistoryMutationHandler: (@MainActor () -> Void)? = nil
     ) {
         playbackSessionGeneration &+= 1
         let sessionGeneration = playbackSessionGeneration
@@ -1505,6 +1513,7 @@ final class AudioEngine: NSObject, ObservableObject {
         self.songFavoriteMutationHandler = songFavoriteMutationHandler
         self.autoplayContinuationProvider = autoplayContinuationProvider
         self.songChangeHandler = songChangeHandler
+        self.playbackHistoryMutationHandler = playbackHistoryMutationHandler
         if client == nil {
             finalizeCurrentPlayback(reason: .stopped)
             historySessionToken = nil
@@ -1931,15 +1940,24 @@ final class AudioEngine: NSObject, ObservableObject {
             if persistsQueue { scheduleQueueSave() }
             return
         }
+        if target + 0.05 < streamBaseOffset {
+            streamBaseOffset = 0
+            seekGeneration &+= 1
+            isSeekInFlight = false
+            loadCurrentItem(
+                compatibilityFormat: activeCompatibilityFormat,
+                resumeFrom: target
+            )
+            if persistsQueue { scheduleQueueSave() }
+            return
+        }
+        let relativeTarget = max(0, target - streamBaseOffset)
         let tolerance = CMTime(seconds: 0.1, preferredTimescale: 600)
         seekGeneration &+= 1
         let generation = seekGeneration
         isSeekInFlight = true
-        let playerTarget = streamBaseOffset > 0
-            ? max(0, target - streamBaseOffset)
-            : target
         player.seek(
-            to: CMTime(seconds: playerTarget, preferredTimescale: 600),
+            to: CMTime(seconds: relativeTarget, preferredTimescale: 600),
             toleranceBefore: tolerance,
             toleranceAfter: tolerance
         ) { @Sendable [weak self] finished in
@@ -3318,6 +3336,9 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func shouldPrefetchPlaybackCache(for song: Song) -> Bool {
         guard song.externalStreamURL == nil else { return false }
+        guard preferredCompatibilityFormat(for: song).lowercased() == "raw" else {
+            return false
+        }
         if playbackPrefetchCompletedSongIDs.contains(song.id) { return false }
         if playbackPrefetchInFlightSongIDs.contains(song.id) { return false }
         return true
@@ -3509,9 +3530,6 @@ final class AudioEngine: NSObject, ObservableObject {
             compatibilityFormat: compatibilityFormat,
             allowLocalSource: fallbackIndex == 0
         )
-        streamBaseOffset = resourceOffset > 0
-            ? TimeInterval(resourceOffset)
-            : 0
         prolongedStallRecoveryTask?.cancel()
         prolongedStallRecoveryTask = nil
         itemLoadTask?.cancel()
@@ -3519,13 +3537,16 @@ final class AudioEngine: NSObject, ObservableObject {
         let generation = itemLoadGeneration
         seekGeneration &+= 1
         isSeekInFlight = false
-        if resourceOffset == 0,
-           pendingSeekPosition == nil,
-           resumePosition > 0 {
-            pendingSeekPosition = resumePosition
-        } else if resourceOffset > 0 {
-            pendingSeekPosition = nil
-            elapsed = TimeInterval(resourceOffset)
+        if resourceOffset == 0 {
+            streamBaseOffset = 0
+            if pendingSeekPosition == nil, resumePosition > 0 {
+                pendingSeekPosition = resumePosition
+            }
+        } else if pendingSeekPosition == nil {
+            pendingSeekPosition = resumePosition > TimeInterval(resourceOffset) + 0.05
+                ? resumePosition
+                : nil
+            elapsed = pendingSeekPosition ?? TimeInterval(resourceOffset)
         }
         activeCompatibilityFormat = compatibilityFormat
         isBuffering = wantsPlayback
@@ -3536,6 +3557,7 @@ final class AudioEngine: NSObject, ObservableObject {
             for: playbackItem,
             compatibilityFormat: compatibilityFormat
         ) {
+            streamBaseOffset = 0
             itemLoadTask = nil
             replacePlayerItem(
                 asset: prepared.asset,
@@ -3563,6 +3585,24 @@ final class AudioEngine: NSObject, ObservableObject {
                       self.currentPlaybackItem?.id == playbackItemID,
                       self.currentSong?.id == song.id else {
                     return
+                }
+                let appliedOffset = resource.streamStartOffset
+                self.streamBaseOffset = TimeInterval(appliedOffset)
+                if appliedOffset > 0 {
+                    let remainder = resumePosition - TimeInterval(appliedOffset)
+                    if remainder > 0.05 {
+                        self.pendingSeekPosition = resumePosition
+                        self.elapsed = resumePosition
+                    } else {
+                        self.pendingSeekPosition = nil
+                        self.elapsed = TimeInterval(appliedOffset)
+                    }
+                } else if resumePosition > 0.05 {
+                    self.pendingSeekPosition = resumePosition
+                    self.elapsed = resumePosition
+                } else {
+                    self.pendingSeekPosition = nil
+                    self.streamBaseOffset = 0
                 }
                 self.replacePlayerItem(
                     url: resource.url,
@@ -3775,6 +3815,7 @@ final class AudioEngine: NSObject, ObservableObject {
     ) {
         recordPlaybackStart(song, origin: origin)
         rememberShuffleSelection(song.id)
+        streamBaseOffset = 0
         elapsed = 0
         duration = song.safeDuration
         pendingSeekPosition = nil
@@ -4438,8 +4479,9 @@ final class AudioEngine: NSObject, ObservableObject {
         let generation = lyricBoundaryGeneration
         let boundary = max(0, lyrics.lines[nextIndex].start)
         guard boundary.isFinite else { return }
+        let playerBoundary = max(0, boundary - streamBaseOffset)
         playbackObservers.replaceLyricBoundaryObserver(
-            time: CMTime(seconds: boundary, preferredTimescale: 600)
+            time: CMTime(seconds: playerBoundary, preferredTimescale: 600)
         ) { [weak self] in
             guard let self,
                   self.lyricBoundaryGeneration == generation,
@@ -4451,7 +4493,7 @@ final class AudioEngine: NSObject, ObservableObject {
             }
             let playerTime = self.currentPlayerPosition()
             let resolved = playerTime.isFinite
-                ? max(boundary, playerTime)
+                ? max(boundary, self.streamBaseOffset + playerTime)
                 : boundary
             self.elapsed = self.duration > 0
                 ? min(max(0, resolved), self.duration)
@@ -4465,8 +4507,7 @@ final class AudioEngine: NSObject, ObservableObject {
         if let pendingSeekPosition, pendingSeekPosition.isFinite {
             return max(0, pendingSeekPosition)
         }
-        let playerTime = player.currentTime().seconds
-        if playerTime.isFinite {
+        if player.currentTime().seconds.isFinite {
             return currentPlayerPosition()
         }
         return max(0, fallback)
@@ -5167,6 +5208,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 origin: origin,
                 session: historySession
             )
+            await MainActor.run {
+                self.playbackHistoryMutationHandler?()
+            }
         }
     }
 
@@ -5194,6 +5238,9 @@ final class AudioEngine: NSObject, ObservableObject {
                 reason: reason,
                 session: historySession
             )
+            await MainActor.run {
+                self.playbackHistoryMutationHandler?()
+            }
         }
     }
 

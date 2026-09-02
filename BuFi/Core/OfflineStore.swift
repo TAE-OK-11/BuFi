@@ -15,6 +15,7 @@ actor OfflineStore {
         let token: UUID
         let scopeGeneration: UInt64
         let mediaRevision: String?
+        let source: DownloadSource
         let task: Task<URL, Error>
         var waiters: Set<UUID>
     }
@@ -60,8 +61,6 @@ actor OfflineStore {
             indexSaveTask?.cancel()
             indexSaveTask = nil
             scopeGeneration &+= 1
-            inFlight.values.forEach { $0.task.cancel() }
-            inFlight.removeAll()
             if indexIsDirty {
                 scheduleIndexPersistence(immediate: true)
             }
@@ -101,6 +100,7 @@ actor OfflineStore {
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
             ofItemAtPath: scopedDirectory.path
         )
+        Self.removeOrphanedPartialFiles(in: scopedDirectory)
 
         let databaseEntries = await AppDatabase.shared.loadOfflineEntries(
             scope: accountScope
@@ -299,7 +299,6 @@ actor OfflineStore {
             throw OpenSubsonicError.invalidResponse
         }
         let mediaRevision = song.offlineMediaRevision
-        let _ = source
         if let existing = localURL(for: song) { return existing }
 
         let generation = scopeGeneration
@@ -319,8 +318,24 @@ actor OfflineStore {
                     scope: scope
                 )
             }
+            if source == .playbackPrefetch, existing.source == .manual {
+                let waiter = UUID()
+                existing.waiters.insert(waiter)
+                inFlight[taskKey] = existing
+                return try await awaitDownload(
+                    existing,
+                    taskKey: taskKey,
+                    waiter: waiter,
+                    scope: scope
+                )
+            }
             existing.task.cancel()
             inFlight[taskKey] = nil
+        }
+
+        if source == .playbackPrefetch,
+           ProcessInfo.processInfo.isLowPowerModeEnabled {
+            throw CancellationError()
         }
 
         let fileName = Self.fileName(for: song)
@@ -365,6 +380,7 @@ actor OfflineStore {
             token: token,
             scopeGeneration: generation,
             mediaRevision: mediaRevision,
+            source: source,
             task: task,
             waiters: [waiter]
         )
@@ -802,6 +818,16 @@ actor OfflineStore {
         )
         guard !Task.isCancelled else { return }
         removeLegacyUnscopedFiles(in: root)
+    }
+
+    private static func removeOrphanedPartialFiles(in directory: URL) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for fileURL in files where fileURL.lastPathComponent.contains(".partial") {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
     }
 
     private static func fileName(for song: Song) -> String {

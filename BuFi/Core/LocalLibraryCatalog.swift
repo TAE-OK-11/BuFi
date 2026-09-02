@@ -231,6 +231,12 @@ actor LocalLibraryCatalog {
         if !mbid.isEmpty, let id = songsByMBID[mbid], let song = entries[id]?.song {
             return song
         }
+        let isrc = Self.normalizedKey(candidate.isrc)
+        if !isrc.isEmpty,
+           let id = songsByISRC[isrc],
+           let song = entries[id]?.song {
+            return song
+        }
         let title = Self.normalizedKey(candidate.title)
         let artist = Self.normalizedKey(candidate.artist)
         guard !title.isEmpty, !artist.isEmpty else { return nil }
