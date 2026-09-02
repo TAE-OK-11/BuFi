@@ -262,20 +262,17 @@ struct SearchView: View {
             .padding(.horizontal, 16)
         case .resultSongs:
             resultSection("곡") {
-                ForEach(
-                    Array(result.songs.enumerated()),
-                    id: \.offset
-                ) { index, song in
+                ForEach(IndexedSongRow.makeRows(from: result.songs)) { row in
                     SongRow(
-                        song: song,
+                        song: row.song,
                         queue: result.songs,
-                        queueIndex: index,
+                        queueIndex: row.index,
                         playbackOrigin: .search,
                         textLineLimit: 2
                     )
                     .padding(.horizontal, 14)
                     .simultaneousGesture(TapGesture().onEnded(resignSearchField))
-                    if index < result.songs.count - 1 {
+                    if row.index < result.songs.count - 1 {
                         rowSeparator
                     }
                 }
@@ -404,14 +401,14 @@ struct SearchView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
+                    ForEach(IndexedSongRow.makeRows(from: songs)) { row in
                         SongRow(
-                            song: song,
+                            song: row.song,
                             queue: songs,
-                            queueIndex: index
+                            queueIndex: row.index
                         )
                         .padding(.horizontal, 14)
-                        if index < songs.count - 1 {
+                        if row.index < songs.count - 1 {
                             rowSeparator
                         }
                     }
@@ -506,7 +503,7 @@ struct SearchView: View {
         ),
         SearchShortcut(
             mode: .mostPlayed,
-            title: "자주 듣는 곡",
+            title: "자주 들은 곡",
             subtitle: String(localized: "청취 기록 순위"),
             systemImage: "chart.bar.fill",
             tint: Color(red: 0.22, green: 0.50, blue: 0.78)
@@ -556,31 +553,31 @@ struct SearchView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
+                        ForEach(IndexedSongRow.makeRows(from: songs)) { row in
                             HStack(spacing: 10) {
-                                Text("\(index + 1)")
+                                Text("\(row.index + 1)")
                                     .font(
                                         .system(
                                             size: 14,
-                                            weight: index < 3 ? .bold : .medium,
+                                            weight: row.index < 3 ? .bold : .medium,
                                             design: .rounded
                                         )
                                     )
                                     .foregroundStyle(
-                                        index < 3 ? BuFiTheme.accent : Color.secondary
+                                        row.index < 3 ? BuFiTheme.accent : Color.secondary
                                     )
                                     .monospacedDigit()
                                     .frame(width: 24, alignment: .trailing)
                                 SongRow(
-                                    song: song,
+                                    song: row.song,
                                     queue: songs,
-                                    queueIndex: index,
+                                    queueIndex: row.index,
                                     artworkSize: 52,
                                     textLineLimit: 2
                                 )
                             }
                             .padding(.horizontal, 12)
-                            if index < songs.count - 1 {
+                            if row.index < songs.count - 1 {
                                 Divider()
                                     .padding(.leading, 112)
                                     .opacity(0.50)

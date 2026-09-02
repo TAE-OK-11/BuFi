@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
     @Environment(\.buFiMotionEnabled) private var effectiveMotionEnabled
+    @Environment(\.scenePhase) private var scenePhase
     @State private var offlineBytes: Int64 = 0
     @State private var confirmOfflineRemoval = false
     @State private var confirmArtworkRemoval = false
@@ -53,6 +54,10 @@ struct SettingsView: View {
                 if PlayerAppearance(rawValue: playerAppearance) == nil {
                     playerAppearance = PlayerAppearance.liquidGlass.rawValue
                 }
+                offlineBytes = await OfflineStore.shared.totalBytes()
+            }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
                 offlineBytes = await OfflineStore.shared.totalBytes()
             }
             .confirmationDialog(

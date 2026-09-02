@@ -111,6 +111,17 @@ struct RootView: View {
             Text(session.errorMessage ?? "")
         }
         .alert(
+            "알림",
+            isPresented: Binding(
+                get: { session.noticeMessage != nil && session.phase == .ready },
+                set: { if !$0 { model.noticeMessage = nil } }
+            )
+        ) {
+            Button("확인", role: .cancel) { model.noticeMessage = nil }
+        } message: {
+            Text(session.noticeMessage ?? "")
+        }
+        .alert(
             "재생 오류",
             isPresented: Binding(
                 get: { playerPresentation.playbackError != nil },

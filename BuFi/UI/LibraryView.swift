@@ -134,17 +134,14 @@ struct LibraryView: View {
             } else {
                 BuFiGroupedSurface {
                     LazyVStack(spacing: 0) {
-                        ForEach(
-                            Array(snapshot.starredSongs.enumerated()),
-                            id: \.offset
-                        ) { index, song in
+                        ForEach(IndexedSongRow.makeRows(from: snapshot.starredSongs)) { row in
                             SongRow(
-                                song: song,
+                                song: row.song,
                                 queue: snapshot.starredSongs,
-                                queueIndex: index
+                                queueIndex: row.index
                             )
                             .padding(.horizontal, 14)
-                            if index < snapshot.starredSongs.count - 1 {
+                            if row.index < snapshot.starredSongs.count - 1 {
                                 rowSeparator
                             }
                         }

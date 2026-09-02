@@ -1613,10 +1613,10 @@ final class AudioEngine: NSObject, ObservableObject {
             self.elapsed = self.duration > 0 ? min(restoredPosition, self.duration) : restoredPosition
             self.applyLyricsDocument(.empty)
             self.updateNowPlaying()
-            self.loadLyrics(for: serverQueue.songs[restoredIndex])
-            self.refreshCanonicalMetadata(
-                for: serverQueue.songs[restoredIndex]
-            )
+            if let restoredSong = self.currentSong {
+                self.loadLyrics(for: restoredSong)
+                self.refreshCanonicalMetadata(for: restoredSong)
+            }
         }
     }
 
@@ -1935,8 +1935,11 @@ final class AudioEngine: NSObject, ObservableObject {
         seekGeneration &+= 1
         let generation = seekGeneration
         isSeekInFlight = true
+        let playerTarget = streamBaseOffset > 0
+            ? max(0, target - streamBaseOffset)
+            : target
         player.seek(
-            to: CMTime(seconds: target, preferredTimescale: 600),
+            to: CMTime(seconds: playerTarget, preferredTimescale: 600),
             toleranceBefore: tolerance,
             toleranceAfter: tolerance
         ) { @Sendable [weak self] finished in
@@ -4446,7 +4449,7 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.pendingSeekPosition == nil else {
                 return
             }
-            let playerTime = self.player.currentTime().seconds
+            let playerTime = self.currentPlayerPosition()
             let resolved = playerTime.isFinite
                 ? max(boundary, playerTime)
                 : boundary
@@ -4463,7 +4466,10 @@ final class AudioEngine: NSObject, ObservableObject {
             return max(0, pendingSeekPosition)
         }
         let playerTime = player.currentTime().seconds
-        return playerTime.isFinite ? max(0, playerTime) : max(0, fallback)
+        if playerTime.isFinite {
+            return currentPlayerPosition()
+        }
+        return max(0, fallback)
     }
 
     private func updateActiveLyric(at position: TimeInterval) {
@@ -5494,8 +5500,8 @@ final class AudioEngine: NSObject, ObservableObject {
         applyLyricsDocument(.empty)
         if let restoredSong = currentSong {
             loadLyrics(for: restoredSong)
+            refreshCanonicalMetadata(for: restoredSong)
         }
-        refreshCanonicalMetadata(for: snapshot.queue[restoredIndex])
     }
 }
 
