@@ -2459,6 +2459,39 @@ private struct PersonalizedMixCacheKey: Equatable {
     let localeIdentifier: String
     let songLimit: Int
     let selectedArtists: [String]
+
+    var coalescingID: String {
+        [
+            String(describing: snapshot),
+            String(year),
+            String(day),
+            period,
+            calendarIdentifier,
+            timeZoneIdentifier,
+            localeIdentifier,
+            String(songLimit),
+            selectedArtists.joined(separator: "\u{1F}")
+        ].joined(separator: "\u{1E}")
+    }
+}
+
+private actor PersonalizedMixBuildCoordinator {
+    static let shared = PersonalizedMixBuildCoordinator()
+    private var tasks: [String: Task<[PersonalizedMix], Never>] = [:]
+
+    func build(
+        key: String,
+        operation: @Sendable @escaping () -> [PersonalizedMix]
+    ) async -> [PersonalizedMix] {
+        if let existing = tasks[key] {
+            return await existing.value
+        }
+        let task = Task(operation: operation)
+        tasks[key] = task
+        let value = await task.value
+        tasks.removeValue(forKey: key)
+        return value
+    }
 }
 
 private final class PersonalizedMixResultCache: @unchecked Sendable {
@@ -2467,41 +2500,11 @@ private final class PersonalizedMixResultCache: @unchecked Sendable {
     private var mixes: [PersonalizedMix] = []
     private var corpusKey: PersonalizedSnapshotCacheKey?
     private var corpus: PersonalizedSongCorpus?
-    private var inFlight: [PersonalizedMixCacheKey: Task<[PersonalizedMix], Never>] = [:]
 
     func value(for requestedKey: PersonalizedMixCacheKey) -> [PersonalizedMix]? {
         lock.lock()
         defer { lock.unlock() }
         return key == requestedKey ? mixes : nil
-    }
-
-    func mixes(
-        for requestedKey: PersonalizedMixCacheKey,
-        build: @Sendable @escaping () -> [PersonalizedMix]
-    ) async -> [PersonalizedMix] {
-        lock.lock()
-        if key == requestedKey {
-            let cached = mixes
-            lock.unlock()
-            return cached
-        }
-        if let existing = inFlight[requestedKey] {
-            lock.unlock()
-            return await existing.value
-        }
-        let task = Task { build() }
-        inFlight[requestedKey] = task
-        lock.unlock()
-
-        let value = await task.value
-        lock.lock()
-        inFlight.removeValue(forKey: requestedKey)
-        if key != requestedKey {
-            key = requestedKey
-            mixes = value
-        }
-        lock.unlock()
-        return value
     }
 
     func insert(_ value: [PersonalizedMix], for newKey: PersonalizedMixCacheKey) {
@@ -2859,7 +2862,9 @@ enum PersonalizedMixBuilder {
         )
         if let cached = cache.value(for: cacheKey) { return cached }
         guard !Task.isCancelled else { return [] }
-        return await cache.mixes(for: cacheKey) {
+        return await PersonalizedMixBuildCoordinator.shared.build(
+            key: cacheKey.coalescingID
+        ) {
             make(
                 snapshot: snapshot,
                 snapshotRevision: snapshotRevision,
