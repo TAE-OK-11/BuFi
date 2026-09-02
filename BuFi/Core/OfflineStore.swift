@@ -60,10 +60,7 @@ actor OfflineStore {
         if activeScope == accountScope {
             indexSaveTask?.cancel()
             indexSaveTask = nil
-<<<<<<< HEAD
             scopeGeneration &+= 1
-=======
->>>>>>> e185574 (Fix API, network, and database audit findings)
             if indexIsDirty {
                 scheduleIndexPersistence(immediate: true)
             }
