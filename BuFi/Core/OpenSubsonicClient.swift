@@ -24,6 +24,7 @@ enum OpenSubsonicError: LocalizedError, Equatable {
     case invalidAPIKey
     case server(code: Int?, message: String)
     case http(Int)
+    case staleReadInterrupted
 
     var errorDescription: String? {
         switch self {
@@ -50,6 +51,8 @@ enum OpenSubsonicError: LocalizedError, Equatable {
                 format: String(localized: "서버가 HTTP %d로 응답했습니다."),
                 status
             )
+        case .staleReadInterrupted:
+            String(localized: "서버 데이터가 변경되어 요청을 다시 시도합니다.")
         }
     }
 
@@ -403,9 +406,9 @@ enum OpenSubsonicRequestPolicy {
             }
             return .invalidating(favoriteRepresentations)
         default:
-            // New mutation endpoints must be classified before they can keep
-            // any favorite-bearing representation alive.
-            return .invalidating(favoriteRepresentations)
+            // Unclassified mutation endpoints should not invalidate the
+            // entire cache until explicitly mapped to their dependencies.
+            return .none
         }
     }
 }
@@ -841,6 +844,7 @@ actor OpenSubsonicClient {
     private static let transcodeDirectPlayCacheLifetime: Duration = .seconds(300)
     private var apiFamily: SubsonicAPIFamily = .openSubsonic
     private var allowsZstandardResponses = true
+    private var zstandardIncompatibleHosts: Set<String> = []
     private var preferredFallbackEndpoints: [String: String] = [:]
     private var inFlightReadRequests: [ReadRequestKey: InFlightReadRequest] = [:]
     private var cacheRevisionState = OpenSubsonicCacheRevisionState()
@@ -1349,7 +1353,7 @@ actor OpenSubsonicClient {
                 // Never hand a caller a representation that completed across
                 // a relevant mutation boundary.
                 guard staleReadRetryCount < 2 else {
-                    throw CancellationError()
+                    throw OpenSubsonicError.staleReadInterrupted
                 }
                 try await waitForRelevantMutations(
                     affecting: cachePolicy.dependencies
@@ -1406,7 +1410,7 @@ actor OpenSubsonicClient {
                 ) != requestRevision
                 if crossedMutationBoundary {
                     guard staleReadRetryCount < 2 else {
-                        throw CancellationError()
+                        throw OpenSubsonicError.staleReadInterrupted
                     }
                     try await waitForRelevantMutations(
                         affecting: cachePolicy.dependencies
@@ -1864,7 +1868,12 @@ actor OpenSubsonicClient {
     ) async throws -> HTTPResponseData {
         // Mutations avoid the zstd negotiation fallback because reissuing a
         // state-changing endpoint would itself be an unsafe retry.
-        var acceptsZstandard = allowsRetry && allowsZstandardResponses
+        var acceptsZstandard = allowsRetry
+            && allowsZstandardResponses
+            && !Self.hostDisallowsZstandard(
+                originalRequest.url?.host,
+                incompatibleHosts: zstandardIncompatibleHosts
+            )
         var retryCount = 0
 
         while true {
@@ -1903,7 +1912,11 @@ actor OpenSubsonicClient {
                     // Content negotiation fallback is not a retry. It existed
                     // before the bounded transient-failure policy and does not
                     // consume its budget.
-                    allowsZstandardResponses = false
+                    if let host = originalRequest.url?.host?.lowercased() {
+                        zstandardIncompatibleHosts.insert(host)
+                    } else {
+                        allowsZstandardResponses = false
+                    }
                     acceptsZstandard = false
                     continue
                 }
@@ -2355,6 +2368,14 @@ actor OpenSubsonicClient {
         case (nil, nil):
             return false
         }
+    }
+
+    private static func hostDisallowsZstandard(
+        _ host: String?,
+        incompatibleHosts: Set<String>
+    ) -> Bool {
+        guard let host = host?.lowercased(), !host.isEmpty else { return false }
+        return incompatibleHosts.contains(host)
     }
 
     private static func appendCacheField(
@@ -3418,6 +3439,7 @@ actor OpenSubsonicClient {
     /// selected item through getSong gives playback one authoritative source
     /// for song ID, cover-art ID, duration, and media format.
     func song(id: String, forceRefresh: Bool = false) async throws -> Song {
+        let metadataGeneration = playbackMetadataMutationGeneration
         if forceRefresh {
             playbackMetadataCache[id] = nil
             inFlightSongRequests[id]?.cancel()
@@ -3429,11 +3451,12 @@ actor OpenSubsonicClient {
             return cached.song
         } else if let existing = inFlightSongRequests[id] {
             return try await existing.value
-        } else if let persisted = await AppDatabase.shared.loadPlaybackMetadata(
-            scope: accountScope,
-            songID: id,
-            maximumAge: Self.persistedPlaybackMetadataMaximumAge
-        ) {
+        } else if metadataGeneration == playbackMetadataMutationGeneration,
+                  let persisted = await AppDatabase.shared.loadPlaybackMetadata(
+                    scope: accountScope,
+                    songID: id,
+                    maximumAge: Self.persistedPlaybackMetadataMaximumAge
+                  ) {
             cachePlaybackMetadata(persisted)
             return persisted
         }
@@ -3992,20 +4015,33 @@ actor OpenSubsonicClient {
         request.setValue("bytes=0-\(maxBytes - 1)", forHTTPHeaderField: "Range")
         request.timeoutInterval = 24
         ModernNetworkPolicy.prepareAnalysisMediaRequest(&request)
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode),
-                  data.count > 8_000 else {
-                return nil
+        var retryCount = 0
+        while true {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode),
+                      data.count > 8_000 else {
+                    return nil
+                }
+                return Self.writeTemporaryAudioSample(
+                    data,
+                    songID: songID,
+                    contentType: http.value(forHTTPHeaderField: "Content-Type")
+                )
+            } catch {
+                guard retryCount < ReadRequestRetryPolicy.maximumRetryCount,
+                      retryPolicy.shouldRetry(error: error),
+                      let delay = retryPolicy.delay(
+                        retryNumber: retryCount + 1,
+                        retryAfterHeader: nil,
+                        jitter: Double.random(in: 0.75...1.25)
+                      ) else {
+                    return nil
+                }
+                retryCount += 1
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            return Self.writeTemporaryAudioSample(
-                data,
-                songID: songID,
-                contentType: http.value(forHTTPHeaderField: "Content-Type")
-            )
-        } catch {
-            return nil
         }
     }
 

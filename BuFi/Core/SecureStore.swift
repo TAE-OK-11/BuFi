@@ -58,7 +58,10 @@ actor SecureStore {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-        if updateStatus == errSecSuccess { return }
+        if updateStatus == errSecSuccess {
+            try verifySavedCredentials(expected: credentials)
+            return
+        }
 
         // Older installs can already contain this item with attributes that the
         // current signer/access group is allowed to read and update but not
@@ -69,7 +72,10 @@ actor SecureStore {
                 query as CFDictionary,
                 [kSecValueData as String: data] as CFDictionary
             )
-            if valueOnlyStatus == errSecSuccess { return }
+            if valueOnlyStatus == errSecSuccess {
+                try verifySavedCredentials(expected: credentials)
+                return
+            }
             guard valueOnlyStatus == errSecItemNotFound else {
                 throw SecureStoreError.keychain(valueOnlyStatus)
             }
@@ -79,6 +85,13 @@ actor SecureStore {
         value.merge(update) { _, new in new }
         let status = SecItemAdd(value as CFDictionary, nil)
         guard status == errSecSuccess else { throw SecureStoreError.keychain(status) }
+        try verifySavedCredentials(expected: credentials)
+    }
+
+    private func verifySavedCredentials(expected: ServerCredentials) throws {
+        guard let loaded = load(), loaded == expected else {
+            throw SecureStoreError.verification
+        }
     }
 
     func load() -> ServerCredentials? {
@@ -231,19 +244,23 @@ actor SecureStore {
 
     private static func cacheSecret(_ value: String, account: String) {
         secretCacheLock.lock()
-        secretCache[account] = value
+        secretCache[cacheKey(account: account)] = value
         secretCacheLock.unlock()
     }
 
     private static func cachedSecret(account: String) -> String? {
         secretCacheLock.lock()
         defer { secretCacheLock.unlock() }
-        return secretCache[account]
+        return secretCache[cacheKey(account: account)]
     }
 
     private static func removeCachedSecret(account: String) {
         secretCacheLock.lock()
-        secretCache.removeValue(forKey: account)
+        secretCache.removeValue(forKey: cacheKey(account: account))
         secretCacheLock.unlock()
+    }
+
+    private static func cacheKey(account: String) -> String {
+        "cloud.tae00217.BuFi\u{1f}\(account)"
     }
 }

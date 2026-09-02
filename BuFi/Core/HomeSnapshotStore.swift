@@ -22,30 +22,34 @@ actor HomeSnapshotStore {
     private init() {}
 
     func load(accountScope: String) async -> CachedHomeSnapshot? {
-        let epoch = scopeEpochs[accountScope, default: 0]
+        let invalidationEpoch = scopeEpochs[accountScope, default: 0]
         if let loaded = await AppDatabase.shared.loadHomeSnapshot(
             scope: accountScope,
             maximumAge: maximumAge,
             maximumBytes: maximumBytes
         ) {
-            guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
+            guard scopeEpochs[accountScope, default: 0] == invalidationEpoch else {
+                return nil
+            }
             removeLegacySnapshot(accountScope: accountScope)
             return CachedHomeSnapshot(
                 snapshot: loaded.snapshot,
                 savedAt: loaded.savedAt
             )
         }
-        guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
+        guard scopeEpochs[accountScope, default: 0] == invalidationEpoch else { return nil }
         guard let cached = legacySnapshot(accountScope: accountScope) else { return nil }
         if await AppDatabase.shared.saveHomeSnapshot(
             cached.snapshot,
             scope: accountScope,
             maximumBytes: maximumBytes
         ) {
-            guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
+            guard scopeEpochs[accountScope, default: 0] == invalidationEpoch else {
+                return nil
+            }
             removeLegacySnapshot(accountScope: accountScope)
         }
-        guard scopeEpochs[accountScope, default: 0] == epoch else { return nil }
+        guard scopeEpochs[accountScope, default: 0] == invalidationEpoch else { return nil }
         return CachedHomeSnapshot(
             snapshot: cached.snapshot,
             savedAt: cached.savedAt
@@ -53,14 +57,11 @@ actor HomeSnapshotStore {
     }
 
     func save(_ snapshot: HomeSnapshot, accountScope: String) async {
-        scopeEpochs[accountScope, default: 0] &+= 1
-        let epoch = scopeEpochs[accountScope, default: 0]
         if await AppDatabase.shared.saveHomeSnapshot(
             snapshot,
             scope: accountScope,
             maximumBytes: maximumBytes
         ) {
-            guard scopeEpochs[accountScope, default: 0] == epoch else { return }
             removeLegacySnapshot(accountScope: accountScope)
         }
     }

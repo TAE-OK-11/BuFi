@@ -3303,29 +3303,12 @@ actor ExternalRecommendationClient {
               let response: ListenBrainzRecommendationResponse = await decode(
                 url: url,
                 token: token,
-                allowsCaching: token?.isEmpty ?? true
+                allowsCaching: token == nil
               ) else {
             return []
         }
         let mbids = response.payload.mbids.map(\.recording_mbid)
-        guard !mbids.isEmpty,
-              var metadataURL = URLComponents(
-                string: "https://api.listenbrainz.org/1/metadata/recording/"
-              ) else {
-            return []
-        }
-        metadataURL.queryItems = [
-            URLQueryItem(name: "recording_mbids", value: mbids.joined(separator: ",")),
-            URLQueryItem(name: "inc", value: "artist release tag")
-        ]
-        guard let resolvedURL = metadataURL.url,
-              let metadata: [String: ListenBrainzMetadata] = await decode(
-                url: resolvedURL,
-                token: token,
-                allowsCaching: token?.isEmpty ?? true
-              ) else {
-            return []
-        }
+        guard !mbids.isEmpty else { return [] }
         let scores = response.payload.mbids.reduce(into: [String: Double]()) {
             result, recommendation in
             result[recommendation.recording_mbid] = max(
@@ -3333,6 +3316,32 @@ actor ExternalRecommendationClient {
                 recommendation.score
             )
         }
+        var metadata: [String: ListenBrainzMetadata] = [:]
+        metadata.reserveCapacity(mbids.count)
+        for chunk in mbids.chunked(into: 20) {
+            guard var metadataURL = URLComponents(
+                string: "https://api.listenbrainz.org/1/metadata/recording/"
+            ) else {
+                continue
+            }
+            metadataURL.queryItems = [
+                URLQueryItem(
+                    name: "recording_mbids",
+                    value: chunk.joined(separator: ",")
+                ),
+                URLQueryItem(name: "inc", value: "artist release tag")
+            ]
+            guard let resolvedURL = metadataURL.url,
+                  let batch: [String: ListenBrainzMetadata] = await decode(
+                    url: resolvedURL,
+                    token: token,
+                    allowsCaching: token == nil
+                  ) else {
+                continue
+            }
+            metadata.merge(batch) { _, new in new }
+        }
+        guard !metadata.isEmpty else { return [] }
         return mbids.compactMap { mbid in
             guard let value = metadata[mbid],
                   let title = value.recording?.name,
@@ -3570,4 +3579,19 @@ private struct ListenBrainzMetadata: Decodable, Sendable {
     let recording: NamedValue?
     let artist: NamedValue?
     let release: NamedValue?
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0, !isEmpty else { return [] }
+        var chunks: [[Element]] = []
+        chunks.reserveCapacity((count + size - 1) / size)
+        var index = startIndex
+        while index < endIndex {
+            let end = self.index(index, offsetBy: size, limitedBy: endIndex) ?? endIndex
+            chunks.append(Array(self[index..<end]))
+            index = end
+        }
+        return chunks
+    }
 }

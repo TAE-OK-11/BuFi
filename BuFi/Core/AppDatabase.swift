@@ -8,6 +8,11 @@ struct OfflineDatabaseEntry: Sendable, Equatable {
     var mediaRevision: String? = nil
 }
 
+struct DatabaseHealth: Sendable, Equatable {
+    let isAvailable: Bool
+    let lastOpenErrorDescription: String?
+}
+
 struct LyricsTranslationRecord: Sendable, Equatable {
     let lineID: Int
     let sourceLanguage: String
@@ -105,7 +110,8 @@ actor AppDatabase {
     private let databasePath: String
     private let currentDate: @Sendable () -> Date
     private var pool: DatabasePool?
-    private var poolTask: Task<DatabasePool?, Never>?
+    private var poolTask: Task<(DatabasePool?, Error?), Never>?
+    private var lastOpenErrorDescription: String?
     private var pendingPaletteTouches = Set<PaletteTouch>()
     private var paletteTouchTask: Task<Void, Never>?
     private var lyricsTranslationSaveCount: UInt = 0
@@ -164,8 +170,8 @@ actor AppDatabase {
     }
 
     @concurrent
-    private static func openPoolConcurrently(path: String) async -> DatabasePool? {
-        guard !Task.isCancelled else { return nil }
+    private static func openPoolConcurrently(path: String) async -> (DatabasePool?, Error?) {
+        guard !Task.isCancelled else { return (nil, nil) }
         return openPool(path: path)
     }
 
@@ -174,7 +180,14 @@ actor AppDatabase {
             return pool
         }
         if let poolTask {
-            return await poolTask.value
+            let (openedPool, openError) = await poolTask.value
+            if let openError {
+                recordOpenFailure(openError)
+            } else if openedPool != nil {
+                clearOpenFailure()
+            }
+            pool = openedPool
+            return openedPool
         }
 
         let path = databasePath
@@ -182,8 +195,13 @@ actor AppDatabase {
             await Self.openPoolConcurrently(path: path)
         }
         poolTask = task
-        let openedPool = await task.value
+        let (openedPool, openError) = await task.value
         poolTask = nil
+        if let openError {
+            recordOpenFailure(openError)
+        } else if openedPool != nil {
+            clearOpenFailure()
+        }
         pool = openedPool
         return openedPool
     }
@@ -191,6 +209,14 @@ actor AppDatabase {
     /// Opens the GRDB pool off the connect critical path when possible.
     func warmupIfNeeded() async {
         _ = await databasePool()
+    }
+
+    func health() async -> DatabaseHealth {
+        _ = await databasePool()
+        return DatabaseHealth(
+            isAvailable: pool != nil,
+            lastOpenErrorDescription: lastOpenErrorDescription
+        )
     }
 
     func loadLyricsDocument(
@@ -1455,6 +1481,9 @@ actor AppDatabase {
                     return false
                 }
                 guard !snapshot.queue.isEmpty else {
+                    guard incomingRevision > (persistedRevision ?? -1) else {
+                        return false
+                    }
                     _ = try Self.writeQueueTombstone(
                         in: db,
                         scope: scope,
@@ -1967,7 +1996,7 @@ actor AppDatabase {
         )
     }
 
-    private static func openPool(path: String) -> DatabasePool? {
+    private static func openPool(path: String) -> (DatabasePool?, Error?) {
         do {
             let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
             try FileManager.default.createDirectory(
@@ -1985,10 +2014,18 @@ actor AppDatabase {
                 ],
                 ofItemAtPath: directory.path
             )
-            return try makePool(path: path)
+            return (try makePool(path: path), nil)
         } catch {
-            return nil
+            return (nil, error)
         }
+    }
+
+    private func recordOpenFailure(_ error: Error) {
+        lastOpenErrorDescription = String(describing: error)
+    }
+
+    private func clearOpenFailure() {
+        lastOpenErrorDescription = nil
     }
 
     private static func makePool(path: String) throws -> DatabasePool {
