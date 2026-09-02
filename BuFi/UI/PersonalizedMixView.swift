@@ -382,22 +382,19 @@ struct PersonalizedMixDetailView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(
-                        Array(mix.songs.enumerated()),
-                        id: \.offset
-                    ) { index, song in
+                    ForEach(IndexedSongRow.makeRows(from: mix.songs)) { row in
                         HStack(spacing: mix.showsRanking ? 10 : 2) {
                             if mix.showsRanking {
-                                Text("\(index + 1)")
+                                Text("\(row.index + 1)")
                                     .font(
                                         .system(
                                             size: 14,
-                                            weight: index < 3 ? .bold : .medium,
+                                            weight: row.index < 3 ? .bold : .medium,
                                             design: .rounded
                                         )
                                     )
                                     .foregroundStyle(
-                                        index < 3
+                                        row.index < 3
                                             ? BuFiTheme.accent
                                             : Color.secondary
                                     )
@@ -405,16 +402,16 @@ struct PersonalizedMixDetailView: View {
                                     .frame(width: 24, alignment: .trailing)
                             }
                             SongRow(
-                                song: song,
+                                song: row.song,
                                 queue: mix.songs,
-                                queueIndex: index,
+                                queueIndex: row.index,
                                 artworkSize: 52,
                                 textLineLimit: 2
                             )
                         }
                         .padding(.horizontal, 12)
 
-                        if index < mix.songs.count - 1 {
+                        if row.index < mix.songs.count - 1 {
                             Divider()
                                 .padding(.leading, mix.showsRanking ? 112 : 78)
                                 .opacity(0.50)

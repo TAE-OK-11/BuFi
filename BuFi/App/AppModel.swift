@@ -28,6 +28,7 @@ final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var hasListenBrainzToken = false
     @Published fileprivate(set) var listenBrainzUsername = ""
     @Published var errorMessage: String?
+    @Published fileprivate(set) var noticeMessage: String?
 
     fileprivate func setPhase(_ value: AppModel.SessionState) {
         guard phase != value else { return }
@@ -82,6 +83,11 @@ final class AppSessionState: ObservableObject {
     fileprivate func setErrorMessage(_ value: String?) {
         guard errorMessage != value else { return }
         errorMessage = value
+    }
+
+    fileprivate func setNoticeMessage(_ value: String?) {
+        guard noticeMessage != value else { return }
+        noticeMessage = value
     }
 }
 
@@ -357,6 +363,11 @@ final class AppModel: ObservableObject {
     var errorMessage: String? {
         get { session.errorMessage }
         set { session.setErrorMessage(newValue) }
+    }
+
+    var noticeMessage: String? {
+        get { session.noticeMessage }
+        set { session.setNoticeMessage(newValue) }
     }
 
     private var favoriteOverrides: [String: Bool] {
@@ -2700,6 +2711,7 @@ final class AppModel: ObservableObject {
         clearDetailCaches()
         sessionState = .connecting
         errorMessage = nil
+        noticeMessage = nil
         var activatedLeases = StoreActivationLeases(
             offline: nil,
             artwork: nil,
@@ -2778,7 +2790,7 @@ final class AppModel: ObservableObject {
                             ?? String(localized: "서버 연결에 실패했습니다.")
                     )
                 }
-                errorMessage = String(
+                noticeMessage = String(
                     localized: "서버에 연결할 수 없어 저장된 라이브러리를 엽니다."
                 )
             }

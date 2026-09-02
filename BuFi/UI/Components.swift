@@ -649,6 +649,22 @@ private struct SongFavoriteMenuButtonContent: View {
     }
 }
 
+/// Stable row identity for song lists that may repeat the same server ID or
+/// reorder without changing count. Offset-only `ForEach` identities reuse the
+/// wrong row state after incremental search or library updates.
+struct IndexedSongRow: Identifiable {
+    let index: Int
+    let song: Song
+
+    var id: String { "\(song.id)#\(index)" }
+
+    static func makeRows(from songs: [Song]) -> [IndexedSongRow] {
+        songs.enumerated().map {
+            IndexedSongRow(index: $0.offset, song: $0.element)
+        }
+    }
+}
+
 struct SongRow: View {
     @EnvironmentObject private var model: AppModel
 

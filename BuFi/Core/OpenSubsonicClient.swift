@@ -4081,7 +4081,13 @@ actor OpenSubsonicClient {
             )
             let queue = payload.playQueueByIndex
             let songs = queue?.entry ?? []
-            let currentIndex = queue?.currentIndex
+            let rawIndex = queue?.currentIndex
+            let currentIndex: Int?
+            if let rawIndex, songs.indices.contains(rawIndex) {
+                currentIndex = rawIndex
+            } else {
+                currentIndex = songs.isEmpty ? nil : 0
+            }
             let currentID: String?
             if let currentIndex, songs.indices.contains(currentIndex) {
                 currentID = songs[currentIndex].id

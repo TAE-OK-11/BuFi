@@ -527,19 +527,16 @@ struct MusicDetailView: View {
         } else {
             BuFiGroupedSurface {
                 LazyVStack(spacing: 0) {
-                    ForEach(
-                        Array(songs.enumerated()),
-                        id: \.offset
-                    ) { index, song in
+                    ForEach(IndexedSongRow.makeRows(from: songs)) { row in
                         SongRow(
-                            song: song,
+                            song: row.song,
                             queue: songs,
-                            queueIndex: index,
+                            queueIndex: row.index,
                             playbackOrigin: isArtist ? .manual : .album,
                             artworkSize: isArtist ? 54 : 44,
                             layout: songRowLayout,
-                            fallbackTrackNumber: index + 1,
-                            onMore: { selectedSong = song }
+                            fallbackTrackNumber: row.index + 1,
+                            onMore: { selectedSong = row.song }
                         )
                         .padding(.horizontal, 12)
                     }

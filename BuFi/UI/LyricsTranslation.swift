@@ -823,7 +823,7 @@ private struct SystemLyricsTranslationTaskHost: View {
         }
         guard let accountScope else {
             translations = [:]
-            phase = .failed
+            phase = .unsupported
             return
         }
 
