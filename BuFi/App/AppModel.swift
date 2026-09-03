@@ -397,8 +397,6 @@ final class AppModel: ObservableObject {
     private var automaticRefreshToken: UUID?
     private var cachedHomePreparationTask: Task<Void, Never>?
     private var cachedHomePreparationToken: UUID?
-    private var serverHomeEnrichmentTask: Task<Void, Never>?
-    private var serverHomeEnrichmentToken: UUID?
     private var catalogRefreshTask: Task<Void, Never>?
     private var catalogRefreshToken: UUID?
     private var localRecommendationGeneration: UInt64 = 0
@@ -657,7 +655,6 @@ final class AppModel: ObservableObject {
             enqueuePendingRefresh(forceFull: forceFull, silent: silent)
             return
         }
-        cancelServerHomeEnrichment()
         let generation = sessionGeneration
         let revision = homeRevision
         let previousHome = home
@@ -678,60 +675,26 @@ final class AppModel: ObservableObject {
                     $0.duration(to: refreshNow) >= .seconds(300)
                 } ?? true
                 || isHomeEmpty
-            let loadsCoreHomeFirst = needsFullRefresh && previousHome == .empty
             let loadResult: HomeLoadResult
             if needsFullRefresh {
                 loadResult = try await client.home(
                     from: isHomeEmpty ? nil : previousHome,
-                    refreshStableCatalog: forceFull || isHomeEmpty,
-                    enrichesServerRecommendations: !loadsCoreHomeFirst
+                    refreshStableCatalog: forceFull || isHomeEmpty
                 )
             } else {
                 loadResult = try await client.incrementalHome(from: previousHome)
             }
-            let snapshot = await preparedHomeSnapshot(loadResult.snapshot)
-            guard generation == sessionGeneration, self.client === client else { return }
-            guard revision == homeRevision else { return }
-            guard starRequests.isEmpty else {
-                enqueuePendingRefresh(forceFull: needsFullRefresh, silent: silent)
-                return
-            }
-            if needsFullRefresh { lastFullRefresh = runtimeClock.now }
-            reconcileFavoriteStates(
-                in: snapshot,
-                authoritative: loadResult.hasAuthoritativeStarredState
+            let outcome = await HomePipelineCoordinator.completeRefreshLoad(
+                on: self,
+                loadResult: loadResult,
+                needsFullRefresh: needsFullRefresh,
+                generation: generation,
+                client: client,
+                revision: revision
             )
-            let resolvedSnapshot = applyingFavoriteOverrides(to: snapshot)
-            let snapshotChanged = publishHome(resolvedSnapshot)
-            let saveNow = runtimeClock.now
-            let snapshotSaveIsDue = lastHomeSnapshotSave.map {
-                $0.duration(to: saveNow) >= .seconds(3_600)
-            } ?? true
-            if snapshotChanged || snapshotSaveIsDue {
-                let accountScope = AccountScope.identifier(for: client.credentials)
-                await HomeSnapshotStore.shared.save(
-                    resolvedSnapshot,
-                    accountScope: accountScope
-                )
-                guard generation == sessionGeneration,
-                      self.client === client else { return }
-                lastHomeSnapshotSave = saveNow
-            }
-            scheduleLibraryCatalogRefresh(snapshot: resolvedSnapshot)
-            lastSuccessfulSyncDate = Date()
-            if needsFullRefresh {
-                if loadsCoreHomeFirst {
-                    scheduleServerHomeEnrichment(
-                        from: resolvedSnapshot,
-                        client: client,
-                        generation: generation
-                    )
-                } else {
-                    scheduleExternalRecommendationRefresh(
-                        client: client,
-                        generation: generation
-                    )
-                }
+            guard generation == sessionGeneration, self.client === client else { return }
+            if outcome == .deferredForStarMutations {
+                enqueuePendingRefresh(forceFull: needsFullRefresh, silent: silent)
             }
         } catch is CancellationError {
             return
@@ -3118,96 +3081,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Publishes the first usable home snapshot before starting the expensive
-    /// recommendation fan-out. The second pass merges only derived server
-    /// sections into the still-current snapshot, so a late response can never
-    /// roll back a favorite, playlist, or album update.
-    private func scheduleServerHomeEnrichment(
-        from source: HomeSnapshot,
-        client: OpenSubsonicClient,
-        generation: Int
-    ) {
-        cancelServerHomeEnrichment()
-        guard allowsBackgroundPreparation else { return }
-
-        let token = UUID()
-        let sourceRevision = library.revision
-        serverHomeEnrichmentToken = token
-        serverHomeEnrichmentTask = Task(priority: .utility) { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.serverHomeEnrichmentToken == token {
-                    self.serverHomeEnrichmentTask = nil
-                    self.serverHomeEnrichmentToken = nil
-                }
-            }
-            do {
-                let result = try await client.home(
-                    from: source,
-                    refreshStableCatalog: false,
-                    enrichesServerRecommendations: true,
-                    forcesServerEnrichment: true
-                )
-                guard !Task.isCancelled,
-                      generation == self.sessionGeneration,
-                      self.client === client,
-                      sourceRevision == self.library.revision else {
-                    return
-                }
-
-                var enriched = self.home
-                enriched.adoptServerEnrichment(from: result.snapshot)
-                enriched = await self.applyRecommendationSections(to: enriched)
-                guard !Task.isCancelled,
-                      generation == self.sessionGeneration,
-                      self.client === client,
-                      sourceRevision == self.library.revision else {
-                    return
-                }
-                self.reconcileFavoriteStates(
-                    in: enriched,
-                    authoritative: false
-                )
-                enriched = self.applyingFavoriteOverrides(to: enriched)
-                let snapshotChanged = self.publishHome(enriched)
-                if snapshotChanged {
-                    let accountScope = AccountScope.identifier(
-                        for: client.credentials
-                    )
-                    await HomeSnapshotStore.shared.save(
-                        enriched,
-                        accountScope: accountScope
-                    )
-                }
-                guard !Task.isCancelled,
-                      generation == self.sessionGeneration,
-                      self.client === client else { return }
-                if snapshotChanged {
-                    self.lastHomeSnapshotSave = self.runtimeClock.now
-                    self.scheduleLibraryCatalogRefresh(snapshot: enriched)
-                }
-                self.scheduleExternalRecommendationRefresh(
-                    client: client,
-                    generation: generation
-                )
-            } catch is CancellationError {
-                return
-            } catch {
-                guard generation == self.sessionGeneration,
-                      self.client === client else { return }
-                // A failed optional pass should be eligible for retry on the
-                // next automatic refresh instead of looking fully complete.
-                self.lastFullRefresh = nil
-            }
-        }
-    }
-
-    private func cancelServerHomeEnrichment() {
-        serverHomeEnrichmentTask?.cancel()
-        serverHomeEnrichmentTask = nil
-        serverHomeEnrichmentToken = nil
-    }
-
     private func scheduleAutomaticRefresh(
         silent: Bool,
         forceFull: Bool = true,
@@ -3236,7 +3109,6 @@ final class AppModel: ObservableObject {
     }
 
     private func cancelBackgroundPreparation() {
-        cancelServerHomeEnrichment()
         cachedHomePreparationTask?.cancel()
         cachedHomePreparationTask = nil
         cachedHomePreparationToken = nil
@@ -3310,5 +3182,60 @@ final class AppModel: ObservableObject {
                   generation == self.sessionGeneration else { return }
             await LocalLibraryCatalog.shared.persistNow()
         }
+    }
+
+    // MARK: - Home pipeline (module-internal)
+
+    var pipelineSessionGeneration: Int { sessionGeneration }
+    var pipelineHomeRevision: Int { homeRevision }
+    var pipelineClient: OpenSubsonicClient? { client }
+    var pipelineStarRequests: [String: StarRequest] { starRequests }
+    var pipelineRuntimeClock: ContinuousClock { runtimeClock }
+    var pipelineLastHomeSnapshotSave: ContinuousClock.Instant? {
+        lastHomeSnapshotSave
+    }
+
+    var pipelineLastSuccessfulSyncDate: Date? {
+        get { lastSuccessfulSyncDate }
+        set { lastSuccessfulSyncDate = newValue }
+    }
+
+    func pipelinePreparedHomeSnapshot(_ snapshot: HomeSnapshot) async -> HomeSnapshot {
+        await preparedHomeSnapshot(snapshot)
+    }
+
+    func pipelineRecordFullRefresh() {
+        lastFullRefresh = runtimeClock.now
+    }
+
+    func pipelineRecordHomeSnapshotSave(at instant: ContinuousClock.Instant) {
+        lastHomeSnapshotSave = instant
+    }
+
+    func pipelineReconcileFavoriteStates(
+        in snapshot: HomeSnapshot,
+        authoritative: Bool
+    ) {
+        reconcileFavoriteStates(in: snapshot, authoritative: authoritative)
+    }
+
+    func pipelineApplyingFavoriteOverrides(to snapshot: HomeSnapshot) -> HomeSnapshot {
+        applyingFavoriteOverrides(to: snapshot)
+    }
+
+    @discardableResult
+    func pipelinePublishHome(_ snapshot: HomeSnapshot) -> Bool {
+        publishHome(snapshot)
+    }
+
+    func pipelineScheduleLibraryCatalogRefresh(snapshot: HomeSnapshot) {
+        scheduleLibraryCatalogRefresh(snapshot: snapshot)
+    }
+
+    func pipelineScheduleExternalRecommendationRefresh(
+        client: OpenSubsonicClient,
+        generation: Int
+    ) {
+        scheduleExternalRecommendationRefresh(client: client, generation: generation)
     }
 }
