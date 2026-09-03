@@ -24,7 +24,7 @@ enum HomePipelineCoordinator {
             return .aborted
         }
         guard revision == model.pipelineHomeRevision else { return .aborted }
-        guard model.pipelineStarRequests.isEmpty else {
+        guard !model.pipelineHasPendingStarRequests else {
             return .deferredForStarMutations
         }
 
@@ -34,7 +34,7 @@ enum HomePipelineCoordinator {
             return .aborted
         }
         guard revision == model.pipelineHomeRevision else { return .aborted }
-        guard model.pipelineStarRequests.isEmpty else {
+        guard !model.pipelineHasPendingStarRequests else {
             return .deferredForStarMutations
         }
 

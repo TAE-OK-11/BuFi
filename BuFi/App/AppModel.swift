@@ -3189,7 +3189,7 @@ final class AppModel: ObservableObject {
     var pipelineSessionGeneration: Int { sessionGeneration }
     var pipelineHomeRevision: Int { homeRevision }
     var pipelineClient: OpenSubsonicClient? { client }
-    var pipelineStarRequests: [String: StarRequest] { starRequests }
+    var pipelineHasPendingStarRequests: Bool { !starRequests.isEmpty }
     var pipelineRuntimeClock: ContinuousClock { runtimeClock }
     var pipelineLastHomeSnapshotSave: ContinuousClock.Instant? {
         lastHomeSnapshotSave
