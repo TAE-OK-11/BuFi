@@ -247,7 +247,9 @@ actor SecureStore {
 
     private static func cacheSecret(_ value: String, account: String) {
         let key = cacheKey(account: account)
-        secretCache.withLock { $0[key] = value }
+        secretCache.withLock { cache in
+            cache[key] = value
+        }
     }
 
     private static func cachedSecret(account: String) -> String? {
@@ -257,7 +259,9 @@ actor SecureStore {
 
     private static func removeCachedSecret(account: String) {
         let key = cacheKey(account: account)
-        secretCache.withLock { $0.removeValue(forKey: key) }
+        secretCache.withLock { cache in
+            cache.removeValue(forKey: key)
+        }
     }
 
     private static func cacheKey(account: String) -> String {
