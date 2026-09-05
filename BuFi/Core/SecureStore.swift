@@ -260,7 +260,7 @@ actor SecureStore {
     private static func removeCachedSecret(account: String) {
         let key = cacheKey(account: account)
         secretCache.withLock { cache in
-            cache.removeValue(forKey: key)
+            _ = cache.removeValue(forKey: key)
         }
     }
 

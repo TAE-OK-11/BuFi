@@ -234,7 +234,7 @@ enum OpenSubsonicPublicDiscovery {
         cache.withLock { state in
             guard let entry = state[serverURL],
                   Date().timeIntervalSince(entry.storedAt) < cacheLifetime else {
-                state.removeValue(forKey: serverURL)
+                _ = state.removeValue(forKey: serverURL)
                 return nil
             }
             return entry.registry
