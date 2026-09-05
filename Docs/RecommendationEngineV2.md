@@ -188,12 +188,17 @@ purpose-specific 값을 사용한다.
 
 개인화 믹스는 한 snapshot에서 deduplicated song corpus를 한 번 만들고,
 searchable text, normalized artist/genre, artist별 곡, genre별 곡을 함께
-indexing한다. 아티스트 믹스마다 전체 후보 풀을 다시 스캔하지 않고 이 index로
-primary/related 후보를 구성한다. 각 믹스에 필요한 deterministic order는 전체
-풀을 매번 정렬하지 않고 최대 `limit` 또는 fallback용 `2 × limit` 항목만
-유지하는 bounded max-heap으로 구한다. 이 방식은 기존 stable-hash 순서의
-prefix와 동등하면서 임시 메모리를 후보 수가 아닌 출력 제한에 맞춘다.
-Discovery allocation도 한 번의 partition pass에서 known/unknown 배열을 만든다.
+indexing한다. corpus는 소스별 우선순위로 `MediaIdentity.uniqueSongs(from:limit:)`
+를 사용해 거대한 중간 concat 배열을 만들지 않으며, 상한(현재 4,096곡)을
+넘기면 앞쪽 추천 소스가 먼저 채워지고 과대 starred/most-played 목록은
+잘린다. indexing과 mood/genre 매칭은 256곡 단위 chunk로 돌며 주기적으로
+취소를 확인한다. 아티스트 믹스마다 전체 후보 풀을 다시 스캔하지 않고 이
+index로 primary/related 후보를 구성한다. 각 믹스에 필요한 deterministic
+order는 전체 풀을 매번 정렬하지 않고 최대 `limit` 또는 fallback용
+`2 × limit` 항목만 유지하는 bounded max-heap으로 구한다. 이 방식은 기존
+stable-hash 순서의 prefix와 동등하면서 임시 메모리를 후보 수가 아닌 출력
+제한에 맞춘다. Discovery allocation도 한 번의 partition pass에서
+known/unknown 배열을 만든다.
 
 fingerprint 생성, rank map 생성, profile 집계, candidate scoring, discovery
 partition, diversity reranking, personalized corpus/ordering의 긴 loop는 주기적으로

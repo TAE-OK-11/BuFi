@@ -3102,9 +3102,7 @@ actor OpenSubsonicClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(
-            withJSONObject: OpenSubsonicClientInfo.jsonBody
-        )
+        request.httpBody = OpenSubsonicClientInfo.jsonBodyData
         let response = try await responseData(
             from: request,
             allowsRetry: allowsRetry

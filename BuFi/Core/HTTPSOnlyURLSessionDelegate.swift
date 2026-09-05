@@ -6,6 +6,11 @@ import OSLog
 /// Prevents authenticated requests from following an HTTPS-to-HTTP redirect.
 /// OpenSubsonic credentials are carried in query parameters, so rejecting a
 /// downgrade before URLSession follows it avoids leaking them to cleartext HTTP.
+///
+/// `@unchecked Sendable` is retained because `NSObject` is not Sendable while
+/// `URLSession` requires its delegate to cross executors. The type is immutable
+/// after init (no stored mutable state), so the annotation is a language/bridge
+/// concession rather than a concurrency hole.
 final class HTTPSOnlyURLSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
 #if DEBUG
     private static let metricsLogger = Logger(

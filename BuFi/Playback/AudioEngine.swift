@@ -3014,7 +3014,11 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func scheduleGaplessSuccessor() {
         let activelyPlaying = player.timeControlStatus == .playing
+        // Shuffle already refuses staging (`stagePreparedSuccessorIfPossible`).
+        // Skip linear successor warmup too so gapless prep cannot fight the
+        // shuffle order or waste a speculative stream on the wrong next track.
         guard wantsPlayback,
+              !isShuffleEnabled,
               !isRemoteLosslessPlayback,
               stagedSuccessorItem == nil,
               PlaybackGaplessPreparationPolicy.shouldPrepare(
@@ -5289,9 +5293,14 @@ final class AudioEngine: NSObject, ObservableObject {
               let client else {
             return
         }
+        // Claim the slot before the network hop so the once-per-second
+        // maintenance tick cannot enqueue duplicate submissions. On failure,
+        // clear the flag only while the same song/session is still current so
+        // a later tick can retry without double-scrobbling a successful send.
         scrobbled = true
         let sessionGeneration = playbackSessionGeneration
         let accountScope = currentAccountScope
+        let songID = song.id
         playerTaskLifecycle.scheduleScrobble { [weak self] in
             guard let self,
                   !Task.isCancelled,
@@ -5300,7 +5309,17 @@ final class AudioEngine: NSObject, ObservableObject {
                   self.client === client else {
                 return
             }
-            try? await client.scrobble(id: song.id, submission: true)
+            do {
+                try await client.scrobble(id: songID, submission: true)
+            } catch is CancellationError {
+                return
+            } catch {
+                if sessionGeneration == self.playbackSessionGeneration,
+                   accountScope == self.currentAccountScope,
+                   self.currentSong?.id == songID {
+                    self.scrobbled = false
+                }
+            }
         }
     }
 

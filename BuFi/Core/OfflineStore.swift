@@ -653,6 +653,9 @@ actor OfflineStore {
         let excess = total - limit
         let averageEntrySize = max(1, total / Int64(max(entries.count, 1)))
         let estimatedEvictions = Int(excess / averageEntrySize) + 1
+        // Small-to-moderate surplus: repeated linear min scans (same shape as
+        // ResponseBodyCache) avoid allocating a full sorted candidate array.
+        // Huge surplus: one O(n log n) sort is cheaper than O(k·n) scans.
         if estimatedEvictions < entries.count / 4 {
             while total > limit {
                 guard let oldest = oldestEvictionCandidate(excluding: protectedID) else { break }

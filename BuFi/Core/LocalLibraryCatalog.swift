@@ -271,6 +271,23 @@ actor LocalLibraryCatalog {
     private func evictIfNeeded() {
         guard entries.count > Self.maximumSongs else { return }
         let surplus = entries.count - Self.maximumSongs
+        // Prefer iterative min-eviction when only a modest surplus must leave,
+        // matching ResponseBodyCache. A full sort remains cheaper when most of
+        // the catalog must be discarded in one pass.
+        if surplus < entries.count / 4 {
+            for _ in 0..<surplus {
+                guard let victim = entries.values.min(by: { lhs, rhs in
+                    (lhs.song.playCount ?? 0, lhs.song.id)
+                        < (rhs.song.playCount ?? 0, rhs.song.id)
+                }) else { break }
+                removeIndexes(victim)
+                entries[victim.song.id] = nil
+                dirtySongIDs.remove(victim.song.id)
+                deletedSongIDs.insert(victim.song.id)
+            }
+            return
+        }
+
         let victims = entries.values
             .sorted { lhs, rhs in
                 (lhs.song.playCount ?? 0, lhs.song.id)

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum OpenSubsonicExtensionName {
     static let apiKeyAuthentication = "apiKeyAuthentication"
@@ -92,60 +93,66 @@ struct TranscodeDecision: Decodable, Sendable {
 
 enum OpenSubsonicClientInfo {
     /// Client capabilities advertised to OpenSubsonic transcoding servers.
-    nonisolated(unsafe) static let jsonBody: [String: Any] = [
-        "name": OpenSubsonicClient.clientName,
-        "platform": "iOS",
-        "maxAudioBitrate": 1_024_000,
-        "maxTranscodingAudioBitrate": 320_000,
-        "directPlayProfiles": [
-            [
-                "containers": ["mp3"],
-                "audioCodecs": ["mp3"],
-                "protocols": ["http"],
-                "maxAudioChannels": 2
+    /// Pre-serialized so callers never need a non-Sendable `[String: Any]`
+    /// constant crossing concurrency domains.
+    static let jsonBodyData: Data = {
+        let body: [String: Any] = [
+            "name": OpenSubsonicClient.clientName,
+            "platform": "iOS",
+            "maxAudioBitrate": 1_024_000,
+            "maxTranscodingAudioBitrate": 320_000,
+            "directPlayProfiles": [
+                [
+                    "containers": ["mp3"],
+                    "audioCodecs": ["mp3"],
+                    "protocols": ["http"],
+                    "maxAudioChannels": 2
+                ],
+                [
+                    "containers": ["mp4", "m4a"],
+                    "audioCodecs": ["aac", "alac"],
+                    "protocols": ["http"],
+                    "maxAudioChannels": 2
+                ],
+                [
+                    "containers": ["flac"],
+                    "audioCodecs": ["flac"],
+                    "protocols": ["http"],
+                    "maxAudioChannels": 2
+                ]
             ],
-            [
-                "containers": ["mp4", "m4a"],
-                "audioCodecs": ["aac", "alac"],
-                "protocols": ["http"],
-                "maxAudioChannels": 2
+            "transcodingProfiles": [
+                [
+                    "container": "mp3",
+                    "audioCodec": "mp3",
+                    "protocol": "http",
+                    "maxAudioChannels": 2
+                ],
+                [
+                    "container": "aac",
+                    "audioCodec": "aac",
+                    "protocol": "http",
+                    "maxAudioChannels": 2
+                ]
             ],
-            [
-                "containers": ["flac"],
-                "audioCodecs": ["flac"],
-                "protocols": ["http"],
-                "maxAudioChannels": 2
-            ]
-        ],
-        "transcodingProfiles": [
-            [
-                "container": "mp3",
-                "audioCodec": "mp3",
-                "protocol": "http",
-                "maxAudioChannels": 2
-            ],
-            [
-                "container": "aac",
-                "audioCodec": "aac",
-                "protocol": "http",
-                "maxAudioChannels": 2
-            ]
-        ],
-        "codecProfiles": [
-            [
-                "type": "AudioCodec",
-                "name": "mp3",
-                "limitations": [
-                    [
-                        "name": "audioBitrate",
-                        "comparison": "LessThanEqual",
-                        "values": ["320000"],
-                        "required": true
+            "codecProfiles": [
+                [
+                    "type": "AudioCodec",
+                    "name": "mp3",
+                    "limitations": [
+                        [
+                            "name": "audioBitrate",
+                            "comparison": "LessThanEqual",
+                            "values": ["320000"],
+                            "required": true
+                        ]
                     ]
                 ]
             ]
         ]
-    ]
+        // Serialization cannot fail for this fixed literal graph.
+        return try! JSONSerialization.data(withJSONObject: body)
+    }()
 }
 
 enum OpenSubsonicPublicDiscovery {
@@ -156,14 +163,16 @@ enum OpenSubsonicPublicDiscovery {
         }
     }
 
-    private static let cacheLock = NSLock()
-    nonisolated(unsafe) private static var cache: [String: CachedEntry] = [:]
-    private static let cacheLifetime: TimeInterval = 5 * 60
-
-    private struct CachedEntry {
+    private struct CachedEntry: Sendable {
         let registry: OpenSubsonicExtensionRegistry
         let storedAt: Date
     }
+
+    // Process-local discovery cache shared across short-lived clients.
+    private static let cache = OSAllocatedUnfairLock(
+        initialState: [String: CachedEntry]()
+    )
+    private static let cacheLifetime: TimeInterval = 5 * 60
 
     private static let session: URLSession = {
         let configuration = ModernNetworkPolicy.makeEphemeralConfiguration(
@@ -222,22 +231,22 @@ enum OpenSubsonicPublicDiscovery {
     }
 
     private static func cachedRegistry(for serverURL: String) -> OpenSubsonicExtensionRegistry? {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
-        guard let entry = cache[serverURL],
-              Date().timeIntervalSince(entry.storedAt) < cacheLifetime else {
-            cache.removeValue(forKey: serverURL)
-            return nil
+        cache.withLock { state in
+            guard let entry = state[serverURL],
+                  Date().timeIntervalSince(entry.storedAt) < cacheLifetime else {
+                _ = state.removeValue(forKey: serverURL)
+                return nil
+            }
+            return entry.registry
         }
-        return entry.registry
     }
 
     private static func store(
         registry: OpenSubsonicExtensionRegistry,
         for serverURL: String
     ) {
-        cacheLock.lock()
-        cache[serverURL] = CachedEntry(registry: registry, storedAt: Date())
-        cacheLock.unlock()
+        cache.withLock {
+            $0[serverURL] = CachedEntry(registry: registry, storedAt: Date())
+        }
     }
 }

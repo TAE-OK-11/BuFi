@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum ArtistPersonaGender: String, Sendable {
     case male
@@ -146,14 +147,18 @@ enum ArtistPersonaResolver {
 
 /// Process-local Last.fm / heuristic persona cache. Mix scoring stays
 /// synchronous, so network-fetched tags land here before the next rank pass.
-final class ArtistPersonaCache: @unchecked Sendable {
+final class ArtistPersonaCache: Sendable {
     static let shared = ArtistPersonaCache()
 
     private static let maximumEntries = 512
     private static let evictionBatchSize = 64
-    private let lock = NSLock()
-    private var values: [String: ArtistPersona] = [:]
-    private var insertionOrder: [String] = []
+
+    private struct State {
+        var values: [String: ArtistPersona] = [:]
+        var insertionOrder: [String] = []
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     func resolved(
         artist: String,
@@ -162,12 +167,9 @@ final class ArtistPersonaCache: @unchecked Sendable {
     ) -> ArtistPersona {
         let key = ArtistPersonaResolver.normalized(artist)
         guard !key.isEmpty else { return .unknown }
-        lock.lock()
-        if let stored = values[key] {
-            lock.unlock()
+        if let stored = state.withLock({ $0.values[key] }) {
             return stored
         }
-        lock.unlock()
         let inferred = ArtistPersonaResolver.infer(
             artist: artist,
             genres: genres,
@@ -182,28 +184,28 @@ final class ArtistPersonaCache: @unchecked Sendable {
     func store(_ persona: ArtistPersona, for artist: String) {
         let key = ArtistPersonaResolver.normalized(artist)
         guard !key.isEmpty, persona != .unknown else { return }
-        lock.lock()
-        if let existing = values[key] {
-            values[key] = ArtistPersona(
-                gender: persona.gender == .unknown ? existing.gender : persona.gender,
-                formation: persona.formation == .unknown
-                    ? existing.formation
-                    : persona.formation
-            )
-        } else {
-            if values.count >= Self.maximumEntries {
-                let evictionCount = min(
-                    Self.evictionBatchSize,
-                    insertionOrder.count
+        state.withLock { state in
+            if let existing = state.values[key] {
+                state.values[key] = ArtistPersona(
+                    gender: persona.gender == .unknown ? existing.gender : persona.gender,
+                    formation: persona.formation == .unknown
+                        ? existing.formation
+                        : persona.formation
                 )
-                for staleKey in insertionOrder.prefix(evictionCount) {
-                    values[staleKey] = nil
+            } else {
+                if state.values.count >= Self.maximumEntries {
+                    let evictionCount = min(
+                        Self.evictionBatchSize,
+                        state.insertionOrder.count
+                    )
+                    for staleKey in state.insertionOrder.prefix(evictionCount) {
+                        state.values[staleKey] = nil
+                    }
+                    state.insertionOrder.removeFirst(evictionCount)
                 }
-                insertionOrder.removeFirst(evictionCount)
+                state.values[key] = persona
+                state.insertionOrder.append(key)
             }
-            values[key] = persona
-            insertionOrder.append(key)
         }
-        lock.unlock()
     }
 }
