@@ -1646,12 +1646,16 @@ actor OpenSubsonicClient {
     /// stale favorites after a single transient failure.
     private func starredPayloadResilient() async throws -> StarredPayload? {
         let endpoints = SubsonicCompatibilityPolicy.starredEndpoints(for: apiFamily)
-        if let payload = try await bestEffortWithFallback(endpoints),
+        if let payload = try await starredPayload(from: endpoints),
            payload.container != nil {
             return payload
         }
         try await Task.sleep(for: .milliseconds(400))
-        return try await bestEffortWithFallback(endpoints)
+        return try await starredPayload(from: endpoints)
+    }
+
+    private func starredPayload(from endpoints: [String]) async throws -> StarredPayload? {
+        try await bestEffortWithFallback(endpoints)
     }
 
     @concurrent
