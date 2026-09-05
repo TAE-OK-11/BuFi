@@ -5334,11 +5334,30 @@ final class AudioEngine: NSObject, ObservableObject {
                 $0.externalStreamURL == nil
             }
             if restorationEnabled && containsOnlyServerSongs {
-                let saved = await AppDatabase.shared.saveQueue(
-                    snapshot,
+                var snapshotToSave = snapshot
+                var saved = await AppDatabase.shared.saveQueue(
+                    snapshotToSave,
                     scope: accountScope,
                     replacingItems: replacingItems
                 )
+                if !saved {
+                    queueSaveRevision &+= 1
+                    snapshotToSave = QueueSnapshot(
+                        entries: snapshot.entries,
+                        currentID: snapshot.currentID,
+                        currentQueueEntryID: snapshot.currentQueueEntryID,
+                        index: snapshot.index,
+                        elapsed: snapshot.elapsed,
+                        shuffle: snapshot.shuffle,
+                        repeatMode: snapshot.repeatMode,
+                        revision: queueSaveRevision
+                    )
+                    saved = await AppDatabase.shared.saveQueue(
+                        snapshotToSave,
+                        scope: accountScope,
+                        replacingItems: replacingItems
+                    )
+                }
                 guard !Task.isCancelled,
                       sessionGeneration == playbackSessionGeneration,
                       accountScope == currentAccountScope else { return }

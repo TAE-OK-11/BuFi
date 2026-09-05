@@ -165,15 +165,13 @@ struct ResponseBodyCache: Sendable {
     }
 
     private mutating func evictIfNeeded() {
-        guard entries.count > countLimit || byteCount > byteLimit else { return }
-        let victims = entries
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .map(\.key)
-        for key in victims {
-            guard entries.count > countLimit || byteCount > byteLimit else {
+        while entries.count > countLimit || byteCount > byteLimit {
+            guard let victim = entries.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
                 break
             }
-            removeValue(for: key)
+            removeValue(for: victim)
         }
     }
 
@@ -185,12 +183,13 @@ struct ResponseBodyCache: Sendable {
         )
         let removeCount = entries.count - targetCount
         guard removeCount > 0 else { return }
-        let victims = entries
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .prefix(removeCount)
-            .map(\.key)
-        for key in victims {
-            removeValue(for: key)
+        for _ in 0..<removeCount {
+            guard let victim = entries.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
+                break
+            }
+            removeValue(for: victim)
         }
     }
 
