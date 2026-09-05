@@ -1694,7 +1694,7 @@ actor ArtworkStore {
     }
 }
 
-private final class ArtworkPipelineDelegate: ImagePipeline.Delegate, @unchecked Sendable {
+private final class ArtworkPipelineDelegate: ImagePipeline.Delegate, Sendable {
     func cacheKey(for request: ImageRequest, pipeline: ImagePipeline) -> String? {
         guard let url = request.url else { return nil }
         let processors = request.processors.map(\.identifier).joined(separator: "|")

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct RecommendationWeights: Sendable {
     var history: Double
@@ -531,35 +532,38 @@ private struct RecommendationSectionsValue: Sendable {
     let daylist: [Song]
 }
 
-private final class RecommendationSectionsCache: @unchecked Sendable {
+private final class RecommendationSectionsCache: Sendable {
     struct Value {
         let createdAt: Date
         var accessOrdinal: UInt64
         let sections: RecommendationSectionsValue
     }
 
-    private let lock = NSLock()
-    private var values: [RecommendationMixCacheKey: Value] = [:]
-    private var nextAccessOrdinal: UInt64 = 0
+    private struct State {
+        var values: [RecommendationMixCacheKey: Value] = [:]
+        var nextAccessOrdinal: UInt64 = 0
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     func value(
         for key: RecommendationMixCacheKey,
         lifetime: TimeInterval,
         now: Date
     ) -> RecommendationSectionsValue? {
-        lock.lock()
-        defer { lock.unlock() }
-        let maximumAge = max(0, lifetime)
-        guard var value = values[key] else { return nil }
-        let age = now.timeIntervalSince(value.createdAt)
-        guard age >= 0, age < maximumAge else {
-            values[key] = nil
-            return nil
+        state.withLock { state in
+            let maximumAge = max(0, lifetime)
+            guard var value = state.values[key] else { return nil }
+            let age = now.timeIntervalSince(value.createdAt)
+            guard age >= 0, age < maximumAge else {
+                state.values[key] = nil
+                return nil
+            }
+            state.nextAccessOrdinal &+= 1
+            value.accessOrdinal = state.nextAccessOrdinal
+            state.values[key] = value
+            return value.sections
         }
-        nextAccessOrdinal &+= 1
-        value.accessOrdinal = nextAccessOrdinal
-        values[key] = value
-        return value.sections
     }
 
     func insert(
@@ -567,50 +571,50 @@ private final class RecommendationSectionsCache: @unchecked Sendable {
         for key: RecommendationMixCacheKey,
         now: Date
     ) {
-        lock.lock()
-        nextAccessOrdinal &+= 1
-        values[key] = Value(
-            createdAt: now,
-            accessOrdinal: nextAccessOrdinal,
-            sections: sections
-        )
-        if values.count > 24 {
-            while values.count > 16,
-                  let victim = values.min(by: {
-                      $0.value.accessOrdinal < $1.value.accessOrdinal
-                  })?.key {
-                values[victim] = nil
+        state.withLock { state in
+            state.nextAccessOrdinal &+= 1
+            state.values[key] = Value(
+                createdAt: now,
+                accessOrdinal: state.nextAccessOrdinal,
+                sections: sections
+            )
+            if state.values.count > 24 {
+                while state.values.count > 16,
+                      let victim = state.values.min(by: {
+                          $0.value.accessOrdinal < $1.value.accessOrdinal
+                      })?.key {
+                    state.values[victim] = nil
+                }
             }
         }
-        lock.unlock()
     }
 
     func removeAll() {
-        lock.lock()
-        values.removeAll(keepingCapacity: false)
-        nextAccessOrdinal = 0
-        lock.unlock()
+        state.withLock { state in
+            state.values.removeAll(keepingCapacity: false)
+            state.nextAccessOrdinal = 0
+        }
     }
 
     func trim(keepFraction: Double) {
-        lock.lock()
-        defer { lock.unlock() }
-        let fraction = min(1, max(0, keepFraction))
-        let targetCount = max(
-            0,
-            Int((Double(values.count) * fraction).rounded(.down))
-        )
-        guard values.count > targetCount else { return }
-        while values.count > targetCount,
-              let victim = values.min(by: {
-                  $0.value.accessOrdinal < $1.value.accessOrdinal
-              })?.key {
-            values[victim] = nil
+        state.withLock { state in
+            let fraction = min(1, max(0, keepFraction))
+            let targetCount = max(
+                0,
+                Int((Double(state.values.count) * fraction).rounded(.down))
+            )
+            guard state.values.count > targetCount else { return }
+            while state.values.count > targetCount,
+                  let victim = state.values.min(by: {
+                      $0.value.accessOrdinal < $1.value.accessOrdinal
+                  })?.key {
+                state.values[victim] = nil
+            }
         }
     }
 }
 
-private struct RecommendationMixCacheKey: Hashable {
+private struct RecommendationMixCacheKey: Hashable, Sendable {
     let algorithmVersion: Int
     let purpose: RecommendationPurpose
     let limit: Int
@@ -623,35 +627,38 @@ private struct RecommendationMixCacheKey: Hashable {
     let timeZoneIdentifier: String
 }
 
-private final class RecommendationMixCache: @unchecked Sendable {
+private final class RecommendationMixCache: Sendable {
     struct Value {
         let createdAt: Date
         var accessOrdinal: UInt64
         let songs: [Song]
     }
 
-    private let lock = NSLock()
-    private var values: [RecommendationMixCacheKey: Value] = [:]
-    private var nextAccessOrdinal: UInt64 = 0
+    private struct State {
+        var values: [RecommendationMixCacheKey: Value] = [:]
+        var nextAccessOrdinal: UInt64 = 0
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     func value(
         for key: RecommendationMixCacheKey,
         lifetime: TimeInterval,
         now: Date
     ) -> [Song]? {
-        lock.lock()
-        defer { lock.unlock() }
-        let maximumAge = max(0, lifetime)
-        guard var value = values[key] else { return nil }
-        let age = now.timeIntervalSince(value.createdAt)
-        guard age >= 0, age < maximumAge else {
-            values[key] = nil
-            return nil
+        state.withLock { state in
+            let maximumAge = max(0, lifetime)
+            guard var value = state.values[key] else { return nil }
+            let age = now.timeIntervalSince(value.createdAt)
+            guard age >= 0, age < maximumAge else {
+                state.values[key] = nil
+                return nil
+            }
+            state.nextAccessOrdinal &+= 1
+            value.accessOrdinal = state.nextAccessOrdinal
+            state.values[key] = value
+            return value.songs
         }
-        nextAccessOrdinal &+= 1
-        value.accessOrdinal = nextAccessOrdinal
-        values[key] = value
-        return value.songs
     }
 
     func insert(
@@ -659,45 +666,45 @@ private final class RecommendationMixCache: @unchecked Sendable {
         for key: RecommendationMixCacheKey,
         now: Date
     ) {
-        lock.lock()
-        nextAccessOrdinal &+= 1
-        values[key] = Value(
-            createdAt: now,
-            accessOrdinal: nextAccessOrdinal,
-            songs: songs
-        )
-        if values.count > 48 {
-            while values.count > 32,
-                  let victim = values.min(by: {
-                      $0.value.accessOrdinal < $1.value.accessOrdinal
-                  })?.key {
-                values[victim] = nil
+        state.withLock { state in
+            state.nextAccessOrdinal &+= 1
+            state.values[key] = Value(
+                createdAt: now,
+                accessOrdinal: state.nextAccessOrdinal,
+                songs: songs
+            )
+            if state.values.count > 48 {
+                while state.values.count > 32,
+                      let victim = state.values.min(by: {
+                          $0.value.accessOrdinal < $1.value.accessOrdinal
+                      })?.key {
+                    state.values[victim] = nil
+                }
             }
         }
-        lock.unlock()
     }
 
     func removeAll() {
-        lock.lock()
-        values.removeAll(keepingCapacity: false)
-        nextAccessOrdinal = 0
-        lock.unlock()
+        state.withLock { state in
+            state.values.removeAll(keepingCapacity: false)
+            state.nextAccessOrdinal = 0
+        }
     }
 
     func trim(keepFraction: Double) {
-        lock.lock()
-        defer { lock.unlock() }
-        let fraction = min(1, max(0, keepFraction))
-        let targetCount = max(
-            0,
-            Int((Double(values.count) * fraction).rounded(.down))
-        )
-        guard values.count > targetCount else { return }
-        while values.count > targetCount,
-              let victim = values.min(by: {
-                  $0.value.accessOrdinal < $1.value.accessOrdinal
-              })?.key {
-            values[victim] = nil
+        state.withLock { state in
+            let fraction = min(1, max(0, keepFraction))
+            let targetCount = max(
+                0,
+                Int((Double(state.values.count) * fraction).rounded(.down))
+            )
+            guard state.values.count > targetCount else { return }
+            while state.values.count > targetCount,
+                  let victim = state.values.min(by: {
+                      $0.value.accessOrdinal < $1.value.accessOrdinal
+                  })?.key {
+                state.values[victim] = nil
+            }
         }
     }
 }
@@ -2566,12 +2573,12 @@ enum ArtistMixPreferences {
     }
 }
 
-private enum PersonalizedSnapshotCacheKey: Equatable {
+private enum PersonalizedSnapshotCacheKey: Equatable, Sendable {
     case revision(HomeSnapshotRevision)
     case snapshot(HomeSnapshot)
 }
 
-private struct PersonalizedMixCacheKey: Equatable {
+private struct PersonalizedMixCacheKey: Equatable, Sendable {
     let snapshot: PersonalizedSnapshotCacheKey
     let year: Int
     let day: Int
@@ -2616,41 +2623,49 @@ private actor PersonalizedMixBuildCoordinator {
     }
 }
 
-private final class PersonalizedMixResultCache: @unchecked Sendable {
-    private let lock = NSLock()
-    private var key: PersonalizedMixCacheKey?
-    private var mixes: [PersonalizedMix] = []
-    private var corpusKey: PersonalizedSnapshotCacheKey?
-    private var corpus: PersonalizedSongCorpus?
+private final class PersonalizedMixResultCache: Sendable {
+    private struct State {
+        var key: PersonalizedMixCacheKey?
+        var mixes: [PersonalizedMix] = []
+        var corpusKey: PersonalizedSnapshotCacheKey?
+        var corpus: PersonalizedSongCorpus?
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
 
     func value(for requestedKey: PersonalizedMixCacheKey) -> [PersonalizedMix]? {
-        lock.lock()
-        defer { lock.unlock() }
-        return key == requestedKey ? mixes : nil
+        state.withLock { state in
+            state.key == requestedKey ? state.mixes : nil
+        }
     }
 
     func insert(_ value: [PersonalizedMix], for newKey: PersonalizedMixCacheKey) {
-        lock.lock()
-        key = newKey
-        mixes = value
-        lock.unlock()
+        state.withLock { state in
+            state.key = newKey
+            state.mixes = value
+        }
     }
 
     func corpus(for requestedKey: PersonalizedSnapshotCacheKey) -> PersonalizedSongCorpus? {
-        lock.lock()
-        defer { lock.unlock() }
-        return corpusKey == requestedKey ? corpus : nil
+        state.withLock { state in
+            state.corpusKey == requestedKey ? state.corpus : nil
+        }
     }
 
     func insert(_ value: PersonalizedSongCorpus, for newKey: PersonalizedSnapshotCacheKey) {
-        lock.lock()
-        corpusKey = newKey
-        corpus = value
-        lock.unlock()
+        state.withLock { state in
+            state.corpusKey = newKey
+            state.corpus = value
+        }
     }
 }
 
-private struct PersonalizedSongCorpus {
+private struct PersonalizedSongCorpus: Sendable {
+    /// Soft ceiling for mix indexes. Sources are unique-scanned in priority
+    /// order so smaller recommendation lists fill first; oversized starred /
+    /// most-played libraries cannot force unbounded peak memory.
+    private static let maximumCorpusSongs = 4_096
+
     let pool: [Song]
     let canonicalSongs: [String: Song]
     let searchableTexts: [String: String]
@@ -2661,45 +2676,60 @@ private struct PersonalizedSongCorpus {
     let songsWithoutGenre: [Song]
 
     init(snapshot: HomeSnapshot) {
-        let resolvedPool = PersonalizedMixBuilder.unique(
-            snapshot.serverRecommendedSongs
-                + snapshot.lastFMRecommendedSongs
-                + snapshot.listenBrainzRecommendedSongs
-                + snapshot.randomSongs
-                + snapshot.recommendedSongs
-                + snapshot.daylistSongs
-                + snapshot.starredSongs
-                + snapshot.mostPlayedSongs
+        // Prefer MediaIdentity multi-source unique so we never materialize a
+        // single concatenated array of every starred song plus every other list.
+        let sources: [[Song]] = [
+            snapshot.serverRecommendedSongs,
+            snapshot.lastFMRecommendedSongs,
+            snapshot.listenBrainzRecommendedSongs,
+            snapshot.randomSongs,
+            snapshot.recommendedSongs,
+            snapshot.daylistSongs,
+            snapshot.starredSongs,
+            snapshot.mostPlayedSongs
+        ]
+        let resolvedPool = MediaIdentity.uniqueSongs(
+            from: sources,
+            limit: Self.maximumCorpusSongs
         )
         pool = resolvedPool
-        canonicalSongs = Dictionary(
-            uniqueKeysWithValues: resolvedPool.map { ($0.id, $0) }
-        )
+        var canonicalSongs: [String: Song] = [:]
+        canonicalSongs.reserveCapacity(resolvedPool.count)
         var searchableTexts: [String: String] = [:]
         var normalizedArtists: [String: String] = [:]
         var normalizedGenres: [String: [String]] = [:]
         var songsByArtist: [String: [Song]] = [:]
         var songsByGenre: [String: [Song]] = [:]
         var songsWithoutGenre: [Song] = []
-        searchableTexts.reserveCapacity(pool.count)
-        normalizedArtists.reserveCapacity(pool.count)
-        normalizedGenres.reserveCapacity(pool.count)
-        for (index, song) in pool.enumerated() {
-            if index.isMultiple(of: 64), Task.isCancelled { break }
-            let artist = PersonalizedMixBuilder.normalized(song.artist)
-            searchableTexts[song.id] = PersonalizedMixBuilder.searchableText(song)
-            normalizedArtists[song.id] = artist
-            songsByArtist[artist, default: []].append(song)
-            let genreKeys = RecommendationCandidateMetadata.genreKeys(for: song)
-            if genreKeys.isEmpty {
-                songsWithoutGenre.append(song)
-            } else {
-                normalizedGenres[song.id] = genreKeys
-                for genreKey in genreKeys {
-                    songsByGenre[genreKey, default: []].append(song)
+        searchableTexts.reserveCapacity(resolvedPool.count)
+        normalizedArtists.reserveCapacity(resolvedPool.count)
+        normalizedGenres.reserveCapacity(resolvedPool.count)
+        // Index in fixed-size chunks so cancellation can interrupt before the
+        // full secondary-index graph is allocated.
+        let chunkSize = 256
+        var index = 0
+        while index < resolvedPool.count {
+            if Task.isCancelled { break }
+            let end = min(index + chunkSize, resolvedPool.count)
+            for song in resolvedPool[index..<end] {
+                canonicalSongs[song.id] = song
+                let artist = PersonalizedMixBuilder.normalized(song.artist)
+                searchableTexts[song.id] = PersonalizedMixBuilder.searchableText(song)
+                normalizedArtists[song.id] = artist
+                songsByArtist[artist, default: []].append(song)
+                let genreKeys = RecommendationCandidateMetadata.genreKeys(for: song)
+                if genreKeys.isEmpty {
+                    songsWithoutGenre.append(song)
+                } else {
+                    normalizedGenres[song.id] = genreKeys
+                    for genreKey in genreKeys {
+                        songsByGenre[genreKey, default: []].append(song)
+                    }
                 }
             }
+            index = end
         }
+        self.canonicalSongs = canonicalSongs
         self.searchableTexts = searchableTexts
         self.normalizedArtists = normalizedArtists
         self.normalizedGenres = normalizedGenres
@@ -2781,7 +2811,13 @@ enum PersonalizedMixBuilder {
 
         let repeatSongs = filled(
             preferred: canonicalized(
-                snapshot.mostPlayedSongs + snapshot.starredSongs
+                MediaIdentity.uniqueSongs(
+                    from: [
+                        snapshot.mostPlayedSongs,
+                        snapshot.starredSongs
+                    ],
+                    limit: max(songLimit * 8, 256)
+                )
             ),
             from: pool,
             seed: dailySeed + 11,
@@ -2803,19 +2839,17 @@ enum PersonalizedMixBuilder {
             ["k-pop", "kpop", "korean pop", "케이팝"]
         )
         let popTokens = normalizedTokens(["pop", "팝"])
-        let kPopMatches = pool.filter { song in
-            containsAny(
-                searchableTexts[song.id] ?? "",
-                normalizedTokens: kPopTokens
-            )
-        }
+        let kPopMatches = matchingSongs(
+            in: pool,
+            searchableTexts: searchableTexts,
+            tokens: kPopTokens
+        )
         let kPopIDs = Set(kPopMatches.map(\.id))
-        let popMatches = pool.filter { song in
-            containsAny(
-                searchableTexts[song.id] ?? "",
-                normalizedTokens: popTokens
-            ) && !kPopIDs.contains(song.id)
-        }
+        let popMatches = matchingSongs(
+            in: pool,
+            searchableTexts: searchableTexts,
+            tokens: popTokens
+        ).filter { !kPopIDs.contains($0.id) }
         let affinityCandidates = highestAffinityArtists(
             in: snapshot,
             fallbackPool: pool,
@@ -3078,6 +3112,32 @@ enum PersonalizedMixBuilder {
         )
     }
 
+    private static func matchingSongs(
+        in pool: [Song],
+        searchableTexts: [String: String],
+        tokens: [String]
+    ) -> [Song] {
+        guard !tokens.isEmpty, !pool.isEmpty else { return [] }
+        var matches: [Song] = []
+        matches.reserveCapacity(min(pool.count, 256))
+        let chunkSize = 256
+        var index = 0
+        while index < pool.count {
+            if Task.isCancelled { return [] }
+            let end = min(index + chunkSize, pool.count)
+            for song in pool[index..<end] {
+                if containsAny(
+                    searchableTexts[song.id] ?? "",
+                    normalizedTokens: tokens
+                ) {
+                    matches.append(song)
+                }
+            }
+            index = end
+        }
+        return matches
+    }
+
     private static func moodMix(
         id: String,
         title: String,
@@ -3089,12 +3149,11 @@ enum PersonalizedMixBuilder {
         limit: Int
     ) -> PersonalizedMix {
         let tokens = normalizedTokens(tokens)
-        let matches = pool.filter { song in
-            containsAny(
-                searchableTexts[song.id] ?? "",
-                normalizedTokens: tokens
-            )
-        }
+        let matches = matchingSongs(
+            in: pool,
+            searchableTexts: searchableTexts,
+            tokens: tokens
+        )
         return PersonalizedMix(
             id: id,
             title: title,
@@ -3124,7 +3183,9 @@ enum PersonalizedMixBuilder {
             }
         }
         score(snapshot.mostPlayedSongs, value: 4)
-        score(snapshot.starredSongs, value: 3)
+        // Cap starred contribution so affinity scoring stays O(bounded) on
+        // huge libraries while remaining deterministic (stable prefix order).
+        score(Array(snapshot.starredSongs.prefix(2_048)), value: 3)
         score(snapshot.recommendedSongs, value: 1)
         for artist in snapshot.starredArtists where !artist.name.isEmpty {
             let key = normalized(artist.name)

@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Security
 
 enum SecureStoreError: LocalizedError, Sendable {
@@ -39,9 +40,11 @@ actor SecureStore {
     // against Keychain so a transient Security.framework read immediately
     // after a successful write cannot make the next actor think the key is
     // absent. This cache never replaces persistent Keychain storage and is
-    // discarded with the process.
-    private static let secretCacheLock = NSLock()
-    nonisolated(unsafe) private static var secretCache: [String: String] = [:]
+    // discarded with the process. OSAllocatedUnfairLock keeps the shared
+    // dictionary Sendable without nonisolated(unsafe).
+    private static let secretCache = OSAllocatedUnfairLock(
+        initialState: [String: String]()
+    )
 
     func save(_ credentials: ServerCredentials) throws {
         guard let data = try? JSONEncoder().encode(credentials) else {
@@ -243,21 +246,18 @@ actor SecureStore {
     }
 
     private static func cacheSecret(_ value: String, account: String) {
-        secretCacheLock.lock()
-        secretCache[cacheKey(account: account)] = value
-        secretCacheLock.unlock()
+        let key = cacheKey(account: account)
+        secretCache.withLock { $0[key] = value }
     }
 
     private static func cachedSecret(account: String) -> String? {
-        secretCacheLock.lock()
-        defer { secretCacheLock.unlock() }
-        return secretCache[cacheKey(account: account)]
+        let key = cacheKey(account: account)
+        return secretCache.withLock { $0[key] }
     }
 
     private static func removeCachedSecret(account: String) {
-        secretCacheLock.lock()
-        secretCache.removeValue(forKey: cacheKey(account: account))
-        secretCacheLock.unlock()
+        let key = cacheKey(account: account)
+        secretCache.withLock { $0.removeValue(forKey: key) }
     }
 
     private static func cacheKey(account: String) -> String {

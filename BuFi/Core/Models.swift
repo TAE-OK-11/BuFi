@@ -528,6 +528,8 @@ struct HomeSnapshot: Codable, Equatable, Sendable {
 
     // WritableKeyPath is a class and is not Sendable. These tables are
     // immutable after initialization and only used as collection indexes.
+    // Deferred: migrating away from WritableKeyPath would need a different
+    // snapshot-mutation API; not a safe drive-by change without Xcode.
     nonisolated(unsafe) static let songCollections:
         [WritableKeyPath<HomeSnapshot, [Song]>] = [
         \.starredSongs,
