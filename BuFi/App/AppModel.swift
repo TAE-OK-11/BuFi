@@ -411,6 +411,11 @@ final class AppModel: ObservableObject {
     private var pendingRefresh = false
     private var pendingRefreshForceFull = false
     private var pendingRefreshSilent = true
+    /// Home loads that raced an in-flight star/unstar wait here instead of
+    /// immediately re-entering `home()` in a tight loop.
+    private var pendingStarGatedRefresh = false
+    private var pendingStarGatedRefreshForceFull = false
+    private var pendingStarGatedRefreshSilent = true
     private let runtimeClock = ContinuousClock()
     private var lastFullRefresh: ContinuousClock.Instant?
     private static let connectSnapshotFreshness: TimeInterval = 300
@@ -613,6 +618,9 @@ final class AppModel: ObservableObject {
         pendingRefresh = false
         pendingRefreshForceFull = false
         pendingRefreshSilent = true
+        pendingStarGatedRefresh = false
+        pendingStarGatedRefreshForceFull = false
+        pendingStarGatedRefreshSilent = true
         lastFullRefresh = nil
         lastHomeSnapshotSave = nil
         lastExternalRecommendationIdentity = nil
@@ -655,6 +663,14 @@ final class AppModel: ObservableObject {
             enqueuePendingRefresh(forceFull: forceFull, silent: silent)
             return
         }
+        // Do not start a home network pass while star/unstar mutations are
+        // still in flight. Publishing that response would either be deferred
+        // or race the optimistic favorite overrides, and retrying immediately
+        // from `flushPendingRefresh` would storm `home()`.
+        if !starRequests.isEmpty {
+            enqueueStarGatedRefresh(forceFull: forceFull, silent: silent)
+            return
+        }
         let generation = sessionGeneration
         let revision = homeRevision
         let previousHome = home
@@ -693,8 +709,25 @@ final class AppModel: ObservableObject {
                 revision: revision
             )
             guard generation == sessionGeneration, self.client === client else { return }
-            if outcome == .deferredForStarMutations {
-                enqueuePendingRefresh(forceFull: needsFullRefresh, silent: silent)
+            switch outcome {
+            case .deferredForStarMutations:
+                enqueueStarGatedRefresh(
+                    forceFull: needsFullRefresh,
+                    silent: silent
+                )
+            case .aborted:
+                // A star mutation completed and bumped `homeRevision` while
+                // this load was in flight. Re-run once so the discarded
+                // snapshot is replaced instead of waiting for the next
+                // periodic sync.
+                if revision != homeRevision {
+                    enqueuePendingRefresh(
+                        forceFull: needsFullRefresh,
+                        silent: silent
+                    )
+                }
+            case .published:
+                break
             }
         } catch is CancellationError {
             return
@@ -715,6 +748,14 @@ final class AppModel: ObservableObject {
         pendingRefreshSilent = pendingRefreshSilent && silent
     }
 
+    private func enqueueStarGatedRefresh(forceFull: Bool, silent: Bool) {
+        pendingStarGatedRefresh = true
+        pendingStarGatedRefreshForceFull =
+            pendingStarGatedRefreshForceFull || forceFull
+        pendingStarGatedRefreshSilent =
+            pendingStarGatedRefreshSilent && silent
+    }
+
     private func flushPendingRefresh() {
         guard pendingRefresh else { return }
         let forceFull = pendingRefreshForceFull
@@ -723,6 +764,19 @@ final class AppModel: ObservableObject {
         pendingRefreshForceFull = false
         pendingRefreshSilent = true
         Task { await refresh(forceFull: forceFull, silent: silent) }
+    }
+
+    private func promoteStarGatedRefreshIfNeeded() {
+        guard pendingStarGatedRefresh, starRequests.isEmpty else { return }
+        let forceFull = pendingStarGatedRefreshForceFull
+        let silent = pendingStarGatedRefreshSilent
+        pendingStarGatedRefresh = false
+        pendingStarGatedRefreshForceFull = false
+        pendingStarGatedRefreshSilent = true
+        enqueuePendingRefresh(forceFull: forceFull, silent: silent)
+        if !refreshInFlight {
+            flushPendingRefresh()
+        }
     }
 
     func search(_ rawQuery: String) {
@@ -1597,12 +1651,14 @@ final class AppModel: ObservableObject {
                 // Invalidate a home request that may have started while this
                 // mutation was pending and captured a stale starred list.
                 homeRevision &+= 1
+                promoteStarGatedRefreshIfNeeded()
             }
             return StarMutationOutcome(succeeded: true, rollbackState: nil)
         } catch {
             let isLatestRequest = starRequests[key]?.token == token
             if isLatestRequest {
                 starRequests[key] = nil
+                promoteStarGatedRefreshIfNeeded()
             }
             guard isLatestRequest,
                   generation == sessionGeneration,
@@ -2022,6 +2078,9 @@ final class AppModel: ObservableObject {
         starRequests.removeAll(keepingCapacity: false)
         confirmedStarStates.removeAll(keepingCapacity: false)
         awaitingStarConfirmations.removeAll(keepingCapacity: false)
+        pendingStarGatedRefresh = false
+        pendingStarGatedRefreshForceFull = false
+        pendingStarGatedRefreshSilent = true
         favorites.removeAll()
     }
 
@@ -2789,6 +2848,9 @@ final class AppModel: ObservableObject {
         pendingRefresh = false
         pendingRefreshForceFull = false
         pendingRefreshSilent = true
+        pendingStarGatedRefresh = false
+        pendingStarGatedRefreshForceFull = false
+        pendingStarGatedRefreshSilent = true
         lastHomeSnapshotSave = nil
         isSearching = false
         clearFavoriteState()

@@ -2045,8 +2045,13 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func requestAutoplayContinuation(advanceWhenReady: Bool) {
+        // Shuffle may call this when the session has no remaining unplayed
+        // entries (`advanceWhenReady == true`). Allow that exhaustion path so
+        // autoplay can continue instead of immediately pausing. Speculative
+        // prefetch (`advanceWhenReady == false`) stays disabled during shuffle
+        // so linear lookahead does not fight the shuffle order.
         guard repeatMode == .off,
-              !isShuffleEnabled,
+              (!isShuffleEnabled || advanceWhenReady),
               algorithmicAutoplayEnabled,
               let seed = currentSong,
               seed.externalStreamURL == nil,
@@ -5334,11 +5339,30 @@ final class AudioEngine: NSObject, ObservableObject {
                 $0.externalStreamURL == nil
             }
             if restorationEnabled && containsOnlyServerSongs {
-                let saved = await AppDatabase.shared.saveQueue(
-                    snapshot,
+                var snapshotToSave = snapshot
+                var saved = await AppDatabase.shared.saveQueue(
+                    snapshotToSave,
                     scope: accountScope,
                     replacingItems: replacingItems
                 )
+                if !saved {
+                    queueSaveRevision &+= 1
+                    snapshotToSave = QueueSnapshot(
+                        entries: snapshot.entries,
+                        currentID: snapshot.currentID,
+                        currentQueueEntryID: snapshot.currentQueueEntryID,
+                        index: snapshot.index,
+                        elapsed: snapshot.elapsed,
+                        shuffle: snapshot.shuffle,
+                        repeatMode: snapshot.repeatMode,
+                        revision: queueSaveRevision
+                    )
+                    saved = await AppDatabase.shared.saveQueue(
+                        snapshotToSave,
+                        scope: accountScope,
+                        replacingItems: replacingItems
+                    )
+                }
                 guard !Task.isCancelled,
                       sessionGeneration == playbackSessionGeneration,
                       accountScope == currentAccountScope else { return }

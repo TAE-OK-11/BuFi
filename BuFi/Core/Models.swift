@@ -305,7 +305,9 @@ extension Song {
         bitDepth = try values.decodeIfPresent(Int.self, forKey: .bitDepth)
         channelCount = try values.decodeIfPresent(Int.self, forKey: .channelCount)
         size = try values.decodeIfPresent(Int64.self, forKey: .size)
-        starred = try values.decodeIfPresent(String.self, forKey: .starred)
+        starred = Self.normalizedStarred(
+            try values.decodeIfPresent(String.self, forKey: .starred)
+        )
         playCount = try values.decodeIfPresent(Int.self, forKey: .playCount)
         played = try values.decodeIfPresent(String.self, forKey: .played)
         genre = try values.decodeIfPresent(String.self, forKey: .genre)
@@ -319,6 +321,17 @@ extension Song {
             String.self,
             forKey: .externalStreamURL
         )
+    }
+
+    /// OpenSubsonic marks favorites with a timestamp string. An empty or
+    /// whitespace-only value is equivalent to "not starred" and must not flip
+    /// `isStarred` to true.
+    fileprivate static func normalizedStarred(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 
@@ -342,6 +355,63 @@ struct Album: Codable, Identifiable, Hashable, Sendable {
     var releaseTypes: [String]? = nil
 
     var isStarred: Bool { starred != nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, artist, coverArt, year, starred, playCount, played
+        case artistId, genre, musicBrainzId, songCount, releaseTypes
+    }
+
+    init(
+        id: String,
+        name: String,
+        artist: String,
+        coverArt: String? = nil,
+        year: Int? = nil,
+        starred: String? = nil,
+        playCount: Int? = nil,
+        played: String? = nil,
+        artistId: String? = nil,
+        genre: String? = nil,
+        musicBrainzId: String? = nil,
+        songCount: Int? = nil,
+        releaseTypes: [String]? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.artist = artist
+        self.coverArt = coverArt
+        self.year = year
+        self.starred = Song.normalizedStarred(starred)
+        self.playCount = playCount
+        self.played = played
+        self.artistId = artistId
+        self.genre = genre
+        self.musicBrainzId = musicBrainzId
+        self.songCount = songCount
+        self.releaseTypes = releaseTypes
+    }
+
+    /// OpenSubsonic AlbumID3 allows `artist` / `name` to be omitted. Decoding
+    /// missing display fields as empty keeps one incomplete album from
+    /// invalidating an otherwise usable list or search response.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? ""
+        artist = try values.decodeIfPresent(String.self, forKey: .artist) ?? ""
+        coverArt = try values.decodeIfPresent(String.self, forKey: .coverArt)
+        year = try values.decodeIfPresent(Int.self, forKey: .year)
+        starred = Song.normalizedStarred(
+            try values.decodeIfPresent(String.self, forKey: .starred)
+        )
+        playCount = try values.decodeIfPresent(Int.self, forKey: .playCount)
+        played = try values.decodeIfPresent(String.self, forKey: .played)
+        artistId = try values.decodeIfPresent(String.self, forKey: .artistId)
+        genre = try values.decodeIfPresent(String.self, forKey: .genre)
+        musicBrainzId = try values.decodeIfPresent(String.self, forKey: .musicBrainzId)
+        songCount = try values.decodeIfPresent(Int.self, forKey: .songCount)
+        releaseTypes = try values.decodeIfPresent([String].self, forKey: .releaseTypes)
+    }
 }
 
 struct Artist: Codable, Identifiable, Hashable, Sendable {
@@ -353,6 +423,38 @@ struct Artist: Codable, Identifiable, Hashable, Sendable {
     var musicBrainzId: String? = nil
 
     var isStarred: Bool { starred != nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, coverArt, albumCount, starred, musicBrainzId
+    }
+
+    init(
+        id: String,
+        name: String,
+        coverArt: String? = nil,
+        albumCount: Int? = nil,
+        starred: String? = nil,
+        musicBrainzId: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.coverArt = coverArt
+        self.albumCount = albumCount
+        self.starred = Song.normalizedStarred(starred)
+        self.musicBrainzId = musicBrainzId
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? ""
+        coverArt = try values.decodeIfPresent(String.self, forKey: .coverArt)
+        albumCount = try values.decodeIfPresent(Int.self, forKey: .albumCount)
+        starred = Song.normalizedStarred(
+            try values.decodeIfPresent(String.self, forKey: .starred)
+        )
+        musicBrainzId = try values.decodeIfPresent(String.self, forKey: .musicBrainzId)
+    }
 }
 
 struct Playlist: Codable, Identifiable, Hashable, Sendable {

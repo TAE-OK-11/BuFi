@@ -575,14 +575,12 @@ private final class RecommendationSectionsCache: @unchecked Sendable {
             sections: sections
         )
         if values.count > 24 {
-            let retained = values.sorted {
-                $0.value.accessOrdinal > $1.value.accessOrdinal
+            while values.count > 16,
+                  let victim = values.min(by: {
+                      $0.value.accessOrdinal < $1.value.accessOrdinal
+                  })?.key {
+                values[victim] = nil
             }
-            values = Dictionary(
-                uniqueKeysWithValues: retained.prefix(16).map {
-                    ($0.key, $0.value)
-                }
-            )
         }
         lock.unlock()
     }
@@ -603,14 +601,12 @@ private final class RecommendationSectionsCache: @unchecked Sendable {
             Int((Double(values.count) * fraction).rounded(.down))
         )
         guard values.count > targetCount else { return }
-        let retained = values.sorted {
-            $0.value.accessOrdinal > $1.value.accessOrdinal
+        while values.count > targetCount,
+              let victim = values.min(by: {
+                  $0.value.accessOrdinal < $1.value.accessOrdinal
+              })?.key {
+            values[victim] = nil
         }
-        values = Dictionary(
-            uniqueKeysWithValues: retained.prefix(targetCount).map {
-                ($0.key, $0.value)
-            }
-        )
     }
 }
 
@@ -671,14 +667,12 @@ private final class RecommendationMixCache: @unchecked Sendable {
             songs: songs
         )
         if values.count > 48 {
-            let retained = values.sorted {
-                return $0.value.accessOrdinal > $1.value.accessOrdinal
+            while values.count > 32,
+                  let victim = values.min(by: {
+                      $0.value.accessOrdinal < $1.value.accessOrdinal
+                  })?.key {
+                values[victim] = nil
             }
-            values = Dictionary(
-                uniqueKeysWithValues: retained.prefix(32).map {
-                    ($0.key, $0.value)
-                }
-            )
         }
         lock.unlock()
     }
@@ -699,14 +693,12 @@ private final class RecommendationMixCache: @unchecked Sendable {
             Int((Double(values.count) * fraction).rounded(.down))
         )
         guard values.count > targetCount else { return }
-        let retained = values.sorted {
-            $0.value.accessOrdinal > $1.value.accessOrdinal
+        while values.count > targetCount,
+              let victim = values.min(by: {
+                  $0.value.accessOrdinal < $1.value.accessOrdinal
+              })?.key {
+            values[victim] = nil
         }
-        values = Dictionary(
-            uniqueKeysWithValues: retained.prefix(targetCount).map {
-                ($0.key, $0.value)
-            }
-        )
     }
 }
 

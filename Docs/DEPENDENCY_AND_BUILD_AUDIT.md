@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-09-02
+Audit date: 2026-09-05 (re-validated; prior audit 2026-09-02)
 
 ## Decisions
 
@@ -39,8 +39,9 @@ toolchain jobs.
 and release build; pass `--check-upstream` locally (with the GitHub CLI) to
 confirm the pinned versions still match each package's latest GitHub release.
 
-As of the 2026-09-02 audit, every linked package and the XcodeGen 2.46.0
-build tool are already on their latest stable releases:
+As of the 2026-09-05 re-validation, every linked package and the XcodeGen 2.46.0
+build tool remain on their latest stable releases. No pin changes were required
+for this phase.
 
 | Package | Pinned | Latest release |
 | --- | --- | --- |

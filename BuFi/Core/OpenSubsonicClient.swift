@@ -827,7 +827,9 @@ actor OpenSubsonicClient {
     private let session: URLSession
     private nonisolated let swiftSonic: SwiftSonicClient
     private let retryPolicy = ReadRequestRetryPolicy()
-    private let authenticationQueryItems: [URLQueryItem]
+    /// API-key auth items are fixed for the session. Password auth generates a
+    /// fresh salt and token on every request per the Subsonic specification.
+    private let cachedAPIKeyAuthenticationItems: [URLQueryItem]?
     private var extensionRegistry: OpenSubsonicExtensionRegistry?
     private var extensionRegistryBackoffUntil: ContinuousClock.Instant?
     private var inFlightExtensionRegistryLoad: Task<OpenSubsonicExtensionRegistry, Never>?
@@ -966,16 +968,21 @@ actor OpenSubsonicClient {
         )
         self.credentials = normalizedCredentials
         self.accountScope = AccountScope.identifier(for: normalizedCredentials)
-        self.authenticationQueryItems = Self.makeAuthenticationItems(
-            for: normalizedCredentials
-        )
+        switch normalizedCredentials.resolvedAuthMethod {
+        case .apiKey:
+            self.cachedAPIKeyAuthenticationItems = Self.makeAPIKeyAuthenticationItems(
+                for: normalizedCredentials
+            )
+        case .password:
+            self.cachedAPIKeyAuthenticationItems = nil
+        }
         let auth: AuthMethod
         switch normalizedCredentials.resolvedAuthMethod {
         case .password:
             auth = .tokenAuth(
                 username: username,
                 password: credentials.password,
-                reusesSalt: true
+                reusesSalt: false
             )
         case .apiKey:
             auth = .apiKey(credentials.password)
@@ -1052,7 +1059,7 @@ actor OpenSubsonicClient {
             requestTimeout: requestTimeout,
             resourceTimeout: resourceTimeout
         )
-        defer { Task { await client.shutdown() } }
+        defer { await client.shutdown() }
         let username = try await client.tokenInfo()
         guard !username.isEmpty else {
             throw OpenSubsonicError.invalidAPIKey
@@ -1060,39 +1067,44 @@ actor OpenSubsonicClient {
         return username
     }
 
-    private static func makeAuthenticationItems(
+    private static func makeAPIKeyAuthenticationItems(
         for credentials: ServerCredentials
     ) -> [URLQueryItem] {
-        switch credentials.resolvedAuthMethod {
-        case .apiKey:
-            return [
-                URLQueryItem(name: "apiKey", value: credentials.password),
-                URLQueryItem(name: "v", value: Self.apiVersion),
-                URLQueryItem(name: "c", value: Self.clientName)
-            ]
-        case .password:
-            // Subsonic token authentication does not require a new salt for every
-            // request. Keep one random pair for this client session, matching the
-            // SwiftSonic `reusesSalt` configuration used by the same account.
-            let salt = (0..<12)
-                .map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }
-                .joined()
-            let tokenData = Data((credentials.password + salt).utf8)
-            let token = Insecure.MD5.hash(data: tokenData)
-                .map { String(format: "%02hhx", $0) }
-                .joined()
-            return [
-                URLQueryItem(name: "u", value: credentials.username),
-                URLQueryItem(name: "s", value: salt),
-                URLQueryItem(name: "t", value: token),
-                URLQueryItem(name: "v", value: Self.apiVersion),
-                URLQueryItem(name: "c", value: Self.clientName)
-            ]
-        }
+        [
+            URLQueryItem(name: "apiKey", value: credentials.password),
+            URLQueryItem(name: "v", value: Self.apiVersion),
+            URLQueryItem(name: "c", value: Self.clientName)
+        ]
+    }
+
+    private static func makePasswordAuthenticationItems(
+        username: String,
+        password: String
+    ) -> [URLQueryItem] {
+        let salt = (0..<12)
+            .map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }
+            .joined()
+        let tokenData = Data((password + salt).utf8)
+        let token = Insecure.MD5.hash(data: tokenData)
+            .map { String(format: "%02hhx", $0) }
+            .joined()
+        return [
+            URLQueryItem(name: "u", value: username),
+            URLQueryItem(name: "s", value: salt),
+            URLQueryItem(name: "t", value: token),
+            URLQueryItem(name: "v", value: Self.apiVersion),
+            URLQueryItem(name: "c", value: Self.clientName)
+        ]
     }
 
     private func authenticationItems() -> [URLQueryItem] {
-        authenticationQueryItems
+        if let cachedAPIKeyAuthenticationItems {
+            return cachedAPIKeyAuthenticationItems
+        }
+        return Self.makePasswordAuthenticationItems(
+            username: credentials.username,
+            password: credentials.password
+        )
     }
 
     func endpointURL(
@@ -1222,7 +1234,7 @@ actor OpenSubsonicClient {
             for: endpoint,
             queryItems: queryItems
         )
-        beginMutation(impact)
+        await beginMutation(impact)
         do {
             let request = try formRequest(endpoint, queryItems: queryItems)
             let response = try await responseData(
@@ -1289,7 +1301,7 @@ actor OpenSubsonicClient {
                     allowsCachedResponse: allowsCachedResponse
                 )
             case .mutation(let impact):
-                beginMutation(impact)
+                await beginMutation(impact)
                 let url = try endpointURL(endpoint, queryItems: queryItems)
                 response = try await responseData(
                     from: url,
@@ -1630,6 +1642,22 @@ actor OpenSubsonicClient {
         }
     }
 
+    /// Retries starred fetches once so incremental home sync does not keep
+    /// stale favorites after a single transient failure.
+    private func starredPayloadResilient() async throws -> StarredPayload? {
+        let endpoints = SubsonicCompatibilityPolicy.starredEndpoints(for: apiFamily)
+        if let payload = try await starredPayload(from: endpoints),
+           payload.container != nil {
+            return payload
+        }
+        try await Task.sleep(for: .milliseconds(400))
+        return try await starredPayload(from: endpoints)
+    }
+
+    private func starredPayload(from endpoints: [String]) async throws -> StarredPayload? {
+        try await bestEffortWithFallback(endpoints)
+    }
+
     @concurrent
     private static func decodeStatusEnvelope(_ data: Data) async throws -> StatusEnvelope {
         try Task.checkCancellation()
@@ -1831,7 +1859,7 @@ actor OpenSubsonicClient {
         }
     }
 
-    private func beginMutation(_ impact: OpenSubsonicMutationImpact) {
+    private func beginMutation(_ impact: OpenSubsonicMutationImpact) async {
         cacheRevisionState.begin(impact)
         let dependencies = impact.invalidatedDependencies
         guard !dependencies.isEmpty else { return }
@@ -1840,9 +1868,7 @@ actor OpenSubsonicClient {
         inFlightSongRequests.removeAll(keepingCapacity: false)
         playbackMetadataCache.removeAll(keepingCapacity: false)
         let scope = accountScope
-        Task(priority: .utility) {
-            await AppDatabase.shared.clearPlaybackMetadata(scope: scope)
-        }
+        _ = await AppDatabase.shared.clearPlaybackMetadata(scope: scope)
         responseCache.removeAll(affecting: dependencies)
         let invalidDecodedKeys = decodedResponseCache.compactMap { key, entry in
             entry.dependencies.isDisjoint(with: dependencies) ? nil : key
@@ -2293,21 +2319,15 @@ actor OpenSubsonicClient {
     }
 
     private func enforceDecodedResponseCacheLimits() {
-        guard decodedResponseCache.count > Self.decodedResponseCacheLimit
+        while decodedResponseCache.count > Self.decodedResponseCacheLimit
                 || decodedResponseCacheByteCount
-                    > Self.decodedResponseCacheByteLimit else {
-            return
-        }
-        let victims = decodedResponseCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .map(\.key)
-        for key in victims {
-            guard decodedResponseCache.count > Self.decodedResponseCacheLimit
-                    || decodedResponseCacheByteCount
-                        > Self.decodedResponseCacheByteLimit else {
+                    > Self.decodedResponseCacheByteLimit {
+            guard let victim = decodedResponseCache.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
                 break
             }
-            removeDecodedResponse(for: key)
+            removeDecodedResponse(for: victim)
         }
     }
 
@@ -2703,9 +2723,7 @@ actor OpenSubsonicClient {
         async let recent: AlbumListPayload? = albumList("newest", size: "16")
         async let recentlyPlayed: AlbumListPayload? = albumList("recent", size: "16")
         async let frequent: AlbumListPayload? = albumList("frequent", size: "16")
-        async let starred: StarredPayload? = bestEffortWithFallback(
-            SubsonicCompatibilityPolicy.starredEndpoints(for: apiFamily)
-        )
+        async let starred: StarredPayload? = starredPayloadResilient()
         async let playlists: PlaylistsPayload? = bestEffortRequest("getPlaylists")
 
         let values = try await (recent, recentlyPlayed, frequent, starred, playlists)
@@ -3076,7 +3094,7 @@ actor OpenSubsonicClient {
             for: endpoint,
             queryItems: queryItems
         )
-        beginMutation(impact)
+        await beginMutation(impact)
         defer { finishMutation(impact) }
         guard let url = try? endpointURL(endpoint, queryItems: queryItems) else {
             throw OpenSubsonicError.invalidServerURL
@@ -3523,18 +3541,15 @@ actor OpenSubsonicClient {
     }
 
     private func enforcePlaybackMetadataCacheLimits(excluding protectedID: String) {
-        guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit else {
-            return
-        }
-        let victims = playbackMetadataCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .map(\.key)
-            .filter { $0 != protectedID }
-        for key in victims {
-            guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit else {
+        while playbackMetadataCache.count > Self.playbackMetadataMemoryLimit {
+            guard let victim = playbackMetadataCache.min(by: { lhs, rhs in
+                if lhs.key == protectedID { return false }
+                if rhs.key == protectedID { return true }
+                return lhs.value.accessOrdinal < rhs.value.accessOrdinal
+            })?.key, victim != protectedID else {
                 break
             }
-            playbackMetadataCache.removeValue(forKey: key)
+            playbackMetadataCache.removeValue(forKey: victim)
         }
     }
 
@@ -3871,12 +3886,13 @@ actor OpenSubsonicClient {
         )
         let removeCount = decodedResponseCache.count - targetCount
         guard removeCount > 0 else { return }
-        let victims = decodedResponseCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .prefix(removeCount)
-            .map(\.key)
-        for key in victims {
-            removeDecodedResponse(for: key)
+        for _ in 0..<removeCount {
+            guard let victim = decodedResponseCache.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
+                break
+            }
+            removeDecodedResponse(for: victim)
         }
     }
 
@@ -3888,12 +3904,13 @@ actor OpenSubsonicClient {
         )
         let removeCount = playbackMetadataCache.count - targetCount
         guard removeCount > 0 else { return }
-        let victims = playbackMetadataCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .prefix(removeCount)
-            .map(\.key)
-        for key in victims {
-            playbackMetadataCache.removeValue(forKey: key)
+        for _ in 0..<removeCount {
+            guard let victim = playbackMetadataCache.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
+                break
+            }
+            playbackMetadataCache.removeValue(forKey: victim)
         }
     }
 
@@ -4243,7 +4260,7 @@ actor OpenSubsonicClient {
         let songs = queue?.entry ?? []
         let currentID = queue?.current
         let currentIndex = currentID.flatMap { id in
-            songs.indices.last { songs[$0].id == id }
+            songs.indices.first { songs[$0].id == id }
         }
         return ServerPlayQueue(
             songs: songs,
