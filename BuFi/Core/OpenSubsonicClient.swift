@@ -2319,21 +2319,15 @@ actor OpenSubsonicClient {
     }
 
     private func enforceDecodedResponseCacheLimits() {
-        guard decodedResponseCache.count > Self.decodedResponseCacheLimit
+        while decodedResponseCache.count > Self.decodedResponseCacheLimit
                 || decodedResponseCacheByteCount
-                    > Self.decodedResponseCacheByteLimit else {
-            return
-        }
-        let victims = decodedResponseCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .map(\.key)
-        for key in victims {
-            guard decodedResponseCache.count > Self.decodedResponseCacheLimit
-                    || decodedResponseCacheByteCount
-                        > Self.decodedResponseCacheByteLimit else {
+                    > Self.decodedResponseCacheByteLimit {
+            guard let victim = decodedResponseCache.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
                 break
             }
-            removeDecodedResponse(for: key)
+            removeDecodedResponse(for: victim)
         }
     }
 
@@ -3547,18 +3541,15 @@ actor OpenSubsonicClient {
     }
 
     private func enforcePlaybackMetadataCacheLimits(excluding protectedID: String) {
-        guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit else {
-            return
-        }
-        let victims = playbackMetadataCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .map(\.key)
-            .filter { $0 != protectedID }
-        for key in victims {
-            guard playbackMetadataCache.count > Self.playbackMetadataMemoryLimit else {
+        while playbackMetadataCache.count > Self.playbackMetadataMemoryLimit {
+            guard let victim = playbackMetadataCache.min(by: { lhs, rhs in
+                if lhs.key == protectedID { return false }
+                if rhs.key == protectedID { return true }
+                return lhs.value.accessOrdinal < rhs.value.accessOrdinal
+            })?.key, victim != protectedID else {
                 break
             }
-            playbackMetadataCache.removeValue(forKey: key)
+            playbackMetadataCache.removeValue(forKey: victim)
         }
     }
 
@@ -3895,12 +3886,13 @@ actor OpenSubsonicClient {
         )
         let removeCount = decodedResponseCache.count - targetCount
         guard removeCount > 0 else { return }
-        let victims = decodedResponseCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .prefix(removeCount)
-            .map(\.key)
-        for key in victims {
-            removeDecodedResponse(for: key)
+        for _ in 0..<removeCount {
+            guard let victim = decodedResponseCache.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
+                break
+            }
+            removeDecodedResponse(for: victim)
         }
     }
 
@@ -3912,12 +3904,13 @@ actor OpenSubsonicClient {
         )
         let removeCount = playbackMetadataCache.count - targetCount
         guard removeCount > 0 else { return }
-        let victims = playbackMetadataCache
-            .sorted { $0.value.accessOrdinal < $1.value.accessOrdinal }
-            .prefix(removeCount)
-            .map(\.key)
-        for key in victims {
-            playbackMetadataCache.removeValue(forKey: key)
+        for _ in 0..<removeCount {
+            guard let victim = playbackMetadataCache.min(
+                by: { $0.value.accessOrdinal < $1.value.accessOrdinal }
+            )?.key else {
+                break
+            }
+            playbackMetadataCache.removeValue(forKey: victim)
         }
     }
 

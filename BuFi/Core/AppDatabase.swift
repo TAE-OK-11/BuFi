@@ -608,7 +608,7 @@ actor AppDatabase {
         }
     }
 
-    func loadListeningHistory(scope: String) async -> [String: SongBehavior] {
+    func loadListeningHistory(scope: String) async throws -> [String: SongBehavior] {
         guard let pool = await databasePool() else { return [:] }
         do {
             let stored = try await pool.read { db in
@@ -646,7 +646,9 @@ actor AppDatabase {
                     )
                 }
             }
-            return await Self.decodeListeningHistoryConcurrently(stored)
+            return try await Self.decodeListeningHistoryConcurrently(stored)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return [:]
         }
@@ -1660,13 +1662,13 @@ actor AppDatabase {
     @concurrent
     private static func decodeListeningHistoryConcurrently(
         _ stored: [StoredListeningBehavior]
-    ) async -> [String: SongBehavior] {
-        guard !Task.isCancelled else { return [:] }
+    ) async throws -> [String: SongBehavior] {
+        try Task.checkCancellation()
         var result: [String: SongBehavior] = [:]
         result.reserveCapacity(stored.count)
         let decoder = propertyListDecoder
         for (index, item) in stored.enumerated() {
-            if index.isMultiple(of: 32), Task.isCancelled { return [:] }
+            if index.isMultiple(of: 32) { try Task.checkCancellation() }
             guard let song = try? decoder.decode(Song.self, from: item.songData),
                   song.id == item.songID else {
                 continue

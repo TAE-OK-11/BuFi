@@ -285,7 +285,15 @@ actor ListeningHistoryStore {
             guard generation == scopeGeneration, activeScope == nil else { return nil }
         }
 
-        var loaded = await AppDatabase.shared.loadListeningHistory(scope: accountScope)
+        var loaded: [String: SongBehavior]
+        do {
+            loaded = try await AppDatabase.shared.loadListeningHistory(scope: accountScope)
+        } catch {
+            // Cancellation must not look like an empty history (legacy migrate /
+            // wipe). Other decode/DB failures already map to [:] inside AppDatabase.
+            if error is CancellationError { return nil }
+            loaded = [:]
+        }
         guard generation == scopeGeneration, activeScope == nil else { return nil }
         if loaded.isEmpty,
            let legacyEntries = loadLegacyEntries(accountScope: accountScope) {

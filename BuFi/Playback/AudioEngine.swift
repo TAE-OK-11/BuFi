@@ -2045,8 +2045,13 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func requestAutoplayContinuation(advanceWhenReady: Bool) {
+        // Shuffle may call this when the session has no remaining unplayed
+        // entries (`advanceWhenReady == true`). Allow that exhaustion path so
+        // autoplay can continue instead of immediately pausing. Speculative
+        // prefetch (`advanceWhenReady == false`) stays disabled during shuffle
+        // so linear lookahead does not fight the shuffle order.
         guard repeatMode == .off,
-              !isShuffleEnabled,
+              (!isShuffleEnabled || advanceWhenReady),
               algorithmicAutoplayEnabled,
               let seed = currentSong,
               seed.externalStreamURL == nil,
