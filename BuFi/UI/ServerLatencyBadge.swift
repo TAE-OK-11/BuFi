@@ -15,22 +15,19 @@ struct ServerLatencyBadge: View {
         Button {
             startMeasurement(force: true)
         } label: {
-            VStack(alignment: .trailing, spacing: 5) {
-                statusIcon
-                HStack(spacing: 4) {
-                    if isMeasuring {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else {
-                        Image(systemName: "network")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
-                    Text(latencyText)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
+            HStack(spacing: 4) {
+                if isMeasuring {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "network")
+                        .font(.system(size: 10, weight: .semibold))
                 }
-                .foregroundStyle(measurementFailed ? .secondary : BuFiTheme.accent)
+                Text(latencyText)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
             }
+            .foregroundStyle(measurementFailed ? .secondary : BuFiTheme.accent)
             .contentShape(Rectangle())
         }
         .buttonStyle(BuFiPressStyle())
@@ -53,21 +50,6 @@ struct ServerLatencyBadge: View {
         }
     }
 
-    @ViewBuilder
-    private var statusIcon: some View {
-        if measurementFailed {
-            Image(systemName: "exclamationmark.circle.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("서버 Ping 측정 불안정")
-        } else {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(BuFiTheme.accent)
-                .accessibilityLabel("서버 연결됨")
-        }
-    }
-
     private var latencyText: String {
         // Keep the last healthy value visible while a refresh is in progress.
         // This avoids replacing useful information with a transient “Ping”.
@@ -85,6 +67,9 @@ struct ServerLatencyBadge: View {
         }
         if measurementFailed, latencyMilliseconds != nil {
             return "\(latencyText), 마지막 정상 측정값"
+        }
+        if measurementFailed {
+            return "측정 실패, 재시도"
         }
         return latencyText
     }
