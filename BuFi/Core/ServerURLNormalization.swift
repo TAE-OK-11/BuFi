@@ -1,10 +1,11 @@
 import Foundation
 
-/// Canonical HTTPS server-address parsing for login and the OpenSubsonic client.
+/// Canonical server-address parsing for login and the OpenSubsonic client.
 ///
 /// Users type hosts, reverse-proxy paths, and sometimes a trailing `/rest`.
 /// The client always appends `/rest/<endpoint>.view`, so this type keeps the
-/// real base path and drops a duplicated REST suffix.
+/// real base path and drops a duplicated REST suffix. Explicit HTTP and HTTPS
+/// schemes are both preserved; addresses without a scheme default to HTTPS.
 enum ServerURLNormalization {
     enum Outcome: Equatable, Sendable {
         case success(URL)
@@ -27,10 +28,7 @@ enum ServerURLNormalization {
             return .invalid
         }
         let scheme = components.scheme?.lowercased() ?? ""
-        if scheme == "http" {
-            return .insecure
-        }
-        guard scheme == "https" else { return .invalid }
+        guard scheme == "http" || scheme == "https" else { return .invalid }
         if components.user != nil || components.password != nil {
             return .credentialsInURL
         }
@@ -39,7 +37,7 @@ enum ServerURLNormalization {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !host.isEmpty else { return .invalid }
 
-        components.scheme = "https"
+        components.scheme = scheme
         components.host = host.lowercased()
         components.user = nil
         components.password = nil
