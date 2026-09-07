@@ -3,10 +3,14 @@ import Foundation
 import OSLog
 #endif
 
-/// Prevents authenticated requests from following an HTTPS-to-HTTP redirect.
-/// OpenSubsonic credentials are carried in query parameters, so rejecting a
-/// downgrade before URLSession follows it avoids leaking them to cleartext HTTP.
+/// Allows HTTP and HTTPS servers while preventing an authenticated HTTPS
+/// request from being redirected down to cleartext HTTP.
 ///
+/// OpenSubsonic credentials are carried in query parameters, so an HTTPS -> HTTP
+/// downgrade is still rejected before URLSession follows it. HTTP -> HTTP,
+/// HTTP -> HTTPS, and HTTPS -> HTTPS redirects remain allowed.
+///
+/// The legacy type name is retained to avoid unnecessary churn at call sites.
 /// `@unchecked Sendable` is retained because `NSObject` is not Sendable while
 /// `URLSession` requires its delegate to cross executors. The type is immutable
 /// after init (no stored mutable state), so the annotation is a language/bridge
@@ -26,14 +30,23 @@ final class HTTPSOnlyURLSessionDelegate: NSObject, URLSessionTaskDelegate, @unch
         newRequest request: URLRequest,
         completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
-        guard request.url?.scheme?.lowercased() == "https" else {
+        guard let targetScheme = request.url?.scheme?.lowercased(),
+              targetScheme == "http" || targetScheme == "https" else {
             completionHandler(nil)
             return
         }
+
+        let sourceRequest = task.currentRequest ?? task.originalRequest
+        let sourceScheme = sourceRequest?.url?.scheme?.lowercased()
+        if sourceScheme == "https" && targetScheme == "http" {
+            completionHandler(nil)
+            return
+        }
+
         var redirectedRequest = request
         ModernNetworkPolicy.prepareRedirect(
             &redirectedRequest,
-            inheriting: task.originalRequest ?? task.currentRequest
+            inheriting: sourceRequest
         )
         completionHandler(redirectedRequest)
     }
