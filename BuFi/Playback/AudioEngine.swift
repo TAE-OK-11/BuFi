@@ -3323,18 +3323,30 @@ final class AudioEngine: NSObject, ObservableObject {
     }
 
     private func playbackPrefetchPlan(
+        maximumUpcoming: Int? = nil,
         permitsPendingPlayback: Bool = false
     ) -> PlaybackPrefetchPlan? {
-        PlaybackPrefetchPlan.make(
+        let isActivelyPlaying =
+            wantsPlayback && (
+                permitsPendingPlayback
+                    || player.timeControlStatus == .playing
+            )
+        if let maximumUpcoming {
+            return PlaybackPrefetchPlan.make(
+                currentSong: currentSong,
+                queue: queue,
+                queueIndex: queueIndex,
+                quality: quality,
+                maximumUpcoming: maximumUpcoming,
+                isActivelyPlaying: isActivelyPlaying
+            )
+        }
+        return PlaybackPrefetchPlan.make(
             currentSong: currentSong,
             queue: queue,
             queueIndex: queueIndex,
             quality: quality,
-            isActivelyPlaying:
-                wantsPlayback && (
-                    permitsPendingPlayback
-                        || player.timeControlStatus == .playing
-                )
+            isActivelyPlaying: isActivelyPlaying
         )
     }
 
@@ -3450,8 +3462,18 @@ final class AudioEngine: NSObject, ObservableObject {
             cancelOfflinePrefetch(resetKey: true)
             return
         }
+        let configured = UserDefaults.standard.integer(forKey: "offline-prefetch-count")
+        let configuredCount =
+            UserDefaults.standard.object(forKey: "offline-prefetch-count") == nil
+                ? 0
+                : configured
+        let cappedCount = min(
+            max(configuredCount, 0),
+            UpcomingPlaybackPrefetchPolicy.maximumBatchSize
+        )
         let thermalState = ProcessInfo.processInfo.thermalState
-        guard !ProcessInfo.processInfo.isLowPowerModeEnabled,
+        guard cappedCount > 0,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled,
               thermalState != .serious,
               thermalState != .critical else {
             cancelOfflinePrefetch(resetKey: true)
@@ -3459,7 +3481,7 @@ final class AudioEngine: NSObject, ObservableObject {
         }
         guard allowsSpeculativeNetworkPrefetch,
               let client,
-              let plan = playbackPrefetchPlan() else {
+              let plan = playbackPrefetchPlan(maximumUpcoming: cappedCount) else {
             cancelOfflinePrefetch(resetKey: true)
             return
         }
@@ -3480,19 +3502,26 @@ final class AudioEngine: NSObject, ObservableObject {
             let candidates = plan.upcomingSongs.filter {
                 self.shouldPrefetchPlaybackCache(for: $0)
             }
-            guard let song = candidates.first else { return }
-            guard !Task.isCancelled else { return }
-            if await OfflineStore.shared.localURL(for: song) != nil {
-                self.markPlaybackPrefetchFinished(for: song.id, cached: true)
-                return
+            guard !candidates.isEmpty else { return }
+            for song in candidates {
+                guard !Task.isCancelled else { return }
+                if await OfflineStore.shared.localURL(for: song) != nil {
+                    self.markPlaybackPrefetchFinished(for: song.id, cached: true)
+                    continue
+                }
+                self.markPlaybackPrefetchStarted(for: song.id)
+                let cached = await OfflineStore.shared.prefetchPlaybackCache(
+                    song: song,
+                    client: client
+                )
+                self.markPlaybackPrefetchFinished(for: song.id, cached: cached)
             }
-            self.markPlaybackPrefetchStarted(for: song.id)
-            let cached = await OfflineStore.shared.prefetchPlaybackCache(
-                song: song,
-                client: client
-            )
-            self.markPlaybackPrefetchFinished(for: song.id, cached: cached)
         }
+    }
+
+    func refreshOfflinePrefetchPreference() {
+        cancelOfflinePrefetch(resetKey: true)
+        scheduleSpeculativePrefetchAfterPlaybackStability()
     }
 
 
