@@ -108,6 +108,8 @@ targets:
           - ko
           - en
           - ja
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIBackgroundModes:
