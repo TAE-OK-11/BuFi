@@ -263,12 +263,18 @@ struct LoginView: View {
         }
         let persisted = ServerURLNormalization.persistedServerURL(from: url)
         extensionDiscoveryTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
             guard let registry = await OpenSubsonicPublicDiscovery.fetchExtensions(
                 serverURL: persisted
             ) else {
                 return
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  ServerURLNormalization.url(from: server) == url else { return }
             discoveredExtensions = registry
             serverSupportsAPIKey = registry.supports(
                 OpenSubsonicExtensionName.apiKeyAuthentication
@@ -294,13 +300,15 @@ struct LoginView: View {
         session.errorMessage = nil
         let submittedPassword = password
         let submittedAuthMethod = authMethod
+        let submittedExtensions = discoveredExtensions
+        extensionDiscoveryTask?.cancel()
         loginTask = Task {
             await model.login(
                 serverURL: ServerURLNormalization.persistedServerURL(from: url),
                 username: trimmedUsername,
                 password: submittedPassword,
                 authMethod: submittedAuthMethod,
-                discoveredExtensions: discoveredExtensions
+                discoveredExtensions: submittedExtensions
             )
             isSubmitting = false
             loginTask = nil

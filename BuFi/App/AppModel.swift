@@ -469,6 +469,7 @@ final class AppModel: ObservableObject {
     func bootstrapIfNeeded() async {
         guard bootstrapState == .idle else { return }
         bootstrapState = .running
+        let bootstrapGeneration = sessionGeneration
         LaunchDiagnostics.mark("credential-bootstrap-starting")
         let stored = await secureStore.loadBootstrapState(
             lastFMAccount: Self.lastFMKeyAccount,
@@ -478,6 +479,7 @@ final class AppModel: ObservableObject {
             bootstrapState = .idle
             return
         }
+        guard bootstrapGeneration == sessionGeneration else { return }
         hasLastFMAPIKey = stored.hasLastFMKey
         hasListenBrainzToken = stored.hasListenBrainzToken
         LaunchDiagnostics.mark("credential-bootstrap-loaded")
@@ -485,6 +487,8 @@ final class AppModel: ObservableObject {
             let seed = await OpenSubsonicPublicDiscovery.fetchExtensions(
                 serverURL: credentials.serverURL
             )
+            guard !Task.isCancelled,
+                  bootstrapGeneration == sessionGeneration else { return }
             await connect(
                 credentials,
                 persist: false,
@@ -511,7 +515,9 @@ final class AppModel: ObservableObject {
     ) async {
         guard !loginInFlight else { return }
         loginInFlight = true
+        let loginGeneration = sessionGeneration
         defer { loginInFlight = false }
+        guard !Task.isCancelled else { return }
         let normalizedURL: URL
         do {
             normalizedURL = try ServerURLNormalization.resolvedURL(from: serverURL)
@@ -532,15 +538,18 @@ final class AppModel: ObservableObject {
                     credentials: credentials
                 )
             } catch let error as OpenSubsonicError {
+                guard !Task.isCancelled, loginGeneration == sessionGeneration else { return }
                 sessionState = .signedOut
                 errorMessage = error.localizedDescription
                 return
             } catch {
+                guard !Task.isCancelled, loginGeneration == sessionGeneration else { return }
                 sessionState = .signedOut
                 errorMessage = error.localizedDescription
                 return
             }
         }
+        guard !Task.isCancelled, loginGeneration == sessionGeneration else { return }
         await connect(
             credentials,
             persist: true,

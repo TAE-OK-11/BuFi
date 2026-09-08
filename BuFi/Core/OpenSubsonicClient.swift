@@ -938,7 +938,12 @@ actor OpenSubsonicClient {
     private var playbackMetadataCache: [String: PlaybackMetadataCacheEntry] = [:]
     private var playbackMetadataAccessClock: UInt64 = 0
     private var playbackMetadataMutationGeneration: UInt64 = 0
-    private var inFlightSongRequests: [String: Task<Song, Error>] = [:]
+    private struct InFlightSongRequest {
+        let token: UUID
+        let task: Task<Song, Error>
+    }
+
+    private var inFlightSongRequests: [String: InFlightSongRequest] = [:]
 
     private struct ServerRecommendationSources: Sendable {
         var sonic: [Song] = []
@@ -1044,6 +1049,8 @@ actor OpenSubsonicClient {
         inFlightTranscodeDecisions.removeAll(keepingCapacity: false)
         inFlightExtensionRegistryLoad?.cancel()
         inFlightExtensionRegistryLoad = nil
+        playbackMetadataMutationGeneration &+= 1
+        inFlightSongRequests.values.forEach { $0.task.cancel() }
         inFlightSongRequests.removeAll(keepingCapacity: false)
         session.invalidateAndCancel()
     }
@@ -1864,7 +1871,7 @@ actor OpenSubsonicClient {
         let dependencies = impact.invalidatedDependencies
         guard !dependencies.isEmpty else { return }
         playbackMetadataMutationGeneration &+= 1
-        inFlightSongRequests.values.forEach { $0.cancel() }
+        inFlightSongRequests.values.forEach { $0.task.cancel() }
         inFlightSongRequests.removeAll(keepingCapacity: false)
         playbackMetadataCache.removeAll(keepingCapacity: false)
         let scope = accountScope
@@ -3481,31 +3488,54 @@ actor OpenSubsonicClient {
     /// selected item through getSong gives playback one authoritative source
     /// for song ID, cover-art ID, duration, and media format.
     func song(id: String, forceRefresh: Bool = false) async throws -> Song {
-        let metadataGeneration = playbackMetadataMutationGeneration
+        try Task.checkCancellation()
         if forceRefresh {
             playbackMetadataCache[id] = nil
-            inFlightSongRequests[id]?.cancel()
+            inFlightSongRequests[id]?.task.cancel()
             inFlightSongRequests[id] = nil
         } else if var cached = playbackMetadataCache[id] {
             playbackMetadataAccessClock &+= 1
             cached.accessOrdinal = playbackMetadataAccessClock
             playbackMetadataCache[id] = cached
             return cached.song
-        } else if let existing = inFlightSongRequests[id] {
-            return try await existing.value
-        } else if metadataGeneration == playbackMetadataMutationGeneration,
-                  let persisted = await AppDatabase.shared.loadPlaybackMetadata(
-                    scope: accountScope,
-                    songID: id,
-                    maximumAge: Self.persistedPlaybackMetadataMaximumAge
-                  ) {
-            cachePlaybackMetadata(persisted)
-            return persisted
         }
-        let task = Task { try await self.fetchSong(id: id, forceRefresh: forceRefresh) }
-        inFlightSongRequests[id] = task
-        defer { inFlightSongRequests[id] = nil }
-        return try await task.value
+
+        let request: InFlightSongRequest
+        if let existing = inFlightSongRequests[id] {
+            request = existing
+        } else {
+            let generation = playbackMetadataMutationGeneration
+            let task = Task {
+                // Register the shared task before the first database suspension,
+                // so concurrent callers also share the persisted-cache lookup.
+                if !forceRefresh,
+                   let persisted = await AppDatabase.shared.loadPlaybackMetadata(
+                       scope: self.accountScope,
+                       songID: id,
+                       maximumAge: Self.persistedPlaybackMetadataMaximumAge
+                   ) {
+                    try Task.checkCancellation()
+                    guard generation == self.playbackMetadataMutationGeneration else {
+                        throw CancellationError()
+                    }
+                    self.cachePlaybackMetadata(persisted)
+                    return persisted
+                }
+                try Task.checkCancellation()
+                return try await self.fetchSong(id: id, forceRefresh: forceRefresh)
+            }
+            request = InFlightSongRequest(token: UUID(), task: task)
+            inFlightSongRequests[id] = request
+        }
+        defer {
+            // An old completion must not remove a force-refresh replacement.
+            if inFlightSongRequests[id]?.token == request.token {
+                inFlightSongRequests[id] = nil
+            }
+        }
+        let song = try await request.task.value
+        try Task.checkCancellation()
+        return song
     }
 
     private func fetchSong(id: String, forceRefresh: Bool) async throws -> Song {
@@ -3515,6 +3545,7 @@ actor OpenSubsonicClient {
             parameters: ["id": id],
             allowsCachedResponse: !forceRefresh
         )
+        try Task.checkCancellation()
         guard let song = payload.song, song.id == id else {
             throw OpenSubsonicError.invalidResponse
         }
@@ -3799,7 +3830,7 @@ actor OpenSubsonicClient {
             }
         )
         let songIDs = uniqueSongs.map(\.id)
-        await prefetchTranscodeDecisions(songIDs: songIDs)
+        async let decisions: Void = prefetchTranscodeDecisions(songIDs: songIDs)
         var resolved: [(Int, Song)] = []
         resolved.reserveCapacity(uniqueSongs.count)
         var batchStart = 0
@@ -3831,6 +3862,7 @@ actor OpenSubsonicClient {
             }
             batchStart = batchEnd
         }
+        await decisions
         return resolved.sorted { $0.0 < $1.0 }.map { $0.1 }
     }
 

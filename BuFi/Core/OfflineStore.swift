@@ -347,13 +347,14 @@ actor OfflineStore {
         let task = Task<URL, Error>(priority: .utility) { [weak self] in
             let remote = try client.downloadURL(songID: song.id)
             try Task.checkCancellation()
-            guard remote.scheme?.lowercased() == "https" else {
+            guard ServerURLNormalization.isSupportedTransportURL(remote) else {
                 throw OpenSubsonicError.insecureServerURL
             }
             let temporary = try await Self.downloadFileWithRetry(
                 remote: remote,
                 session: session
             )
+            defer { try? FileManager.default.removeItem(at: temporary) }
             try Task.checkCancellation()
 
             let staged = try await Self.stageDownloadedFile(
@@ -361,6 +362,7 @@ actor OfflineStore {
                 directory: directory,
                 fileName: fileName
             )
+            defer { try? FileManager.default.removeItem(at: staged.url) }
             try Task.checkCancellation()
             guard let self else {
                 try? FileManager.default.removeItem(at: staged.url)
@@ -657,8 +659,11 @@ actor OfflineStore {
         // ResponseBodyCache) avoid allocating a full sorted candidate array.
         // Huge surplus: one O(n log n) sort is cheaper than O(k·n) scans.
         if estimatedEvictions < entries.count / 4 {
+            var excludedIDs: Set<String> = [protectedID]
             while total > limit {
-                guard let oldest = oldestEvictionCandidate(excluding: protectedID) else { break }
+                guard let oldest = oldestEvictionCandidate(excluding: excludedIDs) else { break }
+                // Attempt each file once, including files that cannot be removed.
+                excludedIDs.insert(oldest.id)
                 try evictEntry(
                     id: oldest.id,
                     entry: oldest.entry,
@@ -683,11 +688,11 @@ actor OfflineStore {
     }
 
     private func oldestEvictionCandidate(
-        excluding protectedID: String
+        excluding excludedIDs: Set<String>
     ) -> (id: String, entry: Entry)? {
         var oldestID: String?
         var oldestDate = Date.distantFuture
-        for (id, entry) in entries where id != protectedID {
+        for (id, entry) in entries where !excludedIDs.contains(id) {
             if entry.lastAccessedAt < oldestDate {
                 oldestDate = entry.lastAccessedAt
                 oldestID = id
@@ -894,14 +899,19 @@ actor OfflineStore {
             ModernNetworkPolicy.prepareBackgroundMediaRequest(&request)
             do {
                 let (temporary, response) = try await session.download(for: request)
+                var keepTemporary = false
+                defer {
+                    if !keepTemporary { try? FileManager.default.removeItem(at: temporary) }
+                }
                 try Task.checkCancellation()
                 guard let http = response as? HTTPURLResponse else {
                     throw OpenSubsonicError.invalidResponse
                 }
-                guard http.url?.scheme?.lowercased() == "https" else {
+                guard ServerURLNormalization.isSupportedTransportURL(http.url) else {
                     throw OpenSubsonicError.insecureServerURL
                 }
                 if (200..<300).contains(http.statusCode) {
+                    keepTemporary = true
                     return temporary
                 }
                 try? FileManager.default.removeItem(at: temporary)
