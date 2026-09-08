@@ -36,11 +36,6 @@ struct OpenSubsonicExtensionRegistry: Sendable, Equatable {
     static let empty = OpenSubsonicExtensionRegistry(extensions: [])
 }
 
-enum ServerAuthMethod: String, Codable, Sendable {
-    case password
-    case apiKey
-}
-
 struct TokenInfoPayload: Decodable, Sendable {
     let tokenInfo: TokenInfoBody?
 }

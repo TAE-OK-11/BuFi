@@ -58,6 +58,9 @@ jobs:
               ;;
           esac
 
+      - name: Verify local search behavior
+        run: sh Scripts/verify-local-search.sh
+
       - name: Verify dependency pins
         run: sh Scripts/verify-dependency-versions.sh
 

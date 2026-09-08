@@ -824,27 +824,33 @@ final class AppModel: ObservableObject {
             previousResults: searchContent.results,
             nextQuery: query
         )
-        let local = applyingFavoriteOverrides(
-            to: localSearchResults(for: query)
-        )
-        let provisionalResults = local.isEmpty ? retained : local
-        let provisionalIsLocal = !local.isEmpty
-            || (searchContent.isLocalFallback && !retained.isEmpty)
         searchContent.publish(
             query: query,
-            results: provisionalResults,
+            results: retained,
             isSearching: true,
-            isLocalFallback: provisionalIsLocal
+            isLocalFallback: searchContent.isLocalFallback && !retained.isEmpty
         )
 
         let task = Task { [weak self] in
             do {
-                if let debounce {
-                    try await Task.sleep(for: debounce)
-                }
+                guard let self else { return }
+                // Start the server debounce alongside local ranking. Neither
+                // the server request nor keyboard input waits for index work.
+                async let remote = Self.searchRemote(
+                    query: query, client: client, debounce: debounce
+                )
+                let local = try await self.localSearchResults(for: query)
                 try Task.checkCancellation()
-                guard let self, generation == self.searchGeneration, self.client === client else { return }
-                let value = try await client.search(query)
+                guard generation == self.searchGeneration, self.client === client else { return }
+                if !local.isEmpty {
+                    self.searchContent.publish(
+                        query: query,
+                        results: self.applyingFavoriteOverrides(to: local),
+                        isSearching: true,
+                        isLocalFallback: true
+                    )
+                }
+                let value = try await remote
                 try Task.checkCancellation()
                 guard generation == self.searchGeneration, self.client === client else { return }
                 self.reconcileFavoriteStates(in: value)
@@ -867,14 +873,15 @@ final class AppModel: ObservableObject {
                 self.searchTask = nil
             } catch {
                 guard let self, generation == self.searchGeneration, self.client === client else { return }
-                let fallback = self.localSearchFallback(for: query)
+                // The local result was already computed for this query; a
+                // network failure should not rebuild or rerank it a second time.
                 self.searchContent.publish(
                     query: query,
-                    results: fallback.results,
+                    results: self.searchContent.results,
                     isSearching: false,
-                    isLocalFallback: fallback.isLocal
+                    isLocalFallback: self.searchContent.isLocalFallback
                 )
-                if fallback.results.isEmpty {
+                if self.searchContent.results.isEmpty {
                     self.errorMessage = error.localizedDescription
                 }
                 self.searchTask = nil
@@ -892,24 +899,15 @@ final class AppModel: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func localSearchFallback(
-        for query: String
-    ) -> (results: SearchResults, isLocal: Bool) {
-        let retained = SearchPresentationPolicy.retainedResults(
-            previousQuery: searchContent.query,
-            previousResults: searchContent.results,
-            nextQuery: query
-        )
-        let local = applyingFavoriteOverrides(
-            to: localSearchResults(for: query)
-        )
-        if !local.isEmpty {
-            return (local, true)
-        }
-        if !retained.isEmpty {
-            return (retained, searchContent.isLocalFallback)
-        }
-        return (.empty, false)
+    @concurrent
+    private static func searchRemote(
+        query: String,
+        client: OpenSubsonicClient,
+        debounce: Duration?
+    ) async throws -> SearchResults {
+        if let debounce { try await Task.sleep(for: debounce) }
+        try Task.checkCancellation()
+        return try await client.search(query)
     }
 
     func clearSearch() {
@@ -2346,13 +2344,23 @@ final class AppModel: ObservableObject {
         return map
     }
 
-    private func localSearchResults(for query: String) -> SearchResults {
-        if localSearchIndexRevision != homeRevision {
-            localSearchIndex = LocalLibrarySearchIndex.build(from: home)
-            localSearchIndexRevision = homeRevision
+    private func localSearchResults(for query: String) async throws -> SearchResults {
+        let revision = homeRevision
+        let session = sessionGeneration
+        let prepared = try await LocalLibrarySearch.prepare(
+            for: query,
+            snapshot: home,
+            cachedIndex: localSearchIndexRevision == revision ? localSearchIndex : nil
+        )
+        try Task.checkCancellation()
+        guard session == sessionGeneration else { throw CancellationError() }
+        // A refresh can publish a newer library while ranking is running.
+        // Never install the old index as the new revision's cache.
+        if revision == homeRevision {
+            localSearchIndex = prepared.index
+            localSearchIndexRevision = revision
         }
-        guard let index = localSearchIndex else { return .empty }
-        return LocalLibrarySearch.results(for: query, using: index)
+        return prepared.results
     }
 
     private func starredIDIndexTokenValue() -> UInt64 {

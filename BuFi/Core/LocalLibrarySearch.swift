@@ -23,7 +23,6 @@ struct LocalLibrarySearchIndex: Sendable {
     fileprivate let songs: [IndexedSong]
     fileprivate let albums: [IndexedAlbum]
     fileprivate let artists: [IndexedArtist]
-    fileprivate let songTokenIndex: [String: [Int]]
 
     static func build(from snapshot: HomeSnapshot) -> LocalLibrarySearchIndex {
         let uniqueSongs = MediaIdentity.uniqueSongs(
@@ -59,28 +58,8 @@ struct LocalLibrarySearchIndex: Sendable {
                     artist: $0,
                     nameKey: normalizedSearchKey($0.name)
                 )
-            },
-            songTokenIndex: Self.buildSongTokenIndex(for: indexedSongs)
+            }
         )
-    }
-
-    private static func buildSongTokenIndex(
-        for songs: [IndexedSong]
-    ) -> [String: [Int]] {
-        var buckets: [String: [Int]] = [:]
-        buckets.reserveCapacity(songs.count * 2)
-        for (index, entry) in songs.enumerated() {
-            var tokens = Set<String>()
-            for key in [entry.titleKey, entry.artistKey, entry.albumKey] where !key.isEmpty {
-                for token in key.split(whereSeparator: \.isWhitespace) {
-                    tokens.insert(String(token))
-                }
-            }
-            for token in tokens {
-                buckets[token, default: []].append(index)
-            }
-        }
-        return buckets
     }
 
     func results(
@@ -97,7 +76,6 @@ struct LocalLibrarySearchIndex: Sendable {
             albums: rankedIndexedAlbums(albums, limit: albumLimit, query: query),
             songs: rankedIndexedSongs(
                 songs,
-                tokenIndex: songTokenIndex,
                 limit: songLimit,
                 query: query
             )
@@ -108,6 +86,22 @@ struct LocalLibrarySearchIndex: Sendable {
 /// Local fallback over the already-loaded home snapshot. Search stays useful
 /// when the server is slow or unreachable, and while the user is still typing.
 enum LocalLibrarySearch {
+    /// Build and rank on the concurrent executor. Only immutable snapshots and
+    /// indexes cross back to the UI actor.
+    @concurrent
+    static func prepare(
+        for query: String,
+        snapshot: HomeSnapshot,
+        cachedIndex: LocalLibrarySearchIndex?
+    ) async throws -> (index: LocalLibrarySearchIndex, results: SearchResults) {
+        try Task.checkCancellation()
+        let index = cachedIndex ?? LocalLibrarySearchIndex.build(from: snapshot)
+        try Task.checkCancellation()
+        let results = index.results(for: query)
+        try Task.checkCancellation()
+        return (index, results)
+    }
+
     static func results(
         for rawQuery: String,
         in snapshot: HomeSnapshot,
@@ -191,53 +185,22 @@ private struct PreparedSearchQuery {
 
 private func rankedIndexedSongs(
     _ items: [LocalLibrarySearchIndex.IndexedSong],
-    tokenIndex: [String: [Int]],
     limit: Int,
     query: PreparedSearchQuery
 ) -> [Song] {
     guard limit > 0 else { return [] }
-    let candidates = candidateSongIndices(for: query, tokenIndex: tokenIndex)
-    let searchItems: [LocalLibrarySearchIndex.IndexedSong]
-    if let candidates {
-        searchItems = candidates.compactMap { index in
-            guard items.indices.contains(index) else { return nil }
-            return items[index]
-        }
-    } else {
-        searchItems = items
-    }
     var buckets: [FieldMatch: [Song]] = [:]
-    for entry in searchItems {
+    for entry in items {
         guard let match = bestFieldMatch(
             fieldMatch(entry.titleKey, query: query, field: 0),
             fieldMatch(entry.artistKey, query: query, field: 1),
             fieldMatch(entry.albumKey, query: query, field: 2)
         ) else { continue }
-        buckets[match, default: []].append(entry.song)
+        if buckets[match, default: []].count < limit {
+            buckets[match, default: []].append(entry.song)
+        }
     }
     return takeRankedMatches(from: buckets, limit: limit)
-}
-
-private func candidateSongIndices(
-    for query: PreparedSearchQuery,
-    tokenIndex: [String: [Int]]
-) -> [Int]? {
-    guard !query.tokens.isEmpty else { return nil }
-    if query.tokens.count == 1, let token = query.tokens.first {
-        return tokenIndex[token]
-    }
-    var candidates: Set<Int>?
-    for token in query.tokens {
-        guard let indices = tokenIndex[token] else { return [] }
-        let bucket = Set(indices)
-        if let existing = candidates {
-            candidates = existing.intersection(bucket)
-        } else {
-            candidates = bucket
-        }
-        if candidates?.isEmpty == true { return [] }
-    }
-    return candidates.map(Array.init)
 }
 
 private func rankedIndexedAlbums(
@@ -252,7 +215,9 @@ private func rankedIndexedAlbums(
             fieldMatch(entry.nameKey, query: query, field: 0),
             fieldMatch(entry.artistKey, query: query, field: 1)
         ) else { continue }
-        buckets[match, default: []].append(entry.album)
+        if buckets[match, default: []].count < limit {
+            buckets[match, default: []].append(entry.album)
+        }
     }
     return takeRankedMatches(from: buckets, limit: limit)
 }
@@ -268,7 +233,9 @@ private func rankedIndexedArtists(
         guard let match = fieldMatch(entry.nameKey, query: query, field: 0) else {
             continue
         }
-        buckets[match, default: []].append(entry.artist)
+        if buckets[match, default: []].count < limit {
+            buckets[match, default: []].append(entry.artist)
+        }
     }
     return takeRankedMatches(from: buckets, limit: limit)
 }
@@ -299,7 +266,7 @@ private func matches(
     }
     let prefixRange = haystackText.localizedStandardRange(of: query.value)
     if prefixRange.location == 0 { return .prefix }
-    if haystackText.localizedStandardContains(query.value) { return .contains }
+    if prefixRange.location != NSNotFound { return .contains }
 
     guard query.tokens.count > 1,
           query.tokens.allSatisfy({
