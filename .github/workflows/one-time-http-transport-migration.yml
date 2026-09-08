@@ -1,0 +1,76 @@
+name: One-time HTTP transport migration
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-time-http-transport-migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch remaining HTTP transport guards
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} matches for {old!r}, found {count}")
+              p.write_text(text.replace(old, new))
+              print(f"{path}: replaced {count} occurrence(s)")
+
+          replace_exact(
+              "BuFi/Core/OpenSubsonicClient.swift",
+              'url.scheme?.lowercased() == "https"',
+              'ServerURLNormalization.isSupportedTransportURL(url)',
+              7,
+          )
+          replace_exact(
+              "BuFi/Core/OpenSubsonicClient.swift",
+              'http.url?.scheme?.lowercased() == "https"',
+              'ServerURLNormalization.isSupportedTransportURL(http.url)',
+              1,
+          )
+          replace_exact(
+              "BuFi/Playback/AudioEngine.swift",
+              'url.scheme?.lowercased() == "https"',
+              'ServerURLNormalization.isSupportedTransportURL(url)',
+              1,
+          )
+          replace_exact(
+              "BuFi/App/AppModel.swift",
+              'url.scheme?.lowercased() == "https"',
+              'ServerURLNormalization.isSupportedTransportURL(url)',
+              1,
+          )
+          replace_exact(
+              "BuFi/App/AppModel.swift",
+              'HTTPS 인터넷 라디오만 안전하게 재생할 수 있습니다.',
+              '인터넷 라디오 주소가 올바르지 않습니다.',
+              1,
+          )
+          PY
+
+      - name: Commit migration and remove one-time workflow
+        shell: bash
+        run: |
+          rm .github/workflows/one-time-http-transport-migration.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BuFi/Core/OpenSubsonicClient.swift BuFi/Playback/AudioEngine.swift BuFi/App/AppModel.swift .github/workflows/one-time-http-transport-migration.yml
+          git commit -m "Allow HTTP across OpenSubsonic media transport"
+          git push
