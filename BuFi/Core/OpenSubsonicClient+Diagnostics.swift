@@ -47,7 +47,7 @@ private enum OpenSubsonicLatencyProbe {
         guard let http = response as? HTTPURLResponse else {
             throw OpenSubsonicError.invalidResponse
         }
-        guard http.url?.scheme?.lowercased() == "https" else {
+        guard ServerURLNormalization.isSupportedTransportURL(http.url) else {
             throw OpenSubsonicError.insecureServerURL
         }
         guard (200..<300).contains(http.statusCode) else {
@@ -72,11 +72,11 @@ private enum OpenSubsonicLatencyProbe {
 extension OpenSubsonicClient {
     /// Measures the shortest healthy authenticated OpenSubsonic RTT. iOS does
     /// not expose a general-purpose ICMP ping API to normal apps, so this keeps
-    /// the probe on the exact HTTPS route BuFi actually uses while stripping
-    /// unrelated client-side work from the timed interval.
+    /// the probe on the exact configured HTTP(S) route BuFi actually uses while
+    /// stripping unrelated client-side work from the timed interval.
     ///
     /// Three back-to-back probes are normally enough: a cold first request can
-    /// establish DNS/TLS/QUIC state and the following requests reuse it. Taking
+    /// establish connection state and the following requests reuse it. Taking
     /// the minimum reports the path's baseline RTT instead of UI/radio jitter.
     func measuredServerLatency(sampleCount: Int = 3) async throws -> Double {
         let targetCount = min(max(sampleCount, 1), 4)
