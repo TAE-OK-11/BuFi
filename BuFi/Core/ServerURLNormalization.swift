@@ -55,6 +55,11 @@ enum ServerURLNormalization {
         return nil
     }
 
+    static func isSupportedTransportURL(_ url: URL?) -> Bool {
+        guard let scheme = url?.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
     static func resolvedURL(from value: String) throws -> URL {
         switch normalize(value) {
         case .success(let url):
