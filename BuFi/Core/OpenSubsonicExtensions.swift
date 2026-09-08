@@ -201,7 +201,7 @@ enum OpenSubsonicPublicDiscovery {
                 + OpenSubsonicClient.apiVersion
                 + "&c="
                 + OpenSubsonicClient.clientName
-        ), url.scheme?.lowercased() == "https" else {
+        ), ServerURLNormalization.isSupportedTransportURL(url) else {
             return nil
         }
         var request = URLRequest(url: url)
