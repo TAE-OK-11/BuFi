@@ -1053,7 +1053,7 @@ enum PlaybackResourceResolver {
         let song = request.song
         if let value = song.externalStreamURL,
            let url = URL(string: value),
-           url.scheme?.lowercased() == "https" {
+           ServerURLNormalization.isSupportedTransportURL(url) {
             return PlaybackResourceDescriptor(
                 url: url,
                 mimeType: song.contentType,

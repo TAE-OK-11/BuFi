@@ -977,8 +977,8 @@ final class AppModel: ObservableObject {
 
     func playInternetRadio(_ station: InternetRadioStation) {
         guard let url = URL(string: station.streamUrl),
-              url.scheme?.lowercased() == "https" else {
-            errorMessage = String(localized: "HTTPS 인터넷 라디오만 안전하게 재생할 수 있습니다.")
+              ServerURLNormalization.isSupportedTransportURL(url) else {
+            errorMessage = String(localized: "인터넷 라디오 주소가 올바르지 않습니다.")
             return
         }
         let song = station.playableSong

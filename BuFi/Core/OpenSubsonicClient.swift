@@ -1144,7 +1144,7 @@ actor OpenSubsonicClient {
     ) throws -> URLRequest {
         guard let url = URL(
             string: credentials.serverURL + "/rest/\(endpoint).view"
-        ), url.scheme?.lowercased() == "https" else {
+        ), ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.invalidServerURL
         }
         var items = authenticationItems()
@@ -1988,7 +1988,7 @@ actor OpenSubsonicClient {
         guard let url = originalRequest.url else {
             throw OpenSubsonicError.invalidServerURL
         }
-        guard url.scheme?.lowercased() == "https" else {
+        guard ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
         var request = originalRequest
@@ -2012,7 +2012,7 @@ actor OpenSubsonicClient {
         guard let http = response as? HTTPURLResponse else {
             throw OpenSubsonicError.invalidResponse
         }
-        guard http.url?.scheme?.lowercased() == "https" else {
+        guard ServerURLNormalization.isSupportedTransportURL(http.url) else {
             throw OpenSubsonicError.insecureServerURL
         }
         let validators = Self.responseValidators(from: http)
@@ -3936,7 +3936,7 @@ actor OpenSubsonicClient {
             format: requestedFormat,
             timeOffset: offsetSeconds > 0 ? offsetSeconds : nil,
             estimateContentLength: true
-        ), url.scheme?.lowercased() == "https" else {
+        ), ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
         return url
@@ -4051,7 +4051,7 @@ actor OpenSubsonicClient {
             queryItems: queryItems,
             json: false
         )
-        guard url.scheme?.lowercased() == "https" else {
+        guard ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
         return PlaybackStreamResource(
@@ -4065,7 +4065,7 @@ actor OpenSubsonicClient {
         songID: String,
         maxBytes: Int = 1_600_000
     ) async -> URL? {
-        guard url.scheme?.lowercased() == "https" else { return nil }
+        guard ServerURLNormalization.isSupportedTransportURL(url) else { return nil }
         var request = URLRequest(url: url)
         request.setValue("bytes=0-\(maxBytes - 1)", forHTTPHeaderField: "Range")
         request.timeoutInterval = 24
@@ -4156,7 +4156,7 @@ actor OpenSubsonicClient {
 
     nonisolated func coverURL(id: String, size: Int? = nil) throws -> URL {
         guard let url = swiftSonic.coverArtURL(id: id, size: size),
-              url.scheme?.lowercased() == "https" else {
+              ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
         return url
@@ -4164,7 +4164,7 @@ actor OpenSubsonicClient {
 
     nonisolated func downloadURL(songID: String) throws -> URL {
         guard let url = swiftSonic.downloadURL(id: songID),
-              url.scheme?.lowercased() == "https" else {
+              ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
         return url
