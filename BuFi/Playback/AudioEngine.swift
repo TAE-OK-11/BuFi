@@ -1071,6 +1071,25 @@ enum PlaybackResourceResolver {
             )
         }
         guard let client else { throw OpenSubsonicError.invalidServerURL }
+        if !PlaybackStreamRoutingPolicy.requiresTranscodeDecision(
+            quality: request.quality,
+            compatibilityFormat: request.compatibilityFormat
+        ) {
+            // URL construction is nonisolated: a raw stream must not queue
+            // behind API decoding, library enrichment, or server mutations.
+            let url = try client.streamURL(
+                songID: song.id,
+                quality: request.quality,
+                compatibilityFormat: request.compatibilityFormat,
+                offsetSeconds: request.offsetSeconds
+            )
+            try Task.checkCancellation()
+            return PlaybackResourceDescriptor(
+                url: url,
+                mimeType: mimeType(for: request.compatibilityFormat, sourceSong: song),
+                streamStartOffset: max(0, request.offsetSeconds)
+            )
+        }
         let stream = try await client.playbackStreamURL(
             songID: song.id,
             quality: request.quality,
@@ -1715,8 +1734,6 @@ final class AudioEngine: NSObject, ObservableObject {
         // An explicit selection supersedes a pending server queue restore,
         // including the interval before AVPlayer reaches the playing state.
         serverQueueTask?.cancel()
-        if !reusesCurrentQueue {
-        }
         let previousSongID = currentSong?.id
         finalizeCurrentPlayback(reason: transitionReason)
         var normalizedEntries = sourceEntries.isEmpty

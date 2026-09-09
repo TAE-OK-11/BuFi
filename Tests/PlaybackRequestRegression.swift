@@ -33,6 +33,32 @@ struct PlaybackRequestRegression {
         precondition(PlaybackTimelinePolicy.absoluteDuration(playerDuration: 180, streamOffset: 0) == 180)
         precondition(PlaybackTimelinePolicy.absoluteDuration(playerDuration: .nan, streamOffset: 120) == 0)
         precondition(PlaybackTimelinePolicy.absoluteDuration(playerDuration: .infinity, streamOffset: 120) == 0)
-        print("Playback timeline and request encoding regressions passed")
+        let formats: [String?] = [nil, "raw", "RAW", "aac", "opus", "mp3"]
+        for quality in StreamQuality.allCases {
+            for format in formats {
+                let expected = format?.lowercased() != "raw" && quality != .original
+                precondition(PlaybackStreamRoutingPolicy.requiresTranscodeDecision(
+                    quality: quality, compatibilityFormat: format
+                ) == expected)
+            }
+        }
+        let genreRows = [[String](), ["pop"], ["rock"], ["pop", "rock"], ["jazz"], ["pop", "pop"]]
+        for pattern in 0..<64 {
+            let recent = (0..<6).map { index in
+                pattern & (1 << index) == 0 ? genreRows[index] : ["jazz", "rock"]
+            }
+            let lookup = RecentGenreOverlapIndex(recent)
+            for candidate in genreRows {
+                let reference = recent.reduce(0) { count, genres in
+                    count + (genres.contains(where: candidate.contains) ? 1 : 0)
+                }
+                precondition(lookup.count(matching: candidate) == reference,
+                             "Optimized recommendation overlap must preserve scores")
+            }
+        }
+        let seven = RecentGenreOverlapIndex([["old"]] + Array(repeating: ["new"], count: 6))
+        precondition(seven.count(matching: ["old"]) == 0)
+        precondition(seven.count(matching: ["new", "new"]) == 6)
+        print("Playback, request, and recommendation regression checks passed")
     }
 }

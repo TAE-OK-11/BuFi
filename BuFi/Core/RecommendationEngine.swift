@@ -1062,7 +1062,7 @@ enum RecommendationMixer {
         guard !Task.isCancelled else { return ([], []) }
         let seed = behavior.recentSongs.first
         let evaluationDate = temporalEvaluationDate(for: .home, date: date)
-        if let key = cacheKey(
+        let sectionKey = cacheKey(
             snapshot: snapshot,
             snapshotRevision: snapshotRevision,
             weights: weights,
@@ -1071,7 +1071,8 @@ enum RecommendationMixer {
             seed: seed,
             limit: 40,
             date: evaluationDate
-        ),
+        )
+        if let key = sectionKey,
            let cached = sectionsCache.value(
             for: key,
             lifetime: cacheLifetime(for: .home),
@@ -1094,16 +1095,7 @@ enum RecommendationMixer {
         )
         guard !Task.isCancelled else { return ([], []) }
         let daylist = DaylistBuilder.make(snapshot: snapshot, date: date)
-        if let key = cacheKey(
-            snapshot: snapshot,
-            snapshotRevision: snapshotRevision,
-            weights: weights,
-            purpose: .home,
-            behavior: behavior,
-            seed: seed,
-            limit: 40,
-            date: evaluationDate
-        ) {
+        if let key = sectionKey {
             sectionsCache.insert(
                 RecommendationSectionsValue(
                     recommended: recommended,
@@ -1913,6 +1905,9 @@ enum RecommendationMixer {
             let albumStreak = trailingCount(in: result, key: \.albumKey)
             let artistStreak = trailingCount(in: result, key: \.artistKey)
             let lastGenres = Set(result.last?.genreKeys ?? [])
+            let recentGenreIndex = applyGenreSpread
+                ? RecentGenreOverlapIndex(result.suffix(6).map(\.genreKeys))
+                : nil
             let wantsBreather = result.count > 0
                 && result.count.isMultiple(of: breatherEvery)
                 && lane.complementaryGender != nil
@@ -1962,9 +1957,7 @@ enum RecommendationMixer {
                 }
                 if applyGenreSpread {
                     // Soft only — do not fight a lane that is naturally narrow.
-                    let recentGenreHits = result.suffix(6).reduce(0) { count, item in
-                        count + (item.genreKeys.contains(where: value.genreKeys.contains) ? 1 : 0)
-                    }
+                    let recentGenreHits = recentGenreIndex?.count(matching: value.genreKeys) ?? 0
                     if recentGenreHits >= 5 { adjusted *= 0.94 }
                 }
                 if wantsBreather,

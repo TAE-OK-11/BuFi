@@ -3983,8 +3983,9 @@ actor OpenSubsonicClient {
         compatibilityFormat: String? = nil,
         offsetSeconds: Int = 0
     ) async throws -> PlaybackStreamResource {
-        let requestsTranscodePath = compatibilityFormat?.lowercased() != "raw"
-            && quality != .original
+        let requestsTranscodePath = PlaybackStreamRoutingPolicy.requiresTranscodeDecision(
+            quality: quality, compatibilityFormat: compatibilityFormat
+        )
         guard requestsTranscodePath else {
             return PlaybackStreamResource(
                 url: try streamURL(
