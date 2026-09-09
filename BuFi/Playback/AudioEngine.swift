@@ -1924,7 +1924,9 @@ final class AudioEngine: NSObject, ObservableObject {
     ) {
         guard seconds.isFinite else { return }
         let itemDuration = player.currentItem?.duration.seconds ?? 0
-        let validItemDuration = itemDuration.isFinite && itemDuration > 0 ? itemDuration : 0
+        let validItemDuration = PlaybackTimelinePolicy.absoluteDuration(
+            playerDuration: itemDuration, streamOffset: streamBaseOffset
+        )
         let upperBound = max(duration, validItemDuration)
         let target = upperBound > 0 ? max(0, min(seconds, upperBound)) : max(0, seconds)
         pendingSeekPosition = target
@@ -3718,23 +3720,11 @@ final class AudioEngine: NSObject, ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     self.updateDuration(using: item.duration.seconds)
-                    if self.streamBaseOffset > 0 {
-                        self.elapsed = self.streamBaseOffset
-                        self.pendingSeekPosition = nil
-                        self.isBuffering = false
-                        self.recomputeTimelineFromPlayer()
-                        self.installNextLyricBoundary(after: self.elapsed)
-                        if self.wantsPlayback {
-                            self.configureAudioSession()
-                            self.player.isMuted = false
-                            self.player.volume = 1
-                            self.activateNowPlayingSession()
-                            self.requestPlayback()
-                        }
-                        return
-                    }
                     let targetPosition = self.pendingSeekPosition ?? resumePosition
-                    let needsPositioning = targetPosition > 0.05
+                    let needsPositioning = PlaybackTimelinePolicy.needsSeek(
+                        target: targetPosition,
+                        streamOffset: self.streamBaseOffset
+                    )
                     if needsPositioning {
                         // Never start a freshly reloaded item at zero and then
                         // seek it back to the recovery position. Wait for the
@@ -3850,7 +3840,10 @@ final class AudioEngine: NSObject, ObservableObject {
 
     private func updateDuration(using playerDuration: TimeInterval) {
         let metadataDuration = currentSong?.safeDuration ?? 0
-        let validPlayerDuration = playerDuration.isFinite && playerDuration > 0
+        let playerDuration = PlaybackTimelinePolicy.absoluteDuration(
+            playerDuration: playerDuration, streamOffset: streamBaseOffset
+        )
+        let validPlayerDuration = playerDuration > 0
         let validMetadataDuration = metadataDuration.isFinite && metadataDuration > 0
         let resolvedDuration: TimeInterval
         if !validPlayerDuration, !validMetadataDuration {

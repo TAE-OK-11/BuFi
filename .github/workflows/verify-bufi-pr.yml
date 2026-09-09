@@ -68,6 +68,9 @@ jobs:
       - name: Verify local search behavior
         run: sh Scripts/verify-local-search.sh
 
+      - name: Verify playback and request behavior
+        run: sh Scripts/verify-playback-requests.sh
+
       - name: Verify dependency pins
         run: sh Scripts/verify-dependency-versions.sh
 

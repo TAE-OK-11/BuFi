@@ -1139,7 +1139,7 @@ actor OpenSubsonicClient {
         var items = authenticationItems()
         if json { items.append(URLQueryItem(name: "f", value: "json")) }
         items.append(contentsOf: queryItems)
-        components.queryItems = items
+        components.percentEncodedQuery = OpenSubsonicRequestEncoding.query(items)
         guard let url = components.url else { throw OpenSubsonicError.invalidServerURL }
         return url
     }
@@ -1157,9 +1157,7 @@ actor OpenSubsonicClient {
         var items = authenticationItems()
         if json { items.append(URLQueryItem(name: "f", value: "json")) }
         items.append(contentsOf: queryItems)
-        var bodyComponents = URLComponents()
-        bodyComponents.queryItems = items
-        guard let body = bodyComponents.percentEncodedQuery?.data(using: .utf8) else {
+        guard let body = OpenSubsonicRequestEncoding.query(items)?.data(using: .utf8) else {
             throw OpenSubsonicError.invalidResponse
         }
         var request = URLRequest(url: url)
@@ -3971,7 +3969,7 @@ actor OpenSubsonicClient {
         ), ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
-        return url
+        return OpenSubsonicRequestEncoding.protectingLiteralPluses(in: url)
     }
 
     struct PlaybackStreamResource: Sendable {
@@ -4191,7 +4189,7 @@ actor OpenSubsonicClient {
               ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
-        return url
+        return OpenSubsonicRequestEncoding.protectingLiteralPluses(in: url)
     }
 
     nonisolated func downloadURL(songID: String) throws -> URL {
@@ -4199,7 +4197,7 @@ actor OpenSubsonicClient {
               ServerURLNormalization.isSupportedTransportURL(url) else {
             throw OpenSubsonicError.insecureServerURL
         }
-        return url
+        return OpenSubsonicRequestEncoding.protectingLiteralPluses(in: url)
     }
 
     enum StarTarget: Sendable {
