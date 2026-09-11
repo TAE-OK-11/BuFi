@@ -12,7 +12,7 @@ struct MiniPlayerView: View {
     @State private var presentedItem: PlaybackMediaItem?
 
     private let playerHeight: CGFloat = 60
-    private let cornerRadius: CGFloat = 10
+    private let cornerRadius: CGFloat = 14
     private let audio = AudioEngine.shared
 
     var body: some View {
@@ -46,7 +46,7 @@ struct MiniPlayerView: View {
                                 ArtworkView(
                                     coverArt: song.artworkID,
                                     size: 50,
-                                    cornerRadius: 5,
+                                    cornerRadius: 8,
                                     cacheRevision: artworkIdentity.artworkRevision,
                                     onPalette: { nextPalette in
                                         guard currentPlayback.item?.artworkIdentity == artworkIdentity else {
@@ -113,12 +113,16 @@ struct MiniPlayerView: View {
                 .clipped()
                 .foregroundStyle(miniPlayerForeground)
                 .background {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(miniPlayerBackground)
-                        .animation(
-                            motionEnabled ? BuFiMotion.color : .none,
-                            value: resolvedPalette
-                        )
+                    ZStack {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(BuFiTheme.elevated)
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(miniPlayerTint.opacity(resolvedPalette == nil ? 0 : 0.52))
+                    }
+                    .animation(
+                        motionEnabled ? BuFiMotion.color : .none,
+                        value: resolvedPalette
+                    )
                 }
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -152,7 +156,7 @@ struct MiniPlayerView: View {
         }
     }
 
-    private var miniPlayerBackground: Color {
+    private var miniPlayerTint: Color {
         resolvedPalette.map { Color($0.top) } ?? BuFiTheme.elevated
     }
 
@@ -162,7 +166,15 @@ struct MiniPlayerView: View {
 
     private var usesDarkForeground: Bool {
         guard let palette = resolvedPalette else { return colorScheme == .light }
-        return relativeLuminance(palette.top) >= 0.18
+        // Blend toward elevated so artwork tint stays light and readable.
+        let tint = palette.top
+        let blended = RGBAColor(
+            red: (tint.red * 0.52) + 0.08,
+            green: (tint.green * 0.52) + 0.08,
+            blue: (tint.blue * 0.52) + 0.08,
+            alpha: 1
+        )
+        return relativeLuminance(blended) >= 0.22
     }
 
     private var resolvedPalette: ArtworkPalette? {
