@@ -241,9 +241,9 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                 ForEach(items) { item in
                     let isSelected = selection == item
                     Button {
-                        withAnimation(motionEnabled ? BuFiMotion.selection : .none) {
-                            selection = item
-                        }
+                        // Selection spring stays on the chip layer via .animation below.
+                        // Avoid withAnimation so parent content can use a separate curve.
+                        selection = item
                     } label: {
                         Text(title(item))
                             .font(.system(size: 13, weight: isSelected ? .bold : .medium))
@@ -292,6 +292,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 1)
+            .animation(motionEnabled ? BuFiMotion.selection : .none, value: selection)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
     }
