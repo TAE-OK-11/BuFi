@@ -4,6 +4,10 @@ enum HomeQuickAccessLeading: Equatable, Sendable {
     case heartGradient
     case chartGradient
     case coverArt(String?)
+    /// Soft Bufi-adjacent fill for liked albums when cover art is unavailable.
+    case albumStackGradient
+    /// Soft teal fill for personalized mixes when cover art is unavailable.
+    case mixSparklesGradient
 }
 
 struct HomeQuickAccessItem: Identifiable, Equatable, Sendable {
@@ -127,6 +131,34 @@ struct HomeQuickAccessCard: View {
                     endPoint: .bottomTrailing
                 )
                 Image(systemName: "chart.bar.fill")
+                    .font(.system(size: size * 0.34, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        case .albumStackGradient:
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.45, green: 0.33, blue: 0.74).opacity(0.92),
+                        Color(red: 0.45, green: 0.33, blue: 0.74)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: "square.stack.fill")
+                    .font(.system(size: size * 0.34, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        case .mixSparklesGradient:
+            ZStack {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.20, green: 0.58, blue: 0.52).opacity(0.92),
+                        Color(red: 0.20, green: 0.58, blue: 0.52)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: "sparkles")
                     .font(.system(size: size * 0.34, weight: .bold))
                     .foregroundStyle(.white)
             }
