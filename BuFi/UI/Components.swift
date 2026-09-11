@@ -258,7 +258,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                                     .fill(
                                         isSelected
                                             ? Color.primary.opacity(0.14)
-                                            : BuFiTheme.elevated.opacity(0.72)
+                                            : Color.primary.opacity(0.04)
                                     )
                                     .overlay {
                                         if isSelected {
@@ -274,8 +274,8 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                                         } else {
                                             Capsule(style: .continuous)
                                                 .stroke(
-                                                    BuFiTheme.separator.opacity(0.32),
-                                                    lineWidth: 0.7
+                                                    BuFiTheme.separator.opacity(0.22),
+                                                    lineWidth: 0.6
                                                 )
                                         }
                                     }
