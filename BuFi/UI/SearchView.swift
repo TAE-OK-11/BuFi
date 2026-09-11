@@ -16,30 +16,27 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollViewReader { scrollProxy in
+            // Title + field stay a fixed layer above scroll/transition content so
+            // browse, focus, and query switches never move 「검색」.
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 18) {
+                    BuFiPageHeader(title: "검색")
+                        .onTapGesture(perform: resignSearchField)
+                    searchField
+                }
+                .padding(.top, 18)
+                .padding(.bottom, 18)
+
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        BuFiPageHeader(title: "검색")
-                            .id(SearchScrollAnchor.top)
-                            .onTapGesture(perform: resignSearchField)
-                            .buFiEntranceMotion()
-                        searchField
-                            .buFiEntranceMotion(delay: 0.035)
                         content
                             .frame(maxWidth: .infinity, alignment: .top)
                             .contentShape(Rectangle())
                             .onTapGesture(perform: resignSearchField)
                     }
-                    .padding(.top, 18)
                     .buFiMiniPlayerContentClearance()
                 }
                 .scrollDismissesKeyboard(.immediately)
-                .onChange(of: browseMode) { _, _ in
-                    resignSearchField()
-                    withAnimation(motionEnabled ? BuFiMotion.content : .none) {
-                        scrollProxy.scrollTo(SearchScrollAnchor.top, anchor: .top)
-                    }
-                }
             }
             .background(BuFiScreenBackground())
             .navigationDestination(for: MusicRoute.self) { route in
@@ -49,6 +46,9 @@ struct SearchView: View {
                 PersonalizedMixDetailView(mix: mix)
             }
             .toolbar(.hidden, for: .navigationBar)
+            .onChange(of: browseMode) { _, _ in
+                resignSearchField()
+            }
             .onChange(of: query) { _, value in
                 if !normalizedQuery(value).isEmpty {
                     browseMode = .main
@@ -73,7 +73,7 @@ struct SearchView: View {
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(isSearchFieldFocused ? BuFiTheme.accentSoft : .secondary)
             TextField(
                 "",
@@ -82,7 +82,7 @@ struct SearchView: View {
                     .foregroundStyle(Color(uiColor: .secondaryLabel))
             )
             .focused($isSearchFieldFocused)
-            .font(.system(size: 16, weight: .regular))
+            .font(.system(size: 17, weight: .regular))
             .textFieldStyle(.plain)
             .frame(maxWidth: .infinity)
             .layoutPriority(1)
@@ -96,7 +96,7 @@ struct SearchView: View {
             if !query.isEmpty {
                 Button(action: exitSearchSession) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(BuFiPressStyle())
@@ -106,10 +106,10 @@ struct SearchView: View {
         }
         .foregroundStyle(.primary)
         .padding(.horizontal, 14)
-        .frame(minHeight: 50, maxHeight: 52)
-        .buFiGlass(cornerRadius: 16, interactive: true)
+        .frame(minHeight: 58, maxHeight: 60)
+        .buFiGlass(cornerRadius: 18, interactive: true)
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(
                     isSearchFieldFocused
                         ? BuFiTheme.accent.opacity(0.48)
@@ -129,21 +129,28 @@ struct SearchView: View {
     @ViewBuilder
     private var content: some View {
         let surfaces = visibleSurfaces
-        ForEach(Array(surfaces.enumerated()), id: \.element) { index, surface in
-            searchSurface(surface)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .buFiVerticalSectionMotion(
-                    delay: min(Double(index) * 0.022, 0.08)
-                )
-                .transition(motionEnabled ? BuFiTransition.section : .opacity)
-                .simultaneousGesture(
-                    TapGesture().onEnded(resignSearchField)
-                )
+        let layerID = contentLayerID
+        // Content-only swap: light crossfade + slight slide. Header stays put.
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(surfaces, id: \.self) { surface in
+                searchSurface(surface)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .simultaneousGesture(
+                        TapGesture().onEnded(resignSearchField)
+                    )
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .id(layerID)
+        .transition(motionEnabled ? BuFiTransition.filterContent : .opacity)
         .animation(
-            motionEnabled ? BuFiMotion.content : .none,
-            value: surfaces
+            motionEnabled ? BuFiMotion.filterContent : .none,
+            value: layerID
         )
+    }
+
+    private var contentLayerID: SearchContentLayerID {
+        isSearchSession ? .searching : .browse(browseMode)
     }
 
     private var visibleSurfaces: [SearchSurface] {
@@ -482,9 +489,8 @@ struct SearchView: View {
         HStack(spacing: 10) {
             Button {
                 resignSearchField()
-                withAnimation(motionEnabled ? BuFiMotion.content : .none) {
-                    browseMode = .main
-                }
+                // Avoid withAnimation so only the content layer uses filterContent.
+                browseMode = .main
             } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .bold))
@@ -687,12 +693,17 @@ private enum SearchSurface: Hashable {
     case resultSongs
 }
 
-private enum SearchBrowseMode {
+private enum SearchBrowseMode: Hashable {
     case main
     case favoriteSongs
     case favoriteAlbums
     case algorithmPlaylists
     case mostPlayed
+}
+
+private enum SearchContentLayerID: Hashable {
+    case searching
+    case browse(SearchBrowseMode)
 }
 
 private struct SearchBrowseQuickItem: Identifiable {
@@ -701,10 +712,6 @@ private struct SearchBrowseQuickItem: Identifiable {
     let leading: HomeQuickAccessLeading
 
     var id: String { title }
-}
-
-private enum SearchScrollAnchor: Hashable {
-    case top
 }
 
 private enum SearchPersonalizedMixWork {
