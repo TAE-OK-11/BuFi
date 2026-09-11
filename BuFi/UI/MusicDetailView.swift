@@ -243,12 +243,13 @@ struct MusicDetailView: View {
                 y: 6
             )
 
-            VStack(spacing: 7) {
+            VStack(spacing: 8) {
                 Text(title.isEmpty ? " " : title)
-                    .font(.system(size: 27, weight: .bold))
-                    .tracking(-0.7)
+                    .font(.system(size: 28, weight: .bold))
+                    .tracking(-0.8)
                     .multilineTextAlignment(.center)
-                    .lineLimit(2)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
                     .foregroundStyle(collectionTitleColor)
                     .contentTransition(.interpolate)
                     .animation(
@@ -260,6 +261,7 @@ struct MusicDetailView: View {
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(collectionSubtitleColor)
                         .multilineTextAlignment(.center)
+                        .lineLimit(2)
                         .contentTransition(.interpolate)
                         .transition(.opacity.combined(with: .offset(y: 4)))
                 }
@@ -269,18 +271,12 @@ struct MusicDetailView: View {
                 value: subtitle
             )
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .buFiSurface(
-                cornerRadius: 20,
-                fill: BuFiTheme.elevated.opacity(0.90),
-                stroke: BuFiTheme.separator.opacity(0.24)
-            )
+            .padding(.horizontal, 20)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 24)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 24)
+        .padding(.top, 20)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 18)
     }
 
     private var controls: some View {
@@ -525,47 +521,74 @@ struct MusicDetailView: View {
             .frame(maxWidth: .infinity)
             .padding(.top, 34)
         } else {
-            BuFiGroupedSurface {
-                LazyVStack(spacing: 0) {
-                    ForEach(IndexedSongRow.makeRows(from: songs)) { row in
-                        SongRow(
-                            song: row.song,
-                            queue: songs,
-                            queueIndex: row.index,
-                            playbackOrigin: isArtist ? .manual : .album,
-                            artworkSize: isArtist ? 54 : 44,
-                            layout: songRowLayout,
-                            fallbackTrackNumber: row.index + 1,
-                            onMore: { selectedSong = row.song }
-                        )
-                        .padding(.horizontal, 12)
+            LazyVStack(spacing: 0) {
+                ForEach(IndexedSongRow.makeRows(from: songs)) { row in
+                    SongRow(
+                        song: row.song,
+                        queue: songs,
+                        queueIndex: row.index,
+                        playbackOrigin: isArtist ? .manual : .album,
+                        artworkSize: isArtist ? 54 : 52,
+                        layout: songRowLayout,
+                        fallbackTrackNumber: row.index + 1,
+                        onMore: { selectedSong = row.song }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, songRowLayout == .compactAlbum ? 1 : 2)
+                    if row.index < songs.count - 1 {
+                        Divider()
+                            .padding(.leading, songListSeparatorLeading)
+                            .opacity(0.42)
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, isArtist ? 0 : 14)
+            .padding(.top, isArtist ? 0 : 8)
+        }
+    }
+
+    private var songListSeparatorLeading: CGFloat {
+        switch songRowLayout {
+        case .compactAlbum:
+            // track number column (28) + spacing (12) + horizontal inset (16)
+            return 16 + 28 + 12
+        case .standard:
+            let art = isArtist ? 54.0 : 52.0
+            return 16 + art + 12
         }
     }
 
     private var background: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(palette.top).opacity(colorScheme == .dark ? 0.92 : 0.18),
-                    BuFiTheme.background
-                ],
-                startPoint: .top,
-                endPoint: .init(x: 0.5, y: 0.43)
-            )
-            if colorScheme == .light {
+            if isArtist {
                 LinearGradient(
                     colors: [
-                        Color.white.opacity(0.10),
-                        Color.white.opacity(0.50),
+                        Color(palette.top).opacity(colorScheme == .dark ? 0.92 : 0.18),
                         BuFiTheme.background
                     ],
                     startPoint: .top,
-                    endPoint: .init(x: 0.5, y: 0.52)
+                    endPoint: .init(x: 0.5, y: 0.43)
+                )
+            } else {
+                // Album/playlist: light artwork tint only (NP-adjacent), not a full flashy wash.
+                LinearGradient(
+                    colors: [
+                        Color(palette.top).opacity(colorScheme == .dark ? 0.28 : 0.10),
+                        Color(palette.bottom).opacity(colorScheme == .dark ? 0.10 : 0.04),
+                        BuFiTheme.background
+                    ],
+                    startPoint: .top,
+                    endPoint: .init(x: 0.5, y: 0.36)
+                )
+            }
+            if colorScheme == .light {
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(isArtist ? 0.10 : 0.06),
+                        Color.white.opacity(isArtist ? 0.50 : 0.28),
+                        BuFiTheme.background
+                    ],
+                    startPoint: .top,
+                    endPoint: .init(x: 0.5, y: isArtist ? 0.52 : 0.40)
                 )
             }
         }
