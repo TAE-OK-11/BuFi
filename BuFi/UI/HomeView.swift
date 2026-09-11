@@ -42,41 +42,46 @@ struct HomeView: View {
                                 : .none,
                             value: hasRevealedContent
                         )
-                    ForEach(Array(sections.enumerated()), id: \.element) { index, section in
-                        homeSection(section)
-                            .padding(.top, section == sections.first ? 0 : 6)
-                            .opacity(hasRevealedContent ? 1 : 0)
-                            .offset(y: hasRevealedContent ? 0 : 9)
-                            .scaleEffect(
-                                hasRevealedContent ? 1 : 0.996,
-                                anchor: .top
-                            )
-                            .animation(
-                                motionEnabled
-                                    ? BuFiMotion.homeEntrance.delay(
-                                        min(0.055 + (Double(index) * 0.022), 0.17)
-                                    )
-                                    : .none,
-                                value: hasRevealedContent
-                            )
-                            .scrollTransition(.interactive, axis: .vertical) { content, phase in
-                                content
-                                    .scaleEffect(
-                                        phase.isIdentity || !enablesMotion ? 1 : 0.994,
-                                        anchor: .center
-                                    )
-                                    .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.94)
-                                    .offset(y: phase.isIdentity || !enablesMotion ? 0 : 5)
-                            }
-                            .transition(
-                                motionEnabled ? BuFiTransition.section : .opacity
-                            )
+                    // Header + chips stay fixed; only this content layer crossfades.
+                    VStack(alignment: .leading, spacing: 18) {
+                        ForEach(Array(sections.enumerated()), id: \.element) { index, section in
+                            homeSection(section)
+                                .padding(.top, section == sections.first ? 0 : 6)
+                                .opacity(hasRevealedContent ? 1 : 0)
+                                .offset(y: hasRevealedContent ? 0 : 9)
+                                .scaleEffect(
+                                    hasRevealedContent ? 1 : 0.996,
+                                    anchor: .top
+                                )
+                                .animation(
+                                    motionEnabled
+                                        ? BuFiMotion.homeEntrance.delay(
+                                            min(0.055 + (Double(index) * 0.022), 0.17)
+                                        )
+                                        : .none,
+                                    value: hasRevealedContent
+                                )
+                                .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                                    content
+                                        .scaleEffect(
+                                            phase.isIdentity || !enablesMotion ? 1 : 0.994,
+                                            anchor: .center
+                                        )
+                                        .opacity(phase.isIdentity || !enablesMotion ? 1 : 0.94)
+                                        .offset(y: phase.isIdentity || !enablesMotion ? 0 : 5)
+                                }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .id(filter)
+                    .transition(
+                        motionEnabled ? BuFiTransition.filterContent : .opacity
+                    )
+                    .animation(
+                        motionEnabled ? BuFiMotion.filterContent : .none,
+                        value: filter
+                    )
                 }
-                .animation(
-                    motionEnabled ? BuFiMotion.content : .none,
-                    value: sections
-                )
                 .padding(.top, 18)
                 .buFiMiniPlayerContentClearance()
             }

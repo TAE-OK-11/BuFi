@@ -39,6 +39,8 @@ enum BuFiMotion {
     static let fade = Animation.smooth(duration: 0.24, extraBounce: 0)
     static let reveal = Animation.smooth(duration: 0.34, extraBounce: 0)
     static let content = Animation.smooth(duration: 0.36, extraBounce: 0)
+    /// Home filter content swap only — opacity + short slide, no scale/bounce.
+    static let filterContent = Animation.smooth(duration: 0.30, extraBounce: 0)
     static let homeEntrance = Animation.spring(duration: 0.46, bounce: 0.045)
     static let homeRefresh = Animation.smooth(duration: 0.40, extraBounce: 0)
     static let playerEntrance = Animation.spring(duration: 0.48, bounce: 0.04)
@@ -92,6 +94,14 @@ enum BuFiTransition {
                 .combined(with: .offset(y: 10))
                 .combined(with: .scale(scale: 0.996, anchor: .top)),
             removal: .opacity.combined(with: .offset(y: -4))
+        )
+    }
+
+    /// Content-layer filter swap: opacity crossfade + slight vertical slide.
+    static var filterContent: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 8)),
+            removal: .opacity.combined(with: .offset(y: -6))
         )
     }
 
