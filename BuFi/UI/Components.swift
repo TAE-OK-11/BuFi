@@ -246,10 +246,14 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                         }
                     } label: {
                         Text(title(item))
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 13, weight: isSelected ? .bold : .medium))
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                            .foregroundStyle(
+                                isSelected
+                                    ? Color.primary
+                                    : Color.primary.opacity(0.72)
+                            )
                             .padding(.horizontal, 14)
                             .frame(height: chipHeight)
                             .frame(maxWidth: 220)
@@ -257,8 +261,8 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                                 Capsule(style: .continuous)
                                     .fill(
                                         isSelected
-                                            ? Color.primary.opacity(0.14)
-                                            : Color.primary.opacity(0.04)
+                                            ? Color.primary.opacity(0.20)
+                                            : Color.primary.opacity(0.07)
                                     )
                                     .overlay {
                                         if isSelected {
@@ -274,7 +278,7 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
                                         } else {
                                             Capsule(style: .continuous)
                                                 .stroke(
-                                                    BuFiTheme.separator.opacity(0.22),
+                                                    BuFiTheme.separator.opacity(0.28),
                                                     lineWidth: 0.6
                                                 )
                                         }

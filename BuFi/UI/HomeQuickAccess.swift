@@ -67,24 +67,22 @@ struct HomeQuickAccessCard: View {
     let leading: HomeQuickAccessLeading
 
     @ScaledMetric(relativeTo: .body) private var cardHeight: CGFloat = 58
-    @ScaledMetric(relativeTo: .body) private var artSize: CGFloat = 52
 
     var body: some View {
         let height = min(max(cardHeight, 56), 68)
-        let leadingSize = min(max(artSize, 48), height)
         return HStack(spacing: 0) {
-            leadingView(size: leadingSize)
-                .frame(width: leadingSize, height: leadingSize)
+            leadingView(size: height)
+                .frame(width: height, height: height)
 
             Text(LocalizedStringKey(title))
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
+                .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
-                .minimumScaleFactor(0.85)
+                .minimumScaleFactor(0.9)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: height)
