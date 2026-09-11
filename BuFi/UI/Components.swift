@@ -200,7 +200,7 @@ extension View {
     /// Keeps the final scrollable content clear of the persistent mini player.
     func buFiMiniPlayerContentClearance(
         idle: CGFloat = 34,
-        playing: CGFloat = 110
+        playing: CGFloat = 102
     ) -> some View {
         modifier(BuFiMiniPlayerContentClearanceModifier(
             idle: idle,
@@ -233,57 +233,63 @@ struct BuFiFilterBar<Item: Identifiable & Equatable>: View {
 
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @Namespace private var selectionNamespace
+    @ScaledMetric(relativeTo: .footnote) private var chipHeight: CGFloat = 33
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(items) { item in
-                Button {
-                    withAnimation(motionEnabled ? BuFiMotion.selection : .none) {
-                        selection = item
-                    }
-                } label: {
-                    Text(title(item))
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .foregroundStyle(
-                            selection == item
-                                ? Color.primary
-                                : Color.secondary
-                        )
-                        .scaleEffect(selection == item ? 1 : 0.985)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 40)
-                        .background {
-                            if selection == item {
-                                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .fill(Color.primary.opacity(0.11))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                            .stroke(
-                                                BuFiTheme.separator.opacity(0.28),
-                                                lineWidth: 0.7
-                                            )
-                                    }
-                                    .matchedGeometryEffect(
-                                        id: "filter-selection",
-                                        in: selectionNamespace
-                                    )
-                            }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(items) { item in
+                    let isSelected = selection == item
+                    Button {
+                        withAnimation(motionEnabled ? BuFiMotion.selection : .none) {
+                            selection = item
                         }
-                        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    } label: {
+                        Text(title(item))
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                            .padding(.horizontal, 14)
+                            .frame(height: chipHeight)
+                            .frame(maxWidth: 220)
+                            .background {
+                                Capsule(style: .continuous)
+                                    .fill(
+                                        isSelected
+                                            ? Color.primary.opacity(0.14)
+                                            : BuFiTheme.elevated.opacity(0.72)
+                                    )
+                                    .overlay {
+                                        if isSelected {
+                                            Capsule(style: .continuous)
+                                                .stroke(
+                                                    BuFiTheme.separator.opacity(0.18),
+                                                    lineWidth: 0.6
+                                                )
+                                                .matchedGeometryEffect(
+                                                    id: "filter-selection",
+                                                    in: selectionNamespace
+                                                )
+                                        } else {
+                                            Capsule(style: .continuous)
+                                                .stroke(
+                                                    BuFiTheme.separator.opacity(0.32),
+                                                    lineWidth: 0.7
+                                                )
+                                        }
+                                    }
+                            }
+                            .contentShape(Capsule(style: .continuous))
+                    }
+                    .buttonStyle(BuFiPressStyle())
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
-                .buttonStyle(BuFiPressStyle())
-                .accessibilityAddTraits(selection == item ? .isSelected : [])
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 1)
         }
-        .padding(4)
-        .frame(height: 48)
-        .buFiSurface(
-            cornerRadius: 17,
-            stroke: BuFiTheme.separator.opacity(0.34)
-        )
-        .padding(.horizontal, 16)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
     }
 }
 

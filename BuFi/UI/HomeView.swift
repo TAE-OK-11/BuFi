@@ -25,7 +25,7 @@ struct HomeView: View {
 
         NavigationStack {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     BuFiPageHeader(title: "홈")
                         .opacity(hasRevealedContent ? 1 : 0)
                         .offset(y: hasRevealedContent ? 0 : 7)
@@ -214,38 +214,103 @@ struct HomeView: View {
     }
 
     private var shortcuts: some View {
-        LazyVGrid(
-            columns: [
-                GridItem(.flexible(), spacing: 10),
-                GridItem(.flexible(), spacing: 10)
-            ],
-            spacing: 10
-        ) {
-            NavigationLink(
-                value: presentation.favoriteSongsMix
-            ) {
-                BuFiShortcutCard(
-                    title: "좋아요 표시한 곡",
-                    systemImage: "heart.fill",
-                    tint: BuFiTheme.accent
-                )
-            }
-            .buttonStyle(BuFiPressStyle())
-            .disabled(library.snapshot.starredSongs.isEmpty)
+        HomeQuickAccessGrid(items: quickAccessItems)
+    }
 
-            NavigationLink(
-                value: presentation.mostPlayedSongsMix
-            ) {
-                BuFiShortcutCard(
-                    title: "자주 들은 곡",
-                    systemImage: "chart.bar.fill",
-                    tint: Color(red: 0.22, green: 0.50, blue: 0.78)
+    private var quickAccessItems: [HomeQuickAccessItem] {
+        let snapshot = library.snapshot
+        var items: [HomeQuickAccessItem] = []
+        var seenAlbumIDs = Set<String>()
+        var seenPlaylistIDs = Set<String>()
+
+        items.append(
+            HomeQuickAccessItem(
+                id: "quick-liked",
+                title: "좋아요 표시한 곡",
+                leading: .heartGradient,
+                destination: .mix(presentation.favoriteSongsMix),
+                isEnabled: !snapshot.starredSongs.isEmpty
+            )
+        )
+        items.append(
+            HomeQuickAccessItem(
+                id: "quick-frequent",
+                title: "자주 들은 곡",
+                leading: frequentLeading(snapshot: snapshot),
+                destination: .mix(presentation.mostPlayedSongsMix),
+                isEnabled: !snapshot.mostPlayedSongs.isEmpty
+            )
+        )
+
+        let targetCount = 6
+        func appendAlbum(_ album: Album) {
+            guard items.count < targetCount else { return }
+            guard seenAlbumIDs.insert(album.id).inserted else { return }
+            items.append(
+                HomeQuickAccessItem(
+                    id: "quick-album-\(album.id)",
+                    title: album.name,
+                    leading: .coverArt(album.coverArt),
+                    destination: .album(album)
                 )
-            }
-            .buttonStyle(BuFiPressStyle())
-            .disabled(library.snapshot.mostPlayedSongs.isEmpty)
+            )
         }
-        .padding(.horizontal, 16)
+        func appendPlaylist(_ playlist: Playlist) {
+            guard items.count < targetCount else { return }
+            guard seenPlaylistIDs.insert(playlist.id).inserted else { return }
+            items.append(
+                HomeQuickAccessItem(
+                    id: "quick-playlist-\(playlist.id)",
+                    title: playlist.name,
+                    leading: .coverArt(playlist.coverArt),
+                    destination: .playlist(playlist)
+                )
+            )
+        }
+
+        for album in snapshot.recentlyPlayedAlbums {
+            appendAlbum(album)
+            if items.count == targetCount { break }
+        }
+        if items.count < targetCount {
+            for album in snapshot.frequentAlbums {
+                appendAlbum(album)
+                if items.count == targetCount { break }
+            }
+        }
+        if items.count < targetCount {
+            for album in snapshot.starredAlbums {
+                appendAlbum(album)
+                if items.count == targetCount { break }
+            }
+        }
+        if items.count < targetCount {
+            for playlist in snapshot.playlists {
+                appendPlaylist(playlist)
+                if items.count == targetCount { break }
+            }
+        }
+        if items.count < targetCount {
+            for album in snapshot.recentAlbums {
+                appendAlbum(album)
+                if items.count == targetCount { break }
+            }
+        }
+        if items.count < targetCount {
+            for album in snapshot.randomAlbums {
+                appendAlbum(album)
+                if items.count == targetCount { break }
+            }
+        }
+
+        return items
+    }
+
+    private func frequentLeading(snapshot: HomeSnapshot) -> HomeQuickAccessLeading {
+        if let cover = snapshot.mostPlayedSongs.first?.artworkID {
+            return .coverArt(cover)
+        }
+        return .chartGradient
     }
 
     @ViewBuilder
@@ -294,7 +359,7 @@ struct HomeView: View {
                             NavigationLink(value: MusicRoute.playlist(playlist)) {
                                 VStack(alignment: .leading, spacing: 8) {
                                     playlistArtwork(playlist)
-                                        .frame(width: 166, height: 166)
+                                        .frame(width: 152, height: 152)
                                     Text(playlist.name)
                                         .font(.system(size: 15, weight: .semibold))
                                         .foregroundStyle(.primary)
@@ -304,7 +369,7 @@ struct HomeView: View {
                                         .font(.system(size: 13))
                                         .foregroundStyle(.secondary)
                                 }
-                                .frame(width: 166, alignment: .leading)
+                                .frame(width: 152, alignment: .leading)
                             }
                             .buttonStyle(BuFiPressStyle())
                             .buFiHorizontalScrollMotion()
@@ -319,7 +384,7 @@ struct HomeView: View {
     @ViewBuilder
     private func playlistArtwork(_ playlist: Playlist) -> some View {
         if let cover = playlist.coverArt, !cover.isEmpty {
-            ArtworkView(coverArt: cover, size: 166, cornerRadius: 14)
+            ArtworkView(coverArt: cover, size: 152, cornerRadius: 14)
         } else {
             ZStack {
                 Image(systemName: "music.note.list")
@@ -338,24 +403,24 @@ struct HomeView: View {
                 SectionTitle(title: title)
                     .padding(.horizontal, 16)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: 16) {
+                    LazyHStack(alignment: .top, spacing: 14) {
                         ForEach(artists.prefix(12)) { artist in
                             NavigationLink(value: MusicRoute.artist(artist)) {
-                                VStack(spacing: 9) {
+                                VStack(spacing: 8) {
                                     ArtworkView(
                                         coverArt: artist.coverArt,
-                                        size: 132,
-                                        cornerRadius: 66
+                                        size: 118,
+                                        cornerRadius: 59
                                     )
-                                    .frame(width: 132, height: 132)
+                                    .frame(width: 118, height: 118)
                                     Text(artist.name)
-                                        .font(.system(size: 15, weight: .semibold))
+                                        .font(.system(size: 14, weight: .semibold))
                                         .foregroundStyle(.primary)
                                         .lineLimit(2)
                                         .multilineTextAlignment(.center)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
-                                .frame(width: 132)
+                                .frame(width: 118)
                             }
                             .buttonStyle(BuFiPressStyle())
                             .buFiHorizontalScrollMotion()
@@ -648,7 +713,7 @@ struct HomePresentation: Equatable, Sendable {
 private struct HomeAlbumCard: View {
     let album: Album
 
-    private let width: CGFloat = 166
+    private let width: CGFloat = 152
 
     var body: some View {
         card.buFiHorizontalScrollMotion()
@@ -685,13 +750,13 @@ private struct HomeAlbumCard: View {
 
 private enum HomeSection: Hashable, CaseIterable {
     case shortcuts
+    case recentlyPlayed
     case randomAlbums
+    case primaryArtists
     case starredAlbums
     case recommendedAlbums
-    case primaryArtists
     case artistMixes
     case featuredArtists
-    case recentlyPlayed
     case frequentAlbums
     case recentAlbums
     case playlists

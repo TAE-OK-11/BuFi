@@ -242,7 +242,7 @@ struct RootView: View {
             .opacity(activeProgress)
             .scaleEffect(0.996 + (0.004 * activeProgress))
             .offset(y: effectiveMotion ? CGFloat(1 - activeProgress) * 7 : 0)
-            .safeAreaInset(edge: .bottom, spacing: 10) {
+            .safeAreaInset(edge: .bottom, spacing: 6) {
                 if currentPlayback.song != nil {
                     Color.clear
                         .frame(maxWidth: .infinity)
@@ -251,7 +251,7 @@ struct RootView: View {
                             key: MiniPlayerPlacementPreferenceKey.self,
                             value: .bounds
                         ) { tab == tag ? $0 : nil }
-                        .padding(.bottom, 6)
+                        .padding(.bottom, 2)
                 }
             }
     }
