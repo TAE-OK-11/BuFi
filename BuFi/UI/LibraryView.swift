@@ -91,7 +91,7 @@ struct LibraryView: View {
                         libraryRow(
                             title: playlist.name,
                             subtitle: String(
-                                format: String(localized: "플레이리스트 · %d곡"),
+                                format: String(localized: "%d곡"),
                                 playlist.songCount ?? 0
                             ),
                             cover: playlist.coverArt,
@@ -132,22 +132,19 @@ struct LibraryView: View {
             if snapshot.starredSongs.isEmpty {
                 empty("좋아요 표시한 곡이 없습니다", icon: "heart")
             } else {
-                BuFiGroupedSurface {
-                    LazyVStack(spacing: 0) {
-                        ForEach(IndexedSongRow.makeRows(from: snapshot.starredSongs)) { row in
-                            SongRow(
-                                song: row.song,
-                                queue: snapshot.starredSongs,
-                                queueIndex: row.index
-                            )
-                            .padding(.horizontal, 14)
-                            if row.index < snapshot.starredSongs.count - 1 {
-                                rowSeparator
-                            }
+                LazyVStack(spacing: 0) {
+                    ForEach(IndexedSongRow.makeRows(from: snapshot.starredSongs)) { row in
+                        SongRow(
+                            song: row.song,
+                            queue: snapshot.starredSongs,
+                            queueIndex: row.index
+                        )
+                        .padding(.horizontal, 16)
+                        if row.index < snapshot.starredSongs.count - 1 {
+                            rowSeparator
                         }
                     }
                 }
-                .padding(.horizontal, 16)
             }
         case .artistsEmpty:
             empty("아티스트가 없습니다", icon: "person.2")
@@ -175,17 +172,14 @@ struct LibraryView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
 
-                    BuFiGroupedSurface {
-                        LazyVStack(spacing: 0) {
-                            ForEach(section.artists) { artist in
-                                artistRow(artist)
-                                if artist.id != section.artists.last?.id {
-                                    rowSeparator
-                                }
+                    LazyVStack(spacing: 0) {
+                        ForEach(section.artists) { artist in
+                            artistRow(artist)
+                            if artist.id != section.artists.last?.id {
+                                rowSeparator
                             }
                         }
                     }
-                    .padding(.horizontal, 16)
                 }
             }
         }
@@ -258,7 +252,7 @@ struct LibraryView: View {
             .buttonStyle(BuFiPressStyle())
             .accessibilityLabel("좋아요 표시")
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
     }
 
@@ -305,7 +299,7 @@ struct LibraryView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
     }
@@ -314,23 +308,20 @@ struct LibraryView: View {
         _ items: [Item],
         @ViewBuilder row: @escaping (Item) -> Row
     ) -> some View {
-        BuFiGroupedSurface {
-            LazyVStack(spacing: 0) {
-                ForEach(items) { item in
-                    row(item)
-                    if item.id != items.last?.id {
-                        rowSeparator
-                    }
+        LazyVStack(spacing: 0) {
+            ForEach(items) { item in
+                row(item)
+                if item.id != items.last?.id {
+                    rowSeparator
                 }
             }
         }
-        .padding(.horizontal, 16)
     }
 
     private var rowSeparator: some View {
         Divider()
-            .padding(.leading, 92)
-            .opacity(0.52)
+            .padding(.leading, 96)
+            .opacity(0.42)
     }
 
     @ViewBuilder
