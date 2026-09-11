@@ -427,22 +427,22 @@ struct SearchView: View {
             )
             .padding(.top, 32)
         } else {
-            BuFiGroupedSurface {
-                LazyVStack(spacing: 0) {
-                    ForEach(IndexedSongRow.makeRows(from: songs)) { row in
-                        SongRow(
-                            song: row.song,
-                            queue: songs,
-                            queueIndex: row.index
-                        )
-                        .padding(.horizontal, 14)
-                        if row.index < songs.count - 1 {
-                            rowSeparator
-                        }
+            LazyVStack(spacing: 0) {
+                ForEach(IndexedSongRow.makeRows(from: songs)) { row in
+                    SongRow(
+                        song: row.song,
+                        queue: songs,
+                        queueIndex: row.index,
+                        artworkSize: 52,
+                        textLineLimit: 2
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
+                    if row.index < songs.count - 1 {
+                        browseListSeparator(leading: 84)
                     }
                 }
             }
-            .padding(.horizontal, 16)
         }
     }
 
@@ -548,41 +548,37 @@ struct SearchView: View {
                 )
                 .padding(.top, 32)
             } else {
-                BuFiGroupedSurface {
-                    LazyVStack(spacing: 0) {
-                        ForEach(IndexedSongRow.makeRows(from: songs)) { row in
-                            HStack(spacing: 10) {
-                                Text("\(row.index + 1)")
-                                    .font(
-                                        .system(
-                                            size: 14,
-                                            weight: row.index < 3 ? .bold : .medium,
-                                            design: .rounded
-                                        )
+                LazyVStack(spacing: 0) {
+                    ForEach(IndexedSongRow.makeRows(from: songs)) { row in
+                        HStack(spacing: 10) {
+                            Text("\(row.index + 1)")
+                                .font(
+                                    .system(
+                                        size: 14,
+                                        weight: row.index < 3 ? .bold : .medium,
+                                        design: .rounded
                                     )
-                                    .foregroundStyle(
-                                        row.index < 3 ? BuFiTheme.accent : Color.secondary
-                                    )
-                                    .monospacedDigit()
-                                    .frame(width: 24, alignment: .trailing)
-                                SongRow(
-                                    song: row.song,
-                                    queue: songs,
-                                    queueIndex: row.index,
-                                    artworkSize: 52,
-                                    textLineLimit: 2
                                 )
-                            }
-                            .padding(.horizontal, 12)
-                            if row.index < songs.count - 1 {
-                                Divider()
-                                    .padding(.leading, 112)
-                                    .opacity(0.50)
-                            }
+                                .foregroundStyle(
+                                    row.index < 3 ? BuFiTheme.accent : Color.secondary
+                                )
+                                .monospacedDigit()
+                                .frame(width: 24, alignment: .trailing)
+                            SongRow(
+                                song: row.song,
+                                queue: songs,
+                                queueIndex: row.index,
+                                artworkSize: 52,
+                                textLineLimit: 2
+                            )
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 2)
+                        if row.index < songs.count - 1 {
+                            browseListSeparator(leading: 100)
                         }
                     }
                 }
-                .padding(.horizontal, 16)
             }
         }
     }
@@ -634,6 +630,12 @@ struct SearchView: View {
         Divider()
             .padding(.leading, 14 + Self.resultArtworkSize + 12)
             .opacity(0.55)
+    }
+
+    private func browseListSeparator(leading: CGFloat) -> some View {
+        Divider()
+            .padding(.leading, leading)
+            .opacity(0.42)
     }
 
     private static let resultArtworkSize: CGFloat = 54
