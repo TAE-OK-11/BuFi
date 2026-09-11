@@ -7,28 +7,14 @@ struct PersonalizedMixArtwork: View {
 
     var body: some View {
         ZStack {
-            if mix.kind == .artist, let coverArt = mix.artworkCoverArt {
-                ArtworkView(
-                    coverArt: coverArt,
-                    size: size,
-                    cornerRadius: 0
-                )
-                .frame(width: size, height: size)
+            coverBackground
 
-                LinearGradient(
-                    colors: [
-                        .black.opacity(0.08),
-                        .clear,
-                        .black.opacity(0.78)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+            if !showsMosaic {
+                coverTypography
             } else {
-                SmartMixCoverBackground(theme: coverTheme)
+                mosaicScrim
+                coverTypography
             }
-
-            coverTypography
         }
         .frame(width: size, height: size)
         .buFiSurface(
@@ -40,212 +26,213 @@ struct PersonalizedMixArtwork: View {
         .accessibilityHidden(true)
     }
 
+    @ViewBuilder
+    private var coverBackground: some View {
+        if mix.kind == .artist, let coverArt = mix.artworkCoverArt {
+            ArtworkView(
+                coverArt: coverArt,
+                size: size,
+                cornerRadius: 0
+            )
+            .frame(width: size, height: size)
+        } else if showsMosaic {
+            MixArtworkMosaic(coverArts: mosaicCoverArts, size: size)
+        } else {
+            softSolidFill
+        }
+    }
+
+    private var softSolidFill: some View {
+        LinearGradient(
+            colors: softFillColors,
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var softFillColors: [Color] {
+        switch mix.kind {
+        case .favorites:
+            return [
+                BuFiTheme.accentSoft.opacity(0.92),
+                BuFiTheme.accent
+            ]
+        case .ranking:
+            return [
+                Color(red: 0.16, green: 0.38, blue: 0.68).opacity(0.94),
+                Color(red: 0.22, green: 0.50, blue: 0.78)
+            ]
+        case .daylist:
+            return [
+                Color(red: 0.32, green: 0.28, blue: 0.62).opacity(0.94),
+                Color(red: 0.42, green: 0.34, blue: 0.78)
+            ]
+        case .repeatListening:
+            return [
+                Color(red: 0.10, green: 0.42, blue: 0.72).opacity(0.94),
+                Color(red: 0.14, green: 0.52, blue: 0.78)
+            ]
+        case .listenAgain:
+            return [
+                Color(red: 0.72, green: 0.38, blue: 0.18).opacity(0.94),
+                Color(red: 0.86, green: 0.48, blue: 0.22)
+            ]
+        case .genre:
+            return [
+                Color(red: 0.18, green: 0.48, blue: 0.32).opacity(0.94),
+                Color(red: 0.28, green: 0.58, blue: 0.38)
+            ]
+        case .mood:
+            return [
+                Color(red: 0.52, green: 0.28, blue: 0.58).opacity(0.94),
+                Color(red: 0.62, green: 0.34, blue: 0.68)
+            ]
+        case .artist:
+            return [
+                Color(red: 0.28, green: 0.14, blue: 0.28).opacity(0.94),
+                Color(red: 0.42, green: 0.18, blue: 0.36)
+            ]
+        }
+    }
+
+    private var mosaicScrim: some View {
+        LinearGradient(
+            colors: [
+                .black.opacity(0.10),
+                .clear,
+                .black.opacity(0.62)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     private var coverTypography: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("BUFI SMART")
-                .font(.custom("Unbounded_900wght", fixedSize: max(8, size * 0.043)))
-                .tracking(size * 0.004)
-                .foregroundStyle(.white.opacity(0.88))
-
             Spacer(minLength: 0)
 
-            Text(coverTitle)
+            Text(coverLabel)
                 .font(coverFont)
-                .tracking(-size * 0.006)
-                .lineLimit(mix.kind == .artist ? 2 : 3)
-                .minimumScaleFactor(0.62)
+                .tracking(-size * 0.004)
+                .lineLimit(3)
+                .minimumScaleFactor(0.72)
                 .fixedSize(horizontal: false, vertical: true)
-
-            Text(coverTheme.signature)
-                .font(
-                    .system(
-                        size: max(8, size * 0.047),
-                        weight: .bold,
-                        design: .rounded
-                    )
-                )
-                .tracking(size * 0.003)
-                .foregroundStyle(.white.opacity(0.68))
-                .padding(.top, max(4, size * 0.022))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.28), radius: 6, y: 2)
         }
         .frame(
             maxWidth: .infinity,
             maxHeight: .infinity,
-            alignment: .leading
+            alignment: .bottomLeading
         )
-        .foregroundStyle(.white)
-        .padding(max(13, size * 0.075))
-        .shadow(color: .black.opacity(0.24), radius: 8, y: 3)
+        .padding(max(12, size * 0.072))
     }
 
-    private var coverTitle: String {
+    private var coverLabel: String {
         switch mix.kind {
-        case .daylist: "DAYLIST"
-        case .repeatListening: "REPEAT"
-        case .listenAgain: "LISTEN\nAGAIN"
-        case .favorites: "FAVORITES"
-        case .ranking: "TOP\nTRACKS"
+        case .favorites:
+            return String(localized: "좋아요")
+        case .ranking:
+            return String(localized: "자주 들은")
+        case .daylist:
+            return mix.title
+        case .repeatListening:
+            return String(localized: "반복 듣기")
+        case .listenAgain:
+            return String(localized: "한 번 더")
         case .artist:
-            mix.title
+            return mix.title
                 .replacingOccurrences(of: " Mix", with: "")
-                .uppercased() + " MIX"
-        case .genre, .mood: mix.title.uppercased()
+        case .genre, .mood:
+            return mix.title
         }
     }
 
     private var coverFont: Font {
-        let fontSize = max(18, size * (mix.kind == .artist ? 0.105 : 0.118))
-        let supportsUnbounded = coverTitle.unicodeScalars.allSatisfy {
-            $0.isASCII
-        }
-        if supportsUnbounded {
-            return .custom("Unbounded_900wght", fixedSize: fontSize)
-        }
-        return .system(
-            size: fontSize,
-            weight: .black,
-            design: .rounded
-        )
+        let fontSize = max(17, size * (mix.kind == .artist ? 0.10 : 0.112))
+        return .system(size: fontSize, weight: .bold, design: .rounded)
     }
 
-    private var coverTheme: SmartMixCoverTheme {
-        switch mix.kind {
-        case .daylist:
-            if mix.id.hasSuffix("-night") {
-                return .init(
-                    colors: [
-                        Color(red: 0.025, green: 0.035, blue: 0.12),
-                        Color(red: 0.10, green: 0.18, blue: 0.54),
-                        Color(red: 0.28, green: 0.23, blue: 0.60)
-                    ],
-                    signature: "AFTER DARK"
-                )
-            }
-            if mix.id.hasSuffix("-afternoon") {
-                return .init(
-                    colors: [
-                        Color(red: 0.30, green: 0.04, blue: 0.20),
-                        Color(red: 0.92, green: 0.20, blue: 0.32),
-                        Color(red: 1.0, green: 0.58, blue: 0.27)
-                    ],
-                    signature: "GOLDEN HOUR"
-                )
-            }
-            return .init(
-                colors: [
-                    Color(red: 0.18, green: 0.07, blue: 0.46),
-                    Color(red: 0.42, green: 0.20, blue: 0.95),
-                    Color(red: 0.92, green: 0.48, blue: 0.82)
-                ],
-                signature: "RIGHT NOW"
-            )
-        case .repeatListening:
-            return .init(
-                colors: [
-                    Color(red: 0.02, green: 0.08, blue: 0.22),
-                    Color(red: 0.02, green: 0.34, blue: 0.88),
-                    Color(red: 0.08, green: 0.66, blue: 0.72)
-                ],
-                signature: "ON ROTATION"
-            )
-        case .listenAgain:
-            return .init(
-                colors: [
-                    Color(red: 0.24, green: 0.07, blue: 0.02),
-                    Color(red: 0.82, green: 0.27, blue: 0.04),
-                    Color(red: 0.98, green: 0.62, blue: 0.20)
-                ],
-                signature: "BACK IN TIME"
-            )
-        case .genre:
-            return .init(
-                colors: [
-                    Color(red: 0.03, green: 0.12, blue: 0.08),
-                    Color(red: 0.16, green: 0.47, blue: 0.16),
-                    Color(red: 0.50, green: 0.70, blue: 0.06)
-                ],
-                signature: "DEEP CUTS"
-            )
-        case .artist:
-            return .init(
-                colors: [.black, Color(red: 0.56, green: 0.12, blue: 0.36)],
-                signature: "ARTIST RADIO"
-            )
-        case .mood:
-            if mix.id.hasPrefix("happy-mix") {
-                return .init(
-                    colors: [
-                        Color(red: 0.48, green: 0.14, blue: 0.00),
-                        Color(red: 0.98, green: 0.46, blue: 0.02),
-                        Color(red: 1.0, green: 0.76, blue: 0.16)
-                    ],
-                    signature: "PURE JOY"
-                )
-            }
-            if mix.id.hasPrefix("upbeat-mix") {
-                return .init(
-                    colors: [
-                        Color(red: 0.28, green: 0.01, blue: 0.09),
-                        Color(red: 0.94, green: 0.05, blue: 0.28),
-                        Color(red: 0.98, green: 0.34, blue: 0.12)
-                    ],
-                    signature: "HIGH ENERGY"
-                )
-            }
-            if mix.id.hasPrefix("chill-mix") {
-                return .init(
-                    colors: [
-                        Color(red: 0.02, green: 0.10, blue: 0.15),
-                        Color(red: 0.02, green: 0.40, blue: 0.48),
-                        Color(red: 0.25, green: 0.66, blue: 0.66)
-                    ],
-                    signature: "SLOW FLOW"
-                )
-            }
-            return .init(
-                colors: [
-                    Color(red: 0.11, green: 0.05, blue: 0.28),
-                    Color(red: 0.48, green: 0.13, blue: 0.58),
-                    Color(red: 0.88, green: 0.35, blue: 0.62)
-                ],
-                signature: "FEEL IT"
-            )
-        case .favorites:
-            return .init(
-                colors: [
-                    Color(red: 0.13, green: 0.02, blue: 0.22),
-                    Color(red: 0.46, green: 0.08, blue: 0.72),
-                    Color(red: 0.92, green: 0.18, blue: 0.56)
-                ],
-                signature: "ALL YOURS"
-            )
-        case .ranking:
-            return .init(
-                colors: [
-                    Color(red: 0.02, green: 0.05, blue: 0.18),
-                    Color(red: 0.08, green: 0.24, blue: 0.78),
-                    Color(red: 0.30, green: 0.20, blue: 0.92)
-                ],
-                signature: "YOUR CHART"
-            )
+    private var mosaicCoverArts: [String] {
+        var seen = Set<String>()
+        var arts: [String] = []
+        for song in mix.songs {
+            guard let art = song.coverArt?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ), !art.isEmpty else { continue }
+            guard seen.insert(art).inserted else { continue }
+            arts.append(art)
+            if arts.count == 4 { break }
         }
+        return arts
+    }
+
+    private var showsMosaic: Bool {
+        mix.kind != .artist && mosaicCoverArts.count >= 1
     }
 }
 
-private struct SmartMixCoverTheme {
-    let colors: [Color]
-    let signature: String
-}
-
-private struct SmartMixCoverBackground: View {
-    let theme: SmartMixCoverTheme
+private struct MixArtworkMosaic: View {
+    let coverArts: [String]
+    let size: CGFloat
 
     var body: some View {
-        LinearGradient(
-            colors: theme.colors,
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        let tiles = Array(coverArts.prefix(4))
+        let half = size / 2
+        Group {
+            switch tiles.count {
+            case 1:
+                tile(tiles[0], side: size)
+                    .frame(width: size, height: size)
+            case 2:
+                HStack(spacing: 0) {
+                    tile(tiles[0], side: size)
+                        .frame(width: half, height: size)
+                        .clipped()
+                    tile(tiles[1], side: size)
+                        .frame(width: half, height: size)
+                        .clipped()
+                }
+            case 3:
+                HStack(spacing: 0) {
+                    tile(tiles[0], side: size)
+                        .frame(width: half, height: size)
+                        .clipped()
+                    VStack(spacing: 0) {
+                        tile(tiles[1], side: half)
+                            .frame(width: half, height: half)
+                            .clipped()
+                        tile(tiles[2], side: half)
+                            .frame(width: half, height: half)
+                            .clipped()
+                    }
+                }
+            default:
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        tile(tiles[0], side: half)
+                            .frame(width: half, height: half)
+                            .clipped()
+                        tile(tiles[1], side: half)
+                            .frame(width: half, height: half)
+                            .clipped()
+                    }
+                    HStack(spacing: 0) {
+                        tile(tiles[2], side: half)
+                            .frame(width: half, height: half)
+                            .clipped()
+                        tile(tiles[3], side: half)
+                            .frame(width: half, height: half)
+                            .clipped()
+                    }
+                }
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    private func tile(_ coverArt: String, side: CGFloat) -> some View {
+        ArtworkView(coverArt: coverArt, size: side, cornerRadius: 0)
     }
 }
 
@@ -283,6 +270,13 @@ struct PersonalizedMixDetailView: View {
     let mix: PersonalizedMix
     private let audio = AudioEngine.shared
 
+    private var trackCountText: String {
+        String(
+            format: String(localized: "%d곡"),
+            mix.songs.count
+        )
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 22) {
@@ -316,11 +310,17 @@ struct PersonalizedMixDetailView: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(mix.subtitle)
+                Text(trackCountText)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .lineLimit(3)
+                if !mix.subtitle.isEmpty, mix.subtitle != trackCountText {
+                    Text(mix.subtitle)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -329,15 +329,6 @@ struct PersonalizedMixDetailView: View {
 
     private var controls: some View {
         HStack(spacing: 12) {
-            Text(
-                String(
-                    format: String(localized: "%d곡"),
-                    mix.songs.count
-                )
-            )
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(.secondary)
-
             Spacer()
 
             Button {
@@ -380,46 +371,44 @@ struct PersonalizedMixDetailView: View {
             .frame(maxWidth: .infinity)
             .padding(.top, 24)
         } else {
-            BuFiGroupedSurface {
-                LazyVStack(spacing: 0) {
-                    ForEach(IndexedSongRow.makeRows(from: mix.songs)) { row in
-                        HStack(spacing: mix.showsRanking ? 10 : 2) {
-                            if mix.showsRanking {
-                                Text("\(row.index + 1)")
-                                    .font(
-                                        .system(
-                                            size: 14,
-                                            weight: row.index < 3 ? .bold : .medium,
-                                            design: .rounded
-                                        )
+            LazyVStack(spacing: 0) {
+                ForEach(IndexedSongRow.makeRows(from: mix.songs)) { row in
+                    HStack(spacing: mix.showsRanking ? 10 : 2) {
+                        if mix.showsRanking {
+                            Text("\(row.index + 1)")
+                                .font(
+                                    .system(
+                                        size: 14,
+                                        weight: row.index < 3 ? .bold : .medium,
+                                        design: .rounded
                                     )
-                                    .foregroundStyle(
-                                        row.index < 3
-                                            ? BuFiTheme.accent
-                                            : Color.secondary
-                                    )
-                                    .monospacedDigit()
-                                    .frame(width: 24, alignment: .trailing)
-                            }
-                            SongRow(
-                                song: row.song,
-                                queue: mix.songs,
-                                queueIndex: row.index,
-                                artworkSize: 52,
-                                textLineLimit: 2
-                            )
+                                )
+                                .foregroundStyle(
+                                    row.index < 3
+                                        ? BuFiTheme.accent
+                                        : Color.secondary
+                                )
+                                .monospacedDigit()
+                                .frame(width: 24, alignment: .trailing)
                         }
-                        .padding(.horizontal, 12)
+                        SongRow(
+                            song: row.song,
+                            queue: mix.songs,
+                            queueIndex: row.index,
+                            artworkSize: 52,
+                            textLineLimit: 2
+                        )
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
 
-                        if row.index < mix.songs.count - 1 {
-                            Divider()
-                                .padding(.leading, mix.showsRanking ? 112 : 78)
-                                .opacity(0.50)
-                        }
+                    if row.index < mix.songs.count - 1 {
+                        Divider()
+                            .padding(.leading, mix.showsRanking ? 100 : 84)
+                            .opacity(0.42)
                     }
                 }
             }
-            .padding(.horizontal, 16)
         }
     }
 
