@@ -105,9 +105,8 @@ struct HomeQuickAccessCard: View {
             ZStack {
                 LinearGradient(
                     colors: [
-                        Color(red: 0.45, green: 0.18, blue: 0.72),
-                        BuFiTheme.accent,
-                        Color(red: 0.98, green: 0.42, blue: 0.55)
+                        BuFiTheme.accent.opacity(0.92),
+                        BuFiTheme.accent
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
