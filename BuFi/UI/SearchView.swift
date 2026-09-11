@@ -71,11 +71,10 @@ struct SearchView: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 21, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(isSearchFieldFocused ? BuFiTheme.accentSoft : .secondary)
-                .scaleEffect(isSearchFieldFocused ? 1.055 : 1)
             TextField(
                 "",
                 text: $query,
@@ -83,7 +82,7 @@ struct SearchView: View {
                     .foregroundStyle(Color(uiColor: .secondaryLabel))
             )
             .focused($isSearchFieldFocused)
-            .font(.body)
+            .font(.system(size: 16, weight: .regular))
             .textFieldStyle(.plain)
             .frame(maxWidth: .infinity)
             .layoutPriority(1)
@@ -97,24 +96,25 @@ struct SearchView: View {
             if !query.isEmpty {
                 Button(action: exitSearchSession) {
                     Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(BuFiPressStyle())
-                .transition(.scale(scale: 0.84).combined(with: .opacity))
+                .transition(.opacity)
                 .accessibilityLabel("검색 닫기")
             }
         }
         .foregroundStyle(.primary)
-        .padding(.horizontal, 16)
-        .frame(minHeight: 58)
-        .buFiGlass(cornerRadius: 20, interactive: true)
+        .padding(.horizontal, 14)
+        .frame(minHeight: 50, maxHeight: 52)
+        .buFiGlass(cornerRadius: 16, interactive: true)
         .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
                     isSearchFieldFocused
-                        ? BuFiTheme.accent.opacity(0.78)
-                        : BuFiTheme.separator.opacity(0.42),
-                    lineWidth: isSearchFieldFocused ? 1.4 : 0.6
+                        ? BuFiTheme.accent.opacity(0.48)
+                        : BuFiTheme.separator.opacity(0.34),
+                    lineWidth: isSearchFieldFocused ? 1.0 : 0.5
                 )
         }
         .padding(.horizontal, 16)
@@ -122,7 +122,6 @@ struct SearchView: View {
         .onTapGesture {
             isSearchFieldFocused = true
         }
-        .scaleEffect(!motionEnabled || isSearchFieldFocused ? 1 : 0.998)
         .animation(motionEnabled ? BuFiMotion.fade : .none, value: isSearchFieldFocused)
         .animation(motionEnabled ? BuFiMotion.symbol : .none, value: query.isEmpty)
     }
@@ -268,6 +267,7 @@ struct SearchView: View {
                         queue: result.songs,
                         queueIndex: row.index,
                         playbackOrigin: .search,
+                        artworkSize: Self.resultArtworkSize,
                         textLineLimit: 2
                     )
                     .padding(.horizontal, 14)
@@ -282,38 +282,38 @@ struct SearchView: View {
     }
 
     private func artistResultRow(_ artist: Artist) -> some View {
-        HStack(spacing: 13) {
+        HStack(spacing: 12) {
             ArtworkView(
                 coverArt: artist.coverArt,
-                size: 58,
-                cornerRadius: 29
+                size: Self.resultArtworkSize,
+                cornerRadius: Self.resultArtworkSize / 2
             )
-            .frame(width: 58, height: 58)
+            .frame(width: Self.resultArtworkSize, height: Self.resultArtworkSize)
             Text(artist.name)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1)
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
     }
 
     private func albumResultRow(_ album: Album) -> some View {
-        HStack(spacing: 13) {
+        HStack(spacing: 12) {
             ArtworkView(
                 coverArt: album.coverArt,
-                size: 58,
-                cornerRadius: 11
+                size: Self.resultArtworkSize,
+                cornerRadius: max(5, Self.resultArtworkSize * 0.11)
             )
-            .frame(width: 58, height: 58)
-            VStack(alignment: .leading, spacing: 4) {
+            .frame(width: Self.resultArtworkSize, height: Self.resultArtworkSize)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(album.name)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("앨범 · \(album.artist)")
@@ -326,28 +326,23 @@ struct SearchView: View {
             Spacer(minLength: 8)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
     }
 
     private var browseShortcuts: some View {
         LazyVGrid(
             columns: [
-                GridItem(.flexible(), spacing: 10),
-                GridItem(.flexible(), spacing: 10)
+                GridItem(.flexible(), spacing: 8),
+                GridItem(.flexible(), spacing: 8)
             ],
-            spacing: 10
+            spacing: 8
         ) {
-            ForEach(Self.searchShortcuts) { shortcut in
+            ForEach(browseQuickItems) { item in
                 Button {
                     resignSearchField()
-                    browseMode = shortcut.mode
+                    browseMode = item.mode
                 } label: {
-                    BuFiShortcutCard(
-                        title: LocalizedStringKey(shortcut.title),
-                        subtitle: shortcut.subtitle,
-                        systemImage: shortcut.systemImage,
-                        tint: shortcut.tint
-                    )
+                    HomeQuickAccessCard(title: item.title, leading: item.leading)
                 }
                 .buttonStyle(BuFiPressStyle())
             }
@@ -355,30 +350,63 @@ struct SearchView: View {
         .padding(.horizontal, 16)
     }
 
+    private var browseQuickItems: [SearchBrowseQuickItem] {
+        let snapshot = library.snapshot
+        return [
+            SearchBrowseQuickItem(
+                mode: .favoriteSongs,
+                title: "좋아요 곡",
+                leading: .heartGradient
+            ),
+            SearchBrowseQuickItem(
+                mode: .favoriteAlbums,
+                title: "좋아요 앨범",
+                leading: snapshot.starredAlbums.first.map {
+                    HomeQuickAccessLeading.coverArt($0.coverArt)
+                } ?? .albumStackGradient
+            ),
+            SearchBrowseQuickItem(
+                mode: .algorithmPlaylists,
+                title: "맞춤 믹스",
+                leading: snapshot.starredAlbums.dropFirst().first.map {
+                    HomeQuickAccessLeading.coverArt($0.coverArt)
+                } ?? snapshot.frequentAlbums.first.map {
+                    HomeQuickAccessLeading.coverArt($0.coverArt)
+                } ?? .mixSparklesGradient
+            ),
+            SearchBrowseQuickItem(
+                mode: .mostPlayed,
+                title: "자주 들은 곡",
+                leading: snapshot.mostPlayedSongs.first?.artworkID.map {
+                    HomeQuickAccessLeading.coverArt($0)
+                } ?? .chartGradient
+            )
+        ]
+    }
+
     private func recommendedArtistsRail(_ artists: [Artist]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             SectionTitle(title: "추천 아티스트")
                 .padding(.horizontal, 16)
-                .padding(.top, 2)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: 16) {
+                LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(artists.prefix(12)) { artist in
                         NavigationLink(value: MusicRoute.artist(artist)) {
                             VStack(spacing: 8) {
                                 ArtworkView(
                                     coverArt: artist.coverArt,
-                                    size: 120,
-                                    cornerRadius: 60
+                                    size: 118,
+                                    cornerRadius: 59
                                 )
-                                .frame(width: 120, height: 120)
+                                .frame(width: 118, height: 118)
                                 Text(artist.name)
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundStyle(.primary)
-                                    .lineLimit(3)
+                                    .lineLimit(2)
                                     .multilineTextAlignment(.center)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
-                            .frame(width: 120)
+                            .frame(width: 118)
                         }
                         .buttonStyle(BuFiPressStyle())
                         .buFiHorizontalScrollMotion()
@@ -478,37 +506,6 @@ struct SearchView: View {
     private var collectionCardWidth: CGFloat {
         max(132, (UIScreen.main.bounds.width - 52) / 2)
     }
-
-    private static let searchShortcuts = [
-        SearchShortcut(
-            mode: .favoriteSongs,
-            title: "좋아요 곡",
-            subtitle: String(localized: "저장한 음악"),
-            systemImage: "heart.fill",
-            tint: BuFiTheme.accent
-        ),
-        SearchShortcut(
-            mode: .favoriteAlbums,
-            title: "좋아요 앨범",
-            subtitle: String(localized: "보관한 앨범"),
-            systemImage: "square.stack.fill",
-            tint: Color(red: 0.45, green: 0.33, blue: 0.74)
-        ),
-        SearchShortcut(
-            mode: .algorithmPlaylists,
-            title: "맞춤 믹스",
-            subtitle: String(localized: "Daylist와 취향 추천"),
-            systemImage: "sparkles",
-            tint: Color(red: 0.20, green: 0.58, blue: 0.52)
-        ),
-        SearchShortcut(
-            mode: .mostPlayed,
-            title: "자주 들은 곡",
-            subtitle: String(localized: "청취 기록 순위"),
-            systemImage: "chart.bar.fill",
-            tint: Color(red: 0.22, green: 0.50, blue: 0.78)
-        )
-    ]
 
     @ViewBuilder
     private func algorithmPlaylistGrid(_ mixes: [PersonalizedMix]) -> some View {
@@ -635,9 +632,11 @@ struct SearchView: View {
 
     private var rowSeparator: some View {
         Divider()
-            .padding(.leading, 85)
+            .padding(.leading, 14 + Self.resultArtworkSize + 12)
             .opacity(0.55)
     }
+
+    private static let resultArtworkSize: CGFloat = 54
 
     private func resignSearchField() {
         guard isSearchFieldFocused else { return }
@@ -694,12 +693,10 @@ private enum SearchBrowseMode {
     case mostPlayed
 }
 
-private struct SearchShortcut: Identifiable {
+private struct SearchBrowseQuickItem: Identifiable {
     let mode: SearchBrowseMode
     let title: String
-    let subtitle: String
-    let systemImage: String
-    let tint: Color
+    let leading: HomeQuickAccessLeading
 
     var id: String { title }
 }
