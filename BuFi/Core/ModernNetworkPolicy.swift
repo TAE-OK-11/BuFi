@@ -10,6 +10,19 @@ enum ModernNetworkPolicy {
     static let modernContentEncodings = "zstd, br, gzip"
     static let compatibilityContentEncodings = "br, gzip"
 
+    /// Password-authenticated Subsonic requests rotate `t`/`s` per request.
+    /// Pingola uses this high-entropy, process-lifetime capability only as a
+    /// stable cache scope after a request still proves that token auth is
+    /// present. It is random rather than password-derived, so exposing its hash
+    /// cannot turn the proxy cache into an offline password oracle.
+    private static let pingolaCacheScopeHeader = "X-BuFi-Cache-Scope"
+    private static let pingolaCacheScope: String = {
+        [UUID(), UUID()]
+            .map { $0.uuidString.replacingOccurrences(of: "-", with: "") }
+            .joined()
+            .lowercased()
+    }()
+
     static func makeEphemeralConfiguration(
         requestTimeout: TimeInterval,
         resourceTimeout: TimeInterval,
@@ -203,5 +216,28 @@ enum ModernNetworkPolicy {
     private static func prepareTransport(_ request: inout URLRequest) {
         request.httpShouldHandleCookies = false
         request.allowsCellularAccess = true
+        attachPingolaCacheScopeIfTokenAuthenticated(&request)
+    }
+
+    private static func attachPingolaCacheScopeIfTokenAuthenticated(
+        _ request: inout URLRequest
+    ) {
+        guard let url = request.url,
+              let components = URLComponents(
+                url: url,
+                resolvingAgainstBaseURL: false
+              ) else {
+            return
+        }
+        let names = Set((components.queryItems ?? []).map(\.name))
+        guard names.contains("u"),
+              names.contains("t"),
+              names.contains("s") else {
+            return
+        }
+        request.setValue(
+            pingolaCacheScope,
+            forHTTPHeaderField: pingolaCacheScopeHeader
+        )
     }
 }
