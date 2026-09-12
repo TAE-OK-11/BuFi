@@ -4,12 +4,14 @@ import SwiftUI
 struct BuFiApp: App {
     @StateObject private var model: AppModel
     @StateObject private var audio: AudioEngine
+    @StateObject private var tunnel: TunnelManager
 
     init() {
         LaunchDiagnostics.beginLaunch()
         _model = StateObject(wrappedValue: AppModel())
         LaunchDiagnostics.mark("app-model-created")
         _audio = StateObject(wrappedValue: AudioEngine.shared)
+        _tunnel = StateObject(wrappedValue: TunnelManager.shared)
         LaunchDiagnostics.mark("audio-model-created")
         Task(priority: .utility) {
             await AppDatabase.shared.warmupIfNeeded()
@@ -30,6 +32,7 @@ struct BuFiApp: App {
                 .environmentObject(audio.activityState)
                 .environmentObject(audio.controlState)
                 .environmentObject(audio.presentation)
+                .environmentObject(tunnel)
                 .tint(BuFiTheme.accent)
                 .task {
                     // SwiftUI may begin a view task before Core Animation has
@@ -40,7 +43,11 @@ struct BuFiApp: App {
                     try? await Task.sleep(for: .milliseconds(150))
                     LaunchDiagnostics.mark("first-scene-mounted")
                     audio.activateRuntimeIfNeeded()
+                    await tunnel.bootstrap()
                     await model.bootstrapIfNeeded()
+                    await model.applyTunnelServerRouting(
+                        tunnelActive: AppModel.tunnelCarriesTraffic(tunnel.status)
+                    )
                 }
         }
     }

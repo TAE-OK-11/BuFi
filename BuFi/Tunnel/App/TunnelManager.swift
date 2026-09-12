@@ -18,6 +18,7 @@ final class TunnelManager: ObservableObject {
     private var managers: [UUID: NETunnelProviderManager] = [:]
     private var statusObserver: NSObjectProtocol?
     private var metricsTask: Task<Void, Never>?
+    private var hasBootstrapped = false
 
     private init() {
         statusObserver = NotificationCenter.default.addObserver(
@@ -46,6 +47,8 @@ final class TunnelManager: ObservableObject {
     }
 
     func bootstrap() async {
+        guard !hasBootstrapped else { return }
+        hasBootstrapped = true
         await perform {
             profiles = try await repository.all()
             guard !profiles.isEmpty else {

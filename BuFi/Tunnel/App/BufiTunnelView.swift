@@ -4,15 +4,19 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct BufiTunnelView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSessionState
     @ObservedObject private var tunnel = TunnelManager.shared
     @State private var editingProfile: TunnelProfile?
     @State private var isCreating = false
     @State private var isImporting = false
     @State private var deleteCandidate: TunnelProfile?
+    @State private var dnsProfile: TunnelProfile?
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
+                serverConnectionSection
                 statusSection
                 profilesSection
                 actionsSection
@@ -31,6 +35,9 @@ struct BufiTunnelView: View {
         }
         .sheet(item: $editingProfile) { profile in
             NavigationStack { TunnelProfileEditor(existing: profile) }
+        }
+        .sheet(item: $dnsProfile) { profile in
+            NavigationStack { TunnelDNSSettingsEditor(profile: profile) }
         }
         .fileImporter(
             isPresented: $isImporting,
@@ -64,6 +71,49 @@ struct BufiTunnelView: View {
             Button("OK") { tunnel.errorMessage = nil }
         } message: {
             Text(tunnel.errorMessage ?? "Unknown error")
+        }
+    }
+
+    private var serverConnectionSection: some View {
+        tunnelSection("OpenSubsonic server") {
+            NavigationLink {
+                TunnelServerRoutingView()
+                    .environmentObject(model)
+                    .environmentObject(session)
+            } label: {
+                HStack(spacing: 13) {
+                    Circle()
+                        .fill(BuFiTheme.accent.opacity(0.14))
+                        .frame(width: 46, height: 46)
+                        .overlay {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundStyle(BuFiTheme.accent)
+                        }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(verbatim: session.connectedServerAddress.isEmpty
+                             ? String(localized: "Connected server")
+                             : session.connectedServerAddress)
+                            .font(.system(size: 16, weight: .bold))
+                            .lineLimit(2)
+                        Text(session.activeServerUsesTunnel
+                             ? String(localized: "Using tunnel server address")
+                             : String(localized: "Using default server address"))
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(
+                                session.activeServerUsesTunnel
+                                    ? Color.green
+                                    : Color.secondary
+                            )
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -195,7 +245,7 @@ struct BufiTunnelView: View {
     }
 
     private var actionsSection: some View {
-        HStack(spacing: 12) {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
             Button { isCreating = true } label: {
                 Label("Add manually", systemImage: "plus")
                     .frame(maxWidth: .infinity)
@@ -206,6 +256,18 @@ struct BufiTunnelView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
+            Button { dnsProfile = tunnel.selectedProfile } label: {
+                Label("DNS settings", systemImage: "network.badge.shield.half.filled")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(tunnel.selectedProfile == nil)
+            Button { editingProfile = tunnel.selectedProfile } label: {
+                Label("Edit selected", systemImage: "slider.horizontal.3")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(tunnel.selectedProfile == nil)
         }
     }
 
@@ -452,5 +514,233 @@ private struct TunnelProfileEditor: View {
     private func abbreviate(_ value: String) -> String {
         guard value.count > 18 else { return value }
         return "\(value.prefix(8))…\(value.suffix(8))"
+    }
+}
+
+private struct TunnelServerRoutingView: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSessionState
+    @Environment(\.dismiss) private var dismiss
+    @State private var primaryURL = ""
+    @State private var alternateURLs: [String] = []
+    @State private var tunnelURL = ""
+    @State private var isSaving = false
+
+    var body: some View {
+        Form {
+            Section("Current connection") {
+                LabeledContent(
+                    "Address",
+                    value: session.connectedServerAddress.isEmpty
+                        ? String(localized: "Unknown")
+                        : session.connectedServerAddress
+                )
+                LabeledContent(
+                    "Route",
+                    value: session.activeServerUsesTunnel
+                        ? String(localized: "Bufi Tunnel")
+                        : String(localized: "Default network")
+                )
+            }
+
+            Section {
+                TextField("Primary server URL", text: $primaryURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+            } footer: {
+                Text("This address is used whenever Bufi Tunnel is disconnected.")
+            }
+
+            Section("Other server addresses") {
+                ForEach(Array(alternateURLs.indices), id: \.self) { index in
+                    HStack(spacing: 8) {
+                        TextField("Additional IP or URL", text: $alternateURLs[index])
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                        Button {
+                            let oldPrimary = primaryURL
+                            primaryURL = alternateURLs[index]
+                            alternateURLs[index] = oldPrimary
+                        } label: {
+                            Image(systemName: "arrow.up.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Use as primary server")
+                        Button(role: .destructive) {
+                            alternateURLs.remove(at: index)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Remove server address")
+                    }
+                }
+                Button("Add server address", systemImage: "plus.circle") {
+                    alternateURLs.append("")
+                }
+            }
+
+            Section {
+                TextField("Tunnel server URL (optional)", text: $tunnelURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+            } footer: {
+                Text("When Bufi Tunnel connects, Bufi verifies this address and switches OpenSubsonic traffic to it automatically. Disconnecting restores the primary address.")
+            }
+        }
+        .navigationTitle("Server addresses")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }
+                    .disabled(isSaving || primaryURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .task { load() }
+    }
+
+    private func load() {
+        guard primaryURL.isEmpty,
+              let configuration = session.serverEndpointConfiguration else { return }
+        primaryURL = configuration.primaryURL
+        alternateURLs = configuration.alternateURLs
+        tunnelURL = configuration.tunnelURL ?? ""
+    }
+
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
+        let saved = await model.saveServerEndpointConfiguration(
+            OpenSubsonicEndpointConfiguration(
+                primaryURL: primaryURL,
+                alternateURLs: alternateURLs,
+                tunnelURL: tunnelURL
+            )
+        )
+        if saved { dismiss() }
+    }
+}
+
+private struct TunnelDNSSettingsEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var tunnel = TunnelManager.shared
+    @State private var profile: TunnelProfile
+    @State private var dns: TunnelDNSConfiguration
+    @State private var localError: String?
+
+    init(profile: TunnelProfile) {
+        _profile = State(initialValue: profile)
+        _dns = State(initialValue: profile.dns)
+    }
+
+    var body: some View {
+        Form {
+            Section("DNS resolver") {
+                Picker("Resolver", selection: $dns.mode) {
+                    ForEach(TunnelDNSMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+            }
+
+            if dns.mode != .system {
+                Section("Resolver configuration") {
+                    if dns.mode == .plain || dns.mode == .https {
+                        TextField(
+                            "Server IPs / bootstrap IPs",
+                            text: Binding(
+                                get: { dns.servers.joined(separator: ", ") },
+                                set: { dns.servers = split($0) }
+                            ),
+                            axis: .vertical
+                        )
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    }
+                    if dns.mode == .https {
+                        TextField("https://dns.example/dns-query", text: $dns.resolverEndpoint)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                    } else if dns.mode == .tls || dns.mode == .quic {
+                        TextField("Resolver host or IP", text: $dns.resolverEndpoint)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("TLS server name (optional)", text: $dns.serverName)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Port", text: Binding(
+                            get: { String(dns.port) },
+                            set: { dns.port = UInt16($0) ?? dns.port }
+                        ))
+                        .keyboardType(.numberPad)
+                    }
+                }
+            }
+
+            Section {
+                switch dns.mode {
+                case .system:
+                    Text("Use the system resolver without overriding tunnel DNS.")
+                case .plain:
+                    Text("Enter one or more IPv4 or IPv6 DNS server addresses. Plain DNS uses port 53.")
+                case .https:
+                    Text("Enter an HTTPS dns-query endpoint and optional bootstrap IP addresses.")
+                case .tls:
+                    Text("DNS-over-TLS uses port 853 by default.")
+                case .quic:
+                    Text("DNS-over-QUIC uses port 853 by default through the isolated DoQ proxy.")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .navigationTitle("DNS settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }
+                    .disabled(tunnel.isBusy)
+            }
+        }
+        .alert("Invalid profile", isPresented: Binding(
+            get: { localError != nil }, set: { if !$0 { localError = nil } }
+        )) {
+            Button("OK") { localError = nil }
+        } message: {
+            Text(localError ?? String(localized: "Unknown error"))
+        }
+        .onChange(of: dns.mode) { _, mode in
+            if mode == .plain { dns.port = 53 }
+            if mode == .tls || mode == .quic { dns.port = 853 }
+        }
+    }
+
+    private func save() async {
+        do {
+            try TunnelProfileValidator.validateDNS(dns)
+            profile.dns = dns
+            if await tunnel.save(profile: profile, privateKey: nil, presharedKeys: [:]) {
+                dismiss()
+            }
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
+    private func split(_ value: String) -> [String] {
+        value.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }

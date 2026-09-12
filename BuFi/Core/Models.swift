@@ -1,10 +1,37 @@
 import Foundation
 
+struct OpenSubsonicEndpointConfiguration: Codable, Equatable, Sendable {
+    var primaryURL: String
+    var alternateURLs: [String] = []
+    var tunnelURL: String?
+
+    var allNormalURLs: [String] {
+        [primaryURL] + alternateURLs
+    }
+
+    var hasTunnelURL: Bool {
+        tunnelURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    func serverURL(tunnelActive: Bool) -> String {
+        guard tunnelActive, hasTunnelURL, let tunnelURL else {
+            return primaryURL
+        }
+        return tunnelURL
+    }
+}
+
 struct ServerCredentials: Codable, Equatable, Sendable {
     var serverURL: String
     var username: String
     var password: String
     var authMethod: ServerAuthMethod?
+    /// Stable cache/database identity. It does not change when the same server
+    /// is reached through a LAN, public, or WireGuard-only address.
+    var accountServerURL: String? = nil
+    /// Non-secret endpoint metadata is kept beside the credentials so it is
+    /// restored atomically without adding another plaintext profile store.
+    var endpointConfiguration: OpenSubsonicEndpointConfiguration? = nil
 
     var resolvedAuthMethod: ServerAuthMethod {
         authMethod ?? .password
@@ -12,6 +39,14 @@ struct ServerCredentials: Codable, Equatable, Sendable {
 
     var usesAPIKey: Bool {
         resolvedAuthMethod == .apiKey
+    }
+
+    var resolvedEndpointConfiguration: OpenSubsonicEndpointConfiguration {
+        endpointConfiguration ?? OpenSubsonicEndpointConfiguration(primaryURL: serverURL)
+    }
+
+    var accountIdentityServerURL: String {
+        accountServerURL ?? endpointConfiguration?.primaryURL ?? serverURL
     }
 }
 

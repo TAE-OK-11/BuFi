@@ -96,6 +96,9 @@
 "서버 주소가 올바르지 않습니다." = "The server address is invalid.";
 "보안을 위해 HTTPS 서버 주소만 사용할 수 있습니다." = "Only HTTPS server addresses can be used.";
 "서버 주소에 아이디나 비밀번호를 넣지 마세요." = "Don't put a username or password in the server address.";
+"Bufi Tunnel 서버 주소로 전환했습니다." = "Switched to the Bufi Tunnel server address.";
+"기본 서버 주소로 전환했습니다." = "Switched to the primary server address.";
+"서버 주소를 전환하지 못했습니다: %@" = "Couldn't switch server address: %@";
 "연결 주소: %@" = "Connecting to %@";
 "라이브러리에서 찾은 결과" = "Results from your library";
 "가사 지능" = "Lyric intelligence";

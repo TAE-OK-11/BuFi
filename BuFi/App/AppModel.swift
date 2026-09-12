@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+@preconcurrency import NetworkExtension
 
 struct ArtworkContextIdentity: Hashable, Sendable {
     let sessionGeneration: Int
@@ -20,6 +21,8 @@ final class AppSessionState: ObservableObject {
     @Published fileprivate(set) var phase: AppModel.SessionState = .signedOut
     @Published fileprivate(set) var connectedServerAddress = ""
     @Published fileprivate(set) var connectedUsername = ""
+    @Published fileprivate(set) var serverEndpointConfiguration: OpenSubsonicEndpointConfiguration?
+    @Published fileprivate(set) var activeServerUsesTunnel = false
     @Published fileprivate(set) var subsonicAPIFamily: SubsonicAPIFamily?
     @Published fileprivate(set) var subsonicAPIVersion = ""
     @Published fileprivate(set) var isSyncing = false
@@ -48,6 +51,18 @@ final class AppSessionState: ObservableObject {
     fileprivate func setConnectedUsername(_ value: String) {
         guard connectedUsername != value else { return }
         connectedUsername = value
+    }
+
+    fileprivate func setServerEndpointConfiguration(
+        _ value: OpenSubsonicEndpointConfiguration?
+    ) {
+        guard serverEndpointConfiguration != value else { return }
+        serverEndpointConfiguration = value
+    }
+
+    fileprivate func setActiveServerUsesTunnel(_ value: Bool) {
+        guard activeServerUsesTunnel != value else { return }
+        activeServerUsesTunnel = value
     }
 
     fileprivate func setSubsonicAPIVersion(_ value: String) {
@@ -336,6 +351,16 @@ final class AppModel: ObservableObject {
         set { session.setConnectedUsername(newValue) }
     }
 
+    private(set) var serverEndpointConfiguration: OpenSubsonicEndpointConfiguration? {
+        get { session.serverEndpointConfiguration }
+        set { session.setServerEndpointConfiguration(newValue) }
+    }
+
+    private(set) var activeServerUsesTunnel: Bool {
+        get { session.activeServerUsesTunnel }
+        set { session.setActiveServerUsesTunnel(newValue) }
+    }
+
     private(set) var subsonicAPIVersion: String {
         get { session.subsonicAPIVersion }
         set { session.setSubsonicAPIVersion(newValue) }
@@ -406,6 +431,7 @@ final class AppModel: ObservableObject {
     private var lastFMKeyOperationGeneration: UInt64 = 0
     private var listenBrainzOperationGeneration: UInt64 = 0
     private var bootstrapState = BootstrapState.idle
+    private var endpointRouteGeneration: UInt64 = 0
     private var loginInFlight = false
     private var refreshInFlight = false
     private var pendingRefresh = false
@@ -483,17 +509,33 @@ final class AppModel: ObservableObject {
         hasLastFMAPIKey = stored.hasLastFMKey
         hasListenBrainzToken = stored.hasListenBrainzToken
         LaunchDiagnostics.mark("credential-bootstrap-loaded")
-        if let credentials = stored.credentials {
-            let seed = await OpenSubsonicPublicDiscovery.fetchExtensions(
-                serverURL: credentials.serverURL
-            )
-            guard !Task.isCancelled,
-                  bootstrapGeneration == sessionGeneration else { return }
-            await connect(
-                credentials,
-                persist: false,
-                seedExtensionRegistry: seed
-            )
+        if var credentials = stored.credentials {
+            let configuration = credentials.resolvedEndpointConfiguration
+            serverEndpointConfiguration = configuration
+            let tunnelActive = Self.tunnelCarriesTraffic(TunnelManager.shared.status)
+            credentials.accountServerURL = credentials.accountServerURL
+                ?? configuration.primaryURL
+            credentials.endpointConfiguration = configuration
+            var candidates: [String] = []
+            if tunnelActive, configuration.hasTunnelURL,
+               let tunnelURL = configuration.tunnelURL {
+                candidates.append(tunnelURL)
+            }
+            candidates.append(contentsOf: configuration.allNormalURLs)
+            var seen = Set<String>()
+            for serverURL in candidates where seen.insert(serverURL.lowercased()).inserted {
+                credentials.serverURL = serverURL
+                let seed = await OpenSubsonicPublicDiscovery.fetchExtensions(
+                    serverURL: serverURL
+                )
+                guard !Task.isCancelled else { return }
+                await connect(
+                    credentials,
+                    persist: false,
+                    seedExtensionRegistry: seed
+                )
+                if sessionState == .ready { break }
+            }
         } else {
             sessionState = .signedOut
         }
@@ -526,11 +568,14 @@ final class AppModel: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
+        let persistedURL = ServerURLNormalization.persistedServerURL(from: normalizedURL)
         var credentials = ServerCredentials(
-            serverURL: ServerURLNormalization.persistedServerURL(from: normalizedURL),
+            serverURL: persistedURL,
             username: username,
             password: password,
-            authMethod: authMethod
+            authMethod: authMethod,
+            accountServerURL: persistedURL,
+            endpointConfiguration: OpenSubsonicEndpointConfiguration(primaryURL: persistedURL)
         )
         if authMethod == .apiKey {
             do {
@@ -554,6 +599,51 @@ final class AppModel: ObservableObject {
             credentials,
             persist: true,
             seedExtensionRegistry: discoveredExtensions
+        )
+    }
+
+    @discardableResult
+    func saveServerEndpointConfiguration(
+        _ configuration: OpenSubsonicEndpointConfiguration
+    ) async -> Bool {
+        guard var credentials = client?.credentials else { return false }
+        do {
+            let normalized = try Self.normalizedEndpointConfiguration(configuration)
+            credentials.accountServerURL = credentials.accountServerURL
+                ?? credentials.accountIdentityServerURL
+            credentials.endpointConfiguration = normalized
+            serverEndpointConfiguration = normalized
+
+            // Persist the route choices before probing a new endpoint. The
+            // currently working serverURL stays active until the probe wins.
+            try await secureStore.save(credentials)
+            let tunnelActive = Self.tunnelCarriesTraffic(TunnelManager.shared.status)
+            return await switchActiveServerEndpoint(
+                credentials: credentials,
+                configuration: normalized,
+                tunnelActive: tunnelActive,
+                reportsFailureAsError: true
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Applies only when the operational tunnel state crosses the connected
+    /// boundary. A replacement client is verified before it becomes active;
+    /// the existing client and playback remain intact on failure.
+    func applyTunnelServerRouting(tunnelActive: Bool) async {
+        guard sessionState == .ready,
+              var credentials = client?.credentials else { return }
+        let configuration = serverEndpointConfiguration
+            ?? credentials.resolvedEndpointConfiguration
+        credentials.endpointConfiguration = configuration
+        _ = await switchActiveServerEndpoint(
+            credentials: credentials,
+            configuration: configuration,
+            tunnelActive: tunnelActive,
+            reportsFailureAsError: false
         )
     }
 
@@ -639,6 +729,8 @@ final class AppModel: ObservableObject {
         subsonicAPIVersion = ""
         isSyncing = false
         lastSuccessfulSyncDate = nil
+        serverEndpointConfiguration = nil
+        activeServerUsesTunnel = false
 
         if let artworkSession = leases.artwork {
             await ArtworkStore.shared.clearAll(session: artworkSession)
@@ -664,6 +756,141 @@ final class AppModel: ObservableObject {
         guard sessionGeneration == logoutGeneration else { return }
 
         sessionState = .signedOut
+    }
+
+    private func switchActiveServerEndpoint(
+        credentials: ServerCredentials,
+        configuration: OpenSubsonicEndpointConfiguration,
+        tunnelActive: Bool,
+        reportsFailureAsError: Bool
+    ) async -> Bool {
+        let desiredURL = configuration.serverURL(tunnelActive: tunnelActive)
+        guard !Self.serverURLsMatch(credentials.serverURL, desiredURL) else {
+            activeServerUsesTunnel = tunnelActive && configuration.hasTunnelURL
+            return true
+        }
+
+        endpointRouteGeneration &+= 1
+        let routeGeneration = endpointRouteGeneration
+        let currentSessionGeneration = sessionGeneration
+        var routedCredentials = credentials
+        routedCredentials.serverURL = desiredURL
+        routedCredentials.endpointConfiguration = configuration
+        var replacement: OpenSubsonicClient?
+
+        do {
+            let newClient = try OpenSubsonicClient(
+                credentials: routedCredentials,
+                waitsForConnectivity: false,
+                requestTimeout: 12,
+                resourceTimeout: 20
+            )
+            replacement = newClient
+            let ping = await Self.pingResult(newClient)
+            guard !ping.isCancelled,
+                  let status = ping.status else {
+                throw OpenSubsonicError.server(
+                    code: nil,
+                    message: ping.failureDescription
+                        ?? String(localized: "서버 연결에 실패했습니다.")
+                )
+            }
+            guard routeGeneration == endpointRouteGeneration,
+                  currentSessionGeneration == sessionGeneration,
+                  sessionState == .ready else {
+                await newClient.shutdown()
+                return false
+            }
+
+            try await secureStore.save(newClient.credentials)
+            guard routeGeneration == endpointRouteGeneration,
+                  currentSessionGeneration == sessionGeneration else {
+                await newClient.shutdown()
+                return false
+            }
+
+            let oldClient = client
+            client = newClient
+            replacement = nil
+            await newClient.applyPingStatus(status)
+            await newClient.refreshExtensionRegistry()
+            connectedServerAddress = Self.serverDisplayAddress(
+                from: newClient.credentials.serverURL
+            )
+            subsonicAPIFamily = SubsonicCompatibilityPolicy.family(from: status)
+            subsonicAPIVersion = Self.sanitizedVersion(status.version)
+            lastSuccessfulSyncDate = Date()
+            activeServerUsesTunnel = tunnelActive && configuration.hasTunnelURL
+            configureAudioEngine(client: newClient)
+            if let oldClient { await oldClient.shutdown() }
+            noticeMessage = activeServerUsesTunnel
+                ? String(localized: "Bufi Tunnel 서버 주소로 전환했습니다.")
+                : String(localized: "기본 서버 주소로 전환했습니다.")
+            return true
+        } catch is CancellationError {
+            if let replacement { await replacement.shutdown() }
+            return false
+        } catch {
+            if let replacement { await replacement.shutdown() }
+            guard routeGeneration == endpointRouteGeneration,
+                  currentSessionGeneration == sessionGeneration else { return false }
+            let message = String(
+                format: String(localized: "서버 주소를 전환하지 못했습니다: %@"),
+                locale: .current,
+                error.localizedDescription
+            )
+            if reportsFailureAsError {
+                errorMessage = message
+            } else {
+                noticeMessage = message
+            }
+            return false
+        }
+    }
+
+    private static func normalizedEndpointConfiguration(
+        _ configuration: OpenSubsonicEndpointConfiguration
+    ) throws -> OpenSubsonicEndpointConfiguration {
+        let primary = try normalizedServerURL(configuration.primaryURL)
+        var seen = Set([primary.lowercased()])
+        var alternates: [String] = []
+        for value in configuration.alternateURLs {
+            guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            let normalized = try normalizedServerURL(value)
+            if seen.insert(normalized.lowercased()).inserted {
+                alternates.append(normalized)
+            }
+        }
+        let tunnelURL: String?
+        if let value = configuration.tunnelURL,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            tunnelURL = try normalizedServerURL(value)
+        } else {
+            tunnelURL = nil
+        }
+        return OpenSubsonicEndpointConfiguration(
+            primaryURL: primary,
+            alternateURLs: alternates,
+            tunnelURL: tunnelURL
+        )
+    }
+
+    private static func normalizedServerURL(_ value: String) throws -> String {
+        ServerURLNormalization.persistedServerURL(
+            from: try ServerURLNormalization.resolvedURL(from: value)
+        )
+    }
+
+    private static func serverURLsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        guard let left = try? normalizedServerURL(lhs),
+              let right = try? normalizedServerURL(rhs) else {
+            return lhs == rhs
+        }
+        return left.caseInsensitiveCompare(right) == .orderedSame
+    }
+
+    nonisolated static func tunnelCarriesTraffic(_ status: NEVPNStatus) -> Bool {
+        status == .connected || status == .reasserting
     }
 
     func refresh(forceFull: Bool = false, silent: Bool = false) async {
@@ -3008,6 +3235,11 @@ final class AppModel: ObservableObject {
                 from: client.credentials.serverURL
             )
             self.connectedUsername = client.credentials.username
+            let endpointConfiguration = client.credentials.resolvedEndpointConfiguration
+            self.serverEndpointConfiguration = endpointConfiguration
+            self.activeServerUsesTunnel = endpointConfiguration.tunnelURL.map {
+                Self.serverURLsMatch($0, client.credentials.serverURL)
+            } ?? false
             self.subsonicAPIFamily = status.map {
                 SubsonicCompatibilityPolicy.family(from: $0)
             }
@@ -3020,29 +3252,7 @@ final class AppModel: ObservableObject {
                 history: nil,
                 catalog: nil
             )
-            AudioEngine.shared.configure(
-                client: client,
-                historySession: historySession,
-                songFavoriteMutationHandler: { [weak self] song in
-                    guard let self else { return false }
-                    return await self.setStar(
-                        song: song,
-                        enabled: !self.isStarred(song)
-                    )
-                },
-                autoplayContinuationProvider: { [weak self] seed, excludedIDs, enqueue in
-                    guard let self else { return [] }
-                    return await self.autoplayContinuation(
-                        after: seed,
-                        excluding: excludedIDs,
-                        client: client,
-                        enqueue: enqueue
-                    )
-                },
-                playbackHistoryMutationHandler: { [weak self] in
-                    self?.scheduleRecommendationRebuild()
-                }
-            )
+            configureAudioEngine(client: client)
             if cachedSnapshot != nil, status == nil {
                 scheduleCachedHomePreparation(
                     snapshot,
@@ -3089,6 +3299,32 @@ final class AppModel: ObservableObject {
             sessionState = .signedOut
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func configureAudioEngine(client: OpenSubsonicClient) {
+        AudioEngine.shared.configure(
+            client: client,
+            historySession: historySessionToken,
+            songFavoriteMutationHandler: { [weak self] song in
+                guard let self else { return false }
+                return await self.setStar(
+                    song: song,
+                    enabled: !self.isStarred(song)
+                )
+            },
+            autoplayContinuationProvider: { [weak self] seed, excludedIDs, enqueue in
+                guard let self else { return [] }
+                return await self.autoplayContinuation(
+                    after: seed,
+                    excluding: excludedIDs,
+                    client: client,
+                    enqueue: enqueue
+                )
+            },
+            playbackHistoryMutationHandler: { [weak self] in
+                self?.scheduleRecommendationRebuild()
+            }
+        )
     }
 
     private struct ConnectPingResult: Sendable {

@@ -109,6 +109,27 @@ All DNS modes implement `TunnelDNSResolver`:
 
 No DNS filtering or advertising blocking is present in v1.
 
+## Optional OpenSubsonic endpoint routing
+
+Bufi Tunnel remains a general-purpose VPN and does not depend on Bufi music
+networking. The main app has a separate optional route selector for an existing
+OpenSubsonic account: one primary address, additional addresses that can be
+promoted to primary, and one tunnel-only address. The endpoint metadata is
+stored atomically with the existing credentials in the app's normal Keychain;
+it is never sent to the Packet Tunnel extension.
+
+When the selected VPN reaches `connected` or `reasserting`, the app probes the
+tunnel-only OpenSubsonic address and swaps clients only after a successful API
+ping. When the VPN disconnects it similarly restores the primary address. A
+failed probe leaves the existing client and playback session in place. The
+account/cache identity is pinned to the original account address, so changing
+between public, LAN, IPv4/IPv6, or WireGuard-only endpoints does not split
+offline data, history, artwork, queue, or library caches into a second account.
+
+The Tunnel screen shows this server connection card first. Separate action
+buttons then open manual WireGuard setup, `.conf` import, selected-profile
+editing, and the dedicated System/Plain/DoH/DoT/DoQ DNS editor.
+
 ## Lifecycle and performance
 
 `NWPathMonitor` observes all path updates, including Wi-Fi/cellular handoffs.
@@ -153,6 +174,7 @@ iPhones:
 - IPv4-only, IPv6-only, dual-stack, split, and full `AllowedIPs`
 - Plain IPv4/IPv6 DNS, DoH, DoT, and DoQ resolvers
 - connect/disconnect and profile enable/disable
+- OpenSubsonic primary/tunnel endpoint switching without cache-scope changes
 - Wi-Fi → cellular, cellular → Wi-Fi, temporary offline, and endpoint DNS change
 - background/foreground, lock/sleep/wake, server restart, and keepalive
 - malformed imports, wrong keys, unavailable endpoint, and unavailable resolver

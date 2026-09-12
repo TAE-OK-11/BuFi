@@ -12,7 +12,9 @@ struct AccountSessionToken: Hashable, Sendable {
 
 enum AccountScope {
     static func identifier(for credentials: ServerCredentials) -> String {
-        let rawServer = credentials.serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawServer = credentials.accountIdentityServerURL.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
         let canonicalServer: String
 
         if var components = URLComponents(string: rawServer) {

@@ -969,7 +969,9 @@ actor OpenSubsonicClient {
             serverURL: ServerURLNormalization.persistedServerURL(from: normalized),
             username: username,
             password: credentials.password,
-            authMethod: credentials.resolvedAuthMethod
+            authMethod: credentials.resolvedAuthMethod,
+            accountServerURL: credentials.accountServerURL,
+            endpointConfiguration: credentials.endpointConfiguration
         )
         self.credentials = normalizedCredentials
         self.accountScope = AccountScope.identifier(for: normalizedCredentials)

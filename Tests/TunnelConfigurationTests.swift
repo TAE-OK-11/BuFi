@@ -147,4 +147,61 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertNil(decoded.secretScope)
         XCTAssertEqual(decoded.effectiveSecretScope, .sharedAccessGroup)
     }
+
+    func testOpenSubsonicEndpointChoosesTunnelAddressOnlyWhileActive() {
+        let configuration = OpenSubsonicEndpointConfiguration(
+            primaryURL: "https://music.example.com",
+            alternateURLs: ["https://192.0.2.10"],
+            tunnelURL: "https://10.10.0.2"
+        )
+        XCTAssertEqual(
+            configuration.serverURL(tunnelActive: false),
+            "https://music.example.com"
+        )
+        XCTAssertEqual(
+            configuration.serverURL(tunnelActive: true),
+            "https://10.10.0.2"
+        )
+    }
+
+    func testOpenSubsonicAccountScopeIsStableAcrossServerRoutes() {
+        let configuration = OpenSubsonicEndpointConfiguration(
+            primaryURL: "https://music.example.com",
+            alternateURLs: ["https://192.0.2.10"],
+            tunnelURL: "https://10.10.0.2"
+        )
+        let publicRoute = ServerCredentials(
+            serverURL: "https://music.example.com",
+            username: "listener",
+            password: "secret",
+            authMethod: .password,
+            accountServerURL: "https://music.example.com",
+            endpointConfiguration: configuration
+        )
+        var tunnelRoute = publicRoute
+        tunnelRoute.serverURL = "https://10.10.0.2"
+        XCTAssertEqual(
+            AccountScope.identifier(for: publicRoute),
+            AccountScope.identifier(for: tunnelRoute)
+        )
+    }
+
+    func testLegacyCredentialsDecodeWithoutEndpointMetadata() throws {
+        let data = try XCTUnwrap(
+            """
+            {
+              "serverURL": "https://music.example.com",
+              "username": "listener",
+              "password": "secret",
+              "authMethod": "password"
+            }
+            """.data(using: .utf8)
+        )
+        let credentials = try JSONDecoder().decode(ServerCredentials.self, from: data)
+        XCTAssertNil(credentials.endpointConfiguration)
+        XCTAssertEqual(
+            credentials.resolvedEndpointConfiguration.primaryURL,
+            "https://music.example.com"
+        )
+    }
 }

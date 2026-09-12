@@ -26,6 +26,7 @@ private struct PlayerPresentationSession: Identifiable {
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSessionState
+    @EnvironmentObject private var tunnel: TunnelManager
     @EnvironmentObject private var currentPlayback: CurrentPlaybackState
     @EnvironmentObject private var playerPresentation: PlayerPresentationState
     @Environment(\.scenePhase) private var scenePhase
@@ -98,6 +99,13 @@ struct RootView: View {
         }
         .task {
             await observeMemoryWarnings()
+        }
+        .onChange(of: tunnel.status) { _, status in
+            Task {
+                await model.applyTunnelServerRouting(
+                    tunnelActive: AppModel.tunnelCarriesTraffic(status)
+                )
+            }
         }
         .alert(
             "오류",
