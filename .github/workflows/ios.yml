@@ -91,6 +91,8 @@ jobs:
           plutil -lint BuFi/Resources/PrivacyInfo.xcprivacy
           xcodegen generate
           sh Scripts/apply-package-lock.sh
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' BuFiTunnelExtension/Info.plist)" = "com.apple.networkextension.packet-tunnel"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' BuFiTunnelExtension/Info.plist)" = '$(PRODUCT_MODULE_NAME).PacketTunnelProvider'
 
       - name: Verify Swift 6.4 unified configuration
         run: Scripts/verify-swift6-language-mode.sh

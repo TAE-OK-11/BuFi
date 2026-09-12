@@ -152,6 +152,13 @@ targets:
         buildPhase: resources
     info:
       path: BuFiTunnelExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Bufi Tunnel
+        LSRequiresIPhoneOS: true
+        BuFiSharedKeychainAccessGroup: "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).PacketTunnelProvider"
     entitlements:
       path: BuFiTunnelExtension/BuFiTunnelExtension.entitlements
     dependencies:
