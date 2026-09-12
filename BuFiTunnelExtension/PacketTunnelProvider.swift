@@ -260,7 +260,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     private static func dnsEndpoint(_ dns: TunnelDNSConfiguration) -> String? {
         let dns = dns.effectiveResolver
-        switch dns.mode {
+        return switch dns.mode {
         case .system: nil
         case .plain: dns.servers.joined(separator: ", ")
         case .https, .tls, .quic: dns.resolverEndpoint
