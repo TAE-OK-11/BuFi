@@ -84,7 +84,7 @@ enum WireGuardConfigParser {
                   let allowed = values["allowedips"].map(csv), !allowed.isEmpty else {
                 throw WireGuardConfigParserError.invalidPeer(index)
             }
-            let psk = values["presharedkey"].flatMap(Data.init(base64Encoded:))
+            let psk = values["presharedkey"].flatMap { Data(base64Encoded: $0) }
             guard psk == nil || psk?.count == 32 else {
                 throw WireGuardConfigParserError.invalidPeer(index)
             }
@@ -133,4 +133,3 @@ enum WireGuardConfigParser {
         return (String(value[..<colon]), port)
     }
 }
-

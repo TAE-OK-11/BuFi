@@ -55,7 +55,10 @@ enum RustTunnelError: LocalizedError, Sendable {
 }
 
 final class RustTunnelAdapter: @unchecked Sendable {
-    private let handle = OSAllocatedUnfairLock<OpaquePointer?>(initialState: nil)
+    /// Swift 6.4 intentionally makes raw pointers non-Sendable. The lock stores
+    /// only the pointer's integer bit pattern and recreates the opaque pointer
+    /// while holding the lock for every FFI call.
+    private let handle = OSAllocatedUnfairLock<UInt>(initialState: 0)
 
     func start(configuration: RustEngineConfiguration) throws {
         let fd = rustFindTunnelFileDescriptor()
@@ -66,21 +69,21 @@ final class RustTunnelAdapter: @unchecked Sendable {
             return rustStartTunnel(fd, bytes, data.count)
         }
         guard let started else { throw RustTunnelError.engine(Self.takeLastError()) }
-        let previous = handle.withLock { value -> OpaquePointer? in
+        let previous = handle.withLock { value -> UInt in
             let previous = value
-            value = started
+            value = UInt(bitPattern: started)
             return previous
         }
-        if let previous { rustStopTunnel(previous) }
+        if previous != 0 { rustStopTunnel(OpaquePointer(bitPattern: previous)) }
     }
 
     func stop() {
-        let stopped = handle.withLock { value -> OpaquePointer? in
+        let stopped = handle.withLock { value -> UInt in
             let stopped = value
-            value = nil
+            value = 0
             return stopped
         }
-        if let stopped { rustStopTunnel(stopped) }
+        if stopped != 0 { rustStopTunnel(OpaquePointer(bitPattern: stopped)) }
     }
 
     func suspend() throws {
@@ -97,8 +100,10 @@ final class RustTunnelAdapter: @unchecked Sendable {
 
     func statistics() throws -> RustEngineStatistics {
         try handle.withLock { value in
-            guard let value else { throw RustTunnelError.engine("GotaTun is not running.") }
-            guard let string = rustTunnelStatistics(value) else {
+            guard value != 0, let pointer = OpaquePointer(bitPattern: value) else {
+                throw RustTunnelError.engine("GotaTun is not running.")
+            }
+            guard let string = rustTunnelStatistics(pointer) else {
                 throw RustTunnelError.engine(Self.takeLastError())
             }
             defer { rustStringFree(string) }
@@ -111,8 +116,10 @@ final class RustTunnelAdapter: @unchecked Sendable {
 
     private func lifecycle(_ operation: (OpaquePointer?) -> Int32) throws {
         try handle.withLock { value in
-            guard let value else { throw RustTunnelError.engine("GotaTun is not running.") }
-            guard operation(value) == 0 else { throw RustTunnelError.engine(Self.takeLastError()) }
+            guard value != 0, let pointer = OpaquePointer(bitPattern: value) else {
+                throw RustTunnelError.engine("GotaTun is not running.")
+            }
+            guard operation(pointer) == 0 else { throw RustTunnelError.engine(Self.takeLastError()) }
         }
     }
 
@@ -124,4 +131,3 @@ final class RustTunnelAdapter: @unchecked Sendable {
 
     deinit { stop() }
 }
-
