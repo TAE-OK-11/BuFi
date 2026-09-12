@@ -86,6 +86,78 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertEqual(dns.effectiveResolver.resolverEndpoint, "one.one.one.one")
     }
 
+    func testCustomDNSRulesUseEncryptedLocalFilteringBoundary() {
+        var dns = TunnelDNSConfiguration.system
+        dns.protection = TunnelDNSProtectionConfiguration(
+            isEnabled: true,
+            preset: .balanced,
+            blockedDomains: ["ads.example"],
+            allowedDomains: ["music.ads.example"]
+        )
+
+        XCTAssertEqual(dns.effectiveResolver.mode, .quic)
+        XCTAssertEqual(dns.effectiveResolver.resolverEndpoint, "94.140.14.14")
+        XCTAssertEqual(dns.effectiveResolver.serverName, "dns.adguard-dns.com")
+        XCTAssertEqual(dns.effectiveResolver.port, 853)
+    }
+
+    func testDNSRuleParserAcceptsDomainsHostsAndBasicAdGuardRules() {
+        let parsed = TunnelDNSRuleParser.parse(
+            """
+            ads.example
+            0.0.0.0 tracker.example # hosts rule
+            ||metrics.example^
+            ADS.EXAMPLE
+            not a valid domain
+            """
+        )
+        XCTAssertEqual(parsed, ["ads.example", "metrics.example", "tracker.example"])
+    }
+
+    func testCustomDNSFilterBlocksSubdomainsAndHonorsAllowRules() {
+        let filter = TunnelDNSMessageFilter(
+            blockedDomains: ["example.com"],
+            allowedDomains: ["music.example.com"]
+        )
+        let blockedQuery = dnsQuery(domain: "ads.example.com")
+        let allowedQuery = dnsQuery(domain: "music.example.com")
+
+        let response = filter.blockedResponse(for: blockedQuery)
+        XCTAssertNotNil(response)
+        XCTAssertEqual((response?[2] ?? 0) & 0x80, 0x80)
+        XCTAssertEqual((response?[3] ?? 0) & 0x0f, 3)
+        XCTAssertNil(filter.blockedResponse(for: allowedQuery))
+    }
+
+    func testEarlierProtectionConfigurationDecodesWithoutCustomRuleFields() throws {
+        let data = try XCTUnwrap(
+            """
+            {
+              "isEnabled": true,
+              "preset": "balanced"
+            }
+            """.data(using: .utf8)
+        )
+        let protection = try JSONDecoder().decode(TunnelDNSProtectionConfiguration.self, from: data)
+        XCTAssertTrue(protection.isEnabled)
+        XCTAssertEqual(protection.preset, .balanced)
+        XCTAssertTrue(protection.blockedDomains.isEmpty)
+        XCTAssertTrue(protection.allowedDomains.isEmpty)
+    }
+
+    func testCustomDNSRuleLimitProtectsExtensionMemoryBudget() {
+        var dns = TunnelDNSConfiguration.system
+        dns.protection = TunnelDNSProtectionConfiguration(
+            isEnabled: true,
+            blockedDomains: (0...TunnelDNSProtectionConfiguration.maximumCustomRules).map {
+                "blocked-\($0).example"
+            }
+        )
+        XCTAssertThrowsError(try TunnelProfileValidator.validateDNS(dns)) { error in
+            XCTAssertEqual(error as? TunnelValidationError, .tooManyCustomDNSRules)
+        }
+    }
+
     func testLegacyDNSConfigurationDefaultsToProtectionDisabled() throws {
         let data = try XCTUnwrap(
             """
@@ -259,5 +331,20 @@ final class TunnelConfigurationTests: XCTestCase {
             credentials.resolvedEndpointConfiguration.primaryURL,
             "https://music.example.com"
         )
+    }
+
+
+    private func dnsQuery(domain: String) -> Data {
+        var data = Data([
+            0x12, 0x34, 0x01, 0x00,
+            0x00, 0x01, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        ])
+        for label in domain.split(separator: ".") {
+            data.append(UInt8(label.utf8.count))
+            data.append(contentsOf: label.utf8)
+        }
+        data.append(contentsOf: [0x00, 0x00, 0x01, 0x00, 0x01])
+        return data
     }
 }

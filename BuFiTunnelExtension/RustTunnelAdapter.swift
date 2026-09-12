@@ -13,6 +13,12 @@ private func rustSuspendTunnel(_ handle: OpaquePointer?) -> Int32
 private func rustResumeTunnel(_ handle: OpaquePointer?) -> Int32
 @_silgen_name("bufi_tunnel_rebind")
 private func rustRebindTunnel(_ handle: OpaquePointer?) -> Int32
+@_silgen_name("bufi_tunnel_reconfigure")
+private func rustReconfigureTunnel(
+    _ handle: OpaquePointer?,
+    _ bytes: UnsafePointer<UInt8>,
+    _ count: Int
+) -> Int32
 @_silgen_name("bufi_tunnel_statistics")
 private func rustTunnelStatistics(_ handle: OpaquePointer?) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("bufi_tunnel_last_error")
@@ -97,6 +103,20 @@ final class RustTunnelAdapter: @unchecked Sendable {
 
     func rebind() throws {
         try lifecycle(rustRebindTunnel)
+    }
+
+    func reconfigure(configuration: RustEngineConfiguration) throws {
+        let data = try JSONEncoder().encode(configuration)
+        try handle.withLock { value in
+            guard value != 0, let pointer = OpaquePointer(bitPattern: value) else {
+                throw RustTunnelError.engine("GotaTun is not running.")
+            }
+            let result = data.withUnsafeBytes { rawBuffer -> Int32 in
+                guard let bytes = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+                return rustReconfigureTunnel(pointer, bytes, data.count)
+            }
+            guard result == 0 else { throw RustTunnelError.engine(Self.takeLastError()) }
+        }
     }
 
     func statistics() throws -> RustEngineStatistics {

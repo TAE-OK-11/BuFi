@@ -240,6 +240,12 @@ struct BufiTunnelView: View {
                         ? (tunnel.diagnostics.dnsProtectionPreset?.title ?? String(localized: "On"))
                         : String(localized: "Off")
                 )
+                if tunnel.diagnostics.dnsProtectionEnabled {
+                    diagnosticRow(
+                        "Blocked DNS queries",
+                        value: "\(tunnel.diagnostics.dnsBlockedQueryCount ?? 0)"
+                    )
+                }
                 if let endpoint = tunnel.diagnostics.dnsResolverEndpoint {
                     diagnosticRow("DNS endpoint", value: endpoint)
                 }
@@ -766,11 +772,15 @@ private struct TunnelAdBlockingEditor: View {
     @ObservedObject private var tunnel = TunnelManager.shared
     @State private var profile: TunnelProfile
     @State private var protection: TunnelDNSProtectionConfiguration
+    @State private var blockedRules: String
+    @State private var allowedRules: String
     @State private var localError: String?
 
     init(profile: TunnelProfile) {
         _profile = State(initialValue: profile)
         _protection = State(initialValue: profile.dns.effectiveProtection)
+        _blockedRules = State(initialValue: profile.dns.effectiveProtection.blockedDomains.joined(separator: "\n"))
+        _allowedRules = State(initialValue: profile.dns.effectiveProtection.allowedDomains.joined(separator: "\n"))
     }
 
     var body: some View {
@@ -797,7 +807,7 @@ private struct TunnelAdBlockingEditor: View {
                             .foregroundStyle(protection.isEnabled ? Color.green : Color.secondary)
                     }
                 }
-                Toggle("Block ads and trackers", isOn: $protection.isEnabled)
+                Toggle("Block ads, trackers, and threats", isOn: $protection.isEnabled)
                     .tint(BuFiTheme.accent)
             }
 
@@ -815,11 +825,30 @@ private struct TunnelAdBlockingEditor: View {
                 }
 
                 Section("Lightweight design") {
-                    Label("Uses Apple native DNS-over-HTTPS", systemImage: "lock.shield")
-                    Label("No local blocklist or background update timer", systemImage: "leaf")
+                    if hasParsedCustomRules {
+                        Label("Custom rules use an encrypted local DNS boundary", systemImage: "lock.shield")
+                    } else {
+                        Label("Uses Apple native DNS-over-HTTPS", systemImage: "lock.shield")
+                    }
+                    Label("No downloaded blocklist or background update timer", systemImage: "leaf")
                     Label("Bufi does not store DNS query history", systemImage: "eye.slash")
                     LabeledContent("Resolver", value: protection.preset.resolver.resolverEndpoint)
                         .font(.caption)
+                }
+
+                Section("Custom filters") {
+                    TextField("Blocked domains", text: $blockedRules, axis: .vertical)
+                        .lineLimit(3...8)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Allowed domains", text: $allowedRules, axis: .vertical)
+                        .lineLimit(2...6)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    LabeledContent("Custom block rules", value: "\(parsedBlockedRules.count)")
+                    LabeledContent("Custom allow rules", value: "\(parsedAllowedRules.count)")
+                } footer: {
+                    Text("Add one domain per line. Comma-separated domains, hosts entries, and basic ||domain.example^ rules are also accepted. Allowed domains override only your custom blocked parent domains.")
                 }
             }
 
@@ -863,6 +892,8 @@ private struct TunnelAdBlockingEditor: View {
     }
 
     private func save() async {
+        protection.blockedDomains = parsedBlockedRules
+        protection.allowedDomains = parsedAllowedRules
         profile.dns.protection = protection
         do {
             try TunnelProfileValidator.validateDNS(profile.dns)
@@ -872,5 +903,17 @@ private struct TunnelAdBlockingEditor: View {
         } catch {
             localError = error.localizedDescription
         }
+    }
+
+    private var parsedBlockedRules: [String] {
+        TunnelDNSRuleParser.parse(blockedRules)
+    }
+
+    private var parsedAllowedRules: [String] {
+        TunnelDNSRuleParser.parse(allowedRules)
+    }
+
+    private var hasParsedCustomRules: Bool {
+        !parsedBlockedRules.isEmpty || !parsedAllowedRules.isEmpty
     }
 }

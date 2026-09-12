@@ -60,7 +60,7 @@ cancellable services.
 
 - iOS 17 minimum; Swift 6 language mode with complete concurrency checking.
 - Required clean Release build on Xcode 27. Hosted CI does not run tests.
-- Monolithic LLVM LTO, whole-module Swift optimization, dead-code stripping,
+- LLVM ThinLTO, whole-module Swift optimization, dead-code stripping,
   dSYM output, package pinning, and the safe non-global stripping workaround
   retained for iOS 27 beta device stability.
 - Physical launch/playback checks on both iOS 17 and iOS 27 beta are required

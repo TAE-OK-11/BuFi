@@ -115,18 +115,27 @@ the base configuration and restored without loss when protection is disabled.
 While protection is active, Bufi selects AdGuard's documented public filtering
 resolver through `NEDNSOverHTTPSSettings`:
 
-- Balanced blocks ads and trackers.
+- Balanced blocks ads, trackers, phishing, and malicious domains.
 - Family additionally blocks adult content and requests Safe Search where the
   upstream supports it.
 
 The architecture follows the resolver/filter separation used by the Apache-2.0
 AdGuard DnsLibs project, but deliberately does not embed that larger C++ engine
 or a GPL blocklist. There is no list download, parser, query database,
-background refresh timer, or per-query Swift/Rust FFI call. Filtering happens
-at the selected upstream and Bufi stores no DNS query history. This is the
-lowest-memory and lowest-wakeup implementation for the Packet Tunnel target;
-the protection preset remains separate from `TunnelDNSResolver`, so an on-device
-filter backend can replace it later without changing WireGuard.
+background refresh timer, or per-query Swift/Rust FFI call. Built-in filtering
+happens at the selected upstream and Bufi stores no DNS query history.
+
+Users may add a small set of block and allow domains in the app. Exact domains,
+subdomains, hosts-style entries, comma/newline lists, and basic
+`||domain.example^` rules are normalized and deduplicated. Allow rules take
+precedence over a blocked parent domain. When custom rules are non-empty, the
+isolated resolver boundary applies them locally and returns an NXDOMAIN response
+without forwarding the query. Allowed traffic uses authenticated DoQ to the
+selected AdGuard endpoint with DoT fallback on networks that block QUIC. Only
+the user-owned rules are resident in memory; the maintained large lists remain
+upstream. Diagnostics expose only an aggregate blocked-query count, never domain
+names. Custom block and allow rules are capped at 4,096 combined to preserve the
+Network Extension's memory budget; bulk maintained lists belong at the upstream.
 
 ## Optional OpenSubsonic endpoint routing
 
@@ -154,7 +163,9 @@ editing, and the dedicated System/Plain/DoH/DoT/DoQ DNS editor.
 `NWPathMonitor` observes all path updates, including Wi-Fi/cellular handoffs.
 Short unsatisfied transitions are debounced. A sustained offline state suspends
 GotaTun, which tears down packet and timer tasks. A restored or changed path
-re-resolves peer hostnames, recreates UDP sockets, and forces a fresh handshake.
+re-resolves peer hostnames, updates peer endpoints in place, recycles UDP
+sockets, and forces a fresh handshake. Full runtime/utun reconstruction is used
+only as the bounded recovery path if in-place reconfiguration fails.
 Sleep suspends the engine and wake performs the same recovery. Normal WireGuard
 timers plus `PersistentKeepalive` handle server restarts and idle NAT mappings;
 there is no STUN, traversal, relay, DERP, mesh, or coordination layer.
@@ -163,6 +174,7 @@ The GotaTun runtime uses two workers, pooled packet buffers, vectored utun
 writes, a duplicated nonblocking fd, and 4 MiB UDP buffers. There is no Swift
 per-packet callback, metrics timer in the extension, or reconnect polling loop.
 The app requests metrics every two seconds only while the VPN is active.
+Rust release builds and the iOS Release configuration both use ThinLTO.
 
 ## GitHub validation
 
@@ -193,6 +205,7 @@ iPhones:
 - IPv4-only, IPv6-only, dual-stack, split, and full `AllowedIPs`
 - Plain IPv4/IPv6 DNS, DoH, DoT, and DoQ resolvers
 - Balanced and Family DNS ad-blocking presets, including resolver restoration
+- custom block/allow rules, NXDOMAIN response, aggregate count, and QUIC fallback
 - connect/disconnect and profile enable/disable
 - OpenSubsonic primary/tunnel endpoint switching without cache-scope changes
 - Wi-Fi → cellular, cellular → Wi-Fi, temporary offline, and endpoint DNS change

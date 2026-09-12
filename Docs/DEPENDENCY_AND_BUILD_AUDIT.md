@@ -92,7 +92,7 @@ a build-time project generator.
   unsuitable for a stabilization build.
 - Xcode 26.3 through 27 beta can corrupt dyld chained fixups when Archive runs
   `strip -S -T` on some Swift 6 binaries (FB23528109), producing a device-only
-  crash before `main()`. BuFi therefore keeps LTO and dead-code stripping but
+  crash before `main()`. BuFi therefore keeps ThinLTO and dead-code stripping but
   uses `STRIP_STYLE = non-global` and `STRIP_SWIFT_SYMBOLS = NO`. CI also passes
   both values as command-line overrides so SwiftPM product targets inherit the
   workaround.

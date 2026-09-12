@@ -47,7 +47,7 @@ for target in BuFi; do
             printf '%s\n' "$settings" \
                 | grep -Eq '^[[:space:]]*SWIFT_COMPILATION_MODE = wholemodule[[:space:]]*$'
             printf '%s\n' "$settings" \
-                | grep -Eq '^[[:space:]]*LLVM_LTO = YES[[:space:]]*$'
+                | grep -Eq '^[[:space:]]*LLVM_LTO = YES_THIN[[:space:]]*$'
             printf '%s\n' "$settings" \
                 | grep -Eq '^[[:space:]]*DEAD_CODE_STRIPPING = YES[[:space:]]*$'
         fi

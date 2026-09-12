@@ -69,11 +69,11 @@ references; no source was copied into BuFi.
   and AVPlayer state, without a separate UIApplication background task or
   timer-driven recovery wakeup.
 - Release builds use explicit modules, whole-module Swift optimization, and
-  monolithic LTO. CI skips redundant clean passes and Homebrew auto-update work.
+  incremental ThinLTO. CI skips redundant clean passes and Homebrew auto-update work.
 
 ## Release optimizer follow-up
 
-- `LLVM_LTO = YES` combines the executable into one link-time optimization
+- `LLVM_LTO = YES_THIN` enables partitioned link-time optimization
   unit. This deliberately trades longer links and higher CI memory use for the
   strongest cross-file optimization.
 - Swift remains on safe `-O` whole-module optimization. `-Ounchecked` and

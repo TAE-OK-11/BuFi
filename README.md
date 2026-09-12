@@ -25,7 +25,8 @@ It is designed around the iOS media stack rather than a web view.
 - Offline downloads stored in Application Support
 - General-purpose Bufi Tunnel WireGuard client with split/full routing,
   capability-checked Keychain storage, lifecycle recovery, and Plain DNS, DoH,
-  DoT, and DoQ resolver modes, plus lightweight encrypted DNS ad blocking
+  DoT, and DoQ resolver modes, plus lightweight encrypted DNS protection for
+  ads, trackers, phishing, malicious domains, and custom block/allow rules
 - Optional primary/alternate/tunnel-only OpenSubsonic server addresses with
   verified automatic switching while Bufi Tunnel is active
 - GitHub Actions generation of an unsigned IPA with Xcode 27 and Swift 6.4

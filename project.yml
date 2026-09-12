@@ -42,10 +42,9 @@ settings:
       SWIFT_COMPILATION_MODE: wholemodule
       SWIFT_SERIALIZE_DEBUGGING_OPTIONS: NO
       OTHER_SWIFT_FLAGS: "$(inherited) -enable-upcoming-feature NonisolatedNonsendingByDefault"
-      # Release favors final runtime/code-size optimization over build
-      # latency. Monolithic LLVM LTO complements Swift whole-module -O and lets
-      # the linker optimize across object-file boundaries.
-      LLVM_LTO: YES
+      # Incremental (Thin) LTO keeps cross-file optimization while reducing
+      # peak linker memory and link latency compared with monolithic LTO.
+      LLVM_LTO: YES_THIN
       DEAD_CODE_STRIPPING: YES
       DEPLOYMENT_POSTPROCESSING: NO
       ENABLE_NS_ASSERTIONS: NO

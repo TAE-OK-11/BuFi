@@ -5,43 +5,52 @@ import Security
 
 protocol TunnelDNSResolver: AnyObject, Sendable {
     var settings: NEDNSSettings? { get }
+    var blockedQueryCount: UInt64 { get }
     func start() throws
     func stop()
 }
 
 enum TunnelDNSResolverFactory {
     static func make(_ configuration: TunnelDNSConfiguration) throws -> TunnelDNSResolver {
-        let configuration = configuration.effectiveResolver
-        switch configuration.mode {
+        let protection = configuration.effectiveProtection
+        let effective = configuration.effectiveResolver
+        switch effective.mode {
         case .system:
             return NativeDNSResolver(settings: nil)
         case .plain:
-            let settings = NEDNSSettings(servers: configuration.servers)
+            let settings = NEDNSSettings(servers: effective.servers)
             settings.matchDomains = [""]
             return NativeDNSResolver(settings: settings)
         case .https:
-            guard let url = URL(string: configuration.resolverEndpoint) else {
+            guard let url = URL(string: effective.resolverEndpoint) else {
                 throw TunnelValidationError.invalidDNSConfiguration
             }
-            let settings = NEDNSOverHTTPSSettings(servers: configuration.servers)
+            let settings = NEDNSOverHTTPSSettings(servers: effective.servers)
             settings.serverURL = url
             settings.matchDomains = [""]
             return NativeDNSResolver(settings: settings)
         case .tls:
-            let settings = NEDNSOverTLSSettings(servers: configuration.servers)
-            settings.serverName = configuration.serverName.isEmpty
-                ? configuration.resolverEndpoint
-                : configuration.serverName
+            let settings = NEDNSOverTLSSettings(servers: effective.servers)
+            settings.serverName = effective.serverName.isEmpty
+                ? effective.resolverEndpoint
+                : effective.serverName
             settings.matchDomains = [""]
             return NativeDNSResolver(settings: settings)
         case .quic:
-            return DoQDNSResolver(configuration: configuration)
+            let filter = protection.isEnabled && protection.hasCustomRules
+                ? TunnelDNSMessageFilter(
+                    blockedDomains: protection.blockedDomains,
+                    allowedDomains: protection.allowedDomains
+                )
+                : nil
+            return DoQDNSResolver(configuration: effective, filter: filter)
         }
     }
 }
 
 private final class NativeDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     let settings: NEDNSSettings?
+    let blockedQueryCount: UInt64 = 0
 
     init(settings: NEDNSSettings?) { self.settings = settings }
     func start() throws {}
@@ -56,14 +65,19 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     let settings: NEDNSSettings?
 
     private let configuration: TunnelDNSConfiguration
+    private let filter: TunnelDNSMessageFilter?
     private let queue = DispatchQueue(label: "cloud.tae00217.BuFi.tunnel.doq", qos: .utility)
     private let state = NSLock()
     private var udpListener: NWListener?
     private var tcpListener: NWListener?
     private var upstreams: [UUID: NWConnection] = [:]
+    private var blockedQueries: UInt64 = 0
 
-    init(configuration: TunnelDNSConfiguration) {
+    var blockedQueryCount: UInt64 { state.locked { blockedQueries } }
+
+    init(configuration: TunnelDNSConfiguration, filter: TunnelDNSMessageFilter?) {
         self.configuration = configuration
+        self.filter = filter
         let dns = NEDNSSettings(servers: ["127.0.0.1"])
         dns.matchDomains = [""]
         settings = dns
@@ -197,6 +211,25 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     }
 
     private func forward(_ query: Data, completion: @escaping @Sendable (Data?) -> Void) {
+        if let response = filter?.blockedResponse(for: query) {
+            state.locked { blockedQueries &+= 1 }
+            completion(response)
+            return
+        }
+        forwardOverQUIC(query) { [weak self] response in
+            guard let self else { completion(nil); return }
+            if let response {
+                completion(response)
+            } else {
+                self.forwardOverTLS(query, completion: completion)
+            }
+        }
+    }
+
+    private func forwardOverQUIC(
+        _ query: Data,
+        completion: @escaping @Sendable (Data?) -> Void
+    ) {
         let quic = NWProtocolQUIC.Options()
         let tls = quic.securityProtocolOptions
         let tlsName = configuration.serverName.isEmpty
@@ -242,7 +275,65 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
             }
         }
         connection.start(queue: queue)
-        queue.asyncAfter(deadline: .now() + .seconds(10)) { [weak self, weak connection] in
+        queue.asyncAfter(deadline: .now() + .seconds(4)) { [weak self, weak connection] in
+            guard let self, let connection else { return }
+            let isPending = self.state.locked { self.upstreams[id] != nil }
+            if isPending {
+                self.finish(id: id, connection: connection, response: nil, completion: completion)
+            }
+        }
+    }
+
+    private func forwardOverTLS(
+        _ query: Data,
+        completion: @escaping @Sendable (Data?) -> Void
+    ) {
+        let tlsOptions = NWProtocolTLS.Options()
+        let tlsName = configuration.serverName.isEmpty
+            ? configuration.resolverEndpoint
+            : configuration.serverName
+        tlsName.withCString {
+            sec_protocol_options_set_tls_server_name(tlsOptions.securityProtocolOptions, $0)
+        }
+        let parameters = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
+        let id = UUID()
+        let connection = NWConnection(
+            host: NWEndpoint.Host(configuration.resolverEndpoint),
+            port: 853,
+            using: parameters
+        )
+        state.locked { upstreams[id] = connection }
+        connection.stateUpdateHandler = { [weak self, weak connection] connectionState in
+            guard let self, let connection else { return }
+            switch connectionState {
+            case .ready:
+                connection.stateUpdateHandler = nil
+                var framed = Data()
+                var count = UInt16(query.count).bigEndian
+                withUnsafeBytes(of: &count) { framed.append(contentsOf: $0) }
+                framed.append(query)
+                connection.send(content: framed, completion: .contentProcessed { error in
+                    guard error == nil else {
+                        self.finish(id: id, connection: connection, response: nil, completion: completion)
+                        return
+                    }
+                    self.receiveDoQResponse(on: connection) { response in
+                        self.finish(
+                            id: id,
+                            connection: connection,
+                            response: response,
+                            completion: completion
+                        )
+                    }
+                })
+            case .failed, .cancelled:
+                self.finish(id: id, connection: connection, response: nil, completion: completion)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + .seconds(6)) { [weak self, weak connection] in
             guard let self, let connection else { return }
             let isPending = self.state.locked { self.upstreams[id] != nil }
             if isPending {
@@ -273,7 +364,8 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
         response: Data?,
         completion: @escaping @Sendable (Data?) -> Void
     ) {
-        state.locked { _ = upstreams.removeValue(forKey: id) }
+        let wasPending = state.locked { upstreams.removeValue(forKey: id) != nil }
+        guard wasPending else { return }
         connection.cancel()
         completion(response)
     }

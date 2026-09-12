@@ -290,6 +290,46 @@ pub extern "C" fn bufi_tunnel_rebind(handle: *mut c_void) -> i32 {
     })
 }
 
+/// Updates peer endpoints and related runtime configuration in place before
+/// recycling sockets. This avoids rebuilding the Tokio runtime and utun device
+/// during ordinary Wi-Fi/cellular handoffs while still picking up DNS changes.
+#[unsafe(no_mangle)]
+pub extern "C" fn bufi_tunnel_reconfigure(
+    handle: *mut c_void,
+    config: *const u8,
+    config_len: usize,
+) -> i32 {
+    if config.is_null() || config_len == 0 {
+        set_error("engine reconfiguration is empty");
+        return -1;
+    }
+    // SAFETY: Swift keeps the Data buffer alive for this synchronous call.
+    let bytes = unsafe { std::slice::from_raw_parts(config, config_len) };
+    with_handle(handle, |handle| {
+        let config: EngineConfiguration = serde_json::from_slice(bytes)
+            .map_err(|error| format!("invalid engine reconfiguration: {error}"))?;
+        let peers = config
+            .peers
+            .into_iter()
+            .map(make_peer)
+            .collect::<Result<Vec<_>, _>>()?;
+        handle.runtime.block_on(async {
+            for peer in peers {
+                if !handle
+                    .device
+                    .update_peer(peer)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err("a configured WireGuard peer disappeared".to_string());
+                }
+            }
+            handle.device.suspend().await;
+            handle.device.resume().await.map_err(|error| error.to_string())
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn bufi_tunnel_statistics(handle: *mut c_void) -> *mut c_char {
     if handle.is_null() {

@@ -37,7 +37,7 @@ enum TunnelDNSProtectionPreset: String, Codable, CaseIterable, Identifiable, Sen
 
     var detail: String {
         switch self {
-        case .balanced: String(localized: "Blocks ads and trackers with low breakage risk.")
+        case .balanced: String(localized: "Blocks ads, trackers, phishing, and malicious domains with low breakage risk.")
         case .family: String(localized: "Also blocks adult content and enables Safe Search where supported.")
         }
     }
@@ -68,13 +68,57 @@ enum TunnelDNSProtectionPreset: String, Codable, CaseIterable, Identifiable, Sen
             )
         }
     }
+
+    /// Local custom rules need plaintext DNS at the resolver boundary. DoQ
+    /// keeps that boundary inside the Packet Tunnel while the upstream remains encrypted.
+    var locallyFilteredResolver: TunnelDNSConfiguration {
+        let secure = resolver
+        return TunnelDNSConfiguration(
+            mode: .quic,
+            servers: secure.servers,
+            resolverEndpoint: secure.servers.first ?? "",
+            serverName: secure.serverName,
+            port: 853
+        )
+    }
 }
 
 struct TunnelDNSProtectionConfiguration: Codable, Equatable, Sendable {
+    static let maximumCustomRules = 4_096
     var isEnabled = false
     var preset: TunnelDNSProtectionPreset = .balanced
+    var blockedDomains: [String] = []
+    var allowedDomains: [String] = []
+
+    init(
+        isEnabled: Bool = false,
+        preset: TunnelDNSProtectionPreset = .balanced,
+        blockedDomains: [String] = [],
+        allowedDomains: [String] = []
+    ) {
+        self.isEnabled = isEnabled
+        self.preset = preset
+        self.blockedDomains = blockedDomains
+        self.allowedDomains = allowedDomains
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled, preset, blockedDomains, allowedDomains
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        preset = try container.decodeIfPresent(TunnelDNSProtectionPreset.self, forKey: .preset) ?? .balanced
+        blockedDomains = try container.decodeIfPresent([String].self, forKey: .blockedDomains) ?? []
+        allowedDomains = try container.decodeIfPresent([String].self, forKey: .allowedDomains) ?? []
+    }
 
     static let disabled = TunnelDNSProtectionConfiguration()
+
+    var hasCustomRules: Bool {
+        !blockedDomains.isEmpty
+    }
 }
 
 enum TunnelSecretScope: String, Codable, Equatable, Sendable {
@@ -107,7 +151,51 @@ struct TunnelDNSConfiguration: Codable, Equatable, Sendable {
 
     var effectiveResolver: TunnelDNSConfiguration {
         guard effectiveProtection.isEnabled else { return self }
-        return effectiveProtection.preset.resolver
+        return effectiveProtection.hasCustomRules
+            ? effectiveProtection.preset.locallyFilteredResolver
+            : effectiveProtection.preset.resolver
+    }
+}
+
+enum TunnelDNSRuleParser {
+    static func parse(_ text: String) -> [String] {
+        var domains = Set<String>()
+        for rawLine in text.components(separatedBy: .newlines) {
+            for rawValue in rawLine.split(separator: ",") {
+                if let domain = normalize(String(rawValue)) { domains.insert(domain) }
+            }
+        }
+        return domains.sorted()
+    }
+
+    static func normalize(_ rawValue: String) -> String? {
+        var value = rawValue
+            .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        guard !value.isEmpty else { return nil }
+
+        if value.hasPrefix("@@") { value.removeFirst(2) }
+        if value.hasPrefix("||") { value.removeFirst(2) }
+        if let option = value.firstIndex(of: "^") { value = String(value[..<option]) }
+        if let slash = value.firstIndex(of: "/") { value = String(value[..<slash]) }
+        let hostsParts = value.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        if hostsParts.count >= 2,
+           (IPv4Address(String(hostsParts[0])) != nil
+               || IPv6Address(String(hostsParts[0])) != nil) {
+            value = String(hostsParts[1])
+        }
+        value = value.trimmingCharacters(in: CharacterSet(charactersIn: ".|"))
+        guard value.count <= 253,
+              !value.isEmpty,
+              value.split(separator: ".").allSatisfy({ label in
+                  !label.isEmpty && label.count <= 63
+                      && label.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" }
+                      && label.first != "-" && label.last != "-"
+              }) else { return nil }
+        return value
     }
 }
 
@@ -180,6 +268,7 @@ enum TunnelValidationError: LocalizedError, Equatable, Sendable {
     case invalidMTU
     case invalidDNSServer(String)
     case invalidDNSConfiguration
+    case tooManyCustomDNSRules
 
     var errorDescription: String? {
         switch self {
@@ -219,6 +308,11 @@ enum TunnelValidationError: LocalizedError, Equatable, Sendable {
             value
         )
         case .invalidDNSConfiguration: String(localized: "The encrypted DNS resolver endpoint is incomplete or invalid.")
+        case .tooManyCustomDNSRules: String(
+            format: String(localized: "Custom DNS protection supports up to %d block and allow rules."),
+            locale: .current,
+            TunnelDNSProtectionConfiguration.maximumCustomRules
+        )
         }
     }
 }
@@ -261,6 +355,11 @@ enum TunnelProfileValidator {
     }
 
     static func validateDNS(_ dns: TunnelDNSConfiguration) throws {
+        let customRuleCount = dns.effectiveProtection.blockedDomains.count
+            + dns.effectiveProtection.allowedDomains.count
+        guard customRuleCount <= TunnelDNSProtectionConfiguration.maximumCustomRules else {
+            throw TunnelValidationError.tooManyCustomDNSRules
+        }
         try validateResolver(dns)
         if dns.effectiveProtection.isEnabled {
             try validateResolver(dns.effectiveResolver)
@@ -333,6 +432,8 @@ struct TunnelDiagnostics: Codable, Equatable, Sendable {
     var dnsResolverEndpoint: String?
     var dnsProtectionEnabled = false
     var dnsProtectionPreset: TunnelDNSProtectionPreset?
+    /// Optional preserves decoding of diagnostics written by earlier builds.
+    var dnsBlockedQueryCount: UInt64?
     var latestError: String?
     var updatedAt = Date()
 }

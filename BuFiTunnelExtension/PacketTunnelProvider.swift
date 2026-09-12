@@ -178,16 +178,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         updateDiagnostics { diagnostics in diagnostics.state = .reconnecting }
         do {
             let resolved = try EngineConfigurationBuilder.make(profile: profile)
-            let adapter = state.withLock { runtime -> RustTunnelAdapter? in
-                let adapter = runtime.adapter
-                runtime.adapter = nil
-                return adapter
+            guard let adapter = state.withLock({ $0.adapter }) else {
+                throw RustTunnelError.engine("GotaTun is not running.")
             }
-            adapter?.stop()
-            let replacement = RustTunnelAdapter()
-            try replacement.start(configuration: resolved.engine)
+            do {
+                try adapter.reconfigure(configuration: resolved.engine)
+            } catch {
+                // A failed in-place update may leave sockets suspended. A full
+                // replacement is the bounded recovery path, not a retry loop.
+                adapter.stop()
+                let replacement = RustTunnelAdapter()
+                try replacement.start(configuration: resolved.engine)
+                state.withLock { $0.adapter = replacement }
+            }
             state.withLock { runtime in
-                runtime.adapter = replacement
                 runtime.diagnostics.state = .connected
                 runtime.diagnostics.currentEndpoint = resolved.firstEndpointIP
                 runtime.diagnostics.currentNetworkPath = pathDescription
@@ -212,6 +216,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 try runtime.adapter?.statistics()
             }
             guard let statistics else { return }
+            let blockedQueryCount = state.withLock {
+                $0.dnsResolver?.blockedQueryCount ?? 0
+            }
             updateDiagnostics { diagnostics in
                 diagnostics.latestHandshake = statistics.latestHandshake.map {
                     Date(timeIntervalSince1970: TimeInterval($0))
@@ -219,6 +226,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 diagnostics.txBytes = statistics.txBytes
                 diagnostics.rxBytes = statistics.rxBytes
                 diagnostics.currentEndpoint = statistics.currentEndpoint
+                diagnostics.dnsBlockedQueryCount = blockedQueryCount
             }
         } catch {
             let message = error.localizedDescription
