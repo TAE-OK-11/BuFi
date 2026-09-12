@@ -21,7 +21,7 @@ use std::{
 use tokio::runtime::{Builder, Runtime};
 use tun_device::IosTunDevice;
 
-type GotaTunDevice = Device<(UdpSocketFactory, IosTunDevice)>;
+type GotaTunDevice = Device<(UdpSocketFactory, IosTunDevice, IosTunDevice)>;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

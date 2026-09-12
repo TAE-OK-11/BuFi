@@ -13,10 +13,11 @@ use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use std::{
     io::{self, IoSlice},
     iter,
-    os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd},
+    os::fd::{BorrowedFd, OwnedFd, RawFd},
     sync::Arc,
 };
 use tokio::io::{unix::AsyncFd, Interest};
+use zerocopy::IntoBytes;
 
 const UTUN_HEADER_LENGTH: usize = size_of::<u32>();
 
@@ -48,8 +49,8 @@ impl IpSend for IosTunDevice {
             6 => libc::AF_INET6.to_ne_bytes(),
             _ => return Err(io::ErrorKind::InvalidInput.into()),
         };
-        let slices = [IoSlice::new(&family), IoSlice::new(packet.as_ref())];
-        let expected = UTUN_HEADER_LENGTH + packet.len();
+        let slices = [IoSlice::new(&family), IoSlice::new(packet.as_bytes())];
+        let expected = UTUN_HEADER_LENGTH + packet.as_bytes().len();
         let written = self
             .fd
             .async_io(Interest::WRITABLE, |fd| {
@@ -90,4 +91,3 @@ impl IpRecv for IosTunDevice {
         self.mtu.clone()
     }
 }
-
