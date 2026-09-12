@@ -24,8 +24,8 @@ It is designed around the iOS media stack rather than a web view.
 - Favorite songs, albums, and artists, with favorite artists pinned above an indexed artist library
 - Offline downloads stored in Application Support
 - General-purpose Bufi Tunnel WireGuard client with split/full routing,
-  shared-Keychain key storage, lifecycle recovery, and Plain DNS, DoH, DoT,
-  and DoQ resolver modes
+  capability-checked Keychain storage, lifecycle recovery, and Plain DNS, DoH,
+  DoT, and DoQ resolver modes
 - GitHub Actions generation of an unsigned IPA with Xcode 27 and Swift 6.4
 
 ## Requirements

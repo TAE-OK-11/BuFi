@@ -93,7 +93,21 @@ struct BufiTunnelView: View {
                     get: { tunnel.isEnabled },
                     set: { enabled in Task { await tunnel.setEnabled(enabled) } }
                 ))
-                .disabled(tunnel.selectedProfile == nil || tunnel.isBusy)
+                .disabled(
+                    tunnel.selectedProfile == nil
+                        || tunnel.selectedProfileRequiresSupportedSigning
+                        || tunnel.isBusy
+                )
+
+                if tunnel.selectedProfileRequiresSupportedSigning {
+                    Label(
+                        "The profile and private key are saved securely in the app, but the shared Tunnel Keychain entitlement is unavailable. Packet Tunnel will not be started.",
+                        systemImage: "exclamationmark.shield.fill"
+                    )
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 Button {
                     if isActive { tunnel.disconnect() } else { Task { await tunnel.connect() } }
@@ -219,28 +233,31 @@ struct BufiTunnelView: View {
     }
 
     private var statusTitle: LocalizedStringKey {
+        if tunnel.selectedProfileRequiresSupportedSigning { return "Signing required" }
         switch tunnel.status {
-        case .invalid: "Not configured"
-        case .disconnected: "Disconnected"
-        case .connecting: "Connecting"
-        case .connected: "Connected"
-        case .reasserting: "Reconnecting"
-        case .disconnecting: "Disconnecting"
-        @unknown default: "Unknown"
+        case .invalid: return "Not configured"
+        case .disconnected: return "Disconnected"
+        case .connecting: return "Connecting"
+        case .connected: return "Connected"
+        case .reasserting: return "Reconnecting"
+        case .disconnecting: return "Disconnecting"
+        @unknown default: return "Unknown"
         }
     }
 
     private var statusColor: Color {
+        if tunnel.selectedProfileRequiresSupportedSigning { return .orange }
         switch tunnel.status {
-        case .connected: .green
-        case .connecting, .reasserting: .orange
-        case .disconnecting: .orange
-        default: .secondary
+        case .connected: return .green
+        case .connecting, .reasserting: return .orange
+        case .disconnecting: return .orange
+        default: return .secondary
         }
     }
 
     private var statusIcon: String {
-        tunnel.status == .connected ? "lock.fill" : "network"
+        if tunnel.selectedProfileRequiresSupportedSigning { return "exclamationmark.shield.fill" }
+        return tunnel.status == .connected ? "lock.fill" : "network"
     }
 
     private var connectionActionTitle: LocalizedStringKey {
@@ -311,7 +328,7 @@ private struct TunnelProfileEditor: View {
                     pendingPrivateKey = pair.privateKey
                     profile.publicKey = pair.publicKey
                 }
-                Text("The private key is hidden and stored only in the shared device Keychain.")
+                Text("The private key is hidden and stored only in the device Keychain.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

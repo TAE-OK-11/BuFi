@@ -100,6 +100,11 @@ jobs:
           sh Scripts/apply-package-lock.sh
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' BuFiTunnelExtension/Info.plist)" = "com.apple.networkextension.packet-tunnel"
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' BuFiTunnelExtension/Info.plist)" = '$(PRODUCT_MODULE_NAME).PacketTunnelProvider'
+          ! /usr/libexec/PlistBuddy -c 'Print :BuFiSharedKeychainAccessGroup' BuFi/Resources/Info.plist 2>/dev/null
+          ! /usr/libexec/PlistBuddy -c 'Print :BuFiSharedKeychainAccessGroup' BuFiTunnelExtension/Info.plist 2>/dev/null
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.networking.networkextension:0' BuFi/Resources/BuFi.entitlements)" = "packet-tunnel-provider"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' BuFi/Resources/BuFi.entitlements)" = "group.cloud.tae00217.BuFi"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' BuFi/Resources/BuFi.entitlements)" = '$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel'
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.networking.networkextension:0' BuFiTunnelExtension/BuFiTunnelExtension.entitlements)" = "packet-tunnel-provider"
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' BuFiTunnelExtension/BuFiTunnelExtension.entitlements)" = "group.cloud.tae00217.BuFi"
           test "$(/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' BuFiTunnelExtension/BuFiTunnelExtension.entitlements)" = '$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel'

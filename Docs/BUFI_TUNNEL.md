@@ -21,8 +21,8 @@ Settings → TunnelManager → NETunnelProviderManager
 ```
 
 - `BuFi/Tunnel/Shared` contains Codable profiles, strict validation, `.conf`
-  parsing, non-secret app-group persistence, diagnostics, and shared Keychain
-  access.
+  parsing, non-secret app-group persistence, diagnostics, and capability-aware
+  Keychain access.
 - `BuFi/Tunnel/App` contains the SwiftUI profile/client experience and
   `NETunnelProviderManager` ownership.
 - `BuFiTunnelExtension` contains the packet-tunnel provider, routes, resolver
@@ -34,13 +34,43 @@ Settings → TunnelManager → NETunnelProviderManager
 ## Profiles and secrets
 
 The app-group profile record includes names, addresses, public keys, routing,
-endpoints, MTU, DNS choices, and opaque Keychain references. It never contains
-an interface private key or preshared key. Both targets use the explicit
-`$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel` Keychain access group and
-`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.
+endpoints, MTU, DNS choices, opaque Keychain references, and a secret-ownership
+scope. It never contains an interface private key or preshared key. Secrets use
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and are not synchronizable.
+
+Properly provisioned app and extension targets declare the same
+`$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel` Keychain access group. The
+runtime does not read that build substitution from Info.plist. Instead, each
+signed process creates a harmless target-local probe, reads the default access
+group assigned by its actual signer, derives the candidate shared group, and
+asks Security whether that exact group is available. An explicit
+`kSecAttrAccessGroup` is added to secret queries only after this check succeeds.
+
+If a re-signed build lacks the shared group, newly generated keys are stored in
+the main app's normal default Keychain group with no explicit access-group
+attribute. Profile creation therefore remains secure and does not fail with
+`errSecMissingEntitlement`, while the profile is marked `mainAppOnly`. Bufi does
+not create or start an `NETunnelProviderManager` for that profile, and the UI
+clearly reports that valid shared-Keychain and Packet Tunnel provisioning is
+required. The extension refuses app-local secret ownership, so it can never
+pretend to establish a tunnel without access to its private key.
+
+The original `-34018` failure came from the first `SecItemUpdate` in
+`TunnelKeychain.save`: every query unconditionally supplied an Info.plist value
+that had already become `cloud.tae00217.BuFi.tunnel` in the unsigned artifact.
+SideStore re-signing cannot re-expand Xcode build settings, so that value did
+not match any access group granted by the final signer. The stale Info.plist
+key has been removed from both targets.
 
 Keypairs are generated locally with CryptoKit X25519. The public key can be
 copied from the editor. The UI never reveals an existing private key.
+
+Extension-only key generation was evaluated but is not used in v1. Before a
+Packet Tunnel configuration exists, the app has no supported direct channel to
+launch that extension solely to provision a key. Building a temporary VPN
+configuration just for key generation would add prompts and failure states.
+The capability-checked shared group is therefore retained for properly signed
+builds, with a narrow app-local fallback that is never exposed to the extension.
 
 The profile actions are kept above diagnostics so they remain reachable above
 Bufi's persistent mini player. **Add manually** opens the full editor for client
@@ -101,12 +131,24 @@ the simulator and physical-device target, run `TunnelConfigurationTests`, and
 build/package the complete app plus Network Extension. Failures upload both
 test and device-build logs.
 
+The CI IPA is deliberately unsigned, so it has neither `_CodeSignature` nor an
+embedded provisioning profile and cannot prove final entitlements. XcodeGen
+checks verify both source entitlement files and ensure the stale access-group
+Info.plist property is absent. Release validation must additionally inspect the
+post-signing `BuFi.app` and `BuFiTunnelExtension.appex` with `codesign -d
+--entitlements :-` and compare their expanded access groups and Network
+Extension capability with their embedded provisioning profiles. A SideStore-
+signed IPA is required to audit what SideStore actually preserved or removed.
+
 ## Device validation still required
 
 Unsigned CI cannot grant NetworkExtension entitlements or exercise real radio
 handoffs. Before release, sign both targets and execute this matrix on physical
 iPhones:
 
+- final signed app/extension entitlements and provisioning-profile comparison
+- profile creation on a build without shared Keychain access; no `-34018`, no
+  repeated VPN prompt, and an explicit unsupported-signing state
 - Linux kernel WireGuard handshake; IPv4 and IPv6 traffic
 - IPv4-only, IPv6-only, dual-stack, split, and full `AllowedIPs`
 - Plain IPv4/IPv6 DNS, DoH, DoT, and DoQ resolvers

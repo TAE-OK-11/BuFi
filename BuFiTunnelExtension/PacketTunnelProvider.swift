@@ -38,15 +38,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             )
         }
 
-        let resolved = try EngineConfigurationBuilder.make(profile: profile)
-        let resolver = try TunnelDNSResolverFactory.make(profile.dns)
+        var resolver: (any TunnelDNSResolver)?
         do {
-            try resolver.start()
+            let resolved = try EngineConfigurationBuilder.make(profile: profile)
+            let configuredResolver = try TunnelDNSResolverFactory.make(profile.dns)
+            resolver = configuredResolver
+            try configuredResolver.start()
             let settings = try TunnelNetworkSettingsBuilder.make(
                 profile: profile,
                 endpointIP: resolved.firstEndpointIP
             )
-            settings.dnsSettings = resolver.settings
+            settings.dnsSettings = configuredResolver.settings
             try await setTunnelNetworkSettings(settings)
 
             let adapter = RustTunnelAdapter()
@@ -54,7 +56,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             state.withLock { runtime in
                 runtime.profile = profile
                 runtime.adapter = adapter
-                runtime.dnsResolver = resolver
+                runtime.dnsResolver = configuredResolver
                 runtime.diagnostics.state = .connected
                 runtime.diagnostics.currentEndpoint = resolved.firstEndpointIP
                 runtime.diagnostics.latestError = nil
@@ -64,7 +66,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             persistDiagnostics()
             startPathMonitoring()
         } catch {
-            resolver.stop()
+            resolver?.stop()
             let message = error.localizedDescription
             updateDiagnostics { diagnostics in
                 diagnostics.state = .error

@@ -1,3 +1,4 @@
+import Security
 import XCTest
 @testable import BuFi
 
@@ -59,5 +60,91 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertEqual(Data(base64Encoded: pair.publicKey)?.count, 32)
         XCTAssertEqual(try TunnelKeyPair.publicKey(for: pair.privateKey), pair.publicKey)
     }
-}
 
+    func testSharedKeychainGroupUsesActualSignerPrefix() {
+        XCTAssertEqual(
+            TunnelConstants.sharedKeychainAccessGroup(
+                defaultAccessGroup: "TEAM123.cloud.tae00217.BuFi",
+                bundleIdentifier: "cloud.tae00217.BuFi"
+            ),
+            "TEAM123.cloud.tae00217.BuFi.tunnel"
+        )
+        XCTAssertEqual(
+            TunnelConstants.sharedKeychainAccessGroup(
+                defaultAccessGroup: "TEAM123.cloud.tae00217.BuFi.tunnel",
+                bundleIdentifier: "cloud.tae00217.BuFi.TunnelExtension"
+            ),
+            "TEAM123.cloud.tae00217.BuFi.tunnel"
+        )
+        XCTAssertNil(
+            TunnelConstants.sharedKeychainAccessGroup(
+                defaultAccessGroup: "TEAM123.unrelated.app",
+                bundleIdentifier: "cloud.tae00217.BuFi"
+            )
+        )
+    }
+
+    func testMainAppOnlyQueryDoesNotForceAnAccessGroup() throws {
+        let query = try TunnelKeychain().baseQuery(
+            reference: "test-reference",
+            scope: .mainAppOnly
+        )
+        XCTAssertNil(query[kSecAttrAccessGroup as String])
+    }
+
+    func testMissingEntitlementStatusHasExplicitMapping() {
+        XCTAssertEqual(
+            TunnelKeychainError.from(status: errSecMissingEntitlement),
+            .missingEntitlement
+        )
+    }
+
+    func testProfileMetadataPreservesSecretOwnershipWithoutSecretBytes() throws {
+        let privateKey = Data(repeating: 41, count: 32).base64EncodedString()
+        let presharedKey = Data(repeating: 42, count: 32).base64EncodedString()
+        let profile = TunnelProfile(
+            name: "Local secret",
+            privateKeyReference: "private-opaque-reference",
+            publicKey: Data(repeating: 43, count: 32).base64EncodedString(),
+            addresses: ["10.0.0.2/32"],
+            peers: [TunnelPeer(
+                publicKey: Data(repeating: 44, count: 32).base64EncodedString(),
+                presharedKeyReference: "psk-opaque-reference",
+                endpointHost: "vpn.example",
+                allowedIPs: ["0.0.0.0/0"]
+            )],
+            mtu: 1280,
+            dns: .system,
+            secretScope: .mainAppOnly
+        )
+
+        let data = try JSONEncoder().encode(profile)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(json.contains(TunnelSecretScope.mainAppOnly.rawValue))
+        XCTAssertFalse(json.contains(privateKey))
+        XCTAssertFalse(json.contains(presharedKey))
+        XCTAssertEqual(try JSONDecoder().decode(TunnelProfile.self, from: data).effectiveSecretScope, .mainAppOnly)
+    }
+
+    func testLegacyProfileDefaultsToSharedSecretOwnership() throws {
+        let profile = TunnelProfile(
+            name: "Legacy",
+            privateKeyReference: "private-legacy",
+            publicKey: Data(repeating: 45, count: 32).base64EncodedString(),
+            addresses: ["10.0.0.2/32"],
+            peers: [TunnelPeer(
+                publicKey: Data(repeating: 46, count: 32).base64EncodedString(),
+                endpointHost: "vpn.example",
+                allowedIPs: ["10.0.0.0/8"]
+            )],
+            mtu: nil,
+            dns: .system
+        )
+        let decoded = try JSONDecoder().decode(
+            TunnelProfile.self,
+            from: JSONEncoder().encode(profile)
+        )
+        XCTAssertNil(decoded.secretScope)
+        XCTAssertEqual(decoded.effectiveSecretScope, .sharedAccessGroup)
+    }
+}

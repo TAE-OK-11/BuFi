@@ -22,6 +22,15 @@ enum TunnelDNSMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum TunnelSecretScope: String, Codable, Equatable, Sendable {
+    /// Available only when both signed targets possess the same explicit
+    /// Keychain access-group entitlement.
+    case sharedAccessGroup
+    /// Safe profile creation fallback for re-signed/free-provisioned builds.
+    /// The Packet Tunnel must never attempt to read this app-local secret.
+    case mainAppOnly
+}
+
 struct TunnelDNSConfiguration: Codable, Equatable, Sendable {
     var mode: TunnelDNSMode = .system
     /// Bootstrap or plain resolver IP addresses. Names are intentionally not
@@ -54,8 +63,15 @@ struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
     var peers: [TunnelPeer]
     var mtu: UInt16?
     var dns: TunnelDNSConfiguration
+    /// `nil` preserves compatibility with v1 profiles, which were written to
+    /// the explicitly shared group before scope metadata was introduced.
+    var secretScope: TunnelSecretScope?
     var createdAt = Date()
     var updatedAt = Date()
+
+    var effectiveSecretScope: TunnelSecretScope {
+        secretScope ?? .sharedAccessGroup
+    }
 
     var isFullTunnel: Bool {
         peers.flatMap(\.allowedIPs).contains { value in

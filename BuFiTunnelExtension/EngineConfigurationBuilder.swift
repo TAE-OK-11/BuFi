@@ -7,8 +7,14 @@ enum EngineConfigurationBuilder {
     }
 
     static func make(profile: TunnelProfile) throws -> Result {
+        guard profile.effectiveSecretScope == .sharedAccessGroup else {
+            throw TunnelKeychainError.sharedAccessGroupUnavailable
+        }
         let keychain = TunnelKeychain()
-        let privateKey = try keychain.load(reference: profile.privateKeyReference)
+        let privateKey = try keychain.load(
+            reference: profile.privateKeyReference,
+            scope: .sharedAccessGroup
+        )
         var firstEndpointIP: String?
         let peers = try profile.peers.map { peer in
             let endpointIP = try EndpointResolver.resolve(
@@ -17,7 +23,7 @@ enum EngineConfigurationBuilder {
             )
             if firstEndpointIP == nil { firstEndpointIP = endpointIP }
             let presharedKey = try peer.presharedKeyReference.map {
-                try keychain.load(reference: $0).base64EncodedString()
+                try keychain.load(reference: $0, scope: .sharedAccessGroup).base64EncodedString()
             }
             return RustPeerConfiguration(
                 publicKey: peer.publicKey,
@@ -39,4 +45,3 @@ enum EngineConfigurationBuilder {
         )
     }
 }
-

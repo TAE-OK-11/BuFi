@@ -120,9 +120,17 @@ targets:
           - Unbounded.ttf
         UIApplicationSupportsIndirectInputEvents: true
         UIRequiresFullScreen: true
-        BuFiSharedKeychainAccessGroup: "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+    entitlements:
+      path: BuFi/Resources/BuFi.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.cloud.tae00217.BuFi
+        keychain-access-groups:
+          - "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cloud.tae00217.BuFi
@@ -155,7 +163,6 @@ targets:
       properties:
         CFBundleDisplayName: Bufi Tunnel
         LSRequiresIPhoneOS: true
-        BuFiSharedKeychainAccessGroup: "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).PacketTunnelProvider"

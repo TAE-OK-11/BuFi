@@ -394,7 +394,7 @@
 "MTU (automatic: 1280)" = "MTU (자동: 1280)";
 "Public key" = "공개 키";
 "Generate new keypair" = "새 키 쌍 생성";
-"The private key is hidden and stored only in the shared device Keychain." = "비공개 키는 표시하지 않으며 기기의 공유 Keychain에만 안전하게 저장됩니다.";
+"The private key is hidden and stored only in the device Keychain." = "비공개 키는 표시하지 않으며 기기의 Keychain에만 안전하게 저장됩니다.";
 "Add peer" = "피어 추가";
 "Resolver" = "리졸버";
 "Server IPs / bootstrap IPs" = "DNS 서버 IP / 부트스트랩 IP";
@@ -432,5 +432,14 @@
 "The encrypted DNS resolver endpoint is incomplete or invalid." = "암호화 DNS 리졸버 엔드포인트가 누락되었거나 올바르지 않습니다.";
 "Enable this tunnel profile before connecting." = "연결하기 전에 이 터널 프로필을 활성화하세요.";
 "VPN settings permission was denied. Install a build signed with the Packet Tunnel Network Extension entitlement, then try again." = "VPN 설정 권한이 거부되었습니다. Packet Tunnel Network Extension 권한으로 서명된 빌드를 설치한 뒤 다시 시도하세요.";
+"Signing required" = "올바른 서명 필요";
+"The profile and private key are saved securely in the app, but the shared Tunnel Keychain entitlement is unavailable. Packet Tunnel will not be started." = "프로필과 비공개 키는 앱에 안전하게 저장되었지만 공유 Tunnel Keychain 권한이 없습니다. Packet Tunnel은 시작되지 않습니다.";
+"This profile is saved securely in the app Keychain. The shared Tunnel Keychain entitlement is unavailable, so Packet Tunnel was not started." = "이 프로필은 앱 Keychain에 안전하게 저장되었습니다. 공유 Tunnel Keychain 권한이 없어 Packet Tunnel을 시작하지 않았습니다.";
+"This installed build does not have the shared Tunnel Keychain entitlement. The profile remains secure, but the extension cannot read its key." = "설치된 빌드에 공유 Tunnel Keychain 권한이 없습니다. 프로필은 안전하지만 확장 프로그램에서 키를 읽을 수 없습니다.";
+"This build is missing the shared Tunnel Keychain entitlement. Your key is still secure in the app Keychain, but this profile cannot connect until Bufi is correctly signed." = "이 빌드에는 공유 Tunnel Keychain 권한이 없습니다. 키는 앱 Keychain에 안전하게 보관되지만 Bufi가 올바르게 서명되기 전에는 연결할 수 없습니다.";
+"This build is not signed with the shared Tunnel Keychain entitlement. The profile is stored securely, but Packet Tunnel access is unavailable." = "이 빌드는 공유 Tunnel Keychain 권한으로 서명되지 않았습니다. 프로필은 안전하게 저장되지만 Packet Tunnel에서는 접근할 수 없습니다.";
+"The signed app is missing a required Keychain entitlement." = "서명된 앱에 필요한 Keychain 권한이 없습니다.";
+"The WireGuard key is not exactly 32 bytes." = "WireGuard 키는 정확히 32바이트여야 합니다.";
+"Tunnel Keychain error (%d)." = "Tunnel Keychain 오류 (%d).";
 
 "5곡" = "5곡";

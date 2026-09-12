@@ -26,8 +26,6 @@
   <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
-  <key>BuFiSharedKeychainAccessGroup</key>
-  <string>$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>NSAppTransportSecurity</key>
