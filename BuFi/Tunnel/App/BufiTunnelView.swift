@@ -836,7 +836,7 @@ private struct TunnelAdBlockingEditor: View {
                         .font(.caption)
                 }
 
-                Section("Custom filters") {
+                Section {
                     TextField("Blocked domains", text: $blockedRules, axis: .vertical)
                         .lineLimit(3...8)
                         .textInputAutocapitalization(.never)
@@ -847,6 +847,8 @@ private struct TunnelAdBlockingEditor: View {
                         .autocorrectionDisabled()
                     LabeledContent("Custom block rules", value: "\(parsedBlockedRules.count)")
                     LabeledContent("Custom allow rules", value: "\(parsedAllowedRules.count)")
+                } header: {
+                    Text("Custom filters")
                 } footer: {
                     Text("Add one domain per line. Comma-separated domains, hosts entries, and basic ||domain.example^ rules are also accepted. Allowed domains override only your custom blocked parent domains.")
                 }
