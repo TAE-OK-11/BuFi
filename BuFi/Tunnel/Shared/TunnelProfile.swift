@@ -13,11 +13,11 @@ enum TunnelDNSMode: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .system: "System / Default"
-        case .plain: "Plain DNS"
-        case .https: "DNS-over-HTTPS"
-        case .tls: "DNS-over-TLS"
-        case .quic: "DNS-over-QUIC"
+        case .system: String(localized: "System / Default")
+        case .plain: String(localized: "Plain DNS")
+        case .https: String(localized: "DNS-over-HTTPS")
+        case .tls: String(localized: "DNS-over-TLS")
+        case .quic: String(localized: "DNS-over-QUIC")
         }
     }
 }
@@ -100,18 +100,42 @@ enum TunnelValidationError: LocalizedError, Equatable, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .emptyName: "Profile name is required."
-        case .invalidPrivateKey: "The interface private key must be a 32-byte WireGuard key."
-        case .invalidPublicKey(let peer): "Peer \(peer + 1) has an invalid public key."
-        case .missingAddress: "At least one client IP address is required."
-        case .invalidAddress(let value): "Invalid client address: \(value)"
-        case .missingPeer: "At least one WireGuard peer is required."
-        case .missingEndpoint(let peer): "Peer \(peer + 1) needs an endpoint and port."
-        case .missingAllowedIPs(let peer): "Peer \(peer + 1) needs at least one AllowedIP."
-        case .invalidAllowedIP(let value): "Invalid AllowedIP: \(value)"
-        case .invalidMTU: "MTU must be between 576 and 9,000 (and at least 1,280 for IPv6)."
-        case .invalidDNSServer(let value): "DNS server must be an IPv4 or IPv6 address: \(value)"
-        case .invalidDNSConfiguration: "The encrypted DNS resolver endpoint is incomplete or invalid."
+        case .emptyName: String(localized: "Profile name is required.")
+        case .invalidPrivateKey: String(localized: "The interface private key must be a 32-byte WireGuard key.")
+        case .invalidPublicKey(let peer): String(
+            format: String(localized: "Peer %d has an invalid public key."),
+            locale: .current,
+            peer + 1
+        )
+        case .missingAddress: String(localized: "At least one client IP address is required.")
+        case .invalidAddress(let value): String(
+            format: String(localized: "Invalid client address: %@"),
+            locale: .current,
+            value
+        )
+        case .missingPeer: String(localized: "At least one WireGuard peer is required.")
+        case .missingEndpoint(let peer): String(
+            format: String(localized: "Peer %d needs an endpoint and port."),
+            locale: .current,
+            peer + 1
+        )
+        case .missingAllowedIPs(let peer): String(
+            format: String(localized: "Peer %d needs at least one AllowedIP."),
+            locale: .current,
+            peer + 1
+        )
+        case .invalidAllowedIP(let value): String(
+            format: String(localized: "Invalid AllowedIP: %@"),
+            locale: .current,
+            value
+        )
+        case .invalidMTU: String(localized: "MTU must be between 576 and 9,000 (and at least 1,280 for IPv6).")
+        case .invalidDNSServer(let value): String(
+            format: String(localized: "DNS server must be an IPv4 or IPv6 address: %@"),
+            locale: .current,
+            value
+        )
+        case .invalidDNSConfiguration: String(localized: "The encrypted DNS resolver endpoint is incomplete or invalid.")
         }
     }
 }

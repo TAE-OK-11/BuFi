@@ -15,11 +15,13 @@ struct BufiTunnelView: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 statusSection
                 profilesSection
-                diagnosticsSection
                 actionsSection
+                diagnosticsSection
             }
             .padding(16)
+            .buFiMiniPlayerContentClearance(idle: 56, playing: 180)
         }
+        .scrollDismissesKeyboard(.interactively)
         .background(BuFiScreenBackground())
         .navigationTitle("Bufi Tunnel")
         .navigationBarTitleDisplayMode(.inline)
@@ -78,7 +80,7 @@ struct BufiTunnelView: View {
                                 .foregroundStyle(statusColor)
                         }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(tunnel.selectedProfile?.name ?? "No profile")
+                        Text(tunnel.selectedProfile?.name ?? String(localized: "No profile"))
                             .font(.system(size: 17, weight: .bold))
                         Text(statusTitle)
                             .font(.system(size: 13, weight: .semibold))
@@ -96,7 +98,11 @@ struct BufiTunnelView: View {
                 Button {
                     if isActive { tunnel.disconnect() } else { Task { await tunnel.connect() } }
                 } label: {
-                    Label(isActive ? "Disconnect" : "Connect", systemImage: isActive ? "stop.fill" : "bolt.fill")
+                    Label {
+                        Text(connectionActionTitle)
+                    } icon: {
+                        Image(systemName: isActive ? "stop.fill" : "bolt.fill")
+                    }
                         .font(.system(size: 16, weight: .bold))
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
@@ -126,7 +132,9 @@ struct BufiTunnelView: View {
                                     .foregroundStyle(tunnel.selectedProfileID == profile.id ? BuFiTheme.accent : .secondary)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(profile.name).font(.system(size: 15, weight: .semibold))
-                                    Text(profile.isFullTunnel ? "Full tunnel" : "Split tunnel")
+                                    Text(profile.isFullTunnel
+                                         ? String(localized: "Full tunnel")
+                                         : String(localized: "Split tunnel"))
                                         .font(.system(size: 12)).foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -149,7 +157,7 @@ struct BufiTunnelView: View {
     private var diagnosticsSection: some View {
         tunnelSection("Diagnostics") {
             VStack(spacing: 11) {
-                diagnosticRow("Latest handshake", value: tunnel.diagnostics.latestHandshake?.formatted(date: .abbreviated, time: .standard) ?? "Never")
+                diagnosticRow("Latest handshake", value: tunnel.diagnostics.latestHandshake?.formatted(date: .abbreviated, time: .standard) ?? String(localized: "Never"))
                 Divider()
                 diagnosticRow("Received", value: ByteCountFormatter.string(fromByteCount: Int64(clamping: tunnel.diagnostics.rxBytes), countStyle: .binary))
                 diagnosticRow("Transmitted", value: ByteCountFormatter.string(fromByteCount: Int64(clamping: tunnel.diagnostics.txBytes), countStyle: .binary))
@@ -175,7 +183,7 @@ struct BufiTunnelView: View {
     private var actionsSection: some View {
         HStack(spacing: 12) {
             Button { isCreating = true } label: {
-                Label("Create profile", systemImage: "plus")
+                Label("Add manually", systemImage: "plus")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
@@ -188,7 +196,7 @@ struct BufiTunnelView: View {
     }
 
     private func tunnelSection<Content: View>(
-        _ title: String,
+        _ title: LocalizedStringKey,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -197,7 +205,7 @@ struct BufiTunnelView: View {
         }
     }
 
-    private func diagnosticRow(_ name: String, value: String) -> some View {
+    private func diagnosticRow(_ name: LocalizedStringKey, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(name).foregroundStyle(.secondary)
             Spacer()
@@ -210,7 +218,7 @@ struct BufiTunnelView: View {
         [.connecting, .connected, .reasserting, .disconnecting].contains(tunnel.status)
     }
 
-    private var statusTitle: String {
+    private var statusTitle: LocalizedStringKey {
         switch tunnel.status {
         case .invalid: "Not configured"
         case .disconnected: "Disconnected"
@@ -233,6 +241,10 @@ struct BufiTunnelView: View {
 
     private var statusIcon: String {
         tunnel.status == .connected ? "lock.fill" : "network"
+    }
+
+    private var connectionActionTitle: LocalizedStringKey {
+        isActive ? "Disconnect" : "Connect"
     }
 
     private func importFile(_ result: Result<URL, Error>) async {
@@ -335,7 +347,7 @@ private struct TunnelProfileEditor: View {
                 }
             }
         }
-        .navigationTitle(isNew ? "New tunnel" : "Edit tunnel")
+        .navigationTitle(isNew ? String(localized: "New tunnel") : String(localized: "Edit tunnel"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -357,11 +369,13 @@ private struct TunnelProfileEditor: View {
     @ViewBuilder
     private func peerSection(index: Int) -> some View {
         let id = profile.peers[index].id
-        Section("Peer \(index + 1)") {
+        Section(String(format: String(localized: "Peer %d"), locale: .current, index + 1)) {
             TextField("Public key", text: $profile.peers[index].publicKey)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
             SecureField(
-                profile.peers[index].presharedKeyReference == nil ? "Preshared key (optional)" : "Replace saved preshared key",
+                profile.peers[index].presharedKeyReference == nil
+                    ? String(localized: "Preshared key (optional)")
+                    : String(localized: "Replace saved preshared key"),
                 text: Binding(get: { presharedKeys[id] ?? "" }, set: { presharedKeys[id] = $0 })
             )
             .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -388,7 +402,7 @@ private struct TunnelProfileEditor: View {
         }
     }
 
-    private func multilineField(_ title: String, values: Binding<[String]>) -> some View {
+    private func multilineField(_ title: LocalizedStringKey, values: Binding<[String]>) -> some View {
         TextField(title, text: Binding(
             get: { values.wrappedValue.joined(separator: ", ") },
             set: { values.wrappedValue = split($0) }

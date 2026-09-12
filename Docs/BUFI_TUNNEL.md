@@ -42,6 +42,13 @@ an interface private key or preshared key. Both targets use the explicit
 Keypairs are generated locally with CryptoKit X25519. The public key can be
 copied from the editor. The UI never reveals an existing private key.
 
+The profile actions are kept above diagnostics so they remain reachable above
+Bufi's persistent mini player. **Add manually** opens the full editor for client
+addresses, peer server IP/hostname and key, port, AllowedIPs, keepalive, MTU,
+and every DNS mode. Standard `.conf` import remains available separately. The
+tunnel screen, editor, validation messages, and entitlement guidance are
+localized in Korean.
+
 ## Network settings
 
 Client IPv4/IPv6 addresses become interface settings. Each peer's `AllowedIPs`
@@ -119,4 +126,3 @@ iPhones:
   ignores `wg-quick` shell hooks and platform-specific route commands.
 - Editing preserves saved private and preshared keys unless explicitly replaced;
   private-key export is intentionally absent.
-

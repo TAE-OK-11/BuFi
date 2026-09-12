@@ -43,6 +43,13 @@ final class TunnelManager: ObservableObject {
     func bootstrap() async {
         await perform {
             profiles = try await repository.all()
+            guard !profiles.isEmpty else {
+                managers = [:]
+                selectedProfileID = nil
+                diagnostics = TunnelDiagnostics()
+                refreshStatus()
+                return
+            }
             let loaded = try await NETunnelProviderManager.loadAllFromPreferences()
             managers = Dictionary(uniqueKeysWithValues: loaded.compactMap { manager in
                 guard let identifier = Self.profileID(from: manager) else { return nil }
@@ -88,7 +95,7 @@ final class TunnelManager: ObservableObject {
             refreshStatus()
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = userFacingMessage(for: error)
             return false
         }
     }
@@ -126,7 +133,7 @@ final class TunnelManager: ObservableObject {
             )
             return await save(profile: profile, privateKey: imported.privateKey, presharedKeys: secrets)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = userFacingMessage(for: error)
             return false
         }
     }
@@ -239,8 +246,17 @@ final class TunnelManager: ObservableObject {
         do {
             try await operation()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = userFacingMessage(for: error)
         }
+    }
+
+    private func userFacingMessage(for error: Error) -> String {
+        let underlying = error as NSError
+        if (underlying.domain == "NEVPNErrorDomain" && underlying.code == 5)
+            || underlying.localizedDescription.localizedCaseInsensitiveContains("permission denied") {
+            return String(localized: "VPN settings permission was denied. Install a build signed with the Packet Tunnel Network Extension entitlement, then try again.")
+        }
+        return error.localizedDescription
     }
 
     private static func profileID(from manager: NETunnelProviderManager) -> UUID? {
@@ -256,7 +272,7 @@ final class TunnelManager: ObservableObject {
 enum TunnelManagerError: LocalizedError {
     case profileDisabled
 
-    var errorDescription: String? { "Enable this tunnel profile before connecting." }
+    var errorDescription: String? { String(localized: "Enable this tunnel profile before connecting.") }
 }
 
 private extension NETunnelProviderSession {
