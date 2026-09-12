@@ -107,7 +107,26 @@ All DNS modes implement `TunnelDNSResolver`:
   deliberately isolated so a future persistent/multiplexed QUIC resolver or
   filtering layer can replace it without touching GotaTun.
 
-No DNS filtering or advertising blocking is present in v1.
+### Lightweight DNS protection
+
+Each profile can optionally enable Bufi DNS protection in Balanced or Family
+mode. The user's System/Plain/DoH/DoT/DoQ resolver configuration is retained as
+the base configuration and restored without loss when protection is disabled.
+While protection is active, Bufi selects AdGuard's documented public filtering
+resolver through `NEDNSOverHTTPSSettings`:
+
+- Balanced blocks ads and trackers.
+- Family additionally blocks adult content and requests Safe Search where the
+  upstream supports it.
+
+The architecture follows the resolver/filter separation used by the Apache-2.0
+AdGuard DnsLibs project, but deliberately does not embed that larger C++ engine
+or a GPL blocklist. There is no list download, parser, query database,
+background refresh timer, or per-query Swift/Rust FFI call. Filtering happens
+at the selected upstream and Bufi stores no DNS query history. This is the
+lowest-memory and lowest-wakeup implementation for the Packet Tunnel target;
+the protection preset remains separate from `TunnelDNSResolver`, so an on-device
+filter backend can replace it later without changing WireGuard.
 
 ## Optional OpenSubsonic endpoint routing
 
@@ -173,6 +192,7 @@ iPhones:
 - Linux kernel WireGuard handshake; IPv4 and IPv6 traffic
 - IPv4-only, IPv6-only, dual-stack, split, and full `AllowedIPs`
 - Plain IPv4/IPv6 DNS, DoH, DoT, and DoQ resolvers
+- Balanced and Family DNS ad-blocking presets, including resolver restoration
 - connect/disconnect and profile enable/disable
 - OpenSubsonic primary/tunnel endpoint switching without cache-scope changes
 - Wi-Fi → cellular, cellular → Wi-Fi, temporary offline, and endpoint DNS change

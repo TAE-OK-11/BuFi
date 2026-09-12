@@ -12,6 +12,7 @@ struct BufiTunnelView: View {
     @State private var isImporting = false
     @State private var deleteCandidate: TunnelProfile?
     @State private var dnsProfile: TunnelProfile?
+    @State private var protectionProfile: TunnelProfile?
 
     var body: some View {
         ScrollView {
@@ -38,6 +39,9 @@ struct BufiTunnelView: View {
         }
         .sheet(item: $dnsProfile) { profile in
             NavigationStack { TunnelDNSSettingsEditor(profile: profile) }
+        }
+        .sheet(item: $protectionProfile) { profile in
+            NavigationStack { TunnelAdBlockingEditor(profile: profile) }
         }
         .fileImporter(
             isPresented: $isImporting,
@@ -230,6 +234,12 @@ struct BufiTunnelView: View {
                 diagnosticRow("Network", value: tunnel.diagnostics.currentNetworkPath)
                 diagnosticRow("Reconnects", value: "\(tunnel.diagnostics.reconnectCount)")
                 diagnosticRow("DNS", value: tunnel.diagnostics.dnsMode.title)
+                diagnosticRow(
+                    "Ad blocking",
+                    value: tunnel.diagnostics.dnsProtectionEnabled
+                        ? (tunnel.diagnostics.dnsProtectionPreset?.title ?? String(localized: "On"))
+                        : String(localized: "Off")
+                )
                 if let endpoint = tunnel.diagnostics.dnsResolverEndpoint {
                     diagnosticRow("DNS endpoint", value: endpoint)
                 }
@@ -258,6 +268,12 @@ struct BufiTunnelView: View {
             .buttonStyle(.bordered)
             Button { dnsProfile = tunnel.selectedProfile } label: {
                 Label("DNS settings", systemImage: "network.badge.shield.half.filled")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(tunnel.selectedProfile == nil)
+            Button { protectionProfile = tunnel.selectedProfile } label: {
+                Label("Ad blocking", systemImage: "shield.lefthalf.filled")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -742,5 +758,119 @@ private struct TunnelDNSSettingsEditor: View {
         value.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+}
+
+private struct TunnelAdBlockingEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var tunnel = TunnelManager.shared
+    @State private var profile: TunnelProfile
+    @State private var protection: TunnelDNSProtectionConfiguration
+    @State private var localError: String?
+
+    init(profile: TunnelProfile) {
+        _profile = State(initialValue: profile)
+        _protection = State(initialValue: profile.dns.effectiveProtection)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 14) {
+                    Circle()
+                        .fill(BuFiTheme.accent.opacity(0.14))
+                        .frame(width: 48, height: 48)
+                        .overlay {
+                            Image(systemName: "shield.lefthalf.filled")
+                                .font(.system(size: 19, weight: .bold))
+                                .foregroundStyle(BuFiTheme.accent)
+                        }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("DNS ad blocking")
+                            .font(.headline)
+                        Text(
+                            protection.isEnabled
+                                ? String(localized: "Protection is active")
+                                : String(localized: "Protection is off")
+                        )
+                            .font(.subheadline)
+                            .foregroundStyle(protection.isEnabled ? Color.green : Color.secondary)
+                    }
+                }
+                Toggle("Block ads and trackers", isOn: $protection.isEnabled)
+                    .tint(BuFiTheme.accent)
+            }
+
+            if protection.isEnabled {
+                Section("Protection level") {
+                    Picker("Mode", selection: $protection.preset) {
+                        ForEach(TunnelDNSProtectionPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(protection.preset.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Lightweight design") {
+                    Label("Uses Apple native DNS-over-HTTPS", systemImage: "lock.shield")
+                    Label("No local blocklist or background update timer", systemImage: "leaf")
+                    Label("Bufi does not store DNS query history", systemImage: "eye.slash")
+                    LabeledContent("Resolver", value: protection.preset.resolver.resolverEndpoint)
+                        .font(.caption)
+                }
+            }
+
+            Section {
+                LabeledContent("Saved custom DNS", value: profile.dns.mode.title)
+            } footer: {
+                Text("Your current DNS settings are preserved and automatically restored when ad blocking is turned off. Reconnect an active tunnel to apply changes.")
+            }
+
+            Section {
+                Link(
+                    "Open-source DNS engine reference",
+                    destination: URL(string: "https://github.com/AdguardTeam/DnsLibs")!
+                )
+                Link(
+                    "Public resolver documentation",
+                    destination: URL(string: "https://adguard-dns.io/en/public-dns.html")!
+                )
+            } footer: {
+                Text("Bufi uses the documented public resolver through iOS APIs. It does not embed the larger AdGuard C++ engine.")
+            }
+        }
+        .navigationTitle("Ad blocking")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }
+                    .disabled(tunnel.isBusy)
+            }
+        }
+        .alert("Invalid profile", isPresented: Binding(
+            get: { localError != nil }, set: { if !$0 { localError = nil } }
+        )) {
+            Button("OK") { localError = nil }
+        } message: {
+            Text(localError ?? String(localized: "Unknown error"))
+        }
+    }
+
+    private func save() async {
+        profile.dns.protection = protection
+        do {
+            try TunnelProfileValidator.validateDNS(profile.dns)
+            if await tunnel.save(profile: profile, privateKey: nil, presharedKeys: [:]) {
+                dismiss()
+            }
+        } catch {
+            localError = error.localizedDescription
+        }
     }
 }

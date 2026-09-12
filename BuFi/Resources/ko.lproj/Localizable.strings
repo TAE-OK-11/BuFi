@@ -476,5 +476,27 @@
 "Bufi Tunnel 서버 주소로 전환했습니다." = "Bufi Tunnel 서버 주소로 전환했습니다.";
 "기본 서버 주소로 전환했습니다." = "기본 서버 주소로 전환했습니다.";
 "서버 주소를 전환하지 못했습니다: %@" = "서버 주소를 전환하지 못했습니다: %@";
+"Ad blocking" = "광고 차단";
+"On" = "켬";
+"Off" = "끔";
+"Balanced" = "균형 보호";
+"Family protection" = "가족 보호";
+"Blocks ads and trackers with low breakage risk." = "사이트 오류 가능성을 낮추면서 광고와 추적기를 차단합니다.";
+"Also blocks adult content and enables Safe Search where supported." = "성인 콘텐츠도 차단하고 지원되는 서비스에서 안전 검색을 켭니다.";
+"DNS ad blocking" = "DNS 광고 차단";
+"Protection is active" = "보호 사용 중";
+"Protection is off" = "보호 꺼짐";
+"Block ads and trackers" = "광고 및 추적기 차단";
+"Protection level" = "보호 수준";
+"Mode" = "모드";
+"Lightweight design" = "가벼운 설계";
+"Uses Apple native DNS-over-HTTPS" = "Apple 기본 DNS-over-HTTPS 사용";
+"No local blocklist or background update timer" = "로컬 차단 목록과 백그라운드 갱신 타이머 없음";
+"Bufi does not store DNS query history" = "Bufi는 DNS 질의 기록을 저장하지 않음";
+"Saved custom DNS" = "저장된 사용자 DNS";
+"Your current DNS settings are preserved and automatically restored when ad blocking is turned off. Reconnect an active tunnel to apply changes." = "현재 DNS 설정은 그대로 보존되며 광고 차단을 끄면 자동으로 복원됩니다. 연결 중인 터널에는 재연결 후 적용됩니다.";
+"Open-source DNS engine reference" = "오픈소스 DNS 엔진 참고 자료";
+"Public resolver documentation" = "공개 리졸버 문서";
+"Bufi uses the documented public resolver through iOS APIs. It does not embed the larger AdGuard C++ engine." = "Bufi는 문서화된 공개 리졸버를 iOS API로 사용하며, 용량이 큰 AdGuard C++ 엔진은 포함하지 않습니다.";
 
 "5곡" = "5곡";

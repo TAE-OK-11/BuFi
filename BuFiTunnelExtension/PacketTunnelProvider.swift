@@ -33,8 +33,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             diagnostics = TunnelDiagnostics(
                 state: .connecting,
                 currentNetworkPath: "Starting",
-                dnsMode: profile.dns.mode,
-                dnsResolverEndpoint: Self.dnsEndpoint(profile.dns)
+                dnsMode: profile.dns.effectiveResolver.mode,
+                dnsResolverEndpoint: Self.dnsEndpoint(profile.dns),
+                dnsProtectionEnabled: profile.dns.effectiveProtection.isEnabled,
+                dnsProtectionPreset: profile.dns.effectiveProtection.isEnabled
+                    ? profile.dns.effectiveProtection.preset
+                    : nil
             )
         }
 
@@ -255,6 +259,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     }
 
     private static func dnsEndpoint(_ dns: TunnelDNSConfiguration) -> String? {
+        let dns = dns.effectiveResolver
         switch dns.mode {
         case .system: nil
         case .plain: dns.servers.joined(separator: ", ")

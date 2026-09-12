@@ -54,6 +54,55 @@ final class TunnelConfigurationTests: XCTestCase {
         )
     }
 
+    func testBalancedAdBlockingUsesNativeDoHResolverConfiguration() throws {
+        var dns = TunnelDNSConfiguration.system
+        dns.protection = TunnelDNSProtectionConfiguration(
+            isEnabled: true,
+            preset: .balanced
+        )
+
+        let effective = dns.effectiveResolver
+        XCTAssertEqual(effective.mode, .https)
+        XCTAssertEqual(effective.resolverEndpoint, "https://dns.adguard-dns.com/dns-query")
+        XCTAssertEqual(effective.serverName, "dns.adguard-dns.com")
+        XCTAssertTrue(effective.servers.contains("94.140.14.14"))
+        XCTAssertTrue(effective.servers.contains("2a10:50c0::ad1:ff"))
+        XCTAssertNoThrow(try TunnelProfileValidator.validateDNS(dns))
+    }
+
+    func testDisablingAdBlockingRestoresCustomResolver() {
+        var dns = TunnelDNSConfiguration(
+            mode: .tls,
+            servers: ["1.1.1.1"],
+            resolverEndpoint: "one.one.one.one",
+            serverName: "one.one.one.one",
+            port: 853,
+            protection: TunnelDNSProtectionConfiguration(isEnabled: true, preset: .family)
+        )
+        XCTAssertEqual(dns.effectiveResolver.resolverEndpoint, "https://family.adguard-dns.com/dns-query")
+
+        dns.protection?.isEnabled = false
+        XCTAssertEqual(dns.effectiveResolver.mode, .tls)
+        XCTAssertEqual(dns.effectiveResolver.resolverEndpoint, "one.one.one.one")
+    }
+
+    func testLegacyDNSConfigurationDefaultsToProtectionDisabled() throws {
+        let data = try XCTUnwrap(
+            """
+            {
+              "mode": "plain",
+              "servers": ["1.1.1.1"],
+              "resolverEndpoint": "",
+              "serverName": "",
+              "port": 53
+            }
+            """.data(using: .utf8)
+        )
+        let dns = try JSONDecoder().decode(TunnelDNSConfiguration.self, from: data)
+        XCTAssertFalse(dns.effectiveProtection.isEnabled)
+        XCTAssertEqual(dns.effectiveResolver, dns)
+    }
+
     func testGeneratedKeyPairHasWireGuardSizedKeys() throws {
         let pair = TunnelKeyPair.generate()
         XCTAssertEqual(pair.privateKey.count, 32)

@@ -22,6 +22,61 @@ enum TunnelDNSMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum TunnelDNSProtectionPreset: String, Codable, CaseIterable, Identifiable, Sendable {
+    case balanced
+    case family
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .balanced: String(localized: "Balanced")
+        case .family: String(localized: "Family protection")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .balanced: String(localized: "Blocks ads and trackers with low breakage risk.")
+        case .family: String(localized: "Also blocks adult content and enables Safe Search where supported.")
+        }
+    }
+
+    var resolver: TunnelDNSConfiguration {
+        switch self {
+        case .balanced:
+            TunnelDNSConfiguration(
+                mode: .https,
+                servers: [
+                    "94.140.14.14", "94.140.15.15",
+                    "2a10:50c0::ad1:ff", "2a10:50c0::ad2:ff"
+                ],
+                resolverEndpoint: "https://dns.adguard-dns.com/dns-query",
+                serverName: "dns.adguard-dns.com",
+                port: 443
+            )
+        case .family:
+            TunnelDNSConfiguration(
+                mode: .https,
+                servers: [
+                    "94.140.14.15", "94.140.15.16",
+                    "2a10:50c0::bad1:ff", "2a10:50c0::bad2:ff"
+                ],
+                resolverEndpoint: "https://family.adguard-dns.com/dns-query",
+                serverName: "family.adguard-dns.com",
+                port: 443
+            )
+        }
+    }
+}
+
+struct TunnelDNSProtectionConfiguration: Codable, Equatable, Sendable {
+    var isEnabled = false
+    var preset: TunnelDNSProtectionPreset = .balanced
+
+    static let disabled = TunnelDNSProtectionConfiguration()
+}
+
 enum TunnelSecretScope: String, Codable, Equatable, Sendable {
     /// Available only when both signed targets possess the same explicit
     /// Keychain access-group entitlement.
@@ -40,8 +95,20 @@ struct TunnelDNSConfiguration: Codable, Equatable, Sendable {
     var resolverEndpoint: String = ""
     var serverName: String = ""
     var port: UInt16 = 53
+    /// Optional keeps profiles created before DNS protection source-compatible.
+    /// The user's resolver remains untouched and is restored when protection is disabled.
+    var protection: TunnelDNSProtectionConfiguration?
 
     static let system = TunnelDNSConfiguration()
+
+    var effectiveProtection: TunnelDNSProtectionConfiguration {
+        protection ?? .disabled
+    }
+
+    var effectiveResolver: TunnelDNSConfiguration {
+        guard effectiveProtection.isEnabled else { return self }
+        return effectiveProtection.preset.resolver
+    }
 }
 
 struct TunnelPeer: Codable, Equatable, Identifiable, Sendable {
@@ -194,6 +261,13 @@ enum TunnelProfileValidator {
     }
 
     static func validateDNS(_ dns: TunnelDNSConfiguration) throws {
+        try validateResolver(dns)
+        if dns.effectiveProtection.isEnabled {
+            try validateResolver(dns.effectiveResolver)
+        }
+    }
+
+    private static func validateResolver(_ dns: TunnelDNSConfiguration) throws {
         for server in dns.servers where IPv4Address(server) == nil && IPv6Address(server) == nil {
             throw TunnelValidationError.invalidDNSServer(server)
         }
@@ -257,6 +331,8 @@ struct TunnelDiagnostics: Codable, Equatable, Sendable {
     var currentNetworkPath = "Unknown"
     var dnsMode: TunnelDNSMode = .system
     var dnsResolverEndpoint: String?
+    var dnsProtectionEnabled = false
+    var dnsProtectionPreset: TunnelDNSProtectionPreset?
     var latestError: String?
     var updatedAt = Date()
 }

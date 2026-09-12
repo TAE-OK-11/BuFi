@@ -11,6 +11,7 @@ protocol TunnelDNSResolver: AnyObject, Sendable {
 
 enum TunnelDNSResolverFactory {
     static func make(_ configuration: TunnelDNSConfiguration) throws -> TunnelDNSResolver {
+        let configuration = configuration.effectiveResolver
         switch configuration.mode {
         case .system:
             return NativeDNSResolver(settings: nil)
