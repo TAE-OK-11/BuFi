@@ -151,7 +151,7 @@ struct BufiTunnelView: View {
 
                 if tunnel.selectedProfileRequiresSupportedSigning {
                     Label(
-                        "The profile and private key are saved securely in the app, but the shared Tunnel Keychain entitlement is unavailable. Packet Tunnel will not be started.",
+                        "The profile and private key are saved securely in the app, but Bufi App Group Keychain access is unavailable. Packet Tunnel will not be started.",
                         systemImage: "exclamationmark.shield.fill"
                     )
                     .font(.system(size: 12.5, weight: .semibold))

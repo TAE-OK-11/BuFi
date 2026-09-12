@@ -129,8 +129,6 @@ targets:
           - packet-tunnel-provider
         com.apple.security.application-groups:
           - group.cloud.tae00217.BuFi
-        keychain-access-groups:
-          - "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cloud.tae00217.BuFi
@@ -173,8 +171,6 @@ targets:
           - packet-tunnel-provider
         com.apple.security.application-groups:
           - group.cloud.tae00217.BuFi
-        keychain-access-groups:
-          - "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
     dependencies:
       - sdk: NetworkExtension.framework
       - sdk: Network.framework

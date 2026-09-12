@@ -63,6 +63,13 @@ final class TunnelConfigurationTests: XCTestCase {
 
     func testSharedKeychainGroupUsesActualSignerPrefix() {
         XCTAssertEqual(
+            TunnelConstants.keychainAccessGroupCandidates(
+                defaultAccessGroup: "TEAM123.cloud.tae00217.BuFi",
+                bundleIdentifier: "cloud.tae00217.BuFi"
+            ),
+            ["group.cloud.tae00217.BuFi", "TEAM123.cloud.tae00217.BuFi.tunnel"]
+        )
+        XCTAssertEqual(
             TunnelConstants.sharedKeychainAccessGroup(
                 defaultAccessGroup: "TEAM123.cloud.tae00217.BuFi",
                 bundleIdentifier: "cloud.tae00217.BuFi"

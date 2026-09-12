@@ -52,7 +52,8 @@ open BuFi.xcodeproj
 Select your development team in Xcode to install the app on a physical device.
 The App ID and Tunnel Extension App ID must both have Network Extensions and
 App Groups enabled, and the provisioning profiles must include
-`group.cloud.tae00217.BuFi` plus the shared Tunnel Keychain group. See
+`group.cloud.tae00217.BuFi`. That App Group is also the shared Tunnel Keychain
+scope, matching the official WireGuard Apple architecture. See
 `Docs/BUFI_TUNNEL.md` for architecture and device validation.
 
 ## Unsigned IPA

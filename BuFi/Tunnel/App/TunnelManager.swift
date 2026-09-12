@@ -51,6 +51,10 @@ final class TunnelManager: ObservableObject {
         hasBootstrapped = true
         await perform {
             profiles = try await repository.all()
+            if keychain.capability().canUseSharedAccessGroup {
+                await migrateAppLocalSecretsIfPossible()
+                profiles = try await repository.all()
+            }
             guard !profiles.isEmpty else {
                 managers = [:]
                 selectedProfileID = nil
@@ -65,7 +69,7 @@ final class TunnelManager: ObservableObject {
                   keychain.capability().canUseSharedAccessGroup else {
                 managers = [:]
                 diagnostics = TunnelDiagnostics()
-                diagnostics.latestError = String(localized: "This installed build does not have the shared Tunnel Keychain entitlement. The profile remains secure, but the extension cannot read its key.")
+                diagnostics.latestError = String(localized: "This installed build cannot use the Bufi App Group for Tunnel Keychain access. The profile remains secure, but the extension cannot read its key.")
                 refreshStatus()
                 return
             }
@@ -121,7 +125,7 @@ final class TunnelManager: ObservableObject {
                 managers[profile.id]?.connection.stopVPNTunnel()
                 managers.removeValue(forKey: profile.id)
                 diagnostics = TunnelDiagnostics()
-                diagnostics.latestError = String(localized: "This profile is saved securely in the app Keychain. The shared Tunnel Keychain entitlement is unavailable, so Packet Tunnel was not started.")
+                diagnostics.latestError = String(localized: "This profile is saved securely in the app Keychain. Bufi App Group Keychain access is unavailable, so Packet Tunnel was not started.")
                 try? await repository.saveDiagnostics(diagnostics)
                 refreshStatus()
                 return true
@@ -275,6 +279,55 @@ final class TunnelManager: ObservableObject {
         }
     }
 
+    private func migrateAppLocalSecretsIfPossible() async {
+        for storedProfile in profiles
+            where storedProfile.effectiveSecretScope == .mainAppOnly {
+            do {
+                let privateKey = try keychain.load(
+                    reference: storedProfile.privateKeyReference,
+                    scope: .mainAppOnly
+                )
+                var presharedKeys: [(reference: String, secret: Data)] = []
+                for peer in storedProfile.peers {
+                    guard let reference = peer.presharedKeyReference else { continue }
+                    presharedKeys.append((
+                        reference,
+                        try keychain.load(reference: reference, scope: .mainAppOnly)
+                    ))
+                }
+
+                try keychain.save(
+                    privateKey,
+                    reference: storedProfile.privateKeyReference,
+                    scope: .sharedAccessGroup
+                )
+                for item in presharedKeys {
+                    try keychain.save(
+                        item.secret,
+                        reference: item.reference,
+                        scope: .sharedAccessGroup
+                    )
+                }
+
+                var migrated = storedProfile
+                migrated.secretScope = .sharedAccessGroup
+                migrated.updatedAt = Date()
+                try await repository.save(migrated)
+                try? keychain.delete(
+                    reference: storedProfile.privateKeyReference,
+                    scope: .mainAppOnly
+                )
+                for item in presharedKeys {
+                    try? keychain.delete(reference: item.reference, scope: .mainAppOnly)
+                }
+            } catch {
+                // Keep the original scope and item intact. A partial shared
+                // copy is harmless and can be overwritten on a later retry.
+                continue
+            }
+        }
+    }
+
     private func refreshStatus() {
         status = selectedManager?.connection.status ?? .invalid
         metricsTask?.cancel()
@@ -334,7 +387,7 @@ enum TunnelManagerError: LocalizedError {
         case .profileDisabled:
             String(localized: "Enable this tunnel profile before connecting.")
         case .sharedKeychainEntitlementRequired:
-            String(localized: "This build is missing the shared Tunnel Keychain entitlement. Your key is still secure in the app Keychain, but this profile cannot connect until Bufi is correctly signed.")
+            String(localized: "This build is missing usable Bufi App Group access. Your key is still secure in the app Keychain, but this profile cannot connect until Bufi is correctly signed.")
         }
     }
 }

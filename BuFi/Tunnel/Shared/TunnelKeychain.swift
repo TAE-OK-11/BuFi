@@ -11,7 +11,7 @@ enum TunnelKeychainError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .sharedAccessGroupUnavailable:
-            String(localized: "This build is not signed with the shared Tunnel Keychain entitlement. The profile is stored securely, but Packet Tunnel access is unavailable.")
+            String(localized: "This build cannot use the Bufi App Group for Tunnel Keychain access. The profile is stored securely, but Packet Tunnel access is unavailable.")
         case .missingEntitlement:
             String(localized: "The signed app is missing a required Keychain entitlement.")
         case .invalidSecret:
@@ -33,6 +33,7 @@ enum TunnelKeychainError: LocalizedError, Equatable, Sendable {
 struct TunnelKeychainCapability: Equatable, Sendable {
     let defaultAccessGroup: String?
     let sharedAccessGroup: String?
+    let usableSharedAccessGroups: [String]
     let canUseSharedAccessGroup: Bool
 }
 
@@ -55,16 +56,16 @@ struct TunnelKeychain: Sendable {
 
         let defaultGroup = discoverDefaultAccessGroup()
         let bundleIdentifier = Bundle.main.bundleIdentifier ?? ""
-        let sharedGroup = defaultGroup.flatMap {
-            TunnelConstants.sharedKeychainAccessGroup(
-                defaultAccessGroup: $0,
-                bundleIdentifier: bundleIdentifier
-            )
-        }
+        let candidates = TunnelConstants.keychainAccessGroupCandidates(
+            defaultAccessGroup: defaultGroup,
+            bundleIdentifier: bundleIdentifier
+        )
+        let usableGroups = candidates.filter(canUseAccessGroup)
         let result = TunnelKeychainCapability(
             defaultAccessGroup: defaultGroup,
-            sharedAccessGroup: sharedGroup,
-            canUseSharedAccessGroup: sharedGroup.map(canUseAccessGroup) ?? false
+            sharedAccessGroup: usableGroups.first,
+            usableSharedAccessGroups: usableGroups,
+            canUseSharedAccessGroup: !usableGroups.isEmpty
         )
         return Self.capabilityCache.withLock { cached in
             if let cached { return cached }
@@ -95,22 +96,30 @@ struct TunnelKeychain: Sendable {
     }
 
     func load(reference: String, scope: TunnelSecretScope) throws -> Data {
-        var query = try baseQuery(reference: reference, scope: scope)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess else { throw TunnelKeychainError.from(status: status) }
-        guard let data = result as? Data, data.count == 32 else {
-            throw TunnelKeychainError.invalidSecret
+        let queries = try baseQueries(reference: reference, scope: scope)
+        for var query in queries {
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            if status == errSecItemNotFound { continue }
+            guard status == errSecSuccess else {
+                throw TunnelKeychainError.from(status: status)
+            }
+            guard let data = result as? Data, data.count == 32 else {
+                throw TunnelKeychainError.invalidSecret
+            }
+            return data
         }
-        return data
+        throw TunnelKeychainError.keychain(errSecItemNotFound)
     }
 
     func delete(reference: String, scope: TunnelSecretScope) throws {
-        let status = SecItemDelete(try baseQuery(reference: reference, scope: scope) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw TunnelKeychainError.from(status: status)
+        for query in try baseQueries(reference: reference, scope: scope) {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw TunnelKeychainError.from(status: status)
+            }
         }
     }
 
@@ -129,6 +138,27 @@ struct TunnelKeychain: Sendable {
             query[kSecAttrAccessGroup as String] = group
         }
         return query
+    }
+
+    private func baseQueries(
+        reference: String,
+        scope: TunnelSecretScope
+    ) throws -> [[String: Any]] {
+        guard scope == .sharedAccessGroup else {
+            return [try baseQuery(reference: reference, scope: scope)]
+        }
+        let capability = capability()
+        guard capability.canUseSharedAccessGroup else {
+            throw TunnelKeychainError.sharedAccessGroupUnavailable
+        }
+        return capability.usableSharedAccessGroups.map { group in
+            [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: reference,
+                kSecAttrAccessGroup as String: group
+            ]
+        }
     }
 
     private func discoverDefaultAccessGroup() -> String? {

@@ -97,10 +97,10 @@ jobs:
           ! /usr/libexec/PlistBuddy -c 'Print :BuFiSharedKeychainAccessGroup' BuFiTunnelExtension/Info.plist 2>/dev/null
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.networking.networkextension:0' BuFi/Resources/BuFi.entitlements)" = "packet-tunnel-provider"
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' BuFi/Resources/BuFi.entitlements)" = "group.cloud.tae00217.BuFi"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' BuFi/Resources/BuFi.entitlements)" = '$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel'
+          ! /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups' BuFi/Resources/BuFi.entitlements 2>/dev/null
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.networking.networkextension:0' BuFiTunnelExtension/BuFiTunnelExtension.entitlements)" = "packet-tunnel-provider"
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' BuFiTunnelExtension/BuFiTunnelExtension.entitlements)" = "group.cloud.tae00217.BuFi"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :keychain-access-groups:0' BuFiTunnelExtension/BuFiTunnelExtension.entitlements)" = '$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel'
+          ! /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups' BuFiTunnelExtension/BuFiTunnelExtension.entitlements 2>/dev/null
 
       - name: Verify Swift 6.4 unified configuration
         run: Scripts/verify-swift6-language-mode.sh

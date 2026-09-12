@@ -441,6 +441,11 @@
 "The signed app is missing a required Keychain entitlement." = "서명된 앱에 필요한 Keychain 권한이 없습니다.";
 "The WireGuard key is not exactly 32 bytes." = "WireGuard 키는 정확히 32바이트여야 합니다.";
 "Tunnel Keychain error (%d)." = "Tunnel Keychain 오류 (%d).";
+"This build cannot use the Bufi App Group for Tunnel Keychain access. The profile is stored securely, but Packet Tunnel access is unavailable." = "이 빌드는 Bufi App Group을 Tunnel Keychain 공유에 사용할 수 없습니다. 프로필은 안전하게 저장되지만 Packet Tunnel에서는 접근할 수 없습니다.";
+"This installed build cannot use the Bufi App Group for Tunnel Keychain access. The profile remains secure, but the extension cannot read its key." = "설치된 빌드는 Bufi App Group을 Tunnel Keychain 공유에 사용할 수 없습니다. 프로필은 안전하지만 확장 프로그램에서 키를 읽을 수 없습니다.";
+"This profile is saved securely in the app Keychain. Bufi App Group Keychain access is unavailable, so Packet Tunnel was not started." = "이 프로필은 앱 Keychain에 안전하게 저장되었습니다. Bufi App Group Keychain 공유가 불가능해 Packet Tunnel을 시작하지 않았습니다.";
+"This build is missing usable Bufi App Group access. Your key is still secure in the app Keychain, but this profile cannot connect until Bufi is correctly signed." = "이 빌드에는 사용 가능한 Bufi App Group 권한이 없습니다. 키는 앱 Keychain에 안전하게 보관되지만 Bufi가 올바르게 서명되기 전에는 연결할 수 없습니다.";
+"The profile and private key are saved securely in the app, but Bufi App Group Keychain access is unavailable. Packet Tunnel will not be started." = "프로필과 비공개 키는 앱에 안전하게 저장되었지만 Bufi App Group Keychain 공유가 불가능합니다. Packet Tunnel은 시작되지 않습니다.";
 "OpenSubsonic server" = "OpenSubsonic 서버";
 "Connected server" = "연결된 서버";
 "Using tunnel server address" = "터널 전용 서버 주소 사용 중";

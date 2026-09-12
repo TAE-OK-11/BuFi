@@ -7,6 +7,22 @@ enum TunnelConstants {
     static let profileStoreKey = "bufi-tunnel-profiles-v1"
     static let diagnosticsKey = "bufi-tunnel-diagnostics-v1"
 
+    static func keychainAccessGroupCandidates(
+        defaultAccessGroup: String?,
+        bundleIdentifier: String
+    ) -> [String] {
+        var groups = [appGroup]
+        if let defaultAccessGroup,
+           let legacy = sharedKeychainAccessGroup(
+               defaultAccessGroup: defaultAccessGroup,
+               bundleIdentifier: bundleIdentifier
+           ),
+           !groups.contains(legacy) {
+            groups.append(legacy)
+        }
+        return groups
+    }
+
     /// Derives the shared group from the access group attached by the *actual*
     /// signer. This deliberately does not trust an Info.plist build-setting
     /// substitution, which is stale when an unsigned IPA is later re-signed.

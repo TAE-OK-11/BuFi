@@ -10,10 +10,5 @@
     <array>
         <string>group.cloud.tae00217.BuFi</string>
     </array>
-    <key>keychain-access-groups</key>
-    <array>
-        <string>$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel</string>
-    </array>
 </dict>
 </plist>
-

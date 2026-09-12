@@ -38,20 +38,20 @@ endpoints, MTU, DNS choices, opaque Keychain references, and a secret-ownership
 scope. It never contains an interface private key or preshared key. Secrets use
 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and are not synchronizable.
 
-Properly provisioned app and extension targets declare the same
-`$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel` Keychain access group. The
-runtime does not read that build substitution from Info.plist. Instead, each
-signed process creates a harmless target-local probe, reads the default access
-group assigned by its actual signer, derives the candidate shared group, and
-asks Security whether that exact group is available. An explicit
-`kSecAttrAccessGroup` is added to secret queries only after this check succeeds.
+Following WireGuard Apple's iOS design, both targets use their existing
+`group.cloud.tae00217.BuFi` application-group entitlement as the Keychain
+access group. A separate `keychain-access-groups` entitlement is not required
+or requested. Each process asks Security whether the App Group is actually
+usable before adding it as `kSecAttrAccessGroup`. The previous prefixed custom
+group remains only as a runtime read fallback for migrating keys from an older
+properly provisioned Bufi build.
 
 If a re-signed build lacks the shared group, newly generated keys are stored in
 the main app's normal default Keychain group with no explicit access-group
 attribute. Profile creation therefore remains secure and does not fail with
 `errSecMissingEntitlement`, while the profile is marked `mainAppOnly`. Bufi does
 not create or start an `NETunnelProviderManager` for that profile, and the UI
-clearly reports that valid shared-Keychain and Packet Tunnel provisioning is
+clearly reports that valid App Group and Packet Tunnel provisioning is
 required. The extension refuses app-local secret ownership, so it can never
 pretend to establish a tunnel without access to its private key.
 
@@ -69,7 +69,7 @@ Extension-only key generation was evaluated but is not used in v1. Before a
 Packet Tunnel configuration exists, the app has no supported direct channel to
 launch that extension solely to provision a key. Building a temporary VPN
 configuration just for key generation would add prompts and failure states.
-The capability-checked shared group is therefore retained for properly signed
+The capability-checked App Group is therefore retained for properly signed
 builds, with a narrow app-local fallback that is never exposed to the extension.
 
 The profile actions are kept above diagnostics so they remain reachable above
