@@ -161,6 +161,13 @@ targets:
           NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).PacketTunnelProvider"
     entitlements:
       path: BuFiTunnelExtension/BuFiTunnelExtension.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.cloud.tae00217.BuFi
+        keychain-access-groups:
+          - "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
     dependencies:
       - sdk: NetworkExtension.framework
       - sdk: Network.framework
