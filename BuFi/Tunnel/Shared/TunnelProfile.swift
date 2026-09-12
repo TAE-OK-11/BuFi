@@ -221,3 +221,6 @@ struct TunnelDiagnostics: Codable, Equatable, Sendable {
     var updatedAt = Date()
 }
 
+enum TunnelProviderMessage: String, Codable, Sendable {
+    case diagnostics
+}

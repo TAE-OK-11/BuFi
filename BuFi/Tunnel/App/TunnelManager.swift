@@ -259,10 +259,6 @@ enum TunnelManagerError: LocalizedError {
     var errorDescription: String? { "Enable this tunnel profile before connecting." }
 }
 
-enum TunnelProviderMessage: String, Codable, Sendable {
-    case diagnostics
-}
-
 private extension NETunnelProviderSession {
     func sendProviderMessage(_ data: Data) async throws -> Data? {
         try await withCheckedThrowingContinuation { continuation in

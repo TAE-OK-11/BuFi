@@ -39,11 +39,11 @@ enum EndpointResolver {
                 0,
                 NI_NUMERICHOST
             ) == 0 {
-                return String(cString: output)
+                let bytes = output.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                return String(decoding: bytes, as: UTF8.self)
             }
             current = info.ai_next
         }
         throw EndpointResolverError.resolutionFailed(host)
     }
 }
-

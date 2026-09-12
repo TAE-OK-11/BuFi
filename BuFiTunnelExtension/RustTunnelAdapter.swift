@@ -69,9 +69,10 @@ final class RustTunnelAdapter: @unchecked Sendable {
             return rustStartTunnel(fd, bytes, data.count)
         }
         guard let started else { throw RustTunnelError.engine(Self.takeLastError()) }
+        let startedBits = UInt(bitPattern: started)
         let previous = handle.withLock { value -> UInt in
             let previous = value
-            value = UInt(bitPattern: started)
+            value = startedBits
             return previous
         }
         if previous != 0 { rustStopTunnel(OpaquePointer(bitPattern: previous)) }
@@ -114,7 +115,7 @@ final class RustTunnelAdapter: @unchecked Sendable {
         }
     }
 
-    private func lifecycle(_ operation: (OpaquePointer?) -> Int32) throws {
+    private func lifecycle(_ operation: @Sendable (OpaquePointer?) -> Int32) throws {
         try handle.withLock { value in
             guard value != 0, let pointer = OpaquePointer(bitPattern: value) else {
                 throw RustTunnelError.engine("GotaTun is not running.")

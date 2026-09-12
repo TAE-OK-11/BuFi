@@ -65,9 +65,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             startPathMonitoring()
         } catch {
             resolver.stop()
+            let message = error.localizedDescription
             updateDiagnostics { diagnostics in
                 diagnostics.state = .error
-                diagnostics.latestError = error.localizedDescription
+                diagnostics.latestError = message
             }
             throw error
         }
@@ -96,9 +97,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             try state.withLock { runtime in try runtime.adapter?.suspend() }
             updateDiagnostics { diagnostics in diagnostics.state = .waitingForNetwork }
         } catch {
+            let message = error.localizedDescription
             updateDiagnostics { diagnostics in
                 diagnostics.state = .error
-                diagnostics.latestError = error.localizedDescription
+                diagnostics.latestError = message
             }
         }
         completionHandler()
@@ -189,9 +191,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 runtime.generation &+= 1
             }
         } catch {
+            let message = error.localizedDescription
             updateDiagnostics { diagnostics in
                 diagnostics.state = .error
-                diagnostics.latestError = error.localizedDescription
+                diagnostics.latestError = message
             }
         }
         persistDiagnostics()
@@ -212,11 +215,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 diagnostics.currentEndpoint = statistics.currentEndpoint
             }
         } catch {
-            updateDiagnostics { diagnostics in diagnostics.latestError = error.localizedDescription }
+            let message = error.localizedDescription
+            updateDiagnostics { diagnostics in diagnostics.latestError = message }
         }
     }
 
-    private func updateDiagnostics(_ body: (inout TunnelDiagnostics) -> Void) {
+    private func updateDiagnostics(
+        _ body: @Sendable (inout TunnelDiagnostics) -> Void
+    ) {
         state.withLock { runtime in
             body(&runtime.diagnostics)
             runtime.diagnostics.updatedAt = Date()
@@ -260,4 +266,3 @@ enum PacketTunnelProviderError: LocalizedError {
 
     var errorDescription: String? { "The selected Bufi Tunnel profile is unavailable." }
 }
-
