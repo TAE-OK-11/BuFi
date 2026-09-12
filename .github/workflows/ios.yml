@@ -17,7 +17,7 @@ jobs:
   unified-ios:
     name: Swift 6.4 unified iOS build
     runs-on: xcode-27
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -58,6 +58,11 @@ jobs:
               ;;
           esac
 
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup target add --toolchain 1.95.0 aarch64-apple-ios
+
       - name: Verify local search behavior
         run: sh Scripts/verify-local-search.sh
 
@@ -78,6 +83,22 @@ jobs:
 
       - name: Verify Swift 6.4 unified configuration
         run: Scripts/verify-swift6-language-mode.sh
+
+      - name: Run tunnel configuration tests
+        run: |
+          set -o pipefail
+          simulator_id="$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for values in d.values() for x in values if x.get("isAvailable") and x["name"].startswith("iPhone")))')"
+          xcodebuild \
+            -disableAutomaticPackageResolution \
+            -quiet \
+            -project BuFi.xcodeproj \
+            -scheme BuFi \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            -derivedDataPath build/TestDerivedData \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
+            CODE_SIGNING_ALLOWED=NO \
+            test 2>&1 | tee build/xcode-tests.log
 
       - name: Build unsigned app
         run: |
@@ -111,6 +132,7 @@ jobs:
           name: BuFi-1.0.0-swift6.4-failure-logs-${{ github.sha }}
           path: |
             build/xcode.log
+            build/xcode-tests.log
           if-no-files-found: warn
           retention-days: 14
 

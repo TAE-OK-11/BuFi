@@ -31,6 +31,8 @@ struct SettingsView: View {
                         .buFiEntranceMotion()
                     serverCard
                         .buFiVerticalSectionMotion(delay: 0.02)
+                    tunnelSection
+                        .buFiVerticalSectionMotion(delay: 0.03)
                     appearanceSection
                         .buFiVerticalSectionMotion(delay: 0.04)
                     syncSection
@@ -196,6 +198,32 @@ struct SettingsView: View {
                         .font(.system(size: 16, weight: .semibold))
                 }
             }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var tunnelSection: some View {
+        SettingsGroup(title: "네트워크") {
+            NavigationLink {
+                BufiTunnelView()
+            } label: {
+                HStack(spacing: 12) {
+                    settingIcon("network.badge.shield.half.filled")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Bufi Tunnel")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("WireGuard VPN 및 암호화 DNS")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(BuFiPressStyle())
         }
         .padding(.horizontal, 16)
     }

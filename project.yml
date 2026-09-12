@@ -90,6 +90,8 @@ targets:
       - path: BuFi/Resources/ThirdPartyLicenses.txt
         buildPhase: resources
     dependencies:
+      - target: BuFiTunnelExtension
+        embed: true
       - package: SwiftSonic
         product: SwiftSonic
       - package: Nuke
@@ -118,6 +120,7 @@ targets:
           - Unbounded.ttf
         UIApplicationSupportsIndirectInputEvents: true
         UIRequiresFullScreen: true
+        BuFiSharedKeychainAccessGroup: "$(AppIdentifierPrefix)cloud.tae00217.BuFi.tunnel"
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     settings:
@@ -129,7 +132,58 @@ targets:
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: BuFi/Resources/BuFi.entitlements
         DEVELOPMENT_ASSET_PATHS: ""
         COREML_CODEGEN_LANGUAGE: None
     scheme:
       gatherCoverageData: false
+      testTargets:
+        - BuFiTunnelTests
+  BuFiTunnelExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: BuFiTunnelExtension
+        excludes:
+          - Info.plist
+          - BuFiTunnelExtension.entitlements
+      - path: BuFi/Tunnel/Shared
+      - path: BuFi/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+    info:
+      path: BuFiTunnelExtension/Info.plist
+    entitlements:
+      path: BuFiTunnelExtension/BuFiTunnelExtension.entitlements
+    dependencies:
+      - sdk: NetworkExtension.framework
+      - sdk: Network.framework
+      - sdk: Security.framework
+    preBuildScripts:
+      - name: Build GotaTun Rust engine
+        script: sh "$SRCROOT/Scripts/build-rust-tunnel.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cloud.tae00217.BuFi.TunnelExtension
+        PRODUCT_NAME: BuFiTunnelExtension
+        PRODUCT_MODULE_NAME: BuFiTunnelExtension
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: BuFiTunnelExtension/BuFiTunnelExtension.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/RustTunnel/build/active"
+        OTHER_LDFLAGS: "$(inherited) -lbufi_tunnel_engine -framework Security -framework SystemConfiguration"
+  BuFiTunnelTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/TunnelConfigurationTests.swift
+    dependencies:
+      - target: BuFi
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cloud.tae00217.BuFi.TunnelTests
+        GENERATE_INFOPLIST_FILE: YES

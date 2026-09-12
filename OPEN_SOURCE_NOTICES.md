@@ -17,6 +17,31 @@ linked-dependency license file; its attribution remains here.
 - License: GNU General Public License v3.0
 - Copyright: Maximilian Bauer and Amperfy contributors
 
+## GotaTun
+
+Bufi Tunnel links GotaTun as its standard WireGuard userspace engine. The
+dependency is pinned to commit `fdf5e909ffe5e12310b2fe72a5fb82ab17dcd2e8`
+and is kept behind Bufi's own C ABI rather than modified in-tree.
+
+- Project: <https://github.com/mullvad/gotatun>
+- Version at pinned revision: 0.9.2
+- License: Mozilla Public License 2.0
+- Copyright: Mullvad VPN AB, Cloudflare, Inc., and contributors
+- License text: <https://github.com/mullvad/gotatun/blob/fdf5e909ffe5e12310b2fe72a5fb82ab17dcd2e8/LICENSE>
+- Source pin: `RustTunnel/Cargo.toml`
+
+## Mullvad VPN iOS reference integration
+
+The utun descriptor discovery, file-descriptor ownership, and packet-framing
+patterns in Bufi Tunnel were adapted from Mullvad VPN's GPLv3 iOS GotaTun
+integration. Bufi's implementation is independently scoped to a conventional
+single-hop WireGuard client and contains none of Mullvad's service-specific,
+post-quantum, obfuscation, or relay logic.
+
+- Project: <https://github.com/mullvad/mullvadvpn-app>
+- Reviewed revision: `694e2d8945fb656b5840fca15db8823a470cfc52`
+- License: GNU General Public License v3.0
+
 ## SwiftSonic
 
 BuFi links SwiftSonic for salted-token authentication support and authenticated

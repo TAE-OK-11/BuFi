@@ -1,6 +1,18 @@
 THIRD-PARTY LICENSES
 ====================
 
+GotaTun 0.9.2 (pinned revision fdf5e909ffe5e12310b2fe72a5fb82ab17dcd2e8)
+Source: https://github.com/mullvad/gotatun
+License: Mozilla Public License 2.0
+License file: https://github.com/mullvad/gotatun/blob/fdf5e909ffe5e12310b2fe72a5fb82ab17dcd2e8/LICENSE
+
+GotaTun is distributed in Source Code Form through the complete BuFi source
+repository, including its exact Cargo source pin and build recipe. GotaTun is
+not sponsored or endorsed by Jason A. Donenfeld. WireGuard is a registered
+trademark of Jason A. Donenfeld.
+
+-------------------------------------------------------------------------------
+
 GRDB.swift 7.11.1
 Source: https://github.com/groue/GRDB.swift/tree/v7.11.1
 License file: https://github.com/groue/GRDB.swift/blob/v7.11.1/LICENSE

@@ -23,6 +23,9 @@ It is designed around the iOS media stack rather than a web view.
 - Korean (default), English, and Japanese localization
 - Favorite songs, albums, and artists, with favorite artists pinned above an indexed artist library
 - Offline downloads stored in Application Support
+- General-purpose Bufi Tunnel WireGuard client with split/full routing,
+  shared-Keychain key storage, lifecycle recovery, and Plain DNS, DoH, DoT,
+  and DoQ resolver modes
 - GitHub Actions generation of an unsigned IPA with Xcode 27 and Swift 6.4
 
 ## Requirements
@@ -37,12 +40,18 @@ It is designed around the iOS media stack rather than a web view.
 ```sh
 brew install xcodegen
 sh Scripts/prepare-assets.sh
+rustup toolchain install 1.95.0 --profile minimal
+sh Scripts/build-rust-tunnel.sh
 xcodegen generate
 sh Scripts/apply-package-lock.sh
 open BuFi.xcodeproj
 ```
 
 Select your development team in Xcode to install the app on a physical device.
+The App ID and Tunnel Extension App ID must both have Network Extensions and
+App Groups enabled, and the provisioning profiles must include
+`group.cloud.tae00217.BuFi` plus the shared Tunnel Keychain group. See
+`Docs/BUFI_TUNNEL.md` for architecture and device validation.
 
 ## Unsigned IPA
 
