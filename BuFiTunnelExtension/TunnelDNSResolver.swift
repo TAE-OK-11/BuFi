@@ -111,31 +111,25 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
 
     private func startAndWait(_ listener: NWListener) throws {
         let semaphore = DispatchSemaphore(value: 0)
-        let result = NSLock()
-        var startError: NWError?
-        var completed = false
+        let result = ListenerStartResult()
         listener.stateUpdateHandler = { listenerState in
-            result.locked {
-                guard !completed else { return }
-                switch listenerState {
-                case .ready:
-                    completed = true
-                    semaphore.signal()
-                case .failed(let error):
-                    startError = error
-                    completed = true
-                    semaphore.signal()
-                default:
-                    break
-                }
+            let didComplete: Bool
+            switch listenerState {
+            case .ready:
+                didComplete = result.complete(error: nil)
+            case .failed(let error):
+                didComplete = result.complete(error: error)
+            default:
+                didComplete = false
             }
+            if didComplete { semaphore.signal() }
         }
         listener.start(queue: queue)
         guard semaphore.wait(timeout: .now() + .seconds(2)) == .success else {
             listener.cancel()
             throw TunnelDNSProxyError.listenerTimeout
         }
-        if let startError { throw startError }
+        if let startError = result.error { throw startError }
     }
 
     private func receiveUDP(on connection: NWConnection) {
@@ -290,6 +284,23 @@ private enum TunnelDNSProxyError: LocalizedError {
     case listenerTimeout
 
     var errorDescription: String? { "The local DNS proxy did not become ready." }
+}
+
+private final class ListenerStartResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+    private var storedError: NWError?
+
+    var error: NWError? { lock.locked { storedError } }
+
+    func complete(error: NWError?) -> Bool {
+        lock.locked {
+            guard !completed else { return false }
+            completed = true
+            storedError = error
+            return true
+        }
+    }
 }
 
 private extension NSLock {

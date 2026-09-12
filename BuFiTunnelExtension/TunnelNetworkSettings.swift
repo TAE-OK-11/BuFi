@@ -26,7 +26,6 @@ enum TunnelNetworkSettingsBuilder {
             value.includedRoutes = routes6(profile: profile)
             settings.ipv6Settings = value
         }
-        settings.includeAllNetworks = profile.isFullTunnel
         return settings
     }
 
@@ -49,4 +48,3 @@ enum TunnelNetworkSettingsBuilder {
         return "\((mask >> 24) & 255).\((mask >> 16) & 255).\((mask >> 8) & 255).\(mask & 255)"
     }
 }
-
