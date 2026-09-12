@@ -70,6 +70,17 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal
           rustup target add --toolchain 1.95.0 aarch64-apple-ios
 
+      - name: Cache Rust tunnel
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            RustTunnel/target
+          key: ${{ runner.os }}-rust-1.95-bufi-tunnel-${{ hashFiles('RustTunnel/Cargo.lock', 'RustTunnel/Cargo.toml', 'RustTunnel/src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-1.95-bufi-tunnel-
+
       - name: Verify local search behavior
         run: sh Scripts/verify-local-search.sh
 
@@ -104,7 +115,6 @@ jobs:
             -destination "platform=iOS Simulator,id=$simulator_id" \
             -derivedDataPath build/TestDerivedData \
             -clonedSourcePackagesDirPath "$RUNNER_TEMP/BuFiSourcePackages" \
-            CODE_SIGNING_ALLOWED=NO \
             test 2>&1 | tee build/xcode-tests.log
 
       - name: Build unsigned app
