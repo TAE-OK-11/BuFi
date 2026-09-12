@@ -73,6 +73,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "x25519-dalek",
+ "zerocopy",
 ]
 
 [[package]]
