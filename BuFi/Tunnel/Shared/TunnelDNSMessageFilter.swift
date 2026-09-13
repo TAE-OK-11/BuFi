@@ -32,34 +32,115 @@ enum TunnelDNSTransportCodec {
 
 /// Small exact/suffix DNS matcher used only for user-owned rules. The large
 /// maintained threat and advertising lists remain at the selected upstream.
+///
+/// Rules are compiled once into a compact label trie. A query then walks its
+/// labels from the TLD inward without allocating a new String for every parent
+/// suffix (for example, `a.b.example.com`, `b.example.com`, and so on).
 struct TunnelDNSMessageFilter: Sendable {
-    private let blockedDomains: Set<String>
-    private let allowedDomains: Set<String>
+    private let blockedDomains: TunnelDomainSuffixMatcher
+    private let allowedDomains: TunnelDomainSuffixMatcher
 
     init(blockedDomains: [String], allowedDomains: [String]) {
-        self.blockedDomains = Set(blockedDomains.compactMap(TunnelDNSRuleParser.normalize))
-        self.allowedDomains = Set(allowedDomains.compactMap(TunnelDNSRuleParser.normalize))
+        self.blockedDomains = TunnelDomainSuffixMatcher(rules: blockedDomains)
+        self.allowedDomains = TunnelDomainSuffixMatcher(rules: allowedDomains)
     }
 
     func blockedResponse(for query: Data) -> Data? {
         guard let question = TunnelDNSQuestion.parse(query),
-              !matches(question.domain, in: allowedDomains),
-              matches(question.domain, in: blockedDomains) else { return nil }
+              !allowedDomains.matches(labels: question.labels),
+              blockedDomains.matches(labels: question.labels) else { return nil }
         return question.nxdomainResponse(query)
     }
+}
 
-    private func matches(_ domain: String, in rules: Set<String>) -> Bool {
-        var candidate = domain
-        while true {
-            if rules.contains(candidate) { return true }
-            guard let dot = candidate.firstIndex(of: ".") else { return false }
-            candidate = String(candidate[candidate.index(after: dot)...])
+private struct TunnelDomainSuffixMatcher: Sendable {
+    private struct BuildNode {
+        var terminal = false
+        var children: [String: Int] = [:]
+    }
+
+    private struct Node: Sendable {
+        let terminal: Bool
+        let edgeStart: Int
+        let edgeCount: Int
+    }
+
+    private struct Edge: Sendable {
+        let label: String
+        let child: Int
+    }
+
+    private let nodes: [Node]
+    private let edges: [Edge]
+
+    init(rules: [String]) {
+        var buildNodes = [BuildNode()]
+        for rawRule in rules {
+            guard let rule = TunnelDNSRuleParser.normalize(rawRule) else { continue }
+            var nodeIndex = 0
+            for label in rule.split(separator: ".").reversed() {
+                let label = String(label)
+                if let child = buildNodes[nodeIndex].children[label] {
+                    nodeIndex = child
+                } else {
+                    let child = buildNodes.count
+                    buildNodes.append(BuildNode())
+                    buildNodes[nodeIndex].children[label] = child
+                    nodeIndex = child
+                }
+            }
+            buildNodes[nodeIndex].terminal = true
         }
+
+        var compactNodes: [Node] = []
+        var compactEdges: [Edge] = []
+        compactNodes.reserveCapacity(buildNodes.count)
+        compactEdges.reserveCapacity(max(0, buildNodes.count - 1))
+        for node in buildNodes {
+            let sortedChildren = node.children.sorted { $0.key < $1.key }
+            compactNodes.append(Node(
+                terminal: node.terminal,
+                edgeStart: compactEdges.count,
+                edgeCount: sortedChildren.count
+            ))
+            for child in sortedChildren {
+                compactEdges.append(Edge(label: child.key, child: child.value))
+            }
+        }
+        self.nodes = compactNodes
+        self.edges = compactEdges
+    }
+
+    func matches(labels: [String]) -> Bool {
+        var nodeIndex = 0
+        for label in labels.reversed() {
+            guard let child = child(of: nodeIndex, matching: label) else { return false }
+            nodeIndex = child
+            if nodes[nodeIndex].terminal { return true }
+        }
+        return false
+    }
+
+    private func child(of nodeIndex: Int, matching label: String) -> Int? {
+        let node = nodes[nodeIndex]
+        var lower = node.edgeStart
+        var upper = node.edgeStart + node.edgeCount
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if edges[middle].label < label {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        guard lower < node.edgeStart + node.edgeCount,
+              edges[lower].label == label else { return nil }
+        return edges[lower].child
     }
 }
 
 private struct TunnelDNSQuestion: Sendable {
-    let domain: String
+    let labels: [String]
     let messageEnd: Int
 
     static func parse(_ data: Data) -> TunnelDNSQuestion? {
@@ -69,7 +150,7 @@ private struct TunnelDNSQuestion: Sendable {
               name.nextOffset + 4 <= data.count,
               !name.labels.isEmpty else { return nil }
         return TunnelDNSQuestion(
-            domain: name.labels.joined(separator: ".").lowercased(),
+            labels: name.labels,
             messageEnd: name.nextOffset + 4
         )
     }
@@ -108,7 +189,7 @@ private struct TunnelDNSQuestion: Sendable {
                     data: data[(offset + 1)..<(offset + 1 + length)],
                     encoding: .utf8
                   ) else { return nil }
-            labels.append(label)
+            labels.append(label.lowercased())
             offset += length + 1
         }
         return nil

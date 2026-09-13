@@ -45,7 +45,7 @@ Xcode/App Store signing uses `group.cloud.tae00217.BuFi`. AltStore and SideStore
 can remap that identifier for the active team and write the actually signed
 value to each bundle's `ALTAppGroups` metadata; Bufi resolves the one exact or
 unambiguous suffixed match and verifies it with Security before use. It also
-reads the embedded appex's signed bundle identifier/`ALTBundleID`, avoiding a
+reads the embedded appex's signed bundle identifier/`ALTBundleIdentifier`, avoiding a
 hardcoded provider identifier after re-signing. Ambiguous or unusable values
 fail closed. The previous prefixed custom group remains only as a runtime read
 fallback for migrating keys from an older properly provisioned Bufi build.
@@ -113,10 +113,12 @@ All DNS modes implement `TunnelDNSResolver`:
 - DoQ starts loopback UDP and TCP DNS listeners on port 53. In accordance with
   RFC 9250, one raw DNS message is sent per authenticated Network.framework
   QUIC stream with ALPN `doq`; no DNS-over-TCP length prefix is placed on a DoQ
-  stream. Local TCP and DoT retain their required two-octet framing. All local
-  and upstream connections are lifecycle-owned and cancelled atomically when
-  the resolver stops. The component remains replaceable without touching
-  GotaTun.
+  stream. Streams are multiplexed over one lifecycle-owned `NWConnectionGroup`,
+  avoiding a new QUIC handshake and UDP socket per query. A bounded five-second
+  retry gate prevents handshake loops when QUIC is unavailable, while queries
+  continue over DoT. Local TCP and DoT retain their required two-octet framing.
+  All local and upstream connections are cancelled atomically when the resolver
+  stops. The component remains replaceable without touching GotaTun.
 
 ### Lightweight DNS protection
 
@@ -144,9 +146,13 @@ isolated resolver boundary applies them locally and returns an NXDOMAIN response
 without forwarding the query. Allowed traffic uses authenticated DoQ to the
 selected AdGuard endpoint with DoT fallback on networks that block QUIC. Only
 the user-owned rules are resident in memory; the maintained large lists remain
-upstream. Diagnostics expose only an aggregate blocked-query count, never domain
-names. Custom block and allow rules are capped at 4,096 combined to preserve the
-Network Extension's memory budget; bulk maintained lists belong at the upstream.
+upstream. Custom rules are compiled once into a compact reverse-label suffix
+index, so hot-path matches do not allocate a String for every parent domain.
+The editor also caches normalized results instead of reparsing the entire rule
+text repeatedly during one SwiftUI render. Diagnostics expose only an aggregate
+blocked-query count, never domain names. Custom block and allow rules are capped
+at 4,096 combined to preserve the Network Extension's memory budget; bulk
+maintained lists belong at the upstream.
 
 ## Optional OpenSubsonic endpoint routing
 
@@ -237,8 +243,8 @@ iPhones:
 
 - Plain DNS intentionally uses the standards-defined port 53 because
   `NEDNSSettings` does not expose a custom port.
-- DoQ uses one QUIC connection per query for a small, deterministic v1 surface;
-  connection pooling/multiplexing is the primary resolver optimization point.
+- DoQ multiplexing depends on Network.framework's `NWConnectionGroup`; networks
+  that block QUIC use the DoT fallback until the bounded QUIC retry gate opens.
 - Import supports standard single- or multi-peer WireGuard `.conf` files but
   ignores `wg-quick` shell hooks and platform-specific route commands.
 - Editing preserves saved private and preshared keys unless explicitly replaced;

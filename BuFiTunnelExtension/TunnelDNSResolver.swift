@@ -70,6 +70,10 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     private let state = NSLock()
     private var udpListener: NWListener?
     private var tcpListener: NWListener?
+    private var quicGroup: NWConnectionGroup?
+    private var quicGroupReady = false
+    private var quicGroupGeneration: UInt64 = 0
+    private var quicRetryNotBefore: UInt64 = 0
     private var downstreams: [UUID: NWConnection] = [:]
     private var upstreams: [UUID: NWConnection] = [:]
     private var blockedQueries: UInt64 = 0
@@ -107,27 +111,40 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
             tcpListener = tcp
             isRunning = true
         }
+        startQUICGroupIfNeeded()
     }
 
     func stop() {
-        let values: (NWListener?, NWListener?, [NWConnection], [NWConnection]) = state.locked {
+        let values: (
+            NWListener?,
+            NWListener?,
+            NWConnectionGroup?,
+            [NWConnection],
+            [NWConnection]
+        ) = state.locked {
             let values = (
                 udpListener,
                 tcpListener,
+                quicGroup,
                 Array(downstreams.values),
                 Array(upstreams.values)
             )
             isRunning = false
             udpListener = nil
             tcpListener = nil
+            quicGroup = nil
+            quicGroupReady = false
+            quicGroupGeneration &+= 1
+            quicRetryNotBefore = 0
             downstreams.removeAll()
             upstreams.removeAll()
             return values
         }
         values.0?.cancel()
         values.1?.cancel()
-        values.2.forEach { $0.cancel() }
+        values.2?.cancel()
         values.3.forEach { $0.cancel() }
+        values.4.forEach { $0.cancel() }
     }
 
     private func acceptUDP(_ connection: NWConnection) {
@@ -290,20 +307,18 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
         _ query: Data,
         completion: @escaping @Sendable (Data?) -> Void
     ) {
-        let quic = NWProtocolQUIC.Options()
-        let tls = quic.securityProtocolOptions
-        let tlsName = configuration.serverName.isEmpty
-            ? configuration.resolverEndpoint
-            : configuration.serverName
-        tlsName.withCString { sec_protocol_options_set_tls_server_name(tls, $0) }
-        "doq".withCString { sec_protocol_options_add_tls_application_protocol(tls, $0) }
-        let parameters = NWParameters(quic: quic)
+        guard let group = state.locked({ () -> NWConnectionGroup? in
+            guard isRunning, quicGroupReady else { return nil }
+            return quicGroup
+        }), let connection = NWConnection(from: group) else {
+            // Group creation is shared by all queries. Until it becomes ready,
+            // use the bounded DoT fallback instead of starting another QUIC
+            // handshake for every DNS packet.
+            startQUICGroupIfNeeded()
+            completion(nil)
+            return
+        }
         let id = UUID()
-        let connection = NWConnection(
-            host: NWEndpoint.Host(configuration.resolverEndpoint),
-            port: NWEndpoint.Port(rawValue: configuration.port)!,
-            using: parameters
-        )
         guard trackUpstream(connection, id: id) else {
             connection.cancel()
             completion(nil)
@@ -356,6 +371,99 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
                 self.finish(id: id, connection: connection, response: nil, completion: completion)
             }
         }
+    }
+
+    /// Keeps one authenticated QUIC transport and opens one bidirectional
+    /// stream per RFC 9250 query. Network.framework owns congestion control and
+    /// path migration for the shared transport, avoiding a TLS/QUIC handshake
+    /// and new UDP socket for every DNS packet.
+    private func startQUICGroupIfNeeded() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard state.locked({
+            isRunning && quicGroup == nil && now >= quicRetryNotBefore
+        }) else { return }
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(configuration.resolverEndpoint),
+            port: NWEndpoint.Port(rawValue: configuration.port)!
+        )
+        let group = NWConnectionGroup(
+            with: NWMultiplexGroup(to: endpoint),
+            using: makeQUICParameters()
+        )
+        let generation = state.locked { () -> UInt64? in
+            guard isRunning, quicGroup == nil else { return nil }
+            quicGroupGeneration &+= 1
+            quicGroup = group
+            quicGroupReady = false
+            return quicGroupGeneration
+        }
+        guard let generation else {
+            group.cancel()
+            return
+        }
+
+        // DoQ clients initiate all request streams. Reject an unexpected
+        // server-initiated stream and install this handler before start().
+        group.newConnectionHandler = { connection in connection.cancel() }
+        group.stateUpdateHandler = { [weak self, weak group] groupState in
+            guard let self, let group else { return }
+            let shouldCancel = self.state.locked { () -> Bool in
+                guard self.quicGroup === group,
+                      self.quicGroupGeneration == generation else { return false }
+                switch groupState {
+                case .ready:
+                    self.quicGroupReady = true
+                    self.quicRetryNotBefore = 0
+                case .waiting:
+                    self.quicGroupReady = false
+                case .failed:
+                    self.quicGroup = nil
+                    self.quicGroupReady = false
+                    self.quicGroupGeneration &+= 1
+                    self.quicRetryNotBefore = Self.quicRetryDeadline()
+                    return true
+                case .cancelled:
+                    self.quicGroup = nil
+                    self.quicGroupReady = false
+                    self.quicGroupGeneration &+= 1
+                    self.quicRetryNotBefore = Self.quicRetryDeadline()
+                default:
+                    break
+                }
+                return false
+            }
+            if shouldCancel { group.cancel() }
+        }
+        group.start(queue: queue)
+
+        queue.asyncAfter(deadline: .now() + .seconds(4)) { [weak self, weak group] in
+            guard let self, let group else { return }
+            let timedOut = self.state.locked { () -> Bool in
+                guard self.quicGroup === group,
+                      self.quicGroupGeneration == generation,
+                      !self.quicGroupReady else { return false }
+                self.quicGroup = nil
+                self.quicGroupGeneration &+= 1
+                self.quicRetryNotBefore = Self.quicRetryDeadline()
+                return true
+            }
+            if timedOut { group.cancel() }
+        }
+    }
+
+    private func makeQUICParameters() -> NWParameters {
+        let quic = NWProtocolQUIC.Options()
+        let tls = quic.securityProtocolOptions
+        let tlsName = configuration.serverName.isEmpty
+            ? configuration.resolverEndpoint
+            : configuration.serverName
+        tlsName.withCString { sec_protocol_options_set_tls_server_name(tls, $0) }
+        "doq".withCString { sec_protocol_options_add_tls_application_protocol(tls, $0) }
+        return NWParameters(quic: quic)
+    }
+
+    private static func quicRetryDeadline() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds &+ 5_000_000_000
     }
 
     private func forwardOverTLS(

@@ -160,9 +160,18 @@ struct TunnelDNSConfiguration: Codable, Equatable, Sendable {
 enum TunnelDNSRuleParser {
     static func parse(_ text: String) -> [String] {
         var domains = Set<String>()
-        for rawLine in text.components(separatedBy: .newlines) {
+        let limit = TunnelDNSProtectionConfiguration.maximumCustomRules + 1
+        domains.reserveCapacity(min(
+            limit,
+            text.count / 16
+        ))
+        for rawLine in text.split(whereSeparator: { $0.isNewline }) {
             for rawValue in rawLine.split(separator: ",") {
                 if let domain = normalize(String(rawValue)) { domains.insert(domain) }
+                // Keep pasted filter text from allocating without bound. One
+                // item beyond the limit is retained so validation can still
+                // report the correct error instead of silently truncating.
+                if domains.count >= limit { return domains.sorted() }
             }
         }
         return domains.sorted()

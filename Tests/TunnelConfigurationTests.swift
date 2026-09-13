@@ -157,6 +157,37 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertNil(filter.blockedResponse(for: allowedQuery))
     }
 
+    func testCustomDNSFilterMatchesWholeLabelsWithoutSuffixAllocations() {
+        let filter = TunnelDNSMessageFilter(
+            blockedDomains: ["EXAMPLE.COM", "tracker.example.net"],
+            allowedDomains: ["safe.example.com"]
+        )
+
+        XCTAssertNotNil(filter.blockedResponse(for: dnsQuery(domain: "deep.ads.example.com")))
+        XCTAssertNotNil(filter.blockedResponse(for: dnsQuery(domain: "tracker.example.net")))
+        XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "safe.example.com")))
+        XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "deep.safe.example.com")))
+        XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "notexample.com")))
+    }
+
+    func testDNSRuleParserNormalizesAndDeduplicatesMixedNewlines() {
+        XCTAssertEqual(
+            TunnelDNSRuleParser.parse("ADS.EXAMPLE\r\nads.example\ntracker.example"),
+            ["ads.example", "tracker.example"]
+        )
+    }
+
+    func testDNSRuleParserBoundsLargePastesWithoutSilentAcceptance() {
+        let text = (0...(TunnelDNSProtectionConfiguration.maximumCustomRules + 100))
+            .map { "blocked-\($0).example" }
+            .joined(separator: "\n")
+        let parsed = TunnelDNSRuleParser.parse(text)
+        XCTAssertEqual(
+            parsed.count,
+            TunnelDNSProtectionConfiguration.maximumCustomRules + 1
+        )
+    }
+
     func testDoQUsesRawDNSMessagesWithoutTCPLengthPrefix() throws {
         let query = dnsQuery(domain: "example.com")
         let doQPayload = try XCTUnwrap(TunnelDNSTransportCodec.doQPayload(query))

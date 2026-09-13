@@ -774,13 +774,20 @@ private struct TunnelAdBlockingEditor: View {
     @State private var protection: TunnelDNSProtectionConfiguration
     @State private var blockedRules: String
     @State private var allowedRules: String
+    @State private var parsedBlockedRules: [String]
+    @State private var parsedAllowedRules: [String]
     @State private var localError: String?
 
     init(profile: TunnelProfile) {
+        let initialProtection = profile.dns.effectiveProtection
+        let blockedText = initialProtection.blockedDomains.joined(separator: "\n")
+        let allowedText = initialProtection.allowedDomains.joined(separator: "\n")
         _profile = State(initialValue: profile)
-        _protection = State(initialValue: profile.dns.effectiveProtection)
-        _blockedRules = State(initialValue: profile.dns.effectiveProtection.blockedDomains.joined(separator: "\n"))
-        _allowedRules = State(initialValue: profile.dns.effectiveProtection.allowedDomains.joined(separator: "\n"))
+        _protection = State(initialValue: initialProtection)
+        _blockedRules = State(initialValue: blockedText)
+        _allowedRules = State(initialValue: allowedText)
+        _parsedBlockedRules = State(initialValue: TunnelDNSRuleParser.parse(blockedText))
+        _parsedAllowedRules = State(initialValue: TunnelDNSRuleParser.parse(allowedText))
     }
 
     var body: some View {
@@ -891,6 +898,12 @@ private struct TunnelAdBlockingEditor: View {
         } message: {
             Text(localError ?? String(localized: "Unknown error"))
         }
+        .onChange(of: blockedRules) { _, value in
+            parsedBlockedRules = TunnelDNSRuleParser.parse(value)
+        }
+        .onChange(of: allowedRules) { _, value in
+            parsedAllowedRules = TunnelDNSRuleParser.parse(value)
+        }
     }
 
     private func save() async {
@@ -905,14 +918,6 @@ private struct TunnelAdBlockingEditor: View {
         } catch {
             localError = error.localizedDescription
         }
-    }
-
-    private var parsedBlockedRules: [String] {
-        TunnelDNSRuleParser.parse(blockedRules)
-    }
-
-    private var parsedAllowedRules: [String] {
-        TunnelDNSRuleParser.parse(allowedRules)
     }
 
     private var hasParsedCustomRules: Bool {
