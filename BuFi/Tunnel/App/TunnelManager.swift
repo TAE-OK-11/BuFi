@@ -129,7 +129,7 @@ final class TunnelManager: ObservableObject {
             refreshStatus()
             return true
         } catch {
-            errorMessage = userFacingMessage(for: error)
+            await record(error)
             return false
         }
     }
@@ -167,7 +167,7 @@ final class TunnelManager: ObservableObject {
             )
             return await save(profile: profile, privateKey: imported.privateKey, presharedKeys: secrets)
         } catch {
-            errorMessage = userFacingMessage(for: error)
+            await record(error)
             return false
         }
     }
@@ -376,9 +376,18 @@ final class TunnelManager: ObservableObject {
             try await operation()
             return true
         } catch {
-            errorMessage = userFacingMessage(for: error)
+            await record(error)
             return false
         }
+    }
+
+    private func record(_ error: Error) async {
+        let message = userFacingMessage(for: error)
+        errorMessage = message
+        diagnostics.state = .error
+        diagnostics.latestError = message
+        diagnostics.updatedAt = Date()
+        try? await repository.saveDiagnostics(diagnostics)
     }
 
     private func userFacingMessage(for error: Error) -> String {
@@ -393,7 +402,7 @@ final class TunnelManager: ObservableObject {
         let underlying = error as NSError
         if (underlying.domain == "NEVPNErrorDomain" && underlying.code == 5)
             || underlying.localizedDescription.localizedCaseInsensitiveContains("permission denied") {
-            return String(localized: "VPN settings permission was denied. Install a build signed with the Packet Tunnel Network Extension entitlement, then try again.")
+            return String(localized: "iOS refused to save the VPN configuration. If you denied the Add VPN Configuration prompt, reopen Bufi and allow it. If iOS denies it without a prompt, this installed build lacks a usable Packet Tunnel Network Extension entitlement; changing key storage cannot fix signing. Install a correctly provisioned build and try again.")
         }
         return error.localizedDescription
     }

@@ -228,6 +228,11 @@ post-signing `BuFi.app` and `BuFiTunnelExtension.appex` with `codesign -d
 --entitlements :-` and compare their expanded access groups and Network
 Extension capability with their embedded provisioning profiles. A SideStore-
 signed IPA is required to audit what SideStore actually preserved or removed.
+An `NEVPNErrorDomain` permission denial while saving the manager is recorded in
+Tunnel diagnostics and reported separately from Keychain failures. Replacing
+Keychain with a database cannot fix that stage: iOS must accept the final
+signature's `packet-tunnel-provider` entitlement before it will create or
+launch the VPN configuration.
 
 ## Device validation still required
 
