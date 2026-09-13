@@ -49,7 +49,7 @@ final class TunnelManager: ObservableObject {
     func bootstrap() async {
         guard !hasBootstrapped else { return }
         hasBootstrapped = true
-        await perform {
+        let succeeded = await perform {
             profiles = try await repository.all()
             if keychain.capability().canUseSharedAccessGroup {
                 await migrateAppLocalSecretsIfPossible()
@@ -81,6 +81,7 @@ final class TunnelManager: ObservableObject {
             refreshStatus()
             await refreshDiagnostics()
         }
+        if !succeeded { hasBootstrapped = false }
     }
 
     func save(
@@ -205,10 +206,7 @@ final class TunnelManager: ObservableObject {
     func setEnabled(_ enabled: Bool) async {
         guard let profile = selectedProfile else { return }
         await perform {
-            let manager = try await configuredManager(for: profile)
-            manager.isEnabled = enabled
-            try await manager.saveToPreferences()
-            try await manager.loadFromPreferences()
+            let manager = try await configuredManager(for: profile, enabled: enabled)
             managers[profile.id] = manager
             refreshStatus()
             objectWillChange.send()
@@ -218,7 +216,14 @@ final class TunnelManager: ObservableObject {
     func connect() async {
         guard let profile = selectedProfile else { return }
         await perform {
-            let manager = try await configuredManager(for: profile)
+            try ensureTunnelCapabilities(for: profile)
+            let manager: NETunnelProviderManager
+            if let existing = managers[profile.id] {
+                try await existing.loadFromPreferences()
+                manager = existing
+            } else {
+                manager = try await configuredManager(for: profile)
+            }
             guard manager.isEnabled else { throw TunnelManagerError.profileDisabled }
             try manager.connection.startVPNTunnel(options: ["profileID": profile.id.uuidString as NSString])
             managers[profile.id] = manager
@@ -252,7 +257,10 @@ final class TunnelManager: ObservableObject {
         }
     }
 
-    private func configuredManager(for profile: TunnelProfile) async throws -> NETunnelProviderManager {
+    private func configuredManager(
+        for profile: TunnelProfile,
+        enabled: Bool? = nil
+    ) async throws -> NETunnelProviderManager {
         try ensureTunnelCapabilities(for: profile)
         let isNew = managers[profile.id] == nil
         let manager = managers[profile.id] ?? NETunnelProviderManager()
@@ -266,7 +274,11 @@ final class TunnelManager: ObservableObject {
         tunnelProtocol.disconnectOnSleep = false
         manager.protocolConfiguration = tunnelProtocol
         manager.localizedDescription = "Bufi Tunnel — \(profile.name)"
-        if isNew { manager.isEnabled = true }
+        if let enabled {
+            manager.isEnabled = enabled
+        } else if isNew {
+            manager.isEnabled = true
+        }
         try await manager.saveToPreferences()
         try await manager.loadFromPreferences()
         return manager
@@ -335,19 +347,24 @@ final class TunnelManager: ObservableObject {
         metricsTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshDiagnostics()
-                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                let interval: Duration = self.status == .connected ? .seconds(5) : .seconds(1)
+                try? await Task.sleep(for: interval)
             }
         }
     }
 
-    private func perform(_ operation: () async throws -> Void) async {
-        guard !isBusy else { return }
+    @discardableResult
+    private func perform(_ operation: () async throws -> Void) async -> Bool {
+        guard !isBusy else { return false }
         isBusy = true
         defer { isBusy = false }
         do {
             try await operation()
+            return true
         } catch {
             errorMessage = userFacingMessage(for: error)
+            return false
         }
     }
 

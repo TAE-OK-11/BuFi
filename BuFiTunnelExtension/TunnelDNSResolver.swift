@@ -70,8 +70,10 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     private let state = NSLock()
     private var udpListener: NWListener?
     private var tcpListener: NWListener?
+    private var downstreams: [UUID: NWConnection] = [:]
     private var upstreams: [UUID: NWConnection] = [:]
     private var blockedQueries: UInt64 = 0
+    private var isRunning = false
 
     var blockedQueryCount: UInt64 { state.locked { blockedQueries } }
 
@@ -103,25 +105,58 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
         state.locked {
             udpListener = udp
             tcpListener = tcp
+            isRunning = true
         }
     }
 
     func stop() {
-        let values: (NWListener?, NWListener?, [NWConnection]) = state.locked {
-            let values = (udpListener, tcpListener, Array(upstreams.values))
+        let values: (NWListener?, NWListener?, [NWConnection], [NWConnection]) = state.locked {
+            let values = (
+                udpListener,
+                tcpListener,
+                Array(downstreams.values),
+                Array(upstreams.values)
+            )
+            isRunning = false
             udpListener = nil
             tcpListener = nil
+            downstreams.removeAll()
             upstreams.removeAll()
             return values
         }
         values.0?.cancel()
         values.1?.cancel()
         values.2.forEach { $0.cancel() }
+        values.3.forEach { $0.cancel() }
     }
 
     private func acceptUDP(_ connection: NWConnection) {
+        guard trackDownstream(connection) != nil else {
+            connection.cancel()
+            return
+        }
         connection.start(queue: queue)
         receiveUDP(on: connection)
+    }
+
+    private func trackDownstream(_ connection: NWConnection) -> UUID? {
+        let id = UUID()
+        let accepted = state.locked { () -> Bool in
+            guard isRunning else { return false }
+            downstreams[id] = connection
+            return true
+        }
+        guard accepted else { return nil }
+        connection.stateUpdateHandler = { [weak self] connectionState in
+            switch connectionState {
+            case .failed, .cancelled:
+                guard let self else { return }
+                self.state.locked { _ = self.downstreams.removeValue(forKey: id) }
+            default:
+                break
+            }
+        }
+        return id
     }
 
     private func startAndWait(_ listener: NWListener) throws {
@@ -156,31 +191,48 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
                     connection.send(content: response, completion: .contentProcessed { _ in })
                 }
             }
-            if error == nil { self.receiveUDP(on: connection) }
+            if error == nil {
+                self.receiveUDP(on: connection)
+            } else {
+                connection.cancel()
+            }
         }
     }
 
     private func acceptTCP(_ connection: NWConnection) {
+        guard trackDownstream(connection) != nil else {
+            connection.cancel()
+            return
+        }
         connection.start(queue: queue)
         receiveTCPFrame(on: connection)
     }
 
     private func receiveTCPFrame(on connection: NWConnection) {
         receiveExactly(2, on: connection) { [weak self, weak connection] prefix in
-            guard let self, let connection, let prefix, prefix.count == 2 else { return }
-            let length = (UInt16(prefix[prefix.startIndex]) << 8)
-                | UInt16(prefix[prefix.index(after: prefix.startIndex)])
-            guard length > 0 else { connection.cancel(); return }
-            self.receiveExactly(Int(length), on: connection) { query in
+            guard let self, let connection else { return }
+            guard let prefix, prefix.count == 2 else {
+                connection.cancel()
+                return
+            }
+            guard let length = TunnelDNSTransportCodec.tcpPayloadLength(prefix) else {
+                connection.cancel()
+                return
+            }
+            self.receiveExactly(length, on: connection) { query in
                 guard let query else { connection.cancel(); return }
                 self.forward(query) { response in
-                    guard let response else { connection.cancel(); return }
-                    var framed = Data()
-                    var count = UInt16(response.count).bigEndian
-                    withUnsafeBytes(of: &count) { framed.append(contentsOf: $0) }
-                    framed.append(response)
-                    connection.send(content: framed, completion: .contentProcessed { _ in
-                        self.receiveTCPFrame(on: connection)
+                    guard let response,
+                          let framed = TunnelDNSTransportCodec.tcpFrame(response) else {
+                        connection.cancel()
+                        return
+                    }
+                    connection.send(content: framed, completion: .contentProcessed { error in
+                        if error == nil {
+                            self.receiveTCPFrame(on: connection)
+                        } else {
+                            connection.cancel()
+                        }
                     })
                 }
             }
@@ -193,16 +245,20 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
         accumulated: Data = Data(),
         completion: @escaping @Sendable (Data?) -> Void
     ) {
+        guard count > 0, accumulated.count < count else {
+            completion(accumulated.count == count ? accumulated : nil)
+            return
+        }
         connection.receive(
             minimumIncompleteLength: 1,
             maximumLength: count - accumulated.count
-        ) { [weak self, weak connection] data, _, _, error in
+        ) { [weak self, weak connection] data, _, isComplete, error in
             guard let self, let connection, error == nil else { completion(nil); return }
             var accumulated = accumulated
             if let data { accumulated.append(data) }
             if accumulated.count == count {
                 completion(accumulated)
-            } else if accumulated.count < count {
+            } else if accumulated.count < count, !isComplete {
                 self.receiveExactly(count, on: connection, accumulated: accumulated, completion: completion)
             } else {
                 completion(nil)
@@ -211,6 +267,10 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     }
 
     private func forward(_ query: Data, completion: @escaping @Sendable (Data?) -> Void) {
+        guard state.locked({ isRunning }) else {
+            completion(nil)
+            return
+        }
         if let response = filter?.blockedResponse(for: query) {
             state.locked { blockedQueries &+= 1 }
             completion(response)
@@ -244,30 +304,44 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
             port: NWEndpoint.Port(rawValue: configuration.port)!,
             using: parameters
         )
-        state.locked { upstreams[id] = connection }
+        guard trackUpstream(connection, id: id) else {
+            connection.cancel()
+            completion(nil)
+            return
+        }
         connection.stateUpdateHandler = { [weak self, weak connection] connectionState in
             guard let self, let connection else { return }
             switch connectionState {
             case .ready:
                 connection.stateUpdateHandler = nil
-                var framed = Data()
-                var count = UInt16(query.count).bigEndian
-                withUnsafeBytes(of: &count) { framed.append(contentsOf: $0) }
-                framed.append(query)
-                connection.send(content: framed, completion: .contentProcessed { error in
-                    if error == nil {
-                        self.receiveDoQResponse(on: connection) { response in
+                guard let payload = TunnelDNSTransportCodec.doQPayload(query) else {
+                    self.finish(id: id, connection: connection, response: nil, completion: completion)
+                    return
+                }
+                connection.send(
+                    content: payload,
+                    contentContext: .finalMessage,
+                    isComplete: true,
+                    completion: .contentProcessed { error in
+                        if error == nil {
+                            self.receiveDoQResponse(on: connection) { response in
+                                self.finish(
+                                    id: id,
+                                    connection: connection,
+                                    response: response,
+                                    completion: completion
+                                )
+                            }
+                        } else {
                             self.finish(
                                 id: id,
                                 connection: connection,
-                                response: response,
+                                response: nil,
                                 completion: completion
                             )
                         }
-                    } else {
-                        self.finish(id: id, connection: connection, response: nil, completion: completion)
                     }
-                })
+                )
             case .failed, .cancelled:
                 self.finish(id: id, connection: connection, response: nil, completion: completion)
             default:
@@ -299,25 +373,29 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
         let id = UUID()
         let connection = NWConnection(
             host: NWEndpoint.Host(configuration.resolverEndpoint),
-            port: 853,
+            port: NWEndpoint.Port(rawValue: configuration.port)!,
             using: parameters
         )
-        state.locked { upstreams[id] = connection }
+        guard trackUpstream(connection, id: id) else {
+            connection.cancel()
+            completion(nil)
+            return
+        }
         connection.stateUpdateHandler = { [weak self, weak connection] connectionState in
             guard let self, let connection else { return }
             switch connectionState {
             case .ready:
                 connection.stateUpdateHandler = nil
-                var framed = Data()
-                var count = UInt16(query.count).bigEndian
-                withUnsafeBytes(of: &count) { framed.append(contentsOf: $0) }
-                framed.append(query)
+                guard let framed = TunnelDNSTransportCodec.tcpFrame(query) else {
+                    self.finish(id: id, connection: connection, response: nil, completion: completion)
+                    return
+                }
                 connection.send(content: framed, completion: .contentProcessed { error in
                     guard error == nil else {
                         self.finish(id: id, connection: connection, response: nil, completion: completion)
                         return
                     }
-                    self.receiveDoQResponse(on: connection) { response in
+                    self.receiveTLSResponse(on: connection) { response in
                         self.finish(
                             id: id,
                             connection: connection,
@@ -344,17 +422,54 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
 
     private func receiveDoQResponse(
         on connection: NWConnection,
+        accumulated: Data = Data(),
         completion: @escaping @Sendable (Data?) -> Void
     ) {
-        receiveExactly(2, on: connection) { [weak self, weak connection] prefix in
-            guard let self, let connection, let prefix, prefix.count == 2 else {
+        guard accumulated.count < TunnelDNSTransportCodec.maximumMessageLength else {
+            completion(nil)
+            return
+        }
+        connection.receive(
+            minimumIncompleteLength: 1,
+            maximumLength: TunnelDNSTransportCodec.maximumMessageLength - accumulated.count
+        ) { [weak self, weak connection] data, _, isComplete, error in
+            guard let self, let connection, error == nil else {
                 completion(nil)
                 return
             }
-            let length = (UInt16(prefix[prefix.startIndex]) << 8)
-                | UInt16(prefix[prefix.index(after: prefix.startIndex)])
-            guard length > 0 else { completion(nil); return }
-            self.receiveExactly(Int(length), on: connection, completion: completion)
+            var response = accumulated
+            if let data { response.append(data) }
+            if isComplete {
+                completion(TunnelDNSTransportCodec.doQPayload(response))
+            } else {
+                self.receiveDoQResponse(
+                    on: connection,
+                    accumulated: response,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func receiveTLSResponse(
+        on connection: NWConnection,
+        completion: @escaping @Sendable (Data?) -> Void
+    ) {
+        receiveExactly(2, on: connection) { [weak self, weak connection] prefix in
+            guard let self, let connection, let prefix,
+                  let length = TunnelDNSTransportCodec.tcpPayloadLength(prefix) else {
+                completion(nil)
+                return
+            }
+            self.receiveExactly(length, on: connection, completion: completion)
+        }
+    }
+
+    private func trackUpstream(_ connection: NWConnection, id: UUID) -> Bool {
+        state.locked {
+            guard isRunning else { return false }
+            upstreams[id] = connection
+            return true
         }
     }
 

@@ -41,6 +41,19 @@ struct RustEngineConfiguration: Codable, Sendable {
     let peers: [RustPeerConfiguration]
 }
 
+/// Network-change updates intentionally contain no private or preshared keys.
+/// GotaTun already owns those secrets; only resolved socket addresses need to
+/// cross FFI when iOS changes its underlying path.
+struct RustPeerEndpointConfiguration: Codable, Sendable {
+    let publicKey: String
+    let endpointIP: String
+    let endpointPort: UInt16
+}
+
+struct RustEndpointConfiguration: Codable, Sendable {
+    let peers: [RustPeerEndpointConfiguration]
+}
+
 struct RustEngineStatistics: Codable, Sendable {
     let latestHandshake: UInt64?
     let txBytes: UInt64
@@ -105,8 +118,8 @@ final class RustTunnelAdapter: @unchecked Sendable {
         try lifecycle(rustRebindTunnel)
     }
 
-    func reconfigure(configuration: RustEngineConfiguration) throws {
-        let data = try JSONEncoder().encode(configuration)
+    func reconfigure(endpoints: RustEndpointConfiguration) throws {
+        let data = try JSONEncoder().encode(endpoints)
         try handle.withLock { value in
             guard value != 0, let pointer = OpaquePointer(bitPattern: value) else {
                 throw RustTunnelError.engine("GotaTun is not running.")

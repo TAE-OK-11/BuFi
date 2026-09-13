@@ -52,6 +52,13 @@ actor TunnelProfileRepository {
     }
 
     func saveDiagnostics(_ diagnostics: TunnelDiagnostics) throws {
+        if let existingData = try defaults().data(forKey: TunnelConstants.diagnosticsKey),
+           let existing = try? JSONDecoder().decode(TunnelDiagnostics.self, from: existingData),
+           existing.updatedAt > diagnostics.updatedAt {
+            // PacketTunnel callbacks persist asynchronously. Never let an older
+            // callback overwrite a newer connected/disconnected state.
+            return
+        }
         guard let data = try? JSONEncoder().encode(diagnostics) else {
             throw TunnelProfileRepositoryError.encoding
         }
@@ -65,4 +72,3 @@ actor TunnelProfileRepository {
         return try JSONDecoder().decode(TunnelDiagnostics.self, from: data)
     }
 }
-

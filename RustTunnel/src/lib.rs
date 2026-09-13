@@ -42,6 +42,20 @@ struct PeerConfiguration {
     persistent_keepalive: Option<u16>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EndpointConfiguration {
+    peers: Vec<PeerEndpointConfiguration>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PeerEndpointConfiguration {
+    public_key: String,
+    endpoint_ip: String,
+    endpoint_port: u16,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EngineStatistics {
@@ -290,9 +304,9 @@ pub extern "C" fn bufi_tunnel_rebind(handle: *mut c_void) -> i32 {
     })
 }
 
-/// Updates peer endpoints and related runtime configuration in place before
-/// recycling sockets. This avoids rebuilding the Tokio runtime and utun device
-/// during ordinary Wi-Fi/cellular handoffs while still picking up DNS changes.
+/// Updates only resolved peer endpoints before recycling sockets. WireGuard
+/// keys and routing configuration stay inside GotaTun and never cross FFI again
+/// during ordinary Wi-Fi/cellular handoffs.
 #[unsafe(no_mangle)]
 pub extern "C" fn bufi_tunnel_reconfigure(
     handle: *mut c_void,
@@ -306,24 +320,50 @@ pub extern "C" fn bufi_tunnel_reconfigure(
     // SAFETY: Swift keeps the Data buffer alive for this synchronous call.
     let bytes = unsafe { std::slice::from_raw_parts(config, config_len) };
     with_handle(handle, |handle| {
-        let config: EngineConfiguration = serde_json::from_slice(bytes)
-            .map_err(|error| format!("invalid engine reconfiguration: {error}"))?;
-        let peers = config
+        let config: EndpointConfiguration = serde_json::from_slice(bytes)
+            .map_err(|error| format!("invalid endpoint reconfiguration: {error}"))?;
+        if config.peers.is_empty() {
+            return Err("endpoint reconfiguration is empty".to_string());
+        }
+        let endpoints = config
             .peers
             .into_iter()
-            .map(make_peer)
+            .map(|peer| {
+                let public_key = PublicKey::from(decode_key(
+                    &peer.public_key,
+                    "peer public key",
+                )?);
+                let endpoint_ip: IpAddr = peer
+                    .endpoint_ip
+                    .parse()
+                    .map_err(|_| "resolved peer endpoint is not an IP address".to_string())?;
+                Ok((
+                    public_key,
+                    SocketAddr::new(endpoint_ip, peer.endpoint_port),
+                ))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         handle.runtime.block_on(async {
-            for peer in peers {
-                if !handle
-                    .device
-                    .update_peer(peer)
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    return Err("a configured WireGuard peer disappeared".to_string());
-                }
-            }
+            let update_result = handle
+                .device
+                .write(async |device| {
+                    for (public_key, endpoint) in endpoints {
+                        if !device
+                            .modify_peer(&public_key, |peer| {
+                                peer.set_endpoint(Some(endpoint));
+                            })
+                            .await
+                        {
+                            return Err(
+                                "a configured WireGuard peer disappeared".to_string(),
+                            );
+                        }
+                    }
+                    Ok::<(), String>(())
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            update_result?;
             handle.device.suspend().await;
             handle.device.resume().await.map_err(|error| error.to_string())
         })

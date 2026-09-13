@@ -421,6 +421,7 @@
 "Profile name is required." = "프로필 이름을 입력하세요.";
 "The interface private key must be a 32-byte WireGuard key." = "인터페이스 비공개 키는 32바이트 WireGuard 키여야 합니다.";
 "Peer %d has an invalid public key." = "피어 %d의 공개 키가 올바르지 않습니다.";
+"Peer %d duplicates another WireGuard public key." = "피어 %d의 WireGuard 공개 키가 다른 피어와 중복됩니다.";
 "At least one client IP address is required." = "클라이언트 IP 주소를 하나 이상 입력하세요.";
 "Invalid client address: %@" = "올바르지 않은 클라이언트 주소: %@";
 "At least one WireGuard peer is required." = "WireGuard 피어를 하나 이상 추가하세요.";
@@ -511,5 +512,9 @@
 "Custom rules use an encrypted local DNS boundary" = "사용자 규칙은 암호화된 로컬 DNS 경계에서 처리";
 "No downloaded blocklist or background update timer" = "다운로드 차단 목록 및 백그라운드 갱신 타이머 없음";
 "Custom DNS protection supports up to %d block and allow rules." = "사용자 DNS 보호는 차단 및 허용 규칙을 합쳐 최대 %d개까지 지원합니다.";
+"Some WireGuard endpoints could not be re-resolved; their last known addresses were retained: %@" = "일부 WireGuard 엔드포인트를 다시 확인하지 못해 마지막으로 확인된 주소를 유지했습니다: %@";
+"The selected Bufi Tunnel profile is unavailable." = "선택한 Bufi Tunnel 프로필을 사용할 수 없습니다.";
+"Bufi Tunnel is already running." = "Bufi Tunnel이 이미 실행 중입니다.";
+"Bufi Tunnel startup was cancelled." = "Bufi Tunnel 시작이 취소되었습니다.";
 
 "5곡" = "5곡";

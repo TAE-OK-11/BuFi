@@ -101,11 +101,13 @@ All DNS modes implement `TunnelDNSResolver`:
 - DoH uses `NEDNSOverHTTPSSettings` and a configurable HTTPS URL.
 - DoT uses `NEDNSOverTLSSettings`, bootstrap addresses, SNI name, and the
   platform's encrypted resolver implementation.
-- DoQ starts loopback UDP and TCP DNS listeners on port 53 and forwards framed
-  DNS messages through authenticated Network.framework QUIC connections with
-  ALPN `doq` to the configurable server (default port 853). This component is
-  deliberately isolated so a future persistent/multiplexed QUIC resolver or
-  filtering layer can replace it without touching GotaTun.
+- DoQ starts loopback UDP and TCP DNS listeners on port 53. In accordance with
+  RFC 9250, one raw DNS message is sent per authenticated Network.framework
+  QUIC stream with ALPN `doq`; no DNS-over-TCP length prefix is placed on a DoQ
+  stream. Local TCP and DoT retain their required two-octet framing. All local
+  and upstream connections are lifecycle-owned and cancelled atomically when
+  the resolver stops. The component remains replaceable without touching
+  GotaTun.
 
 ### Lightweight DNS protection
 
@@ -161,19 +163,28 @@ editing, and the dedicated System/Plain/DoH/DoT/DoQ DNS editor.
 ## Lifecycle and performance
 
 `NWPathMonitor` observes all path updates, including Wi-Fi/cellular handoffs.
-Short unsatisfied transitions are debounced. A sustained offline state suspends
-GotaTun, which tears down packet and timer tasks. A restored or changed path
-re-resolves peer hostnames, updates peer endpoints in place, recycles UDP
-sockets, and forces a fresh handshake. Full runtime/utun reconstruction is used
-only as the bounded recovery path if in-place reconfiguration fails.
+The recovery fingerprint includes interface identity, gateways, IP-family/DNS
+support, and constrained/expensive flags, so changes within the same interface
+are not hidden by the short UI description. `.requiresConnection` is treated as
+potentially usable, matching WireGuard Apple. Short unsatisfied transitions are
+debounced. A sustained offline state suspends GotaTun, which tears down packet
+and timer tasks. A restored or changed path re-resolves peer hostnames, updates
+peer endpoints in place, recycles UDP sockets, and forces a fresh handshake.
+One failed hostname retains its previous address without preventing other peers
+from recovering. Full runtime/utun reconstruction is used only as the bounded
+recovery path if in-place reconfiguration fails. Session generations prevent a
+late path callback from resurrecting an adapter after disconnect.
 Sleep suspends the engine and wake performs the same recovery. Normal WireGuard
 timers plus `PersistentKeepalive` handle server restarts and idle NAT mappings;
 there is no STUN, traversal, relay, DERP, mesh, or coordination layer.
 
 The GotaTun runtime uses two workers, pooled packet buffers, vectored utun
-writes, a duplicated nonblocking fd, and 4 MiB UDP buffers. There is no Swift
+writes, a duplicated nonblocking fd, and 4 MiB UDP buffers. Network changes send
+only public peer identity and resolved endpoints across FFI; private and
+preshared keys are not reloaded or serialized again. There is no Swift
 per-packet callback, metrics timer in the extension, or reconnect polling loop.
-The app requests metrics every two seconds only while the VPN is active.
+The app requests metrics every second during transitions and every five seconds
+after connection, reducing steady-state wakeups.
 Rust release builds and the iOS Release configuration both use ThinLTO.
 
 ## GitHub validation

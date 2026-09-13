@@ -6,7 +6,16 @@ enum EngineConfigurationBuilder {
         let firstEndpointIP: String
     }
 
-    static func make(profile: TunnelProfile) throws -> Result {
+    struct EndpointRefresh: Sendable {
+        let endpoints: RustEndpointConfiguration
+        let firstEndpointIP: String?
+        let unresolvedHosts: [String]
+    }
+
+    static func make(
+        profile: TunnelProfile,
+        strategy: EndpointResolver.Strategy = .initial
+    ) throws -> Result {
         guard profile.effectiveSecretScope == .sharedAccessGroup else {
             throw TunnelKeychainError.sharedAccessGroupUnavailable
         }
@@ -19,7 +28,8 @@ enum EngineConfigurationBuilder {
         let peers = try profile.peers.map { peer in
             let endpointIP = try EndpointResolver.resolve(
                 host: peer.endpointHost,
-                port: peer.endpointPort
+                port: peer.endpointPort,
+                strategy: strategy
             )
             if firstEndpointIP == nil { firstEndpointIP = endpointIP }
             let presharedKey = try peer.presharedKeyReference.map {
@@ -42,6 +52,40 @@ enum EngineConfigurationBuilder {
                 peers: peers
             ),
             firstEndpointIP: firstEndpointIP
+        )
+    }
+
+    /// Refreshes endpoints independently so one temporarily broken DNS record
+    /// cannot prevent every other peer from recovering. No Keychain access is
+    /// performed and no secret is included in the FFI payload.
+    static func makeEndpointRefresh(profile: TunnelProfile) -> EndpointRefresh {
+        var firstEndpointIP: String?
+        var endpoints: [RustPeerEndpointConfiguration] = []
+        var unresolvedHosts: [String] = []
+        endpoints.reserveCapacity(profile.peers.count)
+        unresolvedHosts.reserveCapacity(profile.peers.count)
+
+        for peer in profile.peers {
+            do {
+                let endpointIP = try EndpointResolver.resolve(
+                    host: peer.endpointHost,
+                    port: peer.endpointPort,
+                    strategy: .networkChange
+                )
+                if firstEndpointIP == nil { firstEndpointIP = endpointIP }
+                endpoints.append(RustPeerEndpointConfiguration(
+                    publicKey: peer.publicKey,
+                    endpointIP: endpointIP,
+                    endpointPort: peer.endpointPort
+                ))
+            } catch {
+                unresolvedHosts.append(peer.endpointHost)
+            }
+        }
+        return EndpointRefresh(
+            endpoints: RustEndpointConfiguration(peers: endpoints),
+            firstEndpointIP: firstEndpointIP,
+            unresolvedHosts: unresolvedHosts
         )
     }
 }

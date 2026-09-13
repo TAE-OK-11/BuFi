@@ -46,6 +46,34 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertTrue(profile.isFullTunnel)
     }
 
+    func testValidatorRejectsDuplicateWireGuardPeers() {
+        let peerKey = Data(repeating: 3, count: 32).base64EncodedString()
+        let profile = TunnelProfile(
+            name: "Duplicate peers",
+            privateKeyReference: "private-test",
+            publicKey: Data(repeating: 2, count: 32).base64EncodedString(),
+            addresses: ["10.0.0.2/32"],
+            peers: [
+                TunnelPeer(
+                    publicKey: peerKey,
+                    endpointHost: "one.example",
+                    allowedIPs: ["10.0.0.0/8"]
+                ),
+                TunnelPeer(
+                    publicKey: peerKey,
+                    endpointHost: "two.example",
+                    allowedIPs: ["192.168.0.0/16"]
+                )
+            ],
+            mtu: 1280,
+            dns: .system
+        )
+
+        XCTAssertThrowsError(try TunnelProfileValidator.validate(profile, privateKey: nil)) {
+            XCTAssertEqual(error as? TunnelValidationError, .duplicatePublicKey(peer: 1))
+        }
+    }
+
     func testValidatorRejectsHostnameAsPlainDNSBootstrap() {
         XCTAssertThrowsError(
             try TunnelProfileValidator.validateDNS(
@@ -127,6 +155,32 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertEqual((response?[2] ?? 0) & 0x80, 0x80)
         XCTAssertEqual((response?[3] ?? 0) & 0x0f, 3)
         XCTAssertNil(filter.blockedResponse(for: allowedQuery))
+    }
+
+    func testDoQUsesRawDNSMessagesWithoutTCPLengthPrefix() throws {
+        let query = dnsQuery(domain: "example.com")
+        let doQPayload = try XCTUnwrap(TunnelDNSTransportCodec.doQPayload(query))
+        XCTAssertEqual(doQPayload, query)
+
+        let tcpFrame = try XCTUnwrap(TunnelDNSTransportCodec.tcpFrame(query))
+        XCTAssertEqual(tcpFrame.count, query.count + 2)
+        XCTAssertEqual(
+            TunnelDNSTransportCodec.tcpPayloadLength(Data(tcpFrame.prefix(2))),
+            query.count
+        )
+        XCTAssertEqual(Data(tcpFrame.dropFirst(2)), query)
+        XCTAssertNotEqual(doQPayload, tcpFrame)
+    }
+
+    func testDNSTransportRejectsEmptyAndOversizedMessages() {
+        XCTAssertNil(TunnelDNSTransportCodec.doQPayload(Data()))
+        XCTAssertNil(TunnelDNSTransportCodec.tcpFrame(Data()))
+        let oversized = Data(
+            repeating: 0,
+            count: TunnelDNSTransportCodec.maximumMessageLength + 1
+        )
+        XCTAssertNil(TunnelDNSTransportCodec.doQPayload(oversized))
+        XCTAssertNil(TunnelDNSTransportCodec.tcpFrame(oversized))
     }
 
     func testEarlierProtectionConfigurationDecodesWithoutCustomRuleFields() throws {

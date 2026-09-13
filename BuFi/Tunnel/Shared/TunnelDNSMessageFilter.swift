@@ -1,5 +1,35 @@
 import Foundation
 
+/// DNS transport framing kept independent from the resolver implementation so
+/// protocol details can be regression-tested without starting NetworkExtension.
+/// RFC 9250 gives each DoQ stream exactly one raw DNS message, while RFC 7858
+/// retains DNS-over-TCP's two-octet length prefix for DoT.
+enum TunnelDNSTransportCodec {
+    static let maximumMessageLength = Int(UInt16.max)
+
+    static func doQPayload(_ message: Data) -> Data? {
+        guard !message.isEmpty, message.count <= maximumMessageLength else { return nil }
+        return message
+    }
+
+    static func tcpFrame(_ message: Data) -> Data? {
+        guard !message.isEmpty, message.count <= maximumMessageLength else { return nil }
+        var frame = Data(capacity: message.count + 2)
+        var length = UInt16(message.count).bigEndian
+        withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
+        frame.append(message)
+        return frame
+    }
+
+    static func tcpPayloadLength(_ prefix: Data) -> Int? {
+        guard prefix.count == 2 else { return nil }
+        let start = prefix.startIndex
+        let next = prefix.index(after: start)
+        let length = (UInt16(prefix[start]) << 8) | UInt16(prefix[next])
+        return length > 0 ? Int(length) : nil
+    }
+}
+
 /// Small exact/suffix DNS matcher used only for user-owned rules. The large
 /// maintained threat and advertising lists remain at the selected upstream.
 struct TunnelDNSMessageFilter: Sendable {

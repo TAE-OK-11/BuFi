@@ -259,6 +259,7 @@ enum TunnelValidationError: LocalizedError, Equatable, Sendable {
     case emptyName
     case invalidPrivateKey
     case invalidPublicKey(peer: Int)
+    case duplicatePublicKey(peer: Int)
     case missingAddress
     case invalidAddress(String)
     case missingPeer
@@ -276,6 +277,11 @@ enum TunnelValidationError: LocalizedError, Equatable, Sendable {
         case .invalidPrivateKey: String(localized: "The interface private key must be a 32-byte WireGuard key.")
         case .invalidPublicKey(let peer): String(
             format: String(localized: "Peer %d has an invalid public key."),
+            locale: .current,
+            peer + 1
+        )
+        case .duplicatePublicKey(let peer): String(
+            format: String(localized: "Peer %d duplicates another WireGuard public key."),
             locale: .current,
             peer + 1
         )
@@ -330,9 +336,13 @@ enum TunnelProfileValidator {
             throw TunnelValidationError.invalidAddress(value)
         }
         guard !profile.peers.isEmpty else { throw TunnelValidationError.missingPeer }
+        var peerPublicKeys = Set<Data>()
         for (index, peer) in profile.peers.enumerated() {
-            guard Data(base64Encoded: peer.publicKey)?.count == 32 else {
+            guard let publicKey = Data(base64Encoded: peer.publicKey), publicKey.count == 32 else {
                 throw TunnelValidationError.invalidPublicKey(peer: index)
+            }
+            guard peerPublicKeys.insert(publicKey).inserted else {
+                throw TunnelValidationError.duplicatePublicKey(peer: index)
             }
             guard !peer.endpointHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   peer.endpointPort > 0 else {
