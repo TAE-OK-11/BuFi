@@ -581,14 +581,14 @@ fn parse_question(data: &[u8]) -> Option<ParsedQuestion> {
     Some(question)
 }
 
-fn snapshot_index(data: &[u8]) -> Option<Vec<usize>> {
+fn snapshot_index(data: &[u8]) -> Option<Vec<u32>> {
     if data.is_empty() {
         return Some(Vec::new());
     }
-    if data.last() != Some(&b'\n') {
+    if data.last() != Some(&b'\n') || data.len() > u32::MAX as usize {
         return None;
     }
-    let mut starts = vec![0usize];
+    let mut starts = vec![0u32];
     let mut previous: Option<&[u8]> = None;
     let mut start = 0usize;
     for (index, byte) in data.iter().enumerate() {
@@ -603,23 +603,23 @@ fn snapshot_index(data: &[u8]) -> Option<Vec<usize>> {
         previous = Some(line);
         start = index + 1;
         if start < data.len() {
-            starts.push(start);
+            starts.push(u32::try_from(start).ok()?);
         }
     }
     (start == data.len()).then_some(starts)
 }
 
-fn compare_line(data: &[u8], starts: &[usize], line: usize, query: &[u8]) -> std::cmp::Ordering {
-    let start = starts[line];
+fn compare_line(data: &[u8], starts: &[u32], line: usize, query: &[u8]) -> std::cmp::Ordering {
+    let start = starts[line] as usize;
     let end = if line + 1 < starts.len() {
-        starts[line + 1] - 1
+        starts[line + 1] as usize - 1
     } else {
         data.len() - 1
     };
     data[start..end].cmp(query)
 }
 
-fn snapshot_contains(data: &[u8], starts: &[usize], query: &[u8]) -> bool {
+fn snapshot_contains(data: &[u8], starts: &[u32], query: &[u8]) -> bool {
     let mut lower = 0usize;
     let mut upper = starts.len();
     while lower < upper {
@@ -636,7 +636,7 @@ fn snapshot_contains(data: &[u8], starts: &[usize], query: &[u8]) -> bool {
 struct DnsFilter {
     blocked: DomainSuffixMatcher,
     allowed: DomainSuffixMatcher,
-    subscription_line_starts: Vec<usize>,
+    subscription_line_starts: Vec<u32>,
     subscription_length: usize,
 }
 
