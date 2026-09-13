@@ -39,17 +39,84 @@ enum TunnelDNSTransportCodec {
 struct TunnelDNSMessageFilter: Sendable {
     private let blockedDomains: TunnelDomainSuffixMatcher
     private let allowedDomains: TunnelDomainSuffixMatcher
+    private let subscribedDomains: TunnelMappedDomainMatcher?
 
-    init(blockedDomains: [String], allowedDomains: [String]) {
+    init(
+        blockedDomains: [String],
+        allowedDomains: [String],
+        subscriptionData: Data? = nil
+    ) {
         self.blockedDomains = TunnelDomainSuffixMatcher(rules: blockedDomains)
         self.allowedDomains = TunnelDomainSuffixMatcher(rules: allowedDomains)
+        subscribedDomains = subscriptionData.flatMap(TunnelMappedDomainMatcher.init)
     }
 
     func blockedResponse(for query: Data) -> Data? {
         guard let question = TunnelDNSQuestion.parse(query),
               !allowedDomains.matches(labels: question.labels),
-              blockedDomains.matches(labels: question.labels) else { return nil }
+              (blockedDomains.matches(labels: question.labels)
+                  || subscribedDomains?.matches(labels: question.labels) == true) else { return nil }
         return question.nxdomainResponse(query)
+    }
+}
+
+/// Exact binary search over a sorted, newline-delimited mapped snapshot. Only
+/// the small line-offset table is allocated in Packet Tunnel; domain strings
+/// stay in the mapped Data and query suffixes are created only during lookup.
+private struct TunnelMappedDomainMatcher: Sendable {
+    private let data: Data
+    private let lineStarts: [Int32]
+
+    init?(_ data: Data) {
+        guard data.isEmpty || data.last == 0x0a, data.count <= Int(Int32.max) else { return nil }
+        var starts: [Int32] = []
+        starts.reserveCapacity(data.count / 24)
+        if !data.isEmpty { starts.append(0) }
+        for index in data.indices where data[index] == 0x0a && index + 1 < data.endIndex {
+            starts.append(Int32(index + 1))
+        }
+        self.data = data
+        lineStarts = starts
+    }
+
+    func matches(labels: [String]) -> Bool {
+        guard !lineStarts.isEmpty else { return false }
+        for index in labels.indices {
+            if contains(labels[index...].joined(separator: ".")) { return true }
+        }
+        return false
+    }
+
+    private func contains(_ domain: String) -> Bool {
+        let query = Array(domain.utf8)
+        var lower = 0
+        var upper = lineStarts.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            let comparison = compareLine(at: middle, with: query)
+            if comparison < 0 {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return lower < lineStarts.count && compareLine(at: lower, with: query) == 0
+    }
+
+    private func compareLine(at line: Int, with query: [UInt8]) -> Int {
+        let start = Int(lineStarts[line])
+        let end = line + 1 < lineStarts.count
+            ? Int(lineStarts[line + 1]) - 1
+            : data.count - 1
+        let length = end - start
+        let shared = min(length, query.count)
+        for offset in 0..<shared {
+            let lhs = data[start + offset]
+            let rhs = query[offset]
+            if lhs != rhs { return lhs < rhs ? -1 : 1 }
+        }
+        if length == query.count { return 0 }
+        return length < query.count ? -1 : 1
     }
 }
 

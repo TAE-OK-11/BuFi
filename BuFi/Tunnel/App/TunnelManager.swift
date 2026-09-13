@@ -10,6 +10,8 @@ final class TunnelManager: ObservableObject {
     @Published var selectedProfileID: UUID?
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var diagnostics = TunnelDiagnostics()
+    @Published private(set) var blocklistMetadata: [UUID: TunnelBlocklistUpdateMetadata] = [:]
+    @Published private(set) var updatingBlocklistProfileIDs: Set<UUID> = []
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
 
@@ -51,6 +53,11 @@ final class TunnelManager: ObservableObject {
         hasBootstrapped = true
         let succeeded = await perform {
             profiles = try await repository.all()
+            var cachedMetadata: [UUID: TunnelBlocklistUpdateMetadata] = [:]
+            for profile in profiles {
+                cachedMetadata[profile.id] = try? TunnelBlocklistCache.metadata(profileID: profile.id)
+            }
+            blocklistMetadata = cachedMetadata
             if keychain.capability().canUseSharedAccessGroup {
                 await migrateAppLocalSecretsIfPossible()
                 profiles = try await repository.all()
@@ -74,6 +81,9 @@ final class TunnelManager: ObservableObject {
             await refreshDiagnostics()
         }
         if !succeeded { hasBootstrapped = false }
+        if succeeded {
+            Task { [weak self] in await self?.refreshStaleBlocklists() }
+        }
     }
 
     func save(
@@ -88,6 +98,9 @@ final class TunnelManager: ObservableObject {
             let secretScope = profile.secretScope
                 ?? (privateKey == nil ? .sharedAccessGroup : keychain.preferredScope())
             profile.secretScope = secretScope
+            if profile.effectiveOnDemand.isEnabled, secretScope != .sharedAccessGroup {
+                throw TunnelManagerError.onDemandRequiresSharedSecret
+            }
             if let privateKey {
                 let derived = try TunnelKeyPair.publicKey(for: privateKey)
                 guard derived == profile.publicKey else { throw TunnelValidationError.invalidPrivateKey }
@@ -189,6 +202,8 @@ final class TunnelManager: ObservableObject {
                 }
             }
             managers.removeValue(forKey: profile.id)
+            try? TunnelBlocklistCache.remove(profileID: profile.id)
+            blocklistMetadata.removeValue(forKey: profile.id)
             profiles = try await repository.all()
             selectedProfileID = profiles.first?.id
             refreshStatus()
@@ -203,6 +218,33 @@ final class TunnelManager: ObservableObject {
             refreshStatus()
             objectWillChange.send()
         }
+    }
+
+    func refreshBlocklist(for profile: TunnelProfile, force: Bool = true) async -> Bool {
+        guard !updatingBlocklistProfileIDs.contains(profile.id) else { return false }
+        updatingBlocklistProfileIDs.insert(profile.id)
+        defer { updatingBlocklistProfileIDs.remove(profile.id) }
+        do {
+            let metadata = try await TunnelBlocklistUpdater.shared.update(
+                profile: profile,
+                force: force
+            )
+            guard let current = profiles.first(where: { $0.id == profile.id }),
+                  current.dns.effectiveProtection == profile.dns.effectiveProtection else {
+                try? TunnelBlocklistCache.remove(profileID: profile.id)
+                blocklistMetadata.removeValue(forKey: profile.id)
+                return false
+            }
+            blocklistMetadata[profile.id] = metadata
+            return true
+        } catch {
+            if force { await record(error) }
+            return false
+        }
+    }
+
+    func refreshBlocklistsIfNeeded() async {
+        await refreshStaleBlocklists()
     }
 
     func connect() async {
@@ -269,6 +311,9 @@ final class TunnelManager: ObservableObject {
         } else if isNew {
             manager.isEnabled = true
         }
+        let onDemand = profile.effectiveOnDemand
+        manager.onDemandRules = Self.onDemandRules(from: onDemand)
+        manager.isOnDemandEnabled = manager.isEnabled && onDemand.isEnabled
         try await manager.saveToPreferences()
         try await manager.loadFromPreferences()
         return manager
@@ -367,6 +412,49 @@ final class TunnelManager: ObservableObject {
         }
     }
 
+    private func refreshStaleBlocklists() async {
+        for profile in profiles {
+            let protection = profile.dns.effectiveProtection
+            guard protection.isEnabled,
+                  protection.hasEnabledSubscriptions,
+                  protection.automaticUpdates else { continue }
+            _ = await refreshBlocklist(for: profile, force: false)
+        }
+    }
+
+    private static func onDemandRules(
+        from configuration: TunnelOnDemandConfiguration
+    ) -> [NEOnDemandRule] {
+        guard configuration.isEnabled else { return [] }
+        var rules: [NEOnDemandRule] = []
+        let ssidGroups = Dictionary(grouping: configuration.ssidRules) { $0.action }
+        for action in TunnelOnDemandAction.allCases {
+            let names = (ssidGroups[action] ?? [])
+                .map { $0.ssid.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard !names.isEmpty else { continue }
+            let rule = onDemandRule(action)
+            rule.interfaceTypeMatch = .wiFi
+            rule.ssidMatch = names
+            rules.append(rule)
+        }
+        let wifi = onDemandRule(configuration.wifiAction)
+        wifi.interfaceTypeMatch = .wiFi
+        rules.append(wifi)
+        let cellular = onDemandRule(configuration.cellularAction)
+        cellular.interfaceTypeMatch = .cellular
+        rules.append(cellular)
+        rules.append(NEOnDemandRuleDisconnect())
+        return rules
+    }
+
+    private static func onDemandRule(_ action: TunnelOnDemandAction) -> NEOnDemandRule {
+        switch action {
+        case .connect: NEOnDemandRuleConnect()
+        case .disconnect: NEOnDemandRuleDisconnect()
+        }
+    }
+
     @discardableResult
     private func perform(_ operation: () async throws -> Void) async -> Bool {
         guard !isBusy else { return false }
@@ -420,6 +508,7 @@ final class TunnelManager: ObservableObject {
 enum TunnelManagerError: LocalizedError {
     case profileDisabled
     case sharedKeychainEntitlementRequired
+    case onDemandRequiresSharedSecret
 
     var errorDescription: String? {
         switch self {
@@ -427,6 +516,8 @@ enum TunnelManagerError: LocalizedError {
             String(localized: "Enable this tunnel profile before connecting.")
         case .sharedKeychainEntitlementRequired:
             String(localized: "This build is missing usable Bufi App Group access. Your key is still secure in the app Keychain, but this profile cannot connect until Bufi is correctly signed.")
+        case .onDemandRequiresSharedSecret:
+            String(localized: "On-Demand requires a correctly signed build because iOS starts Packet Tunnel without the app's one-time key delivery.")
         }
     }
 }

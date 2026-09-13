@@ -9,11 +9,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         var adapter: RustTunnelAdapter?
         var dnsResolver: (any TunnelDNSResolver)?
         var pathMonitor: NWPathMonitor?
+        var healthTimer: (any DispatchSourceTimer)?
+        var engineConfiguration: RustEngineConfiguration?
         var diagnostics = TunnelDiagnostics()
         var pathFingerprint: String?
         var pathIsSatisfiable: Bool?
         var generation: UInt64 = 0
         var sessionID: UInt64 = 0
+        var startedAt = Date()
+        var previousStatistics: RustEngineStatistics?
+        var stalledHealthSamples = 0
+        var autoHealStage = 0
+        var lastAutoHeal: Date?
     }
 
     private let state = OSAllocatedUnfairLock(initialState: RuntimeState())
@@ -65,6 +72,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             throw error
         }
 
+        let cachedBlocklistRuleCount = (
+            try? TunnelBlocklistCache.metadata(profileID: profile.id)
+        )?.ruleCount
         updateDiagnostics(for: sessionID) { diagnostics in
             diagnostics = TunnelDiagnostics(
                 state: .connecting,
@@ -74,7 +84,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 dnsProtectionEnabled: profile.dns.effectiveProtection.isEnabled,
                 dnsProtectionPreset: profile.dns.effectiveProtection.isEnabled
                     ? profile.dns.effectiveProtection.preset
-                    : nil
+                    : nil,
+                blocklistRuleCount: cachedBlocklistRuleCount,
+                healthState: .observing,
+                healthDetail: String(localized: "Waiting for enough traffic to evaluate tunnel health.")
             )
         }
 
@@ -90,7 +103,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             } else {
                 resolved = try EngineConfigurationBuilder.make(profile: profile)
             }
-            let configuredResolver = try TunnelDNSResolverFactory.make(profile.dns)
+            let configuredResolver = try TunnelDNSResolverFactory.make(
+                profile.dns,
+                profileID: profile.id
+            )
             resolver = configuredResolver
             try configuredResolver.start()
             let settings = try TunnelNetworkSettingsBuilder.make(
@@ -107,11 +123,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 runtime.profile = profile
                 runtime.adapter = adapter
                 runtime.dnsResolver = configuredResolver
+                runtime.engineConfiguration = resolved.engine
                 runtime.diagnostics.state = .connected
                 runtime.diagnostics.currentEndpoint = resolved.firstEndpointIP
                 runtime.diagnostics.latestError = nil
                 runtime.diagnostics.updatedAt = Date()
                 runtime.generation &+= 1
+                runtime.startedAt = Date()
+                runtime.previousStatistics = nil
+                runtime.stalledHealthSamples = 0
+                runtime.autoHealStage = 0
+                runtime.lastAutoHeal = nil
                 return true
             }
             guard installed else {
@@ -120,6 +142,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             }
             persistDiagnostics()
             startPathMonitoring(sessionID: sessionID)
+            startHealthMonitoring(sessionID: sessionID)
         } catch {
             resolver?.stop()
             let message = error.localizedDescription
@@ -133,19 +156,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     override func stopTunnel(with reason: NEProviderStopReason) async {
         let resources = state.withLock {
-            runtime -> (UInt64, NWPathMonitor?, RustTunnelAdapter?, (any TunnelDNSResolver)?) in
+            runtime -> (
+                UInt64,
+                NWPathMonitor?,
+                DispatchSourceTimer?,
+                RustTunnelAdapter?,
+                (any TunnelDNSResolver)?
+            ) in
             runtime.diagnostics.state = .disconnecting
             runtime.diagnostics.updatedAt = Date()
             runtime.sessionID &+= 1
             let resources = (
                 runtime.sessionID,
                 runtime.pathMonitor,
+                runtime.healthTimer,
                 runtime.adapter,
                 runtime.dnsResolver
             )
             runtime.pathMonitor = nil
+            runtime.healthTimer = nil
             runtime.adapter = nil
             runtime.dnsResolver = nil
+            runtime.engineConfiguration = nil
             runtime.profile = nil
             runtime.pathFingerprint = nil
             runtime.pathIsSatisfiable = nil
@@ -153,8 +185,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             return resources
         }
         resources.1?.cancel()
-        resources.2?.stop()
+        resources.2?.cancel()
         resources.3?.stop()
+        resources.4?.stop()
         try? await setTunnelNetworkSettings(nil)
         let didDisconnect = state.withLock { runtime -> Bool in
             guard runtime.sessionID == resources.0, runtime.profile == nil else { return false }
@@ -231,6 +264,159 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         if !installed { monitor.cancel() }
     }
 
+    private func startHealthMonitoring(sessionID: UInt64) {
+        let timer = DispatchSource.makeTimerSource(queue: pathQueue)
+        timer.schedule(
+            deadline: .now() + .seconds(30),
+            repeating: .seconds(30),
+            leeway: .seconds(5)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.evaluateHealth(sessionID: sessionID)
+        }
+        let installed = state.withLock { runtime -> Bool in
+            guard runtime.sessionID == sessionID, runtime.adapter != nil else { return false }
+            runtime.healthTimer?.cancel()
+            runtime.healthTimer = timer
+            return true
+        }
+        timer.activate()
+        if !installed { timer.cancel() }
+    }
+
+    /// WireGuard can be legitimately idle, so an old handshake alone never
+    /// triggers recovery. We require fresh transmitted traffic with no receive
+    /// or handshake progress, or three observed failures from the local DNS
+    /// proxy. Native encrypted DNS is intentionally reported as unobservable.
+    private func evaluateHealth(sessionID: UInt64) {
+        let snapshot = state.withLock { runtime in
+            (runtime.adapter, runtime.dnsResolver, runtime.pathIsSatisfiable)
+        }
+        guard snapshot.2 != false, let adapter = snapshot.0 else { return }
+        do {
+            let statistics = try adapter.statistics()
+            let dnsHealth = snapshot.1?.health ?? .unavailable
+            let now = Date()
+            let stage = state.withLock { runtime -> Int? in
+                guard runtime.sessionID == sessionID, runtime.adapter === adapter else { return nil }
+                let previous = runtime.previousStatistics
+                runtime.previousStatistics = statistics
+                runtime.diagnostics.latestHandshake = statistics.latestHandshake.map {
+                    Date(timeIntervalSince1970: TimeInterval($0))
+                }
+                runtime.diagnostics.txBytes = statistics.txBytes
+                runtime.diagnostics.rxBytes = statistics.rxBytes
+                runtime.diagnostics.currentEndpoint = statistics.currentEndpoint
+
+                let receivedProgress = previous.map { statistics.rxBytes > $0.rxBytes } ?? false
+                let handshakeProgress = previous?.latestHandshake != statistics.latestHandshake
+                    && statistics.latestHandshake != nil
+                if receivedProgress || handshakeProgress {
+                    runtime.stalledHealthSamples = 0
+                    runtime.autoHealStage = 0
+                    runtime.diagnostics.healthState = .healthy
+                    runtime.diagnostics.healthDetail = String(localized: "Traffic or handshake progress is healthy.")
+                    return nil
+                }
+
+                let sentProgress = previous.map { statistics.txBytes > $0.txBytes } ?? false
+                let handshakeDate = statistics.latestHandshake.map {
+                    Date(timeIntervalSince1970: TimeInterval($0))
+                }
+                let handshakeIsStale = handshakeDate.map { now.timeIntervalSince($0) > 150 } ?? true
+                if sentProgress,
+                   handshakeIsStale,
+                   now.timeIntervalSince(runtime.startedAt) > 60 {
+                    runtime.stalledHealthSamples += 1
+                } else if !sentProgress {
+                    runtime.stalledHealthSamples = 0
+                }
+                let dnsFailed = dnsHealth.isObservable && dnsHealth.consecutiveFailures >= 3
+                let peerStalled = runtime.stalledHealthSamples >= 2
+                guard dnsFailed || peerStalled else {
+                    runtime.diagnostics.healthState = .healthy
+                    runtime.diagnostics.healthDetail = dnsHealth.isObservable
+                        ? String(localized: "Tunnel and local DNS checks are healthy.")
+                        : String(localized: "Tunnel traffic is healthy; native DNS health is managed by iOS.")
+                    return nil
+                }
+
+                runtime.diagnostics.healthState = .degraded
+                runtime.diagnostics.healthDetail = dnsFailed
+                    ? String(localized: "The local encrypted DNS resolver stopped responding.")
+                    : String(localized: "WireGuard sent traffic without peer response or handshake progress.")
+                let cooldown: TimeInterval = runtime.autoHealStage >= 3 ? 120 : 30
+                if let last = runtime.lastAutoHeal, now.timeIntervalSince(last) < cooldown {
+                    return nil
+                }
+                runtime.autoHealStage = min(3, runtime.autoHealStage + 1)
+                runtime.lastAutoHeal = now
+                runtime.diagnostics.healthState = .recovering
+                runtime.diagnostics.lastAutoHeal = now
+                return runtime.autoHealStage
+            }
+            persistDiagnostics()
+            if let stage { performHealthRecovery(stage: stage, sessionID: sessionID, adapter: adapter) }
+        } catch {
+            let message = error.localizedDescription
+            updateDiagnostics(for: sessionID) { diagnostics in
+                diagnostics.healthState = .degraded
+                diagnostics.healthDetail = message
+            }
+        }
+    }
+
+    private func performHealthRecovery(
+        stage: Int,
+        sessionID: UInt64,
+        adapter: RustTunnelAdapter
+    ) {
+        guard let profile = state.withLock({ runtime -> TunnelProfile? in
+            guard runtime.sessionID == sessionID, runtime.adapter === adapter else { return nil }
+            return runtime.profile
+        }) else { return }
+        reasserting = true
+        defer { reasserting = false }
+        do {
+            switch stage {
+            case 1:
+                try adapter.rebind()
+            case 2:
+                let refresh = EngineConfigurationBuilder.makeEndpointRefresh(profile: profile)
+                if refresh.endpoints.peers.isEmpty {
+                    try adapter.rebind()
+                } else {
+                    try adapter.reconfigure(endpoints: refresh.endpoints)
+                    state.withLock { runtime in
+                        if runtime.sessionID == sessionID, runtime.adapter === adapter,
+                           let base = runtime.engineConfiguration {
+                            runtime.engineConfiguration = Self.applying(refresh.endpoints, to: base)
+                        }
+                    }
+                }
+            default:
+                try replaceEngine(sessionID: sessionID, adapter: adapter, profile: profile)
+            }
+            updateDiagnostics(for: sessionID) { diagnostics in
+                diagnostics.state = .connected
+                diagnostics.healthState = .observing
+                diagnostics.autoHealCount = (diagnostics.autoHealCount ?? 0) &+ 1
+                diagnostics.healthDetail = switch stage {
+                case 1: String(localized: "Auto Heal recycled the WireGuard UDP sockets.")
+                case 2: String(localized: "Auto Heal refreshed the peer endpoint and requested a reconnect.")
+                default: String(localized: "Auto Heal rebuilt the tunnel engine.")
+                }
+            }
+        } catch {
+            let message = error.localizedDescription
+            updateDiagnostics(for: sessionID) { diagnostics in
+                diagnostics.state = .reconnecting
+                diagnostics.healthState = .degraded
+                diagnostics.healthDetail = message
+            }
+        }
+    }
+
     private func handlePathUpdate(_ path: NWPath, sessionID: UInt64) {
         let signature = Self.describe(path)
         let fingerprint = Self.fingerprint(path)
@@ -299,31 +485,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                     try snapshot.1.rebind()
                 } else {
                     try snapshot.1.reconfigure(endpoints: refresh.endpoints)
+                    state.withLock { runtime in
+                        if runtime.sessionID == sessionID, runtime.adapter === snapshot.1,
+                           let base = runtime.engineConfiguration {
+                            runtime.engineConfiguration = Self.applying(refresh.endpoints, to: base)
+                        }
+                    }
                 }
             } catch {
                 // A failed in-place update may leave sockets suspended. A full
                 // replacement is the bounded recovery path, not a retry loop.
-                let resolved = try EngineConfigurationBuilder.make(
-                    profile: snapshot.0,
-                    strategy: .networkChange
+                try replaceEngine(
+                    sessionID: sessionID,
+                    adapter: snapshot.1,
+                    profile: snapshot.0
                 )
-                guard isCurrentSession(sessionID, adapter: snapshot.1) else { return }
-                snapshot.1.stop()
-                guard state.withLock({ $0.sessionID == sessionID && $0.profile != nil }) else {
-                    return
-                }
-                let replacement = RustTunnelAdapter()
-                try replacement.start(configuration: resolved.engine)
-                let didInstall = state.withLock { runtime -> Bool in
-                    guard runtime.sessionID == sessionID,
-                          runtime.adapter === snapshot.1 else { return false }
-                    runtime.adapter = replacement
-                    return true
-                }
-                guard didInstall else {
-                    replacement.stop()
-                    return
-                }
             }
             let didRecover = state.withLock { runtime -> Bool in
                 guard runtime.sessionID == sessionID, runtime.profile != nil else { return false }
@@ -350,6 +526,60 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             }
         }
         persistDiagnostics()
+    }
+
+    private func replaceEngine(
+        sessionID: UInt64,
+        adapter: RustTunnelAdapter,
+        profile: TunnelProfile
+    ) throws {
+        let refresh = EngineConfigurationBuilder.makeEndpointRefresh(profile: profile)
+        guard let base = state.withLock({ runtime -> RustEngineConfiguration? in
+            guard runtime.sessionID == sessionID, runtime.adapter === adapter else { return nil }
+            return runtime.engineConfiguration
+        }) else { return }
+        let configuration = refresh.endpoints.peers.isEmpty
+            ? base
+            : Self.applying(refresh.endpoints, to: base)
+        adapter.stop()
+        guard state.withLock({ $0.sessionID == sessionID && $0.profile != nil }) else { return }
+        do {
+            try adapter.start(configuration: configuration)
+        } catch {
+            // Keep the previous resolved endpoints as a rollback if a newly
+            // resolved address cannot start yet.
+            try? adapter.start(configuration: base)
+            throw error
+        }
+        state.withLock { runtime in
+            guard runtime.sessionID == sessionID, runtime.adapter === adapter else { return }
+            runtime.engineConfiguration = configuration
+            runtime.previousStatistics = nil
+        }
+    }
+
+    private static func applying(
+        _ endpoints: RustEndpointConfiguration,
+        to configuration: RustEngineConfiguration
+    ) -> RustEngineConfiguration {
+        let replacements = Dictionary(uniqueKeysWithValues: endpoints.peers.map {
+            ($0.publicKey, $0)
+        })
+        return RustEngineConfiguration(
+            privateKey: configuration.privateKey,
+            mtu: configuration.mtu,
+            peers: configuration.peers.map { peer in
+                guard let endpoint = replacements[peer.publicKey] else { return peer }
+                return RustPeerConfiguration(
+                    publicKey: peer.publicKey,
+                    presharedKey: peer.presharedKey,
+                    endpointIP: endpoint.endpointIP,
+                    endpointPort: endpoint.endpointPort,
+                    allowedIPs: peer.allowedIPs,
+                    persistentKeepalive: peer.persistentKeepalive
+                )
+            }
+        )
     }
 
     private func isCurrentSession(_ sessionID: UInt64, adapter: RustTunnelAdapter) -> Bool {

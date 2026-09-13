@@ -1,6 +1,29 @@
 THIRD-PARTY LICENSES
 ====================
 
+Optional DNS blocklist subscriptions
+------------------------------------
+
+Bufi contains a catalog of official download URLs but does not bundle a
+snapshot of these lists. If a user enables a subscription, its current data is
+downloaded and cached on that device under the source project's terms.
+
+HaGeZi DNS Blocklists (Light)
+Source: https://github.com/hagezi/dns-blocklists
+License: GNU General Public License v3.0
+
+OISD (Small)
+Source: https://github.com/sjhgvr/oisd
+License: GNU General Public License v3.0
+
+List-KR DNS
+Source: https://github.com/List-KR/List-KR
+License: GNU General Public License v3.0
+
+The complete GNU GPL v3 license accompanies Bufi in the repository root.
+
+-------------------------------------------------------------------------------
+
 GotaTun 0.9.2 (pinned revision fdf5e909ffe5e12310b2fe72a5fb82ab17dcd2e8)
 Source: https://github.com/mullvad/gotatun
 License: Mozilla Public License 2.0

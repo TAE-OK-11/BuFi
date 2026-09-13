@@ -86,7 +86,8 @@ final class TunnelConfigurationTests: XCTestCase {
         var dns = TunnelDNSConfiguration.system
         dns.protection = TunnelDNSProtectionConfiguration(
             isEnabled: true,
-            preset: .balanced
+            preset: .balanced,
+            enabledBuiltInBlocklists: []
         )
 
         let effective = dns.effectiveResolver
@@ -105,7 +106,11 @@ final class TunnelConfigurationTests: XCTestCase {
             resolverEndpoint: "one.one.one.one",
             serverName: "one.one.one.one",
             port: 853,
-            protection: TunnelDNSProtectionConfiguration(isEnabled: true, preset: .family)
+            protection: TunnelDNSProtectionConfiguration(
+                isEnabled: true,
+                preset: .family,
+                enabledBuiltInBlocklists: []
+            )
         )
         XCTAssertEqual(dns.effectiveResolver.resolverEndpoint, "https://family.adguard-dns.com/dns-query")
 
@@ -220,6 +225,28 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertNil(filter.blockedResponse(for: chaosClassQuery))
     }
 
+    func testMappedSubscriptionBlocksSuffixAndUserAllowlistWins() {
+        let snapshot = Data("ads.example\ntracker.example\n".utf8)
+        let filter = TunnelDNSMessageFilter(
+            blockedDomains: [],
+            allowedDomains: ["music.ads.example"],
+            subscriptionData: snapshot
+        )
+
+        XCTAssertNotNil(filter.blockedResponse(for: dnsQuery(domain: "deep.ads.example")))
+        XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "music.ads.example")))
+        XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "notads.example")))
+    }
+
+    func testSubscriptionParserUsesIndependentBound() {
+        let parsed = TunnelDNSRuleParser.parseSubscription(
+            "one.example\ntwo.example\nthree.example",
+            maximumRules: 2
+        )
+        XCTAssertTrue(parsed.reachedLimit)
+        XCTAssertEqual(parsed.blockedDomains.count, 3)
+    }
+
     func testDNSRuleParserNormalizesAndDeduplicatesMixedNewlines() {
         XCTAssertEqual(
             TunnelDNSRuleParser.parse("ADS.EXAMPLE\r\nads.example\ntracker.example"),
@@ -278,6 +305,37 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertEqual(protection.preset, .balanced)
         XCTAssertTrue(protection.blockedDomains.isEmpty)
         XCTAssertTrue(protection.allowedDomains.isEmpty)
+        XCTAssertTrue(protection.enabledBuiltInBlocklists.isEmpty)
+        XCTAssertTrue(protection.automaticUpdates)
+    }
+
+    func testNewProtectionOffersLightweightBuiltInCatalogDefault() {
+        let protection = TunnelDNSProtectionConfiguration(isEnabled: true)
+        XCTAssertEqual(protection.enabledBuiltInBlocklists, [.hageziLight])
+        XCTAssertTrue(protection.needsLocalResolver)
+        XCTAssertEqual(protection.preset.locallyFilteredResolver.mode, .quic)
+    }
+
+    func testOnDemandSSIDRulesValidateAndRoundTrip() throws {
+        let configuration = TunnelOnDemandConfiguration(
+            isEnabled: true,
+            cellularAction: .connect,
+            wifiAction: .connect,
+            ssidRules: [
+                TunnelSSIDOnDemandRule(ssid: "Home", action: .disconnect),
+                TunnelSSIDOnDemandRule(ssid: "Office", action: .connect)
+            ]
+        )
+        XCTAssertNoThrow(try TunnelProfileValidator.validateOnDemand(configuration))
+        let decoded = try JSONDecoder().decode(
+            TunnelOnDemandConfiguration.self,
+            from: JSONEncoder().encode(configuration)
+        )
+        XCTAssertEqual(decoded, configuration)
+
+        var duplicate = configuration
+        duplicate.ssidRules.append(TunnelSSIDOnDemandRule(ssid: "Home", action: .connect))
+        XCTAssertThrowsError(try TunnelProfileValidator.validateOnDemand(duplicate))
     }
 
     func testCustomDNSRuleLimitProtectsExtensionMemoryBudget() {

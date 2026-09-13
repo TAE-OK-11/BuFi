@@ -6,12 +6,30 @@ import Security
 protocol TunnelDNSResolver: AnyObject, Sendable {
     var settings: NEDNSSettings? { get }
     var blockedQueryCount: UInt64 { get }
+    var health: TunnelDNSHealthSnapshot { get }
     func start() throws
     func stop()
 }
 
+struct TunnelDNSHealthSnapshot: Sendable {
+    let isObservable: Bool
+    let consecutiveFailures: UInt32
+    let lastSuccess: Date?
+    let lastFailure: Date?
+
+    static let unavailable = TunnelDNSHealthSnapshot(
+        isObservable: false,
+        consecutiveFailures: 0,
+        lastSuccess: nil,
+        lastFailure: nil
+    )
+}
+
 enum TunnelDNSResolverFactory {
-    static func make(_ configuration: TunnelDNSConfiguration) throws -> TunnelDNSResolver {
+    static func make(
+        _ configuration: TunnelDNSConfiguration,
+        profileID: UUID
+    ) throws -> TunnelDNSResolver {
         let protection = configuration.effectiveProtection
         let effective = configuration.effectiveResolver
         switch effective.mode {
@@ -37,10 +55,11 @@ enum TunnelDNSResolverFactory {
             settings.matchDomains = [""]
             return NativeDNSResolver(settings: settings)
         case .quic:
-            let filter = protection.isEnabled && protection.hasCustomRules
+            let filter = protection.isEnabled && protection.needsLocalResolver
                 ? TunnelDNSMessageFilter(
                     blockedDomains: protection.blockedDomains,
-                    allowedDomains: protection.allowedDomains
+                    allowedDomains: protection.allowedDomains,
+                    subscriptionData: try? TunnelBlocklistCache.snapshot(profileID: profileID)
                 )
                 : nil
             return DoQDNSResolver(configuration: effective, filter: filter)
@@ -51,6 +70,7 @@ enum TunnelDNSResolverFactory {
 private final class NativeDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     let settings: NEDNSSettings?
     let blockedQueryCount: UInt64 = 0
+    let health = TunnelDNSHealthSnapshot.unavailable
 
     init(settings: NEDNSSettings?) { self.settings = settings }
     func start() throws {}
@@ -77,9 +97,22 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
     private var downstreams: [UUID: NWConnection] = [:]
     private var upstreams: [UUID: NWConnection] = [:]
     private var blockedQueries: UInt64 = 0
+    private var consecutiveFailures: UInt32 = 0
+    private var lastSuccess: Date?
+    private var lastFailure: Date?
     private var isRunning = false
 
     var blockedQueryCount: UInt64 { state.locked { blockedQueries } }
+    var health: TunnelDNSHealthSnapshot {
+        state.locked {
+            TunnelDNSHealthSnapshot(
+                isObservable: true,
+                consecutiveFailures: consecutiveFailures,
+                lastSuccess: lastSuccess,
+                lastFailure: lastFailure
+            )
+        }
+    }
 
     init(configuration: TunnelDNSConfiguration, filter: TunnelDNSMessageFilter?) {
         self.configuration = configuration
@@ -296,9 +329,25 @@ private final class DoQDNSResolver: TunnelDNSResolver, @unchecked Sendable {
         forwardOverQUIC(query) { [weak self] response in
             guard let self else { completion(nil); return }
             if let response {
+                self.recordUpstreamResult(succeeded: true)
                 completion(response)
             } else {
-                self.forwardOverTLS(query, completion: completion)
+                self.forwardOverTLS(query) { response in
+                    self.recordUpstreamResult(succeeded: response != nil)
+                    completion(response)
+                }
+            }
+        }
+    }
+
+    private func recordUpstreamResult(succeeded: Bool) {
+        state.locked {
+            if succeeded {
+                consecutiveFailures = 0
+                lastSuccess = Date()
+            } else {
+                consecutiveFailures &+= 1
+                lastFailure = Date()
             }
         }
     }

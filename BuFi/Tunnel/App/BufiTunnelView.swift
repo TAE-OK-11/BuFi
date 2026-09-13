@@ -13,6 +13,7 @@ struct BufiTunnelView: View {
     @State private var deleteCandidate: TunnelProfile?
     @State private var dnsProfile: TunnelProfile?
     @State private var protectionProfile: TunnelProfile?
+    @State private var onDemandProfile: TunnelProfile?
 
     var body: some View {
         ScrollView {
@@ -42,6 +43,9 @@ struct BufiTunnelView: View {
         }
         .sheet(item: $protectionProfile) { profile in
             NavigationStack { TunnelAdBlockingEditor(profile: profile) }
+        }
+        .sheet(item: $onDemandProfile) { profile in
+            NavigationStack { TunnelOnDemandEditor(profile: profile) }
         }
         .fileImporter(
             isPresented: $isImporting,
@@ -232,6 +236,17 @@ struct BufiTunnelView: View {
                 diagnosticRow("Endpoint", value: tunnel.diagnostics.currentEndpoint ?? "—")
                 diagnosticRow("Network", value: tunnel.diagnostics.currentNetworkPath)
                 diagnosticRow("Reconnects", value: "\(tunnel.diagnostics.reconnectCount)")
+                diagnosticRow(
+                    "Tunnel health",
+                    value: tunnel.diagnostics.healthState?.title ?? String(localized: "Observing")
+                )
+                if let detail = tunnel.diagnostics.healthDetail {
+                    Text(detail)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                diagnosticRow("Auto Heal actions", value: "\(tunnel.diagnostics.autoHealCount ?? 0)")
                 diagnosticRow("DNS", value: tunnel.diagnostics.dnsMode.title)
                 diagnosticRow(
                     "Ad blocking",
@@ -241,8 +256,12 @@ struct BufiTunnelView: View {
                 )
                 if tunnel.diagnostics.dnsProtectionEnabled {
                     diagnosticRow(
-                        "Custom blocked DNS queries",
+                        "Locally blocked DNS queries",
                         value: "\(tunnel.diagnostics.dnsBlockedQueryCount ?? 0)"
+                    )
+                    diagnosticRow(
+                        "Subscribed block rules",
+                        value: "\(tunnel.diagnostics.blocklistRuleCount ?? 0)"
                     )
                 }
                 if let endpoint = tunnel.diagnostics.dnsResolverEndpoint {
@@ -279,6 +298,12 @@ struct BufiTunnelView: View {
             .disabled(tunnel.selectedProfile == nil)
             Button { protectionProfile = tunnel.selectedProfile } label: {
                 Label("Ad blocking", systemImage: "shield.lefthalf.filled")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(tunnel.selectedProfile == nil)
+            Button { onDemandProfile = tunnel.selectedProfile } label: {
+                Label("On-Demand", systemImage: "antenna.radiowaves.left.and.right")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -354,6 +379,117 @@ struct BufiTunnelView: View {
             _ = await tunnel.importConfiguration(text: text, name: name)
         } catch {
             tunnel.errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private extension TunnelHealthState {
+    var title: String {
+        switch self {
+        case .observing: String(localized: "Observing")
+        case .healthy: String(localized: "Healthy")
+        case .degraded: String(localized: "Degraded")
+        case .recovering: String(localized: "Auto healing")
+        }
+    }
+}
+
+private struct TunnelOnDemandEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var tunnel = TunnelManager.shared
+    @State private var profile: TunnelProfile
+    @State private var configuration: TunnelOnDemandConfiguration
+    @State private var localError: String?
+
+    init(profile: TunnelProfile) {
+        _profile = State(initialValue: profile)
+        _configuration = State(initialValue: profile.effectiveOnDemand)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Enable On-Demand", isOn: $configuration.isEnabled)
+                    .disabled(profile.effectiveSecretScope == .mainAppOnly)
+            } footer: {
+                if profile.effectiveSecretScope == .mainAppOnly {
+                    Text("On-Demand needs a correctly signed Packet Tunnel and shared Keychain access. Manual connection remains available in this build.")
+                } else {
+                    Text("iOS evaluates these rules when the primary network changes, even while Bufi is not open.")
+                }
+            }
+
+            Section("Default network behavior") {
+                Picker("Cellular", selection: $configuration.cellularAction) {
+                    ForEach(TunnelOnDemandAction.allCases) { Text($0.title).tag($0) }
+                }
+                Picker("Wi-Fi", selection: $configuration.wifiAction) {
+                    ForEach(TunnelOnDemandAction.allCases) { Text($0.title).tag($0) }
+                }
+            }
+
+            Section {
+                ForEach($configuration.ssidRules) { $rule in
+                    HStack(spacing: 8) {
+                        TextField("Wi-Fi name (SSID)", text: $rule.ssid)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Picker("Action", selection: $rule.action) {
+                            ForEach(TunnelOnDemandAction.allCases) { Text($0.title).tag($0) }
+                        }
+                        .labelsHidden()
+                        .frame(width: 112)
+                        Button(role: .destructive) {
+                            configuration.ssidRules.removeAll { $0.id == rule.id }
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Button("Add SSID rule", systemImage: "plus.circle") {
+                    configuration.ssidRules.append(TunnelSSIDOnDemandRule())
+                }
+            } header: {
+                Text("Specific Wi-Fi networks")
+            } footer: {
+                Text("SSID rules take priority over the default Wi-Fi action. For example, set Wi-Fi to Connect and your home SSID to Disconnect.")
+            }
+        }
+        .navigationTitle("On-Demand")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { Task { await save() } }.disabled(tunnel.isBusy)
+            }
+        }
+        .alert("Invalid profile", isPresented: Binding(
+            get: { localError != nil }, set: { if !$0 { localError = nil } }
+        )) {
+            Button("OK") { localError = nil }
+        } message: {
+            Text(localError ?? String(localized: "Unknown error"))
+        }
+    }
+
+    private func save() async {
+        do {
+            configuration.ssidRules = configuration.ssidRules.map { rule in
+                var rule = rule
+                rule.ssid = rule.ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+                return rule
+            }
+            try TunnelProfileValidator.validateOnDemand(configuration)
+            profile.onDemand = configuration
+            if await tunnel.save(profile: profile, privateKey: nil, presharedKeys: [:]) {
+                dismiss()
+            } else {
+                localError = tunnel.errorMessage
+                tunnel.errorMessage = nil
+            }
+        } catch {
+            localError = error.localizedDescription
         }
     }
 }
@@ -774,6 +910,7 @@ private struct TunnelAdBlockingEditor: View {
     @State private var parsedAllowedRules: [String]
     @State private var ignoredRuleCount: Int
     @State private var localError: String?
+    @State private var isRefreshing = false
 
     init(profile: TunnelProfile) {
         let initialProtection = profile.dns.effectiveProtection
@@ -831,15 +968,86 @@ private struct TunnelAdBlockingEditor: View {
                 }
 
                 Section("Lightweight design") {
-                    if hasParsedCustomRules {
+                    if hasParsedCustomRules || protection.hasEnabledSubscriptions {
                         Label("Custom rules use an encrypted local DNS boundary", systemImage: "lock.shield")
                     } else {
                         Label("Uses Apple native DNS-over-HTTPS", systemImage: "lock.shield")
                     }
-                    Label("No downloaded blocklist or background update timer", systemImage: "leaf")
+                    Label("Subscribed domains use a memory-mapped compact index", systemImage: "leaf")
                     Label("Bufi does not store DNS query history", systemImage: "eye.slash")
                     LabeledContent("Resolver", value: protection.preset.resolver.resolverEndpoint)
                         .font(.caption)
+                }
+
+                Section {
+                    ForEach(TunnelBuiltInBlocklist.allCases) { source in
+                        Toggle(isOn: builtInBinding(source)) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(source.title).fontWeight(.semibold)
+                                Text(source.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(source.licenseName)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Built-in subscriptions")
+                } footer: {
+                    Text("The catalog is built in; current domain data is downloaded from each project's official distribution URL.")
+                }
+
+                Section {
+                    Toggle("Update automatically", isOn: $protection.automaticUpdates)
+                    ForEach($protection.customSubscriptions) { $subscription in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Enabled", isOn: $subscription.isEnabled)
+                            TextField("List name", text: $subscription.name)
+                            TextField("HTTPS blocklist URL", text: $subscription.url)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                            Button("Remove subscription", role: .destructive) {
+                                protection.customSubscriptions.removeAll { $0.id == subscription.id }
+                            }
+                        }
+                    }
+                    Button("Add custom subscription", systemImage: "plus.circle") {
+                        guard protection.customSubscriptions.count
+                                < TunnelDNSProtectionConfiguration.maximumCustomSubscriptions else {
+                            localError = TunnelValidationError.tooManyBlocklistSubscriptions.localizedDescription
+                            return
+                        }
+                        protection.customSubscriptions.append(TunnelBlocklistSubscription())
+                    }
+                    Button {
+                        Task { await refreshNow() }
+                    } label: {
+                        if isRefreshing {
+                            ProgressView().frame(maxWidth: .infinity)
+                        } else {
+                            Label("Update blocklists now", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .disabled(isRefreshing)
+                    if let metadata = tunnel.blocklistMetadata[profile.id] {
+                        LabeledContent("Subscribed rules", value: "\(metadata.ruleCount)")
+                        LabeledContent(
+                            "Last update",
+                            value: metadata.updatedAt.formatted(date: .abbreviated, time: .shortened)
+                        )
+                    } else {
+                        Text("No downloaded subscription snapshot yet. AdGuard DNS protection remains active until an update succeeds.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Blocklist updates")
+                } footer: {
+                    Text("Automatic updates are checked when Bufi becomes active and are limited to once every 24 hours. Downloads are capped and normalized to DNS-only domains.")
                 }
 
                 Section {
@@ -860,7 +1068,7 @@ private struct TunnelAdBlockingEditor: View {
                 } header: {
                     Text("Custom filters")
                 } footer: {
-                    Text("Add one domain per line. Comma-separated domains, hosts entries, *.domain.example, URLs, and domain-only AdGuard rules are accepted. @@||allowed.example^ exceptions may be pasted with blocked rules. Cosmetic, script, regular-expression, and URL-path rules are ignored because DNS cannot apply them. Allow rules override only your custom blocked parent domains.")
+                    Text("Add one domain per line. Comma-separated domains, hosts entries, *.domain.example, URLs, and domain-only AdGuard rules are accepted. @@||allowed.example^ exceptions may be pasted with blocked rules. Cosmetic, script, regular-expression, and URL-path rules are ignored because DNS cannot apply them. Allow rules override custom and subscribed blocked parent domains.")
                 }
             }
 
@@ -918,11 +1126,56 @@ private struct TunnelAdBlockingEditor: View {
         do {
             try TunnelProfileValidator.validateDNS(profile.dns)
             if await tunnel.save(profile: profile, privateKey: nil, presharedKeys: [:]) {
+                let savedProfile = profile
+                Task { _ = await tunnel.refreshBlocklist(for: savedProfile, force: true) }
                 dismiss()
             }
         } catch {
             localError = error.localizedDescription
         }
+    }
+
+    private func refreshNow() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        protection.blockedDomains = parsedBlockedRules
+        protection.allowedDomains = parsedAllowedRules
+        profile.dns.protection = protection
+        do {
+            try TunnelProfileValidator.validateDNS(profile.dns)
+            guard await tunnel.save(
+                profile: profile,
+                privateKey: nil,
+                presharedKeys: [:]
+            ) else {
+                localError = tunnel.errorMessage
+                tunnel.errorMessage = nil
+                return
+            }
+            guard await tunnel.refreshBlocklist(for: profile, force: true) else {
+                localError = tunnel.errorMessage
+                tunnel.errorMessage = nil
+                return
+            }
+        } catch {
+            localError = error.localizedDescription
+        }
+    }
+
+    private func builtInBinding(_ source: TunnelBuiltInBlocklist) -> Binding<Bool> {
+        Binding(
+            get: { protection.enabledBuiltInBlocklists.contains(source) },
+            set: { enabled in
+                if enabled {
+                    if !protection.enabledBuiltInBlocklists.contains(source) {
+                        protection.enabledBuiltInBlocklists.append(source)
+                    }
+                } else {
+                    protection.enabledBuiltInBlocklists.removeAll { $0 == source }
+                }
+            }
+        )
     }
 
     private var hasParsedCustomRules: Bool {

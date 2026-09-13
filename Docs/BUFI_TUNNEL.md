@@ -144,10 +144,9 @@ resolver through `NEDNSOverHTTPSSettings`:
   upstream supports it.
 
 The architecture follows the resolver/filter separation used by the Apache-2.0
-AdGuard DnsLibs project, but deliberately does not embed that larger C++ engine
-or a GPL blocklist. There is no list download, parser, query database,
-background refresh timer, or per-query Swift/Rust FFI call. Built-in filtering
-happens at the selected upstream and Bufi stores no DNS query history.
+AdGuard DnsLibs project, but deliberately does not embed that larger C++ engine.
+Built-in filtering happens at the selected upstream and Bufi stores no DNS
+query history or domain-level diagnostics.
 
 Users may add a small set of block and allow domains in the app. Exact domains,
 subdomains, multi-alias hosts entries, comma/newline lists, wildcard domains,
@@ -155,12 +154,12 @@ URLs, and domain-only AdGuard rules are normalized and deduplicated. Combined
 lists safely separate `@@||domain.example^` exceptions from block rules.
 Cosmetic, script, regular-expression, and URL-path rules are reported as
 ignored rather than being dangerously widened into whole-domain blocks. Allow
-rules take precedence over a blocked parent domain. When custom rules are non-empty, the
+rules take precedence over custom and subscription blocked parent domains. When
+custom rules or subscriptions are enabled, the
 isolated resolver boundary applies them locally and returns an NXDOMAIN response
 without forwarding the query. Allowed traffic uses authenticated DoQ to the
-selected AdGuard endpoint with DoT fallback on networks that block QUIC. Only
-the user-owned rules are resident in memory; the maintained large lists remain
-upstream. Custom rules are compiled once into a compact reverse-label suffix
+selected AdGuard endpoint with DoT fallback on networks that block QUIC. Custom
+rules are compiled once into a compact reverse-label suffix
 index, so hot-path matches do not allocate a String for every parent domain.
 Only standard Internet-class DNS queries can reach the matcher; responses,
 non-standard opcodes, and non-IN questions pass through without mutation.
@@ -169,7 +168,20 @@ text repeatedly during one SwiftUI render. Diagnostics expose only an aggregate
 locally blocked custom-query count, never domain names; Apple's native encrypted
 DNS settings do not expose the upstream AdGuard block count. Custom block and allow rules are capped
 at 4,096 combined to preserve the Network Extension's memory budget; bulk
-maintained lists belong at the upstream.
+maintained lists belong in a subscription snapshot rather than profile JSON.
+
+The built-in subscription catalog contains the official DNS-domain editions of
+HaGeZi Light, OISD Small, and List-KR DNS. It stores URLs and attribution in the
+app, not a stale copy of the lists. Users may also add up to eight named HTTPS
+sources. Downloads are limited to 12 MB per source and 250,000 combined domains,
+normalized by the containing app, deduplicated, and committed atomically to the
+App Group. Packet Tunnel memory-maps the sorted newline snapshot and uses a
+small line-offset table plus binary search instead of materializing every domain
+as a Swift string. A failed update preserves the previous snapshot; without a
+snapshot, AdGuard upstream protection still applies. Updates are checked when
+Bufi becomes active and no more than once per 24 hours, avoiding a persistent
+background timer. A manual refresh is available in the editor. Attribution and
+source links ship in `ThirdPartyLicenses.txt`.
 
 ## Optional OpenSubsonic endpoint routing
 
@@ -190,7 +202,17 @@ offline data, history, artwork, queue, or library caches into a second account.
 
 The Tunnel screen shows this server connection card first. Separate action
 buttons then open manual WireGuard setup, `.conf` import, selected-profile
-editing, and the dedicated System/Plain/DoH/DoT/DoQ DNS editor.
+editing, On-Demand rules, and the dedicated System/Plain/DoH/DoT/DoQ DNS editor.
+
+## On-Demand rules
+
+Each profile may ask iOS to connect or disconnect independently on cellular and
+Wi-Fi, with ordered per-SSID overrides evaluated before the general Wi-Fi rule.
+This supports “outside ON” with a home SSID set to disconnect, and the inverse.
+Rules are persisted as `NEOnDemandRuleConnect` and
+`NEOnDemandRuleDisconnect` on `NETunnelProviderManager`; Bufi does not poll the
+current SSID. On-Demand is rejected for `mainAppOnly` secret ownership because
+iOS may launch Packet Tunnel without the app's one-time in-memory key envelope.
 
 ## Lifecycle and performance
 
@@ -210,13 +232,25 @@ Sleep suspends the engine and wake performs the same recovery. Normal WireGuard
 timers plus `PersistentKeepalive` handle server restarts and idle NAT mappings;
 there is no STUN, traversal, relay, DERP, mesh, or coordination layer.
 
+A single extension-owned health timer runs every 30 seconds with scheduling
+leeway. An old handshake alone is not a fault because WireGuard may be idle.
+Auto Heal activates only after transmitted traffic has no receive or handshake
+progress for two samples after startup grace, or after the local DoQ/DoT proxy
+observes three consecutive upstream failures. Recovery is rate-limited and
+escalates from UDP socket rebind, to endpoint re-resolution and peer
+reconfiguration, to an in-memory GotaTun engine rebuild. Traffic progress resets
+the ladder; the final stage has a two-minute cooldown. No active ping is
+generated, so packet loss is conservatively treated as missing peer progress
+rather than inventing a loss percentage. Native encrypted DNS health is left to
+iOS because those APIs expose no per-query result to Packet Tunnel.
+
 The GotaTun runtime uses two workers, pooled packet buffers, vectored utun
 writes, a duplicated nonblocking fd, and 4 MiB UDP buffers. Network changes send
 only public peer identity and resolved endpoints across FFI; private and
 preshared keys are not reloaded or serialized again. There is no Swift
-per-packet callback, metrics timer in the extension, or reconnect polling loop.
+per-packet callback or reconnect polling loop.
 The app requests metrics every second during transitions and every five seconds
-after connection, reducing steady-state wakeups.
+after connection; the extension health sample is independent and low-frequency.
 Rust release builds and the iOS Release configuration both use ThinLTO.
 
 ## GitHub validation
@@ -254,6 +288,10 @@ iPhones:
 - Plain IPv4/IPv6 DNS, DoH, DoT, and DoQ resolvers
 - Balanced and Family DNS ad-blocking presets, including resolver restoration
 - custom block/allow rules, NXDOMAIN response, aggregate count, and QUIC fallback
+- HaGeZi/OISD/List-KR refresh, failed-update cache rollback, allowlist override,
+  and memory/CPU behavior near the combined rule cap
+- cellular/Wi-Fi and SSID-specific On-Demand connect/disconnect rules
+- Auto Heal rebind, endpoint refresh, engine rebuild, cooldown, and counters
 - connect/disconnect and profile enable/disable
 - OpenSubsonic primary/tunnel endpoint switching without cache-scope changes
 - Wi-Fi → cellular, cellular → Wi-Fi, temporary offline, and endpoint DNS change

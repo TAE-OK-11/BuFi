@@ -85,25 +85,36 @@ enum TunnelDNSProtectionPreset: String, Codable, CaseIterable, Identifiable, Sen
 
 struct TunnelDNSProtectionConfiguration: Codable, Equatable, Sendable {
     static let maximumCustomRules = 4_096
+    static let maximumCustomSubscriptions = 8
     var isEnabled = false
     var preset: TunnelDNSProtectionPreset = .balanced
     var blockedDomains: [String] = []
     var allowedDomains: [String] = []
+    var enabledBuiltInBlocklists: [TunnelBuiltInBlocklist] = [.hageziLight]
+    var customSubscriptions: [TunnelBlocklistSubscription] = []
+    var automaticUpdates = true
 
     init(
         isEnabled: Bool = false,
         preset: TunnelDNSProtectionPreset = .balanced,
         blockedDomains: [String] = [],
-        allowedDomains: [String] = []
+        allowedDomains: [String] = [],
+        enabledBuiltInBlocklists: [TunnelBuiltInBlocklist] = [.hageziLight],
+        customSubscriptions: [TunnelBlocklistSubscription] = [],
+        automaticUpdates: Bool = true
     ) {
         self.isEnabled = isEnabled
         self.preset = preset
         self.blockedDomains = blockedDomains
         self.allowedDomains = allowedDomains
+        self.enabledBuiltInBlocklists = enabledBuiltInBlocklists
+        self.customSubscriptions = customSubscriptions
+        self.automaticUpdates = automaticUpdates
     }
 
     private enum CodingKeys: String, CodingKey {
         case isEnabled, preset, blockedDomains, allowedDomains
+        case enabledBuiltInBlocklists, customSubscriptions, automaticUpdates
     }
 
     init(from decoder: Decoder) throws {
@@ -112,6 +123,21 @@ struct TunnelDNSProtectionConfiguration: Codable, Equatable, Sendable {
         preset = try container.decodeIfPresent(TunnelDNSProtectionPreset.self, forKey: .preset) ?? .balanced
         blockedDomains = try container.decodeIfPresent([String].self, forKey: .blockedDomains) ?? []
         allowedDomains = try container.decodeIfPresent([String].self, forKey: .allowedDomains) ?? []
+        // Existing profiles keep their former resolver behavior until the user
+        // explicitly selects a subscription. Newly created protection settings
+        // offer HaGeZi Light as the low-memory default.
+        enabledBuiltInBlocklists = try container.decodeIfPresent(
+            [TunnelBuiltInBlocklist].self,
+            forKey: .enabledBuiltInBlocklists
+        ) ?? []
+        customSubscriptions = try container.decodeIfPresent(
+            [TunnelBlocklistSubscription].self,
+            forKey: .customSubscriptions
+        ) ?? []
+        automaticUpdates = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .automaticUpdates
+        ) ?? true
     }
 
     static let disabled = TunnelDNSProtectionConfiguration()
@@ -119,6 +145,92 @@ struct TunnelDNSProtectionConfiguration: Codable, Equatable, Sendable {
     var hasCustomRules: Bool {
         !blockedDomains.isEmpty
     }
+
+    var hasEnabledSubscriptions: Bool {
+        !enabledBuiltInBlocklists.isEmpty || customSubscriptions.contains(where: \.isEnabled)
+    }
+
+    var needsLocalResolver: Bool {
+        hasCustomRules || hasEnabledSubscriptions
+    }
+}
+
+enum TunnelBuiltInBlocklist: String, Codable, CaseIterable, Identifiable, Sendable {
+    case hageziLight
+    case oisdSmall
+    case listKR
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hageziLight: "HaGeZi Light"
+        case .oisdSmall: "OISD Small"
+        case .listKR: "List-KR DNS"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .hageziLight: String(localized: "Low-breakage ads, trackers, telemetry, and selected threats.")
+        case .oisdSmall: String(localized: "A compact compatibility-focused advertising list.")
+        case .listKR: String(localized: "DNS-level advertising rules focused on Korean services.")
+        }
+    }
+
+    var sourceURL: URL {
+        switch self {
+        case .hageziLight:
+            URL(string: "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/wildcard/light-onlydomains.txt")!
+        case .oisdSmall:
+            URL(string: "https://small.oisd.nl/domainswild2")!
+        case .listKR:
+            URL(string: "https://cdn.jsdelivr.net/npm/@list-kr/filterslists@latest/dist/filterslist-DNS.txt")!
+        }
+    }
+
+    var projectURL: URL {
+        switch self {
+        case .hageziLight: URL(string: "https://github.com/hagezi/dns-blocklists")!
+        case .oisdSmall: URL(string: "https://oisd.nl")!
+        case .listKR: URL(string: "https://github.com/List-KR/List-KR")!
+        }
+    }
+
+    var licenseName: String { "GPL-3.0" }
+}
+
+struct TunnelBlocklistSubscription: Codable, Equatable, Identifiable, Sendable {
+    var id = UUID()
+    var name = ""
+    var url = ""
+    var isEnabled = true
+}
+
+enum TunnelOnDemandAction: String, Codable, CaseIterable, Identifiable, Sendable {
+    case connect
+    case disconnect
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .connect: String(localized: "Connect")
+        case .disconnect: String(localized: "Disconnect")
+        }
+    }
+}
+
+struct TunnelSSIDOnDemandRule: Codable, Equatable, Identifiable, Sendable {
+    var id = UUID()
+    var ssid = ""
+    var action: TunnelOnDemandAction = .disconnect
+}
+
+struct TunnelOnDemandConfiguration: Codable, Equatable, Sendable {
+    var isEnabled = false
+    var cellularAction: TunnelOnDemandAction = .connect
+    var wifiAction: TunnelOnDemandAction = .connect
+    var ssidRules: [TunnelSSIDOnDemandRule] = []
 }
 
 enum TunnelSecretScope: String, Codable, Equatable, Sendable {
@@ -152,7 +264,7 @@ struct TunnelDNSConfiguration: Codable, Equatable, Sendable {
 
     var effectiveResolver: TunnelDNSConfiguration {
         guard effectiveProtection.isEnabled else { return self }
-        return effectiveProtection.hasCustomRules
+        return effectiveProtection.needsLocalResolver
             ? effectiveProtection.preset.locallyFilteredResolver
             : effectiveProtection.preset.resolver
     }
@@ -181,10 +293,32 @@ enum TunnelDNSRuleParser {
     /// a block. Resource, cosmetic, script, and regular-expression rules are
     /// deliberately ignored because a DNS filter cannot implement them.
     static func parse(_ text: String, defaultAction: DefaultAction) -> Result {
+        parse(
+            text,
+            defaultAction: defaultAction,
+            maximumRules: TunnelDNSProtectionConfiguration.maximumCustomRules
+        )
+    }
+
+    /// Subscription downloads are normalized in the containing app, then
+    /// written as a sorted domain-only snapshot. The hard cap bounds download
+    /// processing and Packet Tunnel memory even for a malformed source.
+    static func parseSubscription(
+        _ text: String,
+        maximumRules: Int = 250_000
+    ) -> Result {
+        parse(text, defaultAction: .block, maximumRules: maximumRules)
+    }
+
+    private static func parse(
+        _ text: String,
+        defaultAction: DefaultAction,
+        maximumRules: Int
+    ) -> Result {
         var blocked = Set<String>()
         var allowed = Set<String>()
         var ignoredRuleCount = 0
-        let limit = TunnelDNSProtectionConfiguration.maximumCustomRules + 1
+        let limit = maximumRules + 1
         blocked.reserveCapacity(min(limit, text.count / 24))
         allowed.reserveCapacity(min(limit, text.count / 64))
         for rawLine in text.split(whereSeparator: { $0.isNewline }) {
@@ -318,6 +452,8 @@ struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
     var peers: [TunnelPeer]
     var mtu: UInt16?
     var dns: TunnelDNSConfiguration
+    /// Optional keeps profiles written before On-Demand support compatible.
+    var onDemand: TunnelOnDemandConfiguration? = nil
     /// `nil` preserves compatibility with v1 profiles, which were written to
     /// the explicitly shared group before scope metadata was introduced.
     var secretScope: TunnelSecretScope?
@@ -326,6 +462,10 @@ struct TunnelProfile: Codable, Equatable, Identifiable, Sendable {
 
     var effectiveSecretScope: TunnelSecretScope {
         secretScope ?? .sharedAccessGroup
+    }
+
+    var effectiveOnDemand: TunnelOnDemandConfiguration {
+        onDemand ?? TunnelOnDemandConfiguration()
     }
 
     var isFullTunnel: Bool {
@@ -370,6 +510,9 @@ enum TunnelValidationError: LocalizedError, Equatable, Sendable {
     case invalidDNSServer(String)
     case invalidDNSConfiguration
     case tooManyCustomDNSRules
+    case tooManyBlocklistSubscriptions
+    case invalidBlocklistSubscription
+    case invalidOnDemandSSID
 
     var errorDescription: String? {
         switch self {
@@ -419,6 +562,12 @@ enum TunnelValidationError: LocalizedError, Equatable, Sendable {
             locale: .current,
             TunnelDNSProtectionConfiguration.maximumCustomRules
         )
+        case .tooManyBlocklistSubscriptions:
+            String(localized: "Too many custom blocklist subscriptions are configured.")
+        case .invalidBlocklistSubscription:
+            String(localized: "Blocklist subscriptions must use a valid HTTPS URL and a name.")
+        case .invalidOnDemandSSID:
+            String(localized: "On-Demand SSID rules must have unique, non-empty network names.")
         }
     }
 }
@@ -462,6 +611,7 @@ enum TunnelProfileValidator {
             }
         }
         try validateDNS(profile.dns)
+        try validateOnDemand(profile.effectiveOnDemand)
     }
 
     static func validateDNS(_ dns: TunnelDNSConfiguration) throws {
@@ -470,9 +620,35 @@ enum TunnelProfileValidator {
         guard customRuleCount <= TunnelDNSProtectionConfiguration.maximumCustomRules else {
             throw TunnelValidationError.tooManyCustomDNSRules
         }
+        let protection = dns.effectiveProtection
+        guard protection.customSubscriptions.count
+                <= TunnelDNSProtectionConfiguration.maximumCustomSubscriptions else {
+            throw TunnelValidationError.tooManyBlocklistSubscriptions
+        }
+        for subscription in protection.customSubscriptions {
+            guard !subscription.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let url = URL(string: subscription.url),
+                  url.scheme?.lowercased() == "https",
+                  url.host != nil else {
+                throw TunnelValidationError.invalidBlocklistSubscription
+            }
+        }
         try validateResolver(dns)
         if dns.effectiveProtection.isEnabled {
             try validateResolver(dns.effectiveResolver)
+        }
+    }
+
+    static func validateOnDemand(_ configuration: TunnelOnDemandConfiguration) throws {
+        guard configuration.ssidRules.count <= 64 else {
+            throw TunnelValidationError.invalidOnDemandSSID
+        }
+        var names = Set<String>()
+        for rule in configuration.ssidRules {
+            let name = rule.ssid.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, names.insert(name).inserted else {
+                throw TunnelValidationError.invalidOnDemandSSID
+            }
         }
     }
 
@@ -544,8 +720,20 @@ struct TunnelDiagnostics: Codable, Equatable, Sendable {
     var dnsProtectionPreset: TunnelDNSProtectionPreset?
     /// Optional preserves decoding of diagnostics written by earlier builds.
     var dnsBlockedQueryCount: UInt64?
+    var blocklistRuleCount: Int?
+    var healthState: TunnelHealthState?
+    var healthDetail: String?
+    var autoHealCount: UInt64?
+    var lastAutoHeal: Date?
     var latestError: String?
     var updatedAt = Date()
+}
+
+enum TunnelHealthState: String, Codable, Sendable {
+    case observing
+    case healthy
+    case degraded
+    case recovering
 }
 
 enum TunnelProviderMessage: String, Codable, Sendable {

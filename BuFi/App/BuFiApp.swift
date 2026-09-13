@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct BuFiApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model: AppModel
     @StateObject private var audio: AudioEngine
     @StateObject private var tunnel: TunnelManager
@@ -48,6 +49,10 @@ struct BuFiApp: App {
                     await model.applyTunnelServerRouting(
                         tunnelActive: AppModel.tunnelCarriesTraffic(tunnel.status)
                     )
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    Task { await tunnel.refreshBlocklistsIfNeeded() }
                 }
         }
     }
