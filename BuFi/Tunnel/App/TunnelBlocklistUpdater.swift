@@ -6,6 +6,7 @@ enum TunnelBlocklistUpdateError: LocalizedError, Sendable {
     case invalidText
     case tooManyRules
     case noUsableRules(String)
+    case rustEngineUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ enum TunnelBlocklistUpdateError: LocalizedError, Sendable {
             locale: .current,
             name
         )
+        case .rustEngineUnavailable:
+            String(localized: "The Rust DNS filter engine could not compile the blocklist.")
         }
     }
 }
@@ -49,9 +52,11 @@ actor TunnelBlocklistUpdater {
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
 
-        var blocked = Set<String>()
-        var exceptions = Set<String>()
-        blocked.reserveCapacity(50_000)
+        guard let compiler = RustDNSBlocklistCompiler(
+            maximumRules: Self.maximumCombinedRules
+        ) else {
+            throw TunnelBlocklistUpdateError.rustEngineUnavailable
+        }
         for source in sources {
             var request = URLRequest(url: source.url)
             request.setValue("text/plain", forHTTPHeaderField: "Accept")
@@ -64,25 +69,27 @@ actor TunnelBlocklistUpdater {
             guard data.count <= Self.maximumDownloadBytes else {
                 throw TunnelBlocklistUpdateError.downloadTooLarge
             }
-            guard let text = String(data: data, encoding: .utf8) else {
+            let usableRuleCount: Int
+            switch compiler.add(data) {
+            case .accepted(let count):
+                usableRuleCount = count
+            case .invalidUTF8:
                 throw TunnelBlocklistUpdateError.invalidText
+            case .reachedLimit:
+                throw TunnelBlocklistUpdateError.tooManyRules
+            case .failed:
+                throw TunnelBlocklistUpdateError.rustEngineUnavailable
             }
-            let remaining = Self.maximumCombinedRules - blocked.count - exceptions.count
-            guard remaining > 0 else { throw TunnelBlocklistUpdateError.tooManyRules }
-            let parsed = TunnelDNSRuleParser.parseSubscription(text, maximumRules: remaining)
-            guard !parsed.blockedDomains.isEmpty || !parsed.allowedDomains.isEmpty else {
+            guard usableRuleCount > 0 else {
                 throw TunnelBlocklistUpdateError.noUsableRules(source.name)
             }
-            if parsed.reachedLimit { throw TunnelBlocklistUpdateError.tooManyRules }
-            blocked.formUnion(parsed.blockedDomains)
-            exceptions.formUnion(parsed.allowedDomains)
-            guard blocked.count + exceptions.count <= Self.maximumCombinedRules else {
-                throw TunnelBlocklistUpdateError.tooManyRules
-            }
         }
-        blocked.subtract(exceptions)
+        guard let compiled = compiler.finish() else {
+            throw TunnelBlocklistUpdateError.rustEngineUnavailable
+        }
         return try TunnelBlocklistCache.save(
-            domains: blocked.sorted(),
+            snapshot: compiled.snapshot,
+            ruleCount: compiled.ruleCount,
             profileID: profile.id,
             sourceCount: sources.count
         )

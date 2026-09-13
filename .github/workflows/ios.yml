@@ -63,16 +63,20 @@ jobs:
           rustup toolchain install 1.98.1 --profile minimal
           rustup target add --toolchain 1.98.1 aarch64-apple-ios
 
-      - name: Cache Rust tunnel
+      - name: Cache Rust engines
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             RustTunnel/target
-          key: ${{ runner.os }}-rust-1.98-bufi-tunnel-${{ hashFiles('RustTunnel/Cargo.lock', 'RustTunnel/Cargo.toml', 'RustTunnel/src/**/*.rs') }}
+            RustDNSFilter/target
+          key: ${{ runner.os }}-rust-1.98-bufi-engines-${{ hashFiles('RustTunnel/Cargo.lock', 'RustTunnel/Cargo.toml', 'RustTunnel/src/**/*.rs', 'RustDNSFilter/Cargo.lock', 'RustDNSFilter/Cargo.toml', 'RustDNSFilter/src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-rust-1.98-bufi-tunnel-
+            ${{ runner.os }}-rust-1.98-bufi-engines-
+
+      - name: Test Rust DNS filter
+        run: cargo +1.98.1 test --locked --manifest-path RustDNSFilter/Cargo.toml
 
       - name: Verify local search behavior
         run: sh Scripts/verify-local-search.sh

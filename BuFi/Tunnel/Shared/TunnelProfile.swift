@@ -310,126 +310,37 @@ enum TunnelDNSRuleParser {
         parse(text, defaultAction: .block, maximumRules: maximumRules)
     }
 
+    static func parseSubscription(
+        _ data: Data,
+        maximumRules: Int = 250_000
+    ) -> Result? {
+        RustDNSRuleEngine.parse(
+            data,
+            defaultAction: .block,
+            maximumRules: maximumRules
+        )
+    }
+
     private static func parse(
         _ text: String,
         defaultAction: DefaultAction,
         maximumRules: Int
     ) -> Result {
-        var blocked = Set<String>()
-        var allowed = Set<String>()
-        var ignoredRuleCount = 0
-        let limit = maximumRules + 1
-        blocked.reserveCapacity(min(limit, text.count / 24))
-        allowed.reserveCapacity(min(limit, text.count / 64))
-        for rawLine in text.split(whereSeparator: { $0.isNewline }) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty,
-                  !line.hasPrefix("!"),
-                  !line.hasPrefix("#"),
-                  !(line.hasPrefix("[") && line.hasSuffix("]")) else { continue }
-            for rawValue in rawLine.split(separator: ",") {
-                let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                let isException = value.hasPrefix("@@")
-                let domains = normalizedDomains(value)
-                if domains.isEmpty {
-                    ignoredRuleCount += 1
-                    continue
-                }
-                let action: DefaultAction = isException ? .allow : defaultAction
-                for domain in domains {
-                    switch action {
-                    case .block: blocked.insert(domain)
-                    case .allow: allowed.insert(domain)
-                    }
-                }
-                // Keep pasted filter text from allocating without bound. One
-                // item beyond the limit is retained so validation can still
-                // report the correct error instead of silently truncating.
-                if blocked.count + allowed.count >= limit {
-                    return Result(
-                        blockedDomains: blocked.sorted(),
-                        allowedDomains: allowed.sorted(),
-                        ignoredRuleCount: ignoredRuleCount,
-                        reachedLimit: true
-                    )
-                }
-            }
-        }
-        return Result(
-            blockedDomains: blocked.sorted(),
-            allowedDomains: allowed.sorted(),
-            ignoredRuleCount: ignoredRuleCount,
+        RustDNSRuleEngine.parse(
+            text,
+            defaultAction: defaultAction,
+            maximumRules: maximumRules
+        ) ?? Result(
+            blockedDomains: [],
+            allowedDomains: [],
+            ignoredRuleCount: 0,
             reachedLimit: false
         )
     }
 
     static func normalize(_ rawValue: String) -> String? {
-        normalizedDomains(rawValue).first
-    }
-
-    private static func normalizedDomains(_ rawValue: String) -> [String] {
-        var value = rawValue
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard !value.isEmpty,
-              !value.hasPrefix("!"),
-              !value.hasPrefix("#"),
-              !value.contains("##"),
-              !value.contains("#@#"),
-              !value.contains("#$#"),
-              !value.contains("#?#") else { return [] }
-
-        value = value
-            .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-            .first
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !value.isEmpty else { return [] }
-
-        if value.hasPrefix("@@") { value.removeFirst(2) }
-        let hostsParts = value.split(whereSeparator: { $0 == " " || $0 == "\t" })
-        if hostsParts.count >= 2,
-           (IPv4Address(String(hostsParts[0])) != nil
-               || IPv6Address(String(hostsParts[0])) != nil) {
-            return hostsParts.dropFirst().compactMap { normalizeDomainToken(String($0)) }
-        }
-
-        return normalizeDomainToken(value).map { [$0] } ?? []
-    }
-
-    private static func normalizeDomainToken(_ rawValue: String) -> String? {
-        var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty, !value.hasPrefix("/") else { return nil }
-        if value.hasPrefix("||") { value.removeFirst(2) }
-        if value.hasPrefix("|") { value.removeFirst() }
-
-        if value.hasPrefix("http://") || value.hasPrefix("https://") {
-            guard let host = URL(string: value)?.host else { return nil }
-            value = host
-        } else if value.hasPrefix("//") {
-            guard let host = URL(string: "https:" + value)?.host else { return nil }
-            value = host
-        } else {
-            let delimiters = [value.firstIndex(of: "^"), value.firstIndex(of: "$")]
-                .compactMap { $0 }
-            if let delimiter = delimiters.min() { value = String(value[..<delimiter]) }
-            // A path-specific content rule cannot be represented safely at DNS level.
-            guard !value.contains("/") else { return nil }
-        }
-
-        while value.hasPrefix("*.") { value.removeFirst(2) }
-        value = value.trimmingCharacters(in: CharacterSet(charactersIn: ".|"))
-        guard IPv4Address(value) == nil, IPv6Address(value) == nil else { return nil }
-        guard value.count <= 253,
-              !value.isEmpty,
-              value.split(separator: ".").allSatisfy({ label in
-                  !label.isEmpty && label.count <= 63
-                      && label.utf8.allSatisfy {
-                          ($0 >= 97 && $0 <= 122) || ($0 >= 48 && $0 <= 57) || $0 == 45
-                      }
-                      && label.first != "-" && label.last != "-"
-              }) else { return nil }
-        return value
+        let result = parse(rawValue, defaultAction: .block)
+        return result.blockedDomains.first ?? result.allowedDomains.first
     }
 }
 

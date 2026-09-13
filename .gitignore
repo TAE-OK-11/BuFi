@@ -3,3 +3,4 @@ BuFi/Resources/Fonts/Unbounded.ttf
 __pycache__/
 *.py[cod]
 RustTunnel/target/
+RustDNSFilter/target/

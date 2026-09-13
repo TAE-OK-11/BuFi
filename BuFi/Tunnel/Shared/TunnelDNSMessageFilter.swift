@@ -30,257 +30,34 @@ enum TunnelDNSTransportCodec {
     }
 }
 
-/// Small exact/suffix DNS matcher used only for user-owned rules. The large
-/// maintained threat and advertising lists remain at the selected upstream.
-///
-/// Rules are compiled once into a compact label trie. A query then walks its
-/// labels from the TLD inward without allocating a new String for every parent
-/// suffix (for example, `a.b.example.com`, `b.example.com`, and so on).
+/// Rust owns DNS question parsing, custom-rule tries, and subscription suffix
+/// matching. The immutable subscription remains memory-mapped by Foundation;
+/// each synchronous call lends those bytes to Rust without making a large copy.
 struct TunnelDNSMessageFilter: Sendable {
-    private let blockedDomains: TunnelDomainSuffixMatcher
-    private let allowedDomains: TunnelDomainSuffixMatcher
-    private let subscribedDomains: TunnelMappedDomainMatcher?
+    private let engine: RustDNSFilterHandle?
 
     init(
         blockedDomains: [String],
         allowedDomains: [String],
         subscriptionData: Data? = nil
     ) {
-        self.blockedDomains = TunnelDomainSuffixMatcher(rules: blockedDomains)
-        self.allowedDomains = TunnelDomainSuffixMatcher(rules: allowedDomains)
-        subscribedDomains = subscriptionData.flatMap(TunnelMappedDomainMatcher.init)
-    }
-
-    func blockedResponse(for query: Data) -> Data? {
-        guard let question = TunnelDNSQuestion.parse(query),
-              !allowedDomains.matches(labels: question.labels),
-              (blockedDomains.matches(labels: question.labels)
-                  || subscribedDomains?.matches(labels: question.labels) == true) else { return nil }
-        return question.nxdomainResponse(query)
-    }
-}
-
-/// Exact binary search over a sorted, newline-delimited mapped snapshot. Only
-/// the small line-offset table is allocated in Packet Tunnel; domain strings
-/// stay in the mapped Data. Each query is flattened to one byte buffer and all
-/// parent lookups use zero-copy slices of it, avoiding a joined String and a
-/// second byte array for every suffix on the DNS packet hot path.
-private struct TunnelMappedDomainMatcher: Sendable {
-    private let data: Data
-    private let lineStarts: [Int32]
-
-    init?(_ data: Data) {
-        guard data.isEmpty || data.last == 0x0a, data.count <= Int(Int32.max) else { return nil }
-        var starts: [Int32] = []
-        starts.reserveCapacity(data.count / 24)
-        if !data.isEmpty { starts.append(0) }
-        for index in data.indices where data[index] == 0x0a && index + 1 < data.endIndex {
-            starts.append(Int32(index + 1))
-        }
-        self.data = data
-        lineStarts = starts
-    }
-
-    func matches(labels: [String]) -> Bool {
-        guard !lineStarts.isEmpty else { return false }
-        let byteCount = labels.reduce(into: max(0, labels.count - 1)) {
-            $0 += $1.utf8.count
-        }
-        var domain = [UInt8]()
-        domain.reserveCapacity(byteCount)
-        for (index, label) in labels.enumerated() {
-            if index > 0 { domain.append(0x2e) }
-            domain.append(contentsOf: label.utf8)
-        }
-
-        var suffixStart = domain.startIndex
-        for label in labels {
-            if contains(domain[suffixStart...]) { return true }
-            if suffixStart + label.utf8.count == domain.endIndex { break }
-            suffixStart += label.utf8.count + 1
-        }
-        return false
-    }
-
-    private func contains(_ query: ArraySlice<UInt8>) -> Bool {
-        var lower = 0
-        var upper = lineStarts.count
-        while lower < upper {
-            let middle = lower + (upper - lower) / 2
-            let comparison = compareLine(at: middle, with: query)
-            if comparison < 0 {
-                lower = middle + 1
-            } else {
-                upper = middle
-            }
-        }
-        return lower < lineStarts.count && compareLine(at: lower, with: query) == 0
-    }
-
-    private func compareLine(at line: Int, with query: ArraySlice<UInt8>) -> Int {
-        let start = Int(lineStarts[line])
-        let end = line + 1 < lineStarts.count
-            ? Int(lineStarts[line + 1]) - 1
-            : data.count - 1
-        let length = end - start
-        let shared = min(length, query.count)
-        for offset in 0..<shared {
-            let lhs = data[start + offset]
-            let rhs = query[query.startIndex + offset]
-            if lhs != rhs { return lhs < rhs ? -1 : 1 }
-        }
-        if length == query.count { return 0 }
-        return length < query.count ? -1 : 1
-    }
-}
-
-private struct TunnelDomainSuffixMatcher: Sendable {
-    private struct BuildNode {
-        var terminal = false
-        var children: [String: Int] = [:]
-    }
-
-    private struct Node: Sendable {
-        let terminal: Bool
-        let edgeStart: Int
-        let edgeCount: Int
-    }
-
-    private struct Edge: Sendable {
-        let label: String
-        let child: Int
-    }
-
-    private let nodes: [Node]
-    private let edges: [Edge]
-
-    init(rules: [String]) {
-        var buildNodes = [BuildNode()]
-        for rawRule in rules {
-            guard let rule = TunnelDNSRuleParser.normalize(rawRule) else { continue }
-            var nodeIndex = 0
-            for label in rule.split(separator: ".").reversed() {
-                let label = String(label)
-                if let child = buildNodes[nodeIndex].children[label] {
-                    nodeIndex = child
-                } else {
-                    let child = buildNodes.count
-                    buildNodes.append(BuildNode())
-                    buildNodes[nodeIndex].children[label] = child
-                    nodeIndex = child
-                }
-            }
-            buildNodes[nodeIndex].terminal = true
-        }
-
-        var compactNodes: [Node] = []
-        var compactEdges: [Edge] = []
-        compactNodes.reserveCapacity(buildNodes.count)
-        compactEdges.reserveCapacity(max(0, buildNodes.count - 1))
-        for node in buildNodes {
-            let sortedChildren = node.children.sorted { $0.key < $1.key }
-            compactNodes.append(Node(
-                terminal: node.terminal,
-                edgeStart: compactEdges.count,
-                edgeCount: sortedChildren.count
-            ))
-            for child in sortedChildren {
-                compactEdges.append(Edge(label: child.key, child: child.value))
-            }
-        }
-        self.nodes = compactNodes
-        self.edges = compactEdges
-    }
-
-    func matches(labels: [String]) -> Bool {
-        var nodeIndex = 0
-        for label in labels.reversed() {
-            guard let child = child(of: nodeIndex, matching: label) else { return false }
-            nodeIndex = child
-            if nodes[nodeIndex].terminal { return true }
-        }
-        return false
-    }
-
-    private func child(of nodeIndex: Int, matching label: String) -> Int? {
-        let node = nodes[nodeIndex]
-        var lower = node.edgeStart
-        var upper = node.edgeStart + node.edgeCount
-        while lower < upper {
-            let middle = lower + (upper - lower) / 2
-            if edges[middle].label < label {
-                lower = middle + 1
-            } else {
-                upper = middle
-            }
-        }
-        guard lower < node.edgeStart + node.edgeCount,
-              edges[lower].label == label else { return nil }
-        return edges[lower].child
-    }
-}
-
-private struct TunnelDNSQuestion: Sendable {
-    let labels: [String]
-    let messageEnd: Int
-
-    static func parse(_ data: Data) -> TunnelDNSQuestion? {
-        let flags = data.count >= 4 ? readUInt16(data, at: 2) : UInt16.max
-        guard data.count >= 17,
-              flags & 0x8000 == 0,
-              flags & 0x7800 == 0,
-              readUInt16(data, at: 4) == 1,
-              let name = readName(data, at: 12, depth: 0),
-              name.nextOffset + 4 <= data.count,
-              readUInt16(data, at: name.nextOffset + 2) == 1,
-              !name.labels.isEmpty else { return nil }
-        return TunnelDNSQuestion(
-            labels: name.labels,
-            messageEnd: name.nextOffset + 4
+        engine = RustDNSFilterHandle(
+            blockedDomains: blockedDomains,
+            allowedDomains: allowedDomains,
+            subscriptionData: subscriptionData
         )
     }
 
-    func nxdomainResponse(_ query: Data) -> Data {
+    func blockedResponse(for query: Data) -> Data? {
+        guard let messageEnd = engine?.blockedMessageEnd(for: query),
+              messageEnd >= 12,
+              messageEnd <= query.count else { return nil }
         var response = Data(query.prefix(messageEnd))
-        let queryFlags = Self.readUInt16(response, at: 2)
-        let flags = (queryFlags & 0x7900) | 0x8083 // response + recursion available + NXDOMAIN
+        let queryFlags = (UInt16(response[2]) << 8) | UInt16(response[3])
+        let flags = (queryFlags & 0x7900) | 0x8083
         response[2] = UInt8(flags >> 8)
         response[3] = UInt8(flags & 0xff)
         for offset in 6...11 { response[offset] = 0 }
         return response
-    }
-
-    private static func readName(
-        _ data: Data,
-        at start: Int,
-        depth: Int
-    ) -> (labels: [String], nextOffset: Int)? {
-        guard depth < 8 else { return nil }
-        var labels: [String] = []
-        var offset = start
-        while offset < data.count {
-            let length = Int(data[offset])
-            if length == 0 { return (labels, offset + 1) }
-            if length & 0xc0 == 0xc0 {
-                guard offset + 1 < data.count else { return nil }
-                let pointer = ((length & 0x3f) << 8) | Int(data[offset + 1])
-                guard pointer < data.count,
-                      let pointed = readName(data, at: pointer, depth: depth + 1) else { return nil }
-                labels.append(contentsOf: pointed.labels)
-                return (labels, offset + 2)
-            }
-            guard length <= 63, offset + 1 + length <= data.count,
-                  let label = String(
-                    data: data[(offset + 1)..<(offset + 1 + length)],
-                    encoding: .utf8
-                  ) else { return nil }
-            labels.append(label.lowercased())
-            offset += length + 1
-        }
-        return nil
-    }
-
-    private static func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
-        (UInt16(data[offset]) << 8) | UInt16(data[offset + 1])
     }
 }

@@ -1,0 +1,16 @@
+[package]
+name = "bufi-dns-filter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = "debuginfo"

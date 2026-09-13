@@ -13,6 +13,7 @@ Settings → TunnelManager → NETunnelProviderManager
                   PacketTunnelProvider
                     ├─ network settings/routes
                     ├─ TunnelDNSResolver
+                    ├─ RustDNSFilter (DNS parser + suffix matcher)
                     ├─ NWPathMonitor lifecycle
                     └─ RustTunnelAdapter (one startup call, lifecycle + metrics)
                                       ▼
@@ -30,6 +31,10 @@ Settings → TunnelManager → NETunnelProviderManager
 - `RustTunnel` is a static library with a small C ABI around upstream GotaTun.
   Packet buffers remain inside Rust for the data path; Swift/Rust crossings are
   limited to start/stop, network lifecycle operations, and on-demand metrics.
+- `RustDNSFilter` is a dependency-free Rust static library shared by the app
+  and extension. It compiles downloaded rule text, normalizes and deduplicates
+  domains, removes exceptions, parses DNS questions, and performs exact/suffix
+  matching behind a small C ABI.
 
 ## Profiles and secrets
 
@@ -158,9 +163,10 @@ rules take precedence over custom and subscription blocked parent domains. When
 custom rules or subscriptions are enabled, the
 isolated resolver boundary applies them locally and returns an NXDOMAIN response
 without forwarding the query. Allowed traffic uses authenticated DoQ to the
-selected AdGuard endpoint with DoT fallback on networks that block QUIC. Custom
-rules are compiled once into a compact reverse-label suffix
-index, so hot-path matches do not allocate a String for every parent domain.
+selected AdGuard endpoint with DoT fallback on networks that block QUIC. Rust
+compiles custom rules into a reverse-label suffix trie and parses each DNS
+question into one bounded lowercase byte buffer, so the hot path does not
+allocate a Swift String for every label or parent domain.
 Only standard Internet-class DNS queries can reach the matcher; responses,
 non-standard opcodes, and non-IN questions pass through without mutation.
 The editor also caches normalized results instead of reparsing the entire rule
@@ -173,12 +179,14 @@ maintained lists belong in a subscription snapshot rather than profile JSON.
 The built-in subscription catalog contains the official DNS-domain editions of
 HaGeZi Light, OISD Small, and List-KR DNS. It stores URLs and attribution in the
 app, not a stale copy of the lists. Users may also add up to eight named HTTPS
-sources. Downloads are limited to 12 MB per source and 250,000 combined domains,
-normalized by the containing app, deduplicated, and committed atomically to the
-App Group. Packet Tunnel memory-maps the sorted newline snapshot and uses a
-small line-offset table plus binary search instead of materializing every domain
-as a Swift string. A failed update preserves the previous snapshot; without a
-snapshot, AdGuard upstream protection still applies. Updates are checked when
+sources. Downloads are limited to 12 MB per source and 250,000 combined domains.
+The containing app lends each UTF-8 response directly to the incremental Rust
+compiler, which normalizes, deduplicates, applies exceptions, and emits one
+sorted newline snapshot for an atomic App Group commit. Packet Tunnel
+memory-maps that snapshot; Rust retains only a small line-offset table and uses
+binary search without materializing every domain as a String. A failed update
+preserves the previous snapshot; without a snapshot, AdGuard upstream
+protection still applies. Updates are checked when
 Bufi becomes active and no more than once per 24 hours, avoiding a persistent
 background timer. A manual refresh is available in the editor. Attribution and
 source links ship in `ThirdPartyLicenses.txt`.
@@ -255,10 +263,11 @@ Rust release builds and the iOS Release configuration both use ThinLTO.
 
 ## GitHub validation
 
-The workflows install Rust 1.98.1, build the pinned GotaTun static library for
-the simulator and physical-device target, run `TunnelConfigurationTests`, and
-build/package the complete app plus Network Extension. Failures upload both
-test and device-build logs.
+The workflows install Rust 1.98.1, run the Rust DNS filter tests, build the
+pinned GotaTun and DNS filter static libraries for the simulator and
+physical-device target, run `TunnelConfigurationTests`, and build/package the
+complete app plus Network Extension. Failures upload both test and device-build
+logs.
 
 The CI IPA is deliberately unsigned, so it has neither `_CodeSignature` nor an
 embedded provisioning profile and cannot prove final entitlements. XcodeGen

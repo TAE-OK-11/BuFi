@@ -296,6 +296,33 @@ final class TunnelConfigurationTests: XCTestCase {
         )
     }
 
+    func testRustBlocklistCompilerMergesSourcesAndAppliesExceptions() throws {
+        let compiler = try XCTUnwrap(RustDNSBlocklistCompiler(maximumRules: 20))
+        switch compiler.add(Data("ads.example\ntracker.example\n".utf8)) {
+        case .accepted(let usableRuleCount): XCTAssertEqual(usableRuleCount, 2)
+        default: XCTFail("The first Rust blocklist source was not accepted.")
+        }
+        switch compiler.add(Data("@@||ads.example^\nmetrics.example\n".utf8)) {
+        case .accepted(let usableRuleCount): XCTAssertEqual(usableRuleCount, 2)
+        default: XCTFail("The second Rust blocklist source was not accepted.")
+        }
+
+        let compiled = try XCTUnwrap(compiler.finish())
+        XCTAssertEqual(
+            String(decoding: compiled.snapshot, as: UTF8.self),
+            "metrics.example\ntracker.example\n"
+        )
+        XCTAssertEqual(compiled.ruleCount, 2)
+    }
+
+    func testRustBlocklistCompilerRejectsInvalidUTF8() throws {
+        let compiler = try XCTUnwrap(RustDNSBlocklistCompiler(maximumRules: 20))
+        switch compiler.add(Data([0xff, 0xfe])) {
+        case .invalidUTF8: break
+        default: XCTFail("The Rust blocklist compiler accepted invalid UTF-8.")
+        }
+    }
+
     func testDoQUsesRawDNSMessagesWithoutTCPLengthPrefix() throws {
         let query = dnsQuery(domain: "example.com")
         let doQPayload = try XCTUnwrap(TunnelDNSTransportCodec.doQPayload(query))

@@ -540,6 +540,7 @@
 "A blocklist is not valid UTF-8 text." = "차단 목록이 올바른 UTF-8 텍스트가 아닙니다.";
 "The combined blocklist exceeded the 250,000-domain safety limit." = "통합 차단 목록이 도메인 250,000개 안전 제한을 초과했습니다.";
 "The blocklist %@ did not contain usable DNS domain rules." = "차단 목록 %@에 사용할 수 있는 DNS 도메인 규칙이 없습니다.";
+"The Rust DNS filter engine could not compile the blocklist." = "Rust DNS 필터 엔진이 차단 목록을 컴파일하지 못했습니다.";
 "On-Demand requires a correctly signed build because iOS starts Packet Tunnel without the app's one-time key delivery." = "iOS는 앱의 일회성 키 전달 없이 Packet Tunnel을 시작하므로 On-Demand에는 올바르게 서명된 빌드가 필요합니다.";
 "Waiting for enough traffic to evaluate tunnel health." = "터널 상태를 판단할 트래픽을 기다리는 중입니다.";
 "Traffic or handshake progress is healthy." = "트래픽 또는 핸드셰이크가 정상적으로 진행 중입니다.";

@@ -99,6 +99,18 @@ targets:
         product: libzstd
       - package: GRDB
         product: GRDB
+    preBuildScripts:
+      - name: Build Rust DNS filter
+        script: sh "$SRCROOT/Scripts/build-rust-dns-filter.sh"
+        inputFiles:
+          - $(SRCROOT)/RustDNSFilter/Cargo.toml
+          - $(SRCROOT)/RustDNSFilter/Cargo.lock
+          - $(SRCROOT)/RustDNSFilter/rust-toolchain.toml
+          - $(SRCROOT)/RustDNSFilter/src/lib.rs
+          - $(SRCROOT)/Scripts/build-rust-dns-filter.sh
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/libbufi_dns_filter.a
+        basedOnDependencyAnalysis: true
     info:
       path: BuFi/Resources/Info.plist
       properties:
@@ -140,6 +152,9 @@ targets:
         CODE_SIGN_ENTITLEMENTS: BuFi/Resources/BuFi.entitlements
         DEVELOPMENT_ASSET_PATHS: ""
         COREML_CODEGEN_LANGUAGE: None
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(DERIVED_FILE_DIR)"
+        OTHER_LDFLAGS: "$(inherited) -lbufi_dns_filter"
     scheme:
       gatherCoverageData: false
       testTargets:
@@ -187,6 +202,17 @@ targets:
         outputFiles:
           - $(DERIVED_FILE_DIR)/libbufi_tunnel_engine.a
         basedOnDependencyAnalysis: true
+      - name: Build Rust DNS filter
+        script: sh "$SRCROOT/Scripts/build-rust-dns-filter.sh"
+        inputFiles:
+          - $(SRCROOT)/RustDNSFilter/Cargo.toml
+          - $(SRCROOT)/RustDNSFilter/Cargo.lock
+          - $(SRCROOT)/RustDNSFilter/rust-toolchain.toml
+          - $(SRCROOT)/RustDNSFilter/src/lib.rs
+          - $(SRCROOT)/Scripts/build-rust-dns-filter.sh
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/libbufi_dns_filter.a
+        basedOnDependencyAnalysis: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cloud.tae00217.BuFi.TunnelExtension
@@ -201,7 +227,7 @@ targets:
         SKIP_INSTALL: YES
         ENABLE_USER_SCRIPT_SANDBOXING: false
         LIBRARY_SEARCH_PATHS: "$(inherited) $(DERIVED_FILE_DIR)"
-        OTHER_LDFLAGS: "$(inherited) -lbufi_tunnel_engine -framework Security -framework SystemConfiguration"
+        OTHER_LDFLAGS: "$(inherited) -lbufi_tunnel_engine -lbufi_dns_filter -framework Security -framework SystemConfiguration"
   BuFiTunnelTests:
     type: bundle.unit-test
     platform: iOS

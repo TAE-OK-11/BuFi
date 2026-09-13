@@ -27,10 +27,15 @@ enum TunnelBlocklistCache {
     private static let directoryName = "TunnelBlocklists-v1"
 
     static func save(
-        domains: [String],
+        snapshot: Data,
+        ruleCount: Int,
         profileID: UUID,
         sourceCount: Int
     ) throws -> TunnelBlocklistUpdateMetadata {
+        guard ruleCount >= 0,
+              snapshot.isEmpty || snapshot.last == 0x0a else {
+            throw TunnelBlocklistCacheError.invalidSnapshot
+        }
         let directory = try directoryURL()
         try FileManager.default.createDirectory(
             at: directory,
@@ -39,11 +44,10 @@ enum TunnelBlocklistCache {
                 .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
             ]
         )
-        let body = domains.joined(separator: "\n") + (domains.isEmpty ? "" : "\n")
-        try Data(body.utf8).write(to: dataURL(profileID, directory: directory), options: .atomic)
+        try snapshot.write(to: dataURL(profileID, directory: directory), options: .atomic)
         let metadata = TunnelBlocklistUpdateMetadata(
             updatedAt: Date(),
-            ruleCount: domains.count,
+            ruleCount: ruleCount,
             sourceCount: sourceCount
         )
         try JSONEncoder().encode(metadata).write(

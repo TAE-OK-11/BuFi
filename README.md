@@ -25,8 +25,8 @@ It is designed around the iOS media stack rather than a web view.
 - Offline downloads stored in Application Support
 - General-purpose Bufi Tunnel WireGuard client with split/full routing,
   capability-checked Keychain storage, lifecycle recovery, and Plain DNS, DoH,
-  DoT, and DoQ resolver modes, plus lightweight encrypted DNS protection for
-  ads, trackers, phishing, malicious domains, and custom block/allow rules
+  DoT, and DoQ resolver modes, plus a Rust DNS filter/compiler for ads,
+  trackers, phishing, malicious domains, and custom block/allow rules
 - Optional primary/alternate/tunnel-only OpenSubsonic server addresses with
   verified automatic switching while Bufi Tunnel is active
 - GitHub Actions generation of an unsigned IPA with Xcode 27 and Swift 6.4
@@ -45,6 +45,7 @@ brew install xcodegen
 sh Scripts/prepare-assets.sh
 rustup toolchain install 1.98.1 --profile minimal
 sh Scripts/build-rust-tunnel.sh
+sh Scripts/build-rust-dns-filter.sh
 xcodegen generate
 sh Scripts/apply-package-lock.sh
 open BuFi.xcodeproj
