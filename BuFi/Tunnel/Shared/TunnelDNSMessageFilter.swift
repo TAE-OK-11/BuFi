@@ -62,7 +62,9 @@ struct TunnelDNSMessageFilter: Sendable {
 
 /// Exact binary search over a sorted, newline-delimited mapped snapshot. Only
 /// the small line-offset table is allocated in Packet Tunnel; domain strings
-/// stay in the mapped Data and query suffixes are created only during lookup.
+/// stay in the mapped Data. Each query is flattened to one byte buffer and all
+/// parent lookups use zero-copy slices of it, avoiding a joined String and a
+/// second byte array for every suffix on the DNS packet hot path.
 private struct TunnelMappedDomainMatcher: Sendable {
     private let data: Data
     private let lineStarts: [Int32]
@@ -81,14 +83,26 @@ private struct TunnelMappedDomainMatcher: Sendable {
 
     func matches(labels: [String]) -> Bool {
         guard !lineStarts.isEmpty else { return false }
-        for index in labels.indices {
-            if contains(labels[index...].joined(separator: ".")) { return true }
+        let byteCount = labels.reduce(into: max(0, labels.count - 1)) {
+            $0 += $1.utf8.count
+        }
+        var domain = [UInt8]()
+        domain.reserveCapacity(byteCount)
+        for (index, label) in labels.enumerated() {
+            if index > 0 { domain.append(0x2e) }
+            domain.append(contentsOf: label.utf8)
+        }
+
+        var suffixStart = domain.startIndex
+        for label in labels {
+            if contains(domain[suffixStart...]) { return true }
+            if suffixStart + label.utf8.count == domain.endIndex { break }
+            suffixStart += label.utf8.count + 1
         }
         return false
     }
 
-    private func contains(_ domain: String) -> Bool {
-        let query = Array(domain.utf8)
+    private func contains(_ query: ArraySlice<UInt8>) -> Bool {
         var lower = 0
         var upper = lineStarts.count
         while lower < upper {
@@ -103,7 +117,7 @@ private struct TunnelMappedDomainMatcher: Sendable {
         return lower < lineStarts.count && compareLine(at: lower, with: query) == 0
     }
 
-    private func compareLine(at line: Int, with query: [UInt8]) -> Int {
+    private func compareLine(at line: Int, with query: ArraySlice<UInt8>) -> Int {
         let start = Int(lineStarts[line])
         let end = line + 1 < lineStarts.count
             ? Int(lineStarts[line + 1]) - 1
@@ -112,7 +126,7 @@ private struct TunnelMappedDomainMatcher: Sendable {
         let shared = min(length, query.count)
         for offset in 0..<shared {
             let lhs = data[start + offset]
-            let rhs = query[offset]
+            let rhs = query[query.startIndex + offset]
             if lhs != rhs { return lhs < rhs ? -1 : 1 }
         }
         if length == query.count { return 0 }

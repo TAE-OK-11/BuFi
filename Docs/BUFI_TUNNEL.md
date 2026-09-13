@@ -255,7 +255,7 @@ Rust release builds and the iOS Release configuration both use ThinLTO.
 
 ## GitHub validation
 
-The workflows install Rust 1.95, build the pinned GotaTun static library for
+The workflows install Rust 1.98.1, build the pinned GotaTun static library for
 the simulator and physical-device target, run `TunnelConfigurationTests`, and
 build/package the complete app plus Network Extension. Failures upload both
 test and device-build logs.

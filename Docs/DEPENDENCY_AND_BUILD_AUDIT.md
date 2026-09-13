@@ -1,6 +1,6 @@
 # Dependency and build audit
 
-Audit date: 2026-09-05 (re-validated; prior audit 2026-09-02)
+Audit date: 2026-09-13 (re-validated; prior audit 2026-09-05)
 
 ## Decisions
 
@@ -39,7 +39,7 @@ toolchain jobs.
 and release build; pass `--check-upstream` locally (with the GitHub CLI) to
 confirm the pinned versions still match each package's latest GitHub release.
 
-As of the 2026-09-05 re-validation, every linked package and the XcodeGen 2.46.0
+As of the 2026-09-13 re-validation, every linked package and the XcodeGen 2.46.0
 build tool remain on their latest stable releases. No pin changes were required
 for this phase.
 
@@ -50,6 +50,14 @@ for this phase.
 | Nuke | 13.2.0 | 13.2.0 |
 | Zstandard | 1.5.7 | 1.5.7 |
 | XcodeGen | 2.46.0 | 2.46.0 |
+
+The tunnel engine now pins Rust 1.98.1 and records the lockfile's current
+compatible direct versions for bytes 1.12.1, libc 0.2.189, nix 0.31.3, serde
+1.0.229, serde_json 1.0.151, Tokio 1.53.1, and zerocopy 0.8.57. The redundant
+direct `x25519-dalek` declaration was removed because BuFi consumes the exact
+key types re-exported by pinned GotaTun. Base64 intentionally remains on 0.22.1:
+GotaTun requires that compatible major, and selecting 0.23 only in BuFi would
+embed a second implementation in the static library.
 
 ## Distribution notices
 
@@ -120,6 +128,10 @@ Swift 6 in
   compiler index store, explicitly parallelizes targets, and emits Xcode's
   build-timing summary. DerivedData is intentionally not cached so verification
   remains a clean Release build.
+- The Rust pre-build phase declares all source, manifest, lock, toolchain, and
+  script inputs and writes its architecture-specific library to Xcode's derived
+  file directory. Incremental Xcode builds therefore skip an unchanged Cargo
+  invocation without risking reuse of a simulator library in a device link.
 - Pull requests run only the verification workflow; the artifact workflow runs
   after changes reach `main`, avoiding duplicate builds.
 - CI compiles the unsigned Release IPA. It does not boot a simulator or run
@@ -175,6 +187,14 @@ and
   per-type limits.
 - Redundant temporary arrays were removed from static category, album-prefix,
   and player artwork iteration where stable collection indices are available.
+- Personalized mix keyword classification now reads the bounded song corpus
+  once for all genre and mood groups instead of performing six complete scans.
+  The listen-again path also avoids a full timestamp sort before its independent
+  stable-hash selection.
+- Mapped Tunnel blocklists flatten each DNS name once and binary-search parent
+  suffixes through zero-copy byte slices, eliminating per-suffix joined strings
+  and arrays. Allow-only custom configurations now correctly select the local
+  encrypted resolver so their exception rules are actually applied.
 - The `AudioEngine` singleton's destructor was unreachable during the app
   lifetime and produced Swift 6 isolation warnings. It was removed, while
   per-item end notifications now share the same explicit lifecycle as stall and

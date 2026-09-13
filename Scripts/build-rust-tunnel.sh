@@ -19,7 +19,16 @@ case "${PLATFORM_NAME:-iphoneos}" in
     ;;
 esac
 
-rustup target add --toolchain 1.95.0 "$target"
-cargo +1.95.0 build --locked --release --target "$target"
-mkdir -p build/active
-cp "target/$target/release/libbufi_tunnel_engine.a" build/active/libbufi_tunnel_engine.a
+# The directory's rust-toolchain.toml is the single source of truth. Avoid a
+# second hard-coded version here that can silently diverge from Cargo and CI.
+rustup target add "$target"
+cargo build --locked --release --target "$target"
+
+# Xcode gives each target/configuration an architecture-specific derived-file
+# directory. Publishing there prevents a simulator archive from being reused
+# accidentally for a device link and lets dependency analysis skip this phase
+# when neither the Rust inputs nor toolchain declaration changed.
+output_dir="${DERIVED_FILE_DIR:-build/active}"
+mkdir -p "$output_dir"
+cp "target/$target/release/libbufi_tunnel_engine.a" \
+  "$output_dir/libbufi_tunnel_engine.a"

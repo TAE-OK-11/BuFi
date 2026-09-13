@@ -67,8 +67,8 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup target add --toolchain 1.95.0 aarch64-apple-ios
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add --toolchain 1.98.1 aarch64-apple-ios
 
       - name: Cache Rust tunnel
         uses: actions/cache@v6
@@ -77,9 +77,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             RustTunnel/target
-          key: ${{ runner.os }}-rust-1.95-bufi-tunnel-${{ hashFiles('RustTunnel/Cargo.lock', 'RustTunnel/Cargo.toml', 'RustTunnel/src/**/*.rs') }}
+          key: ${{ runner.os }}-rust-1.98-bufi-tunnel-${{ hashFiles('RustTunnel/Cargo.lock', 'RustTunnel/Cargo.toml', 'RustTunnel/src/**/*.rs') }}
           restore-keys: |
-            ${{ runner.os }}-rust-1.95-bufi-tunnel-
+            ${{ runner.os }}-rust-1.98-bufi-tunnel-
 
       - name: Verify local search behavior
         run: sh Scripts/verify-local-search.sh

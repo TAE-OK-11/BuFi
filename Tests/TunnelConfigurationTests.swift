@@ -238,6 +238,37 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "notads.example")))
     }
 
+    func testMappedSubscriptionMatchesEveryParentSuffixFromOneQueryBuffer() {
+        let snapshot = Data(
+            "deep.example.net\nexample.com\nmetrics.deep.example.net\ntracker.example.org\n".utf8
+        )
+        let filter = TunnelDNSMessageFilter(
+            blockedDomains: [],
+            allowedDomains: [],
+            subscriptionData: snapshot
+        )
+
+        XCTAssertNotNil(filter.blockedResponse(
+            for: dnsQuery(domain: "a.b.c.metrics.deep.example.net")
+        ))
+        XCTAssertNotNil(filter.blockedResponse(for: dnsQuery(domain: "unrelated.example.com")))
+        XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "example.net")))
+        XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "notexample.org")))
+    }
+
+    func testAllowOnlyProtectionStillUsesLocalResolver() {
+        let protection = TunnelDNSProtectionConfiguration(
+            isEnabled: true,
+            preset: .balanced,
+            blockedDomains: [],
+            allowedDomains: ["safe.example"],
+            enabledBuiltInBlocklists: []
+        )
+
+        XCTAssertTrue(protection.hasCustomRules)
+        XCTAssertTrue(protection.needsLocalResolver)
+    }
+
     func testSubscriptionParserUsesIndependentBound() {
         let parsed = TunnelDNSRuleParser.parseSubscription(
             "one.example\ntwo.example\nthree.example",

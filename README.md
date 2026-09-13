@@ -43,7 +43,7 @@ It is designed around the iOS media stack rather than a web view.
 ```sh
 brew install xcodegen
 sh Scripts/prepare-assets.sh
-rustup toolchain install 1.95.0 --profile minimal
+rustup toolchain install 1.98.1 --profile minimal
 sh Scripts/build-rust-tunnel.sh
 xcodegen generate
 sh Scripts/apply-package-lock.sh

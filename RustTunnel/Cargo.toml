@@ -2,7 +2,7 @@
 name = "bufi-tunnel-engine"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.98"
 license = "GPL-3.0-or-later"
 publish = false
 
@@ -10,17 +10,18 @@ publish = false
 crate-type = ["staticlib"]
 
 [dependencies]
+# Keep this major aligned with GotaTun. 0.23 would compile a second base64
+# implementation into the static library until the pinned engine migrates.
 base64 = "0.22.1"
-bytes = "1.11.1"
+bytes = "1.12.1"
 gotatun = { git = "https://github.com/mullvad/gotatun.git", rev = "fdf5e909ffe5e12310b2fe72a5fb82ab17dcd2e8", default-features = false, features = ["device", "ring"] }
 ipnetwork = "0.21.1"
-libc = "0.2.180"
-nix = { version = "0.31.1", default-features = false, features = ["fs", "uio"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-tokio = { version = "1.49.0", features = ["io-util", "net", "rt-multi-thread", "sync"] }
-x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
-zerocopy = { version = "0.8.27", features = ["std"] }
+libc = "0.2.189"
+nix = { version = "0.31.3", default-features = false, features = ["fs", "uio"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["io-util", "net", "rt-multi-thread", "sync"] }
+zerocopy = { version = "0.8.57", features = ["std"] }
 
 [profile.release]
 codegen-units = 1

@@ -177,7 +177,16 @@ targets:
     preBuildScripts:
       - name: Build GotaTun Rust engine
         script: sh "$SRCROOT/Scripts/build-rust-tunnel.sh"
-        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/RustTunnel/Cargo.toml
+          - $(SRCROOT)/RustTunnel/Cargo.lock
+          - $(SRCROOT)/RustTunnel/rust-toolchain.toml
+          - $(SRCROOT)/RustTunnel/src/lib.rs
+          - $(SRCROOT)/RustTunnel/src/tun_device.rs
+          - $(SRCROOT)/Scripts/build-rust-tunnel.sh
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/libbufi_tunnel_engine.a
+        basedOnDependencyAnalysis: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cloud.tae00217.BuFi.TunnelExtension
@@ -191,7 +200,7 @@ targets:
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
         ENABLE_USER_SCRIPT_SANDBOXING: false
-        LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/RustTunnel/build/active"
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(DERIVED_FILE_DIR)"
         OTHER_LDFLAGS: "$(inherited) -lbufi_tunnel_engine -framework Security -framework SystemConfiguration"
   BuFiTunnelTests:
     type: bundle.unit-test

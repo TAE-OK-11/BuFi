@@ -2740,6 +2740,40 @@ private struct StableOrderedSong {
 
 enum PersonalizedMixBuilder {
     private static let cache = PersonalizedMixResultCache()
+    private static let kPopTokens = normalizedTokens(
+        ["k-pop", "kpop", "korean pop", "케이팝"]
+    )
+    private static let popTokens = normalizedTokens(["pop", "팝"])
+    private static let happyTokens = normalizedTokens(
+        ["happy", "smile", "joy", "summer", "disco", "funk", "행복", "여름"]
+    )
+    private static let upbeatTokens = normalizedTokens(
+        ["dance", "edm", "electronic", "rock", "hip hop", "upbeat", "댄스"]
+    )
+    private static let loveTokens = normalizedTokens(
+        ["love", "romantic", "romance", "r&b", "soul", "ballad", "사랑"]
+    )
+    private static let chillTokens = normalizedTokens(
+        ["chill", "ambient", "acoustic", "jazz", "lo-fi", "indie", "잔잔"]
+    )
+
+    private struct CategorizedMatches {
+        var kPop: [Song] = []
+        var pop: [Song] = []
+        var happy: [Song] = []
+        var upbeat: [Song] = []
+        var love: [Song] = []
+        var chill: [Song] = []
+
+        init(reserving capacity: Int) {
+            kPop.reserveCapacity(capacity)
+            pop.reserveCapacity(capacity)
+            happy.reserveCapacity(capacity)
+            upbeat.reserveCapacity(capacity)
+            love.reserveCapacity(capacity)
+            chill.reserveCapacity(capacity)
+        }
+    }
 
     static func make(
         snapshot: HomeSnapshot,
@@ -2816,9 +2850,11 @@ enum PersonalizedMixBuilder {
             seed: dailySeed + 11,
             limit: songLimit
         )
-        let recentlyPlayed = pool.filter { $0.played != nil }.sorted {
-            ($0.played ?? "") > ($1.played ?? "")
-        }
+        // `filled` applies the stable daily hash order and selects a bounded
+        // prefix from the complete preferred set. Sorting the same set by its
+        // server timestamp first cannot change that selection (except an
+        // astronomically unlikely hash tie), but used to add O(n log n) work.
+        let recentlyPlayed = pool.filter { $0.played != nil }
         let listenAgain = filled(
             preferred: canonicalized(
                 recentlyPlayed + snapshot.mostPlayedSongs
@@ -2828,21 +2864,12 @@ enum PersonalizedMixBuilder {
             limit: songLimit
         )
 
-        let kPopTokens = normalizedTokens(
-            ["k-pop", "kpop", "korean pop", "케이팝"]
-        )
-        let popTokens = normalizedTokens(["pop", "팝"])
-        let kPopMatches = matchingSongs(
+        let categorizedMatches = categorizedMatches(
             in: pool,
-            searchableTexts: searchableTexts,
-            tokens: kPopTokens
+            searchableTexts: searchableTexts
         )
-        let kPopIDs = Set(kPopMatches.map(\.id))
-        let popMatches = matchingSongs(
-            in: pool,
-            searchableTexts: searchableTexts,
-            tokens: popTokens
-        ).filter { !kPopIDs.contains($0.id) }
+        let kPopMatches = categorizedMatches.kPop
+        let popMatches = categorizedMatches.pop
         let affinityCandidates = highestAffinityArtists(
             in: snapshot,
             fallbackPool: pool,
@@ -2940,9 +2967,8 @@ enum PersonalizedMixBuilder {
                 id: "happy-mix-\(dailySeed)",
                 title: "Happy Mix",
                 subtitle: String(localized: "기분을 환하게 만드는 음악"),
-                tokens: ["happy", "smile", "joy", "summer", "disco", "funk", "행복", "여름"],
+                preferred: categorizedMatches.happy,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 61,
                 limit: songLimit
             ),
@@ -2950,9 +2976,8 @@ enum PersonalizedMixBuilder {
                 id: "upbeat-mix-\(dailySeed)",
                 title: "Upbeat Mix",
                 subtitle: String(localized: "에너지가 필요한 순간을 위한 음악"),
-                tokens: ["dance", "edm", "electronic", "rock", "hip hop", "upbeat", "댄스"],
+                preferred: categorizedMatches.upbeat,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 67,
                 limit: songLimit
             ),
@@ -2960,9 +2985,8 @@ enum PersonalizedMixBuilder {
                 id: "love-mix-\(dailySeed)",
                 title: "Love Mix",
                 subtitle: String(localized: "사랑과 설렘을 담은 음악"),
-                tokens: ["love", "romantic", "romance", "r&b", "soul", "ballad", "사랑"],
+                preferred: categorizedMatches.love,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 71,
                 limit: songLimit
             ),
@@ -2970,9 +2994,8 @@ enum PersonalizedMixBuilder {
                 id: "chill-mix-\(dailySeed)",
                 title: "Chill Mix",
                 subtitle: String(localized: "편안하게 흐르는 차분한 음악"),
-                tokens: ["chill", "ambient", "acoustic", "jazz", "lo-fi", "indie", "잔잔"],
+                preferred: categorizedMatches.chill,
                 pool: pool,
-                searchableTexts: searchableTexts,
                 seed: dailySeed + 79,
                 limit: songLimit
             )
@@ -3105,25 +3128,36 @@ enum PersonalizedMixBuilder {
         )
     }
 
-    private static func matchingSongs(
+    private static func categorizedMatches(
         in pool: [Song],
-        searchableTexts: [String: String],
-        tokens: [String]
-    ) -> [Song] {
-        guard !tokens.isEmpty, !pool.isEmpty else { return [] }
-        var matches: [Song] = []
-        matches.reserveCapacity(min(pool.count, 256))
+        searchableTexts: [String: String]
+    ) -> CategorizedMatches {
+        var matches = CategorizedMatches(reserving: min(pool.count, 256))
+        guard !pool.isEmpty else { return matches }
         let chunkSize = 256
         var index = 0
         while index < pool.count {
-            if Task.isCancelled { return [] }
+            if Task.isCancelled { return CategorizedMatches(reserving: 0) }
             let end = min(index + chunkSize, pool.count)
             for song in pool[index..<end] {
-                if containsAny(
-                    searchableTexts[song.id] ?? "",
-                    normalizedTokens: tokens
-                ) {
-                    matches.append(song)
+                let text = searchableTexts[song.id] ?? ""
+                let isKPop = containsAny(text, normalizedTokens: kPopTokens)
+                if isKPop {
+                    matches.kPop.append(song)
+                } else if containsAny(text, normalizedTokens: popTokens) {
+                    matches.pop.append(song)
+                }
+                if containsAny(text, normalizedTokens: happyTokens) {
+                    matches.happy.append(song)
+                }
+                if containsAny(text, normalizedTokens: upbeatTokens) {
+                    matches.upbeat.append(song)
+                }
+                if containsAny(text, normalizedTokens: loveTokens) {
+                    matches.love.append(song)
+                }
+                if containsAny(text, normalizedTokens: chillTokens) {
+                    matches.chill.append(song)
                 }
             }
             index = end
@@ -3135,24 +3169,17 @@ enum PersonalizedMixBuilder {
         id: String,
         title: String,
         subtitle: String,
-        tokens: [String],
+        preferred: [Song],
         pool: [Song],
-        searchableTexts: [String: String],
         seed: Int,
         limit: Int
     ) -> PersonalizedMix {
-        let tokens = normalizedTokens(tokens)
-        let matches = matchingSongs(
-            in: pool,
-            searchableTexts: searchableTexts,
-            tokens: tokens
-        )
         return PersonalizedMix(
             id: id,
             title: title,
             subtitle: subtitle,
             songs: filled(
-                preferred: matches,
+                preferred: preferred,
                 from: pool,
                 seed: seed,
                 limit: limit

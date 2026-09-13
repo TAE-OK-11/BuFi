@@ -143,7 +143,7 @@ struct TunnelDNSProtectionConfiguration: Codable, Equatable, Sendable {
     static let disabled = TunnelDNSProtectionConfiguration()
 
     var hasCustomRules: Bool {
-        !blockedDomains.isEmpty
+        !blockedDomains.isEmpty || !allowedDomains.isEmpty
     }
 
     var hasEnabledSubscriptions: Bool {
