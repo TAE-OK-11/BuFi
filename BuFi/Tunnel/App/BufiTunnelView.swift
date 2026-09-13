@@ -241,7 +241,7 @@ struct BufiTunnelView: View {
                 )
                 if tunnel.diagnostics.dnsProtectionEnabled {
                     diagnosticRow(
-                        "Blocked DNS queries",
+                        "Custom blocked DNS queries",
                         value: "\(tunnel.diagnostics.dnsBlockedQueryCount ?? 0)"
                     )
                 }
@@ -772,18 +772,21 @@ private struct TunnelAdBlockingEditor: View {
     @State private var allowedRules: String
     @State private var parsedBlockedRules: [String]
     @State private var parsedAllowedRules: [String]
+    @State private var ignoredRuleCount: Int
     @State private var localError: String?
 
     init(profile: TunnelProfile) {
         let initialProtection = profile.dns.effectiveProtection
         let blockedText = initialProtection.blockedDomains.joined(separator: "\n")
         let allowedText = initialProtection.allowedDomains.joined(separator: "\n")
+        let parsed = Self.parseRuleFields(blocked: blockedText, allowed: allowedText)
         _profile = State(initialValue: profile)
         _protection = State(initialValue: initialProtection)
         _blockedRules = State(initialValue: blockedText)
         _allowedRules = State(initialValue: allowedText)
-        _parsedBlockedRules = State(initialValue: TunnelDNSRuleParser.parse(blockedText))
-        _parsedAllowedRules = State(initialValue: TunnelDNSRuleParser.parse(allowedText))
+        _parsedBlockedRules = State(initialValue: parsed.blocked)
+        _parsedAllowedRules = State(initialValue: parsed.allowed)
+        _ignoredRuleCount = State(initialValue: parsed.ignored)
     }
 
     var body: some View {
@@ -850,10 +853,14 @@ private struct TunnelAdBlockingEditor: View {
                         .autocorrectionDisabled()
                     LabeledContent("Custom block rules", value: "\(parsedBlockedRules.count)")
                     LabeledContent("Custom allow rules", value: "\(parsedAllowedRules.count)")
+                    if ignoredRuleCount > 0 {
+                        LabeledContent("Ignored unsupported rules", value: "\(ignoredRuleCount)")
+                            .foregroundStyle(.secondary)
+                    }
                 } header: {
                     Text("Custom filters")
                 } footer: {
-                    Text("Add one domain per line. Comma-separated domains, hosts entries, and basic ||domain.example^ rules are also accepted. Allowed domains override only your custom blocked parent domains.")
+                    Text("Add one domain per line. Comma-separated domains, hosts entries, *.domain.example, URLs, and domain-only AdGuard rules are accepted. @@||allowed.example^ exceptions may be pasted with blocked rules. Cosmetic, script, regular-expression, and URL-path rules are ignored because DNS cannot apply them. Allow rules override only your custom blocked parent domains.")
                 }
             }
 
@@ -895,10 +902,12 @@ private struct TunnelAdBlockingEditor: View {
             Text(localError ?? String(localized: "Unknown error"))
         }
         .onChange(of: blockedRules) { _, value in
-            parsedBlockedRules = TunnelDNSRuleParser.parse(value)
+            _ = value
+            refreshParsedRules()
         }
         .onChange(of: allowedRules) { _, value in
-            parsedAllowedRules = TunnelDNSRuleParser.parse(value)
+            _ = value
+            refreshParsedRules()
         }
     }
 
@@ -918,5 +927,28 @@ private struct TunnelAdBlockingEditor: View {
 
     private var hasParsedCustomRules: Bool {
         !parsedBlockedRules.isEmpty || !parsedAllowedRules.isEmpty
+    }
+
+    private func refreshParsedRules() {
+        let parsed = Self.parseRuleFields(blocked: blockedRules, allowed: allowedRules)
+        parsedBlockedRules = parsed.blocked
+        parsedAllowedRules = parsed.allowed
+        ignoredRuleCount = parsed.ignored
+    }
+
+    private static func parseRuleFields(
+        blocked: String,
+        allowed: String
+    ) -> (blocked: [String], allowed: [String], ignored: Int) {
+        let blockResult = TunnelDNSRuleParser.parse(blocked, defaultAction: .block)
+        let allowResult = TunnelDNSRuleParser.parse(allowed, defaultAction: .allow)
+        var blockedDomains = Set(blockResult.blockedDomains + allowResult.blockedDomains)
+        let allowedDomains = Set(blockResult.allowedDomains + allowResult.allowedDomains)
+        blockedDomains.subtract(allowedDomains)
+        return (
+            blockedDomains.sorted(),
+            allowedDomains.sorted(),
+            blockResult.ignoredRuleCount + allowResult.ignoredRuleCount
+        )
     }
 }

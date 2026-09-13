@@ -142,6 +142,42 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertEqual(parsed, ["ads.example", "metrics.example", "tracker.example"])
     }
 
+    func testDNSRuleParserSeparatesExceptionsAndIgnoresNonDNSRules() {
+        let parsed = TunnelDNSRuleParser.parse(
+            """
+            ! AdGuard list header
+            [Adblock Plus 2.0]
+            ||ads.example^
+            @@||music.ads.example^
+            0.0.0.0 tracker.example metrics.example # hosts aliases
+            *.telemetry.example
+            https://beacon.example/path
+            page.example##.advert
+            ||cdn.example/banner.js
+            /tracking[0-9]+/
+            """,
+            defaultAction: .block
+        )
+
+        XCTAssertEqual(
+            parsed.blockedDomains,
+            ["ads.example", "beacon.example", "metrics.example", "telemetry.example", "tracker.example"]
+        )
+        XCTAssertEqual(parsed.allowedDomains, ["music.ads.example"])
+        XCTAssertEqual(parsed.ignoredRuleCount, 3)
+        XCTAssertFalse(parsed.reachedLimit)
+    }
+
+    func testDNSRuleParserUsesAllowAsFieldDefaultAndRejectsIPRules() {
+        let parsed = TunnelDNSRuleParser.parse(
+            "safe.example\n@@||music.example^\n192.0.2.1",
+            defaultAction: .allow
+        )
+        XCTAssertTrue(parsed.blockedDomains.isEmpty)
+        XCTAssertEqual(parsed.allowedDomains, ["music.example", "safe.example"])
+        XCTAssertEqual(parsed.ignoredRuleCount, 1)
+    }
+
     func testCustomDNSFilterBlocksSubdomainsAndHonorsAllowRules() {
         let filter = TunnelDNSMessageFilter(
             blockedDomains: ["example.com"],
@@ -168,6 +204,20 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "safe.example.com")))
         XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "deep.safe.example.com")))
         XCTAssertNil(filter.blockedResponse(for: dnsQuery(domain: "notexample.com")))
+    }
+
+    func testCustomDNSFilterIgnoresResponsesAndNonInternetClassQueries() {
+        let filter = TunnelDNSMessageFilter(
+            blockedDomains: ["example.com"],
+            allowedDomains: []
+        )
+        var response = dnsQuery(domain: "example.com")
+        response[2] |= 0x80
+        XCTAssertNil(filter.blockedResponse(for: response))
+
+        var chaosClassQuery = dnsQuery(domain: "example.com")
+        chaosClassQuery[chaosClassQuery.count - 1] = 3
+        XCTAssertNil(filter.blockedResponse(for: chaosClassQuery))
     }
 
     func testDNSRuleParserNormalizesAndDeduplicatesMixedNewlines() {

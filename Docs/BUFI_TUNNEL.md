@@ -150,18 +150,24 @@ background refresh timer, or per-query Swift/Rust FFI call. Built-in filtering
 happens at the selected upstream and Bufi stores no DNS query history.
 
 Users may add a small set of block and allow domains in the app. Exact domains,
-subdomains, hosts-style entries, comma/newline lists, and basic
-`||domain.example^` rules are normalized and deduplicated. Allow rules take
-precedence over a blocked parent domain. When custom rules are non-empty, the
+subdomains, multi-alias hosts entries, comma/newline lists, wildcard domains,
+URLs, and domain-only AdGuard rules are normalized and deduplicated. Combined
+lists safely separate `@@||domain.example^` exceptions from block rules.
+Cosmetic, script, regular-expression, and URL-path rules are reported as
+ignored rather than being dangerously widened into whole-domain blocks. Allow
+rules take precedence over a blocked parent domain. When custom rules are non-empty, the
 isolated resolver boundary applies them locally and returns an NXDOMAIN response
 without forwarding the query. Allowed traffic uses authenticated DoQ to the
 selected AdGuard endpoint with DoT fallback on networks that block QUIC. Only
 the user-owned rules are resident in memory; the maintained large lists remain
 upstream. Custom rules are compiled once into a compact reverse-label suffix
 index, so hot-path matches do not allocate a String for every parent domain.
+Only standard Internet-class DNS queries can reach the matcher; responses,
+non-standard opcodes, and non-IN questions pass through without mutation.
 The editor also caches normalized results instead of reparsing the entire rule
 text repeatedly during one SwiftUI render. Diagnostics expose only an aggregate
-blocked-query count, never domain names. Custom block and allow rules are capped
+locally blocked custom-query count, never domain names; Apple's native encrypted
+DNS settings do not expose the upstream AdGuard block count. Custom block and allow rules are capped
 at 4,096 combined to preserve the Network Extension's memory budget; bulk
 maintained lists belong at the upstream.
 

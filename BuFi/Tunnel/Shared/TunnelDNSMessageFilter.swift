@@ -144,10 +144,14 @@ private struct TunnelDNSQuestion: Sendable {
     let messageEnd: Int
 
     static func parse(_ data: Data) -> TunnelDNSQuestion? {
+        let flags = data.count >= 4 ? readUInt16(data, at: 2) : UInt16.max
         guard data.count >= 17,
+              flags & 0x8000 == 0,
+              flags & 0x7800 == 0,
               readUInt16(data, at: 4) == 1,
               let name = readName(data, at: 12, depth: 0),
               name.nextOffset + 4 <= data.count,
+              readUInt16(data, at: name.nextOffset + 2) == 1,
               !name.labels.isEmpty else { return nil }
         return TunnelDNSQuestion(
             labels: name.labels,

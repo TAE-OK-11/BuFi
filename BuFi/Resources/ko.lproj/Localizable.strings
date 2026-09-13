@@ -514,6 +514,9 @@
 "Allowed domains" = "허용할 도메인";
 "Custom block rules" = "사용자 차단 규칙";
 "Custom allow rules" = "사용자 허용 규칙";
+"Ignored unsupported rules" = "지원되지 않아 무시된 규칙";
+"Custom blocked DNS queries" = "사용자 규칙으로 차단한 DNS 요청";
+"Add one domain per line. Comma-separated domains, hosts entries, *.domain.example, URLs, and domain-only AdGuard rules are accepted. @@||allowed.example^ exceptions may be pasted with blocked rules. Cosmetic, script, regular-expression, and URL-path rules are ignored because DNS cannot apply them. Allow rules override only your custom blocked parent domains." = "한 줄에 도메인 하나를 추가하세요. 쉼표 목록, hosts 항목, *.domain.example, URL 및 도메인 전용 AdGuard 규칙을 지원합니다. @@||allowed.example^ 예외 규칙은 차단 규칙과 함께 붙여 넣어도 됩니다. DNS에서 처리할 수 없는 꾸미기·스크립트·정규식·URL 경로 규칙은 무시됩니다. 허용 규칙은 사용자가 추가한 상위 차단 도메인에만 우선합니다.";
 "Add one domain per line. Comma-separated domains, hosts entries, and basic ||domain.example^ rules are also accepted. Allowed domains override blocked parent domains." = "한 줄에 도메인 하나를 추가하세요. 쉼표로 구분한 도메인, hosts 항목, 기본 ||domain.example^ 규칙도 사용할 수 있습니다. 허용 도메인은 상위 도메인 차단보다 우선합니다.";
 "Add one domain per line. Comma-separated domains, hosts entries, and basic ||domain.example^ rules are also accepted. Allowed domains override only your custom blocked parent domains." = "한 줄에 도메인 하나를 추가하세요. 쉼표로 구분한 도메인, hosts 항목, 기본 ||domain.example^ 규칙도 사용할 수 있습니다. 허용 도메인은 사용자가 추가한 상위 도메인 차단에만 예외로 적용됩니다.";
 "Custom rules use an encrypted local DNS boundary" = "사용자 규칙은 암호화된 로컬 DNS 경계에서 처리";
