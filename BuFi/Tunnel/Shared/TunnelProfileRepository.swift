@@ -22,8 +22,18 @@ actor TunnelProfileRepository {
         return defaults
     }
 
+    private func dataWithLegacyMigration(forKey key: String) throws -> Data? {
+        let current = try defaults()
+        if let data = current.data(forKey: key) { return data }
+        guard TunnelConstants.appGroup != TunnelConstants.configuredAppGroup,
+              let legacy = UserDefaults(suiteName: TunnelConstants.configuredAppGroup),
+              let data = legacy.data(forKey: key) else { return nil }
+        current.set(data, forKey: key)
+        return data
+    }
+
     func all() throws -> [TunnelProfile] {
-        guard let data = try defaults().data(forKey: TunnelConstants.profileStoreKey) else {
+        guard let data = try dataWithLegacyMigration(forKey: TunnelConstants.profileStoreKey) else {
             return []
         }
         return try JSONDecoder().decode([TunnelProfile].self, from: data)
@@ -66,7 +76,7 @@ actor TunnelProfileRepository {
     }
 
     func diagnostics() throws -> TunnelDiagnostics? {
-        guard let data = try defaults().data(forKey: TunnelConstants.diagnosticsKey) else {
+        guard let data = try dataWithLegacyMigration(forKey: TunnelConstants.diagnosticsKey) else {
             return nil
         }
         return try JSONDecoder().decode(TunnelDiagnostics.self, from: data)

@@ -266,6 +266,43 @@ final class TunnelConfigurationTests: XCTestCase {
         )
     }
 
+    func testSideStoreRemappedAppGroupIsResolvedFromSignedMetadata() {
+        XCTAssertEqual(
+            TunnelConstants.resolvedAppGroup(
+                configured: "group.cloud.tae00217.BuFi",
+                signedGroups: ["group.cloud.tae00217.BuFi.TEAM123456"]
+            ),
+            "group.cloud.tae00217.BuFi.TEAM123456"
+        )
+        XCTAssertEqual(
+            TunnelConstants.resolvedAppGroup(
+                configured: "group.cloud.tae00217.BuFi",
+                signedGroups: ["group.cloud.tae00217.BuFi"]
+            ),
+            "group.cloud.tae00217.BuFi"
+        )
+    }
+
+    func testAmbiguousOrUnrelatedSignedGroupsDoNotSelectAnotherContainer() {
+        XCTAssertEqual(
+            TunnelConstants.resolvedAppGroup(
+                configured: "group.cloud.tae00217.BuFi",
+                signedGroups: ["group.unrelated.application"]
+            ),
+            "group.cloud.tae00217.BuFi"
+        )
+        XCTAssertEqual(
+            TunnelConstants.resolvedAppGroup(
+                configured: "group.cloud.tae00217.BuFi",
+                signedGroups: [
+                    "group.cloud.tae00217.BuFi.ONE",
+                    "group.cloud.tae00217.BuFi.TWO"
+                ]
+            ),
+            "group.cloud.tae00217.BuFi"
+        )
+    }
+
     func testMainAppOnlyQueryDoesNotForceAnAccessGroup() throws {
         let query = try TunnelKeychain().baseQuery(
             reference: "test-reference",

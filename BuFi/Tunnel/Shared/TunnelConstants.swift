@@ -1,11 +1,58 @@
 import Foundation
 
 enum TunnelConstants {
-    static let appGroup = "group.cloud.tae00217.BuFi"
-    static let providerBundleIdentifier = "cloud.tae00217.BuFi.TunnelExtension"
+    static let configuredAppGroup = "group.cloud.tae00217.BuFi"
+    static let configuredProviderBundleIdentifier = "cloud.tae00217.BuFi.TunnelExtension"
+    private static let altAppGroupsInfoKey = "ALTAppGroups"
+    // This is the exact key used by AltStore/SideStore's Bundle.Info.altBundleID.
+    private static let altBundleIdentifierInfoKey = "ALTBundleIdentifier"
+
+    /// AltStore/SideStore append the signing team to App Group identifiers and
+    /// place the actually provisioned values in ALTAppGroups. Normal App Store
+    /// and Xcode builds do not contain that key and use the configured group.
+    static let appGroup: String = resolvedAppGroup(
+        configured: configuredAppGroup,
+        signedGroups: Bundle.main.object(forInfoDictionaryKey: altAppGroupsInfoKey) as? [String]
+            ?? []
+    )
+
+    /// Re-signers can also rewrite embedded extension bundle identifiers. Read
+    /// the signed appex Info.plist instead of guessing a team-specific suffix.
+    static let providerBundleIdentifier: String = {
+        guard let plugInsURL = Bundle.main.builtInPlugInsURL,
+              let urls = try? FileManager.default.contentsOfDirectory(
+                  at: plugInsURL,
+                  includingPropertiesForKeys: nil,
+                  options: [.skipsHiddenFiles]
+              ) else {
+            return configuredProviderBundleIdentifier
+        }
+        for url in urls where url.pathExtension == "appex" {
+            guard let bundle = Bundle(url: url),
+                  let identifier = bundle.bundleIdentifier else { continue }
+            let original = bundle.object(
+                forInfoDictionaryKey: altBundleIdentifierInfoKey
+            ) as? String
+            if original == configuredProviderBundleIdentifier
+                || identifier == configuredProviderBundleIdentifier
+                || url.lastPathComponent == "BuFiTunnelExtension.appex" {
+                return identifier
+            }
+        }
+        return configuredProviderBundleIdentifier
+    }()
     static let keychainGroupSuffix = "cloud.tae00217.BuFi.tunnel"
     static let profileStoreKey = "bufi-tunnel-profiles-v1"
     static let diagnosticsKey = "bufi-tunnel-diagnostics-v1"
+
+    static func resolvedAppGroup(
+        configured: String,
+        signedGroups: [String]
+    ) -> String {
+        if signedGroups.contains(configured) { return configured }
+        let remapped = signedGroups.filter { $0.hasPrefix(configured + ".") }
+        return remapped.count == 1 ? remapped[0] : configured
+    }
 
     static func keychainAccessGroupCandidates(
         defaultAccessGroup: String?,

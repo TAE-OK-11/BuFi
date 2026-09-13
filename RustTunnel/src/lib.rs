@@ -337,7 +337,7 @@ pub extern "C" fn bufi_tunnel_reconfigure(
                     .endpoint_ip
                     .parse()
                     .map_err(|_| "resolved peer endpoint is not an IP address".to_string())?;
-                Ok((
+                Ok::<(PublicKey, SocketAddr), String>((
                     public_key,
                     SocketAddr::new(endpoint_ip, peer.endpoint_port),
                 ))

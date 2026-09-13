@@ -38,13 +38,17 @@ endpoints, MTU, DNS choices, opaque Keychain references, and a secret-ownership
 scope. It never contains an interface private key or preshared key. Secrets use
 `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and are not synchronizable.
 
-Following WireGuard Apple's iOS design, both targets use their existing
-`group.cloud.tae00217.BuFi` application-group entitlement as the Keychain
-access group. A separate `keychain-access-groups` entitlement is not required
-or requested. Each process asks Security whether the App Group is actually
-usable before adding it as `kSecAttrAccessGroup`. The previous prefixed custom
-group remains only as a runtime read fallback for migrating keys from an older
-properly provisioned Bufi build.
+Following WireGuard Apple's iOS design, both targets use their shared
+application-group entitlement as the Keychain access group. A separate
+`keychain-access-groups` entitlement is not required or requested. Normal
+Xcode/App Store signing uses `group.cloud.tae00217.BuFi`. AltStore and SideStore
+can remap that identifier for the active team and write the actually signed
+value to each bundle's `ALTAppGroups` metadata; Bufi resolves the one exact or
+unambiguous suffixed match and verifies it with Security before use. It also
+reads the embedded appex's signed bundle identifier/`ALTBundleID`, avoiding a
+hardcoded provider identifier after re-signing. Ambiguous or unusable values
+fail closed. The previous prefixed custom group remains only as a runtime read
+fallback for migrating keys from an older properly provisioned Bufi build.
 
 If a re-signed build lacks the shared group, newly generated keys are stored in
 the main app's normal default Keychain group with no explicit access-group
@@ -54,6 +58,11 @@ not create or start an `NETunnelProviderManager` for that profile, and the UI
 clearly reports that valid App Group and Packet Tunnel provisioning is
 required. The extension refuses app-local secret ownership, so it can never
 pretend to establish a tunnel without access to its private key.
+
+When a SideStore update introduces a usable remapped group, the repository
+copies legacy profile metadata from the configured suite into that group. The
+main app then migrates its `mainAppOnly` key into the verified group and deletes
+the old item only after both copies and the profile scope update succeed.
 
 The original `-34018` failure came from the first `SecItemUpdate` in
 `TunnelKeychain.save`: every query unconditionally supplied an Info.plist value
