@@ -69,7 +69,7 @@ final class TunnelConfigurationTests: XCTestCase {
             dns: .system
         )
 
-        XCTAssertThrowsError(try TunnelProfileValidator.validate(profile, privateKey: nil)) {
+        XCTAssertThrowsError(try TunnelProfileValidator.validate(profile, privateKey: nil)) { error in
             XCTAssertEqual(error as? TunnelValidationError, .duplicatePublicKey(peer: 1))
         }
     }
