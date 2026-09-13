@@ -126,7 +126,8 @@ enum TunnelSecretScope: String, Codable, Equatable, Sendable {
     /// Keychain access-group entitlement.
     case sharedAccessGroup
     /// Safe profile creation fallback for re-signed/free-provisioned builds.
-    /// The Packet Tunnel must never attempt to read this app-local secret.
+    /// The Packet Tunnel cannot read this app-local item. A manual connection
+    /// may deliver its bytes through startVPNTunnel's one-time IPC options.
     case mainAppOnly
 }
 

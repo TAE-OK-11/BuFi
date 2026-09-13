@@ -39,11 +39,11 @@ final class TunnelManager: ObservableObject {
     }
 
     var isEnabled: Bool { selectedManager?.isEnabled == true }
-    var selectedProfileRequiresSupportedSigning: Bool {
+    var selectedProfileUsesInMemorySecretDelivery: Bool {
         selectedProfile?.effectiveSecretScope == .mainAppOnly
     }
     var canConnect: Bool {
-        !selectedProfileRequiresSupportedSigning && isEnabled && status == .disconnected
+        isEnabled && status == .disconnected
     }
 
     func bootstrap() async {
@@ -64,14 +64,6 @@ final class TunnelManager: ObservableObject {
             }
             if selectedProfileID == nil || !profiles.contains(where: { $0.id == selectedProfileID }) {
                 selectedProfileID = profiles.first?.id
-            }
-            guard profiles.contains(where: { $0.effectiveSecretScope == .sharedAccessGroup }),
-                  keychain.capability().canUseSharedAccessGroup else {
-                managers = [:]
-                diagnostics = TunnelDiagnostics()
-                diagnostics.latestError = String(localized: "This installed build cannot use the Bufi App Group for Tunnel Keychain access. The profile remains secure, but the extension cannot read its key.")
-                refreshStatus()
-                return
             }
             let loaded = try await NETunnelProviderManager.loadAllFromPreferences()
             managers = Dictionary(uniqueKeysWithValues: loaded.compactMap { manager in
@@ -126,7 +118,7 @@ final class TunnelManager: ObservableObject {
                 managers[profile.id]?.connection.stopVPNTunnel()
                 managers.removeValue(forKey: profile.id)
                 diagnostics = TunnelDiagnostics()
-                diagnostics.latestError = String(localized: "This profile is saved securely in the app Keychain. Bufi App Group Keychain access is unavailable, so Packet Tunnel was not started.")
+                diagnostics.latestError = String(localized: "The private key is secured in the app Keychain. Enable the profile to connect using one-time in-memory delivery to Packet Tunnel.")
                 try? await repository.saveDiagnostics(diagnostics)
                 refreshStatus()
                 return true
@@ -216,7 +208,6 @@ final class TunnelManager: ObservableObject {
     func connect() async {
         guard let profile = selectedProfile else { return }
         await perform {
-            try ensureTunnelCapabilities(for: profile)
             let manager: NETunnelProviderManager
             if let existing = managers[profile.id] {
                 try await existing.loadFromPreferences()
@@ -225,7 +216,7 @@ final class TunnelManager: ObservableObject {
                 manager = try await configuredManager(for: profile)
             }
             guard manager.isEnabled else { throw TunnelManagerError.profileDisabled }
-            try manager.connection.startVPNTunnel(options: ["profileID": profile.id.uuidString as NSString])
+            try manager.connection.startVPNTunnel(options: try launchOptions(for: profile))
             managers[profile.id] = manager
             refreshStatus()
         }
@@ -261,7 +252,6 @@ final class TunnelManager: ObservableObject {
         for profile: TunnelProfile,
         enabled: Bool? = nil
     ) async throws -> NETunnelProviderManager {
-        try ensureTunnelCapabilities(for: profile)
         let isNew = managers[profile.id] == nil
         let manager = managers[profile.id] ?? NETunnelProviderManager()
         let tunnelProtocol = (manager.protocolConfiguration as? NETunnelProviderProtocol)
@@ -284,11 +274,34 @@ final class TunnelManager: ObservableObject {
         return manager
     }
 
-    private func ensureTunnelCapabilities(for profile: TunnelProfile) throws {
-        guard profile.effectiveSecretScope == .sharedAccessGroup,
-              keychain.capability().canUseSharedAccessGroup else {
-            throw TunnelManagerError.sharedKeychainEntitlementRequired
+    private func launchOptions(for profile: TunnelProfile) throws -> [String: NSObject] {
+        guard profile.effectiveSecretScope == .mainAppOnly else {
+            guard keychain.capability().canUseSharedAccessGroup else {
+                throw TunnelManagerError.sharedKeychainEntitlementRequired
+            }
+            return ["profileID": profile.id.uuidString as NSString]
         }
+        let privateKey = try keychain.load(
+            reference: profile.privateKeyReference,
+            scope: .mainAppOnly
+        )
+        var presharedKeys: [UUID: Data] = [:]
+        presharedKeys.reserveCapacity(profile.peers.count)
+        for peer in profile.peers {
+            if let reference = peer.presharedKeyReference {
+                presharedKeys[peer.id] = try keychain.load(
+                    reference: reference,
+                    scope: .mainAppOnly
+                )
+            }
+        }
+        var options = try TunnelLaunchOptions.encode(TunnelLaunchMaterial(
+            profile: profile,
+            privateKey: privateKey,
+            presharedKeys: presharedKeys
+        ))
+        options["profileID"] = profile.id.uuidString as NSString
+        return options
     }
 
     private func migrateAppLocalSecretsIfPossible() async {

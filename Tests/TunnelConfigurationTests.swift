@@ -376,6 +376,72 @@ final class TunnelConfigurationTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(TunnelProfile.self, from: data).effectiveSecretScope, .mainAppOnly)
     }
 
+    func testAppKeychainLaunchOptionsRoundTripSecretsOnlyInMemory() throws {
+        let privateKey = Data(repeating: 51, count: 32)
+        let peerID = UUID()
+        let presharedKey = Data(repeating: 52, count: 32)
+        let profile = TunnelProfile(
+            name: "Memory launch",
+            privateKeyReference: "opaque-private-reference",
+            publicKey: try TunnelKeyPair.publicKey(for: privateKey),
+            addresses: ["10.0.0.2/32"],
+            peers: [TunnelPeer(
+                id: peerID,
+                publicKey: Data(repeating: 53, count: 32).base64EncodedString(),
+                presharedKeyReference: "opaque-psk-reference",
+                endpointHost: "vpn.example",
+                allowedIPs: ["0.0.0.0/0"]
+            )],
+            mtu: 1280,
+            dns: .system,
+            secretScope: .mainAppOnly
+        )
+        let options = try TunnelLaunchOptions.encode(TunnelLaunchMaterial(
+            profile: profile,
+            privateKey: privateKey,
+            presharedKeys: [peerID: presharedKey]
+        ))
+        let decoded = try XCTUnwrap(TunnelLaunchOptions.decode(options))
+
+        XCTAssertEqual(decoded.profile, profile)
+        XCTAssertEqual(decoded.privateKey, privateKey)
+        XCTAssertEqual(decoded.presharedKeys[peerID], presharedKey)
+        let serializedStrings = options.values.compactMap { value -> String? in
+            guard let data = value as? NSData else { return nil }
+            return String(data: data as Data, encoding: .utf8)
+        }
+        XCTAssertFalse(serializedStrings.contains { $0.contains(privateKey.base64EncodedString()) })
+        XCTAssertFalse(serializedStrings.contains { $0.contains(presharedKey.base64EncodedString()) })
+    }
+
+    func testAppKeychainLaunchOptionsFailClosedOnMissingSecret() throws {
+        let privateKey = Data(repeating: 61, count: 32)
+        let profile = TunnelProfile(
+            name: "Missing PSK",
+            privateKeyReference: "private-reference",
+            publicKey: try TunnelKeyPair.publicKey(for: privateKey),
+            addresses: ["10.0.0.2/32"],
+            peers: [TunnelPeer(
+                publicKey: Data(repeating: 62, count: 32).base64EncodedString(),
+                presharedKeyReference: "psk-reference",
+                endpointHost: "vpn.example",
+                allowedIPs: ["0.0.0.0/0"]
+            )],
+            mtu: 1280,
+            dns: .system,
+            secretScope: .mainAppOnly
+        )
+
+        XCTAssertThrowsError(try TunnelLaunchOptions.encode(TunnelLaunchMaterial(
+            profile: profile,
+            privateKey: privateKey,
+            presharedKeys: [:]
+        ))) { error in
+            XCTAssertEqual(error as? TunnelLaunchOptionsError, .invalidPresharedKey(peer: 0))
+        }
+        XCTAssertNil(try TunnelLaunchOptions.decode(nil))
+    }
+
     func testLegacyProfileDefaultsToSharedSecretOwnership() throws {
         let profile = TunnelProfile(
             name: "Legacy",

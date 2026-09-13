@@ -53,11 +53,23 @@ fallback for migrating keys from an older properly provisioned Bufi build.
 If a re-signed build lacks the shared group, newly generated keys are stored in
 the main app's normal default Keychain group with no explicit access-group
 attribute. Profile creation therefore remains secure and does not fail with
-`errSecMissingEntitlement`, while the profile is marked `mainAppOnly`. Bufi does
-not create or start an `NETunnelProviderManager` for that profile, and the UI
-clearly reports that valid App Group and Packet Tunnel provisioning is
-required. The extension refuses app-local secret ownership, so it can never
-pretend to establish a tunnel without access to its private key.
+`errSecMissingEntitlement`, while the profile is marked `mainAppOnly`. When the
+user manually connects, Bufi reads that item and any preshared keys, validates
+them, and passes their raw 32-byte `NSData` values only in
+`startVPNTunnel(options:)`. The non-secret profile JSON is a separate option;
+neither the secrets nor that launch envelope enter `providerConfiguration`, a
+database, UserDefaults, or a file. The extension verifies the profile ID, key
+sizes, derived public key, and required preshared keys before starting GotaTun.
+Launch values are process memory owned by the OS IPC and are not retained in
+the provider's runtime profile.
+
+This fallback permits a manual connection only if the final signature still
+contains a usable Packet Tunnel Network Extension entitlement. It cannot and
+does not bypass Apple's capability checks. Because iOS cannot reconstruct the
+one-time secret options after independently relaunching the provider, automatic
+tunnel restart is unavailable for `mainAppOnly` profiles; the user reconnects
+from Bufi. Correctly provisioned builds continue to use shared Keychain access
+and support normal provider relaunch.
 
 When a SideStore update introduces a usable remapped group, the repository
 copies legacy profile metadata from the configured suite into that group. The
@@ -76,10 +88,9 @@ copied from the editor. The UI never reveals an existing private key.
 
 Extension-only key generation was evaluated but is not used in v1. Before a
 Packet Tunnel configuration exists, the app has no supported direct channel to
-launch that extension solely to provision a key. Building a temporary VPN
-configuration just for key generation would add prompts and failure states.
-The capability-checked App Group is therefore retained for properly signed
-builds, with a narrow app-local fallback that is never exposed to the extension.
+launch that extension solely to provision a key. The capability-checked App
+Group remains preferred for properly signed builds, with the manual in-memory
+delivery boundary as the narrow fallback for re-signed builds.
 
 The profile actions are kept above diagnostics so they remain reachable above
 Bufi's persistent mini player. **Add manually** opens the full editor for client

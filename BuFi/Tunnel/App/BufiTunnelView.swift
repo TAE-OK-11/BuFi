@@ -149,17 +149,16 @@ struct BufiTunnelView: View {
                 ))
                 .disabled(
                     tunnel.selectedProfile == nil
-                        || tunnel.selectedProfileRequiresSupportedSigning
                         || tunnel.isBusy
                 )
 
-                if tunnel.selectedProfileRequiresSupportedSigning {
+                if tunnel.selectedProfileUsesInMemorySecretDelivery {
                     Label(
-                        "The profile and private key are saved securely in the app, but Bufi App Group Keychain access is unavailable. Packet Tunnel will not be started.",
-                        systemImage: "exclamationmark.shield.fill"
+                        "The private key remains in the app Keychain and is delivered to Packet Tunnel only in memory when you connect. Automatic tunnel restart is unavailable for this build.",
+                        systemImage: "lock.shield.fill"
                     )
                     .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
@@ -317,7 +316,6 @@ struct BufiTunnelView: View {
     }
 
     private var statusTitle: LocalizedStringKey {
-        if tunnel.selectedProfileRequiresSupportedSigning { return "Signing required" }
         switch tunnel.status {
         case .invalid: return "Not configured"
         case .disconnected: return "Disconnected"
@@ -330,7 +328,6 @@ struct BufiTunnelView: View {
     }
 
     private var statusColor: Color {
-        if tunnel.selectedProfileRequiresSupportedSigning { return .orange }
         switch tunnel.status {
         case .connected: return .green
         case .connecting, .reasserting: return .orange
@@ -340,7 +337,6 @@ struct BufiTunnelView: View {
     }
 
     private var statusIcon: String {
-        if tunnel.selectedProfileRequiresSupportedSigning { return "exclamationmark.shield.fill" }
         return tunnel.status == .connected ? "lock.fill" : "network"
     }
 

@@ -29,15 +29,33 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             return runtime.sessionID
         }
         let profile: TunnelProfile
+        let launchMaterial: TunnelLaunchMaterial?
         do {
             guard let tunnelProtocol = protocolConfiguration as? NETunnelProviderProtocol,
                   let value = tunnelProtocol.providerConfiguration?["profileID"] as? String,
-                  let profileID = UUID(uuidString: value),
-                  let storedProfile = try await TunnelProfileRepository.shared.profile(id: profileID) else {
+                  let profileID = UUID(uuidString: value) else {
                 throw PacketTunnelProviderError.profileUnavailable
             }
-            try TunnelProfileValidator.validate(storedProfile, privateKey: nil)
-            profile = storedProfile
+            if let material = try TunnelLaunchOptions.decode(options) {
+                guard material.profile.id == profileID else {
+                    throw PacketTunnelProviderError.profileMismatch
+                }
+                try TunnelProfileValidator.validate(
+                    material.profile,
+                    privateKey: material.privateKey
+                )
+                profile = material.profile
+                launchMaterial = material
+            } else {
+                guard let storedProfile = try await TunnelProfileRepository.shared.profile(
+                    id: profileID
+                ) else {
+                    throw PacketTunnelProviderError.profileUnavailable
+                }
+                try TunnelProfileValidator.validate(storedProfile, privateKey: nil)
+                profile = storedProfile
+                launchMaterial = nil
+            }
         } catch {
             let message = error.localizedDescription
             updateDiagnostics(for: sessionID) { diagnostics in
@@ -62,7 +80,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
         var resolver: (any TunnelDNSResolver)?
         do {
-            let resolved = try EngineConfigurationBuilder.make(profile: profile)
+            let resolved: EngineConfigurationBuilder.Result
+            if let launchMaterial {
+                resolved = try EngineConfigurationBuilder.make(
+                    profile: profile,
+                    privateKey: launchMaterial.privateKey,
+                    presharedKeys: launchMaterial.presharedKeys
+                )
+            } else {
+                resolved = try EngineConfigurationBuilder.make(profile: profile)
+            }
             let configuredResolver = try TunnelDNSResolverFactory.make(profile.dns)
             resolver = configuredResolver
             try configuredResolver.start()
@@ -458,12 +485,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
 enum PacketTunnelProviderError: LocalizedError {
     case profileUnavailable
+    case profileMismatch
     case alreadyRunning
     case startupCancelled
 
     var errorDescription: String? {
         switch self {
         case .profileUnavailable: String(localized: "The selected Bufi Tunnel profile is unavailable.")
+        case .profileMismatch: String(localized: "The in-memory Tunnel profile does not match the selected VPN configuration.")
         case .alreadyRunning: String(localized: "Bufi Tunnel is already running.")
         case .startupCancelled: String(localized: "Bufi Tunnel startup was cancelled.")
         }

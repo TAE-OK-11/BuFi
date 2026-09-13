@@ -24,16 +24,53 @@ enum EngineConfigurationBuilder {
             reference: profile.privateKeyReference,
             scope: .sharedAccessGroup
         )
+        var presharedKeys: [UUID: Data] = [:]
+        presharedKeys.reserveCapacity(profile.peers.count)
+        for peer in profile.peers {
+            if let reference = peer.presharedKeyReference {
+                presharedKeys[peer.id] = try keychain.load(
+                    reference: reference,
+                    scope: .sharedAccessGroup
+                )
+            }
+        }
+        return try make(
+            profile: profile,
+            privateKey: privateKey,
+            presharedKeys: presharedKeys,
+            strategy: strategy
+        )
+    }
+
+    /// Used by the manual-connect fallback when only the main app's normal
+    /// Keychain is available. Secret bytes arrive in the launch IPC and remain
+    /// in memory; this builder never persists or logs them.
+    static func make(
+        profile: TunnelProfile,
+        privateKey: Data,
+        presharedKeys: [UUID: Data],
+        strategy: EndpointResolver.Strategy = .initial
+    ) throws -> Result {
+        try TunnelProfileValidator.validate(profile, privateKey: privateKey)
+        guard try TunnelKeyPair.publicKey(for: privateKey) == profile.publicKey else {
+            throw TunnelLaunchOptionsError.invalidPrivateKey
+        }
         var firstEndpointIP: String?
-        let peers = try profile.peers.map { peer in
+        let peers = try profile.peers.enumerated().map { index, peer in
             let endpointIP = try EndpointResolver.resolve(
                 host: peer.endpointHost,
                 port: peer.endpointPort,
                 strategy: strategy
             )
             if firstEndpointIP == nil { firstEndpointIP = endpointIP }
-            let presharedKey = try peer.presharedKeyReference.map {
-                try keychain.load(reference: $0, scope: .sharedAccessGroup).base64EncodedString()
+            let presharedKey: String?
+            if peer.presharedKeyReference != nil {
+                guard let secret = presharedKeys[peer.id], secret.count == 32 else {
+                    throw TunnelLaunchOptionsError.invalidPresharedKey(peer: index)
+                }
+                presharedKey = secret.base64EncodedString()
+            } else {
+                presharedKey = nil
             }
             return RustPeerConfiguration(
                 publicKey: peer.publicKey,
