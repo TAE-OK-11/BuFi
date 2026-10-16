@@ -8,11 +8,14 @@ struct SearchView: View {
     @Environment(\.buFiMotionEnabled) private var motionEnabled
     @AppStorage(ArtistMixPreferences.storageKey)
     private var selectedArtistMixes = "[]"
+    @AppStorage(RecentSearchStore.storageKey)
+    private var recentSearchesStorage = "[]"
 
     @State private var query = ""
     @State private var browseMode = SearchBrowseMode.main
     @State private var personalizedMixes: [PersonalizedMix] = []
     @FocusState private var isSearchFieldFocused: Bool
+    private let audio = AudioEngine.shared
 
     var body: some View {
         NavigationStack {
@@ -91,6 +94,7 @@ struct SearchView: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .onSubmit {
+                recordRecentQuery(query)
                 Task { await model.searchImmediately(query) }
             }
             if !query.isEmpty {
@@ -150,7 +154,24 @@ struct SearchView: View {
     }
 
     private var contentLayerID: SearchContentLayerID {
-        isSearchSession ? .searching : .browse(browseMode)
+        if isSearchSession {
+            return .searching
+        }
+        if showsRecentSearches {
+            return .recent
+        }
+        return .browse(browseMode)
+    }
+
+    private var recentSearchItems: [RecentSearchItem] {
+        RecentSearchStore.decode(recentSearchesStorage)
+    }
+
+    private var showsRecentSearches: Bool {
+        isSearchFieldFocused
+            && normalizedQuery(query).isEmpty
+            && browseMode == .main
+            && !recentSearchItems.isEmpty
     }
 
     private var visibleSurfaces: [SearchSurface] {
@@ -174,6 +195,10 @@ struct SearchView: View {
             return surfaces
         }
 
+        if showsRecentSearches {
+            return [.recentSearches]
+        }
+
         switch browseMode {
         case .main:
             return library.snapshot.recommendedArtists.isEmpty
@@ -195,6 +220,8 @@ struct SearchView: View {
         let snapshot = library.snapshot
         let result = searchContent.results
         switch surface {
+        case .recentSearches:
+            recentSearchesSection
         case .browseShortcuts:
             browseShortcuts
         case .browseRecommendedArtists:
@@ -245,13 +272,17 @@ struct SearchView: View {
                         artistResultRow(artist)
                     }
                     .buttonStyle(BuFiPressStyle())
-                    .simultaneousGesture(TapGesture().onEnded(resignSearchField))
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            recordRecent(.artist(artist))
+                            resignSearchField()
+                        }
+                    )
                     if artist.id != result.artists.last?.id {
                         rowSeparator
                     }
                 }
             }
-            .padding(.horizontal, 16)
         case .resultAlbums:
             resultSection("앨범") {
                 ForEach(result.albums) { album in
@@ -259,13 +290,17 @@ struct SearchView: View {
                         albumResultRow(album)
                     }
                     .buttonStyle(BuFiPressStyle())
-                    .simultaneousGesture(TapGesture().onEnded(resignSearchField))
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            recordRecent(.album(album))
+                            resignSearchField()
+                        }
+                    )
                     if album.id != result.albums.last?.id {
                         rowSeparator
                     }
                 }
             }
-            .padding(.horizontal, 16)
         case .resultSongs:
             resultSection("곡") {
                 ForEach(IndexedSongRow.makeRows(from: result.songs)) { row in
@@ -275,16 +310,22 @@ struct SearchView: View {
                         queueIndex: row.index,
                         playbackOrigin: .search,
                         artworkSize: Self.resultArtworkSize,
-                        textLineLimit: 2
+                        textLineLimit: 2,
+                        subtitleText: "곡 · \(row.song.artist)"
                     )
-                    .padding(.horizontal, 14)
-                    .simultaneousGesture(TapGesture().onEnded(resignSearchField))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 2)
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            recordRecent(.song(row.song))
+                            resignSearchField()
+                        }
+                    )
                     if row.index < result.songs.count - 1 {
                         rowSeparator
                     }
                 }
             }
-            .padding(.horizontal, 16)
         }
     }
 
@@ -296,18 +337,22 @@ struct SearchView: View {
                 cornerRadius: Self.resultArtworkSize / 2
             )
             .frame(width: Self.resultArtworkSize, height: Self.resultArtworkSize)
-            Text(artist.name)
-                .font(.system(size: 16, weight: .semibold))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .layoutPriority(1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(artist.name)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("아티스트")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .layoutPriority(1)
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 
     private func albumResultRow(_ album: Album) -> some View {
@@ -332,8 +377,9 @@ struct SearchView: View {
             .layoutPriority(1)
             Spacer(minLength: 8)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
+        .contentShape(Rectangle())
     }
 
     private var browseShortcuts: some View {
@@ -589,16 +635,144 @@ struct SearchView: View {
         }
     }
 
+    private var recentSearchesSection: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            SectionTitle(title: "최근 검색")
+                .padding(.horizontal, 16)
+            LazyVStack(spacing: 0) {
+                ForEach(Array(recentSearchItems.enumerated()), id: \.element.id) { index, item in
+                    recentSearchRow(item)
+                    if index < recentSearchItems.count - 1 {
+                        rowSeparator
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func recentSearchRow(_ item: RecentSearchItem) -> some View {
+        HStack(spacing: 10) {
+            recentSearchPrimary(item)
+            Button {
+                deleteRecentSearch(item)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(BuFiPressStyle())
+            .accessibilityLabel("최근 검색 삭제")
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 10)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func recentSearchPrimary(_ item: RecentSearchItem) -> some View {
+        switch item.kind {
+        case .artist:
+            if let artist = item.artist {
+                NavigationLink(value: MusicRoute.artist(artist)) {
+                    recentSearchLabel(item)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        recordRecent(item)
+                        resignSearchField()
+                    }
+                )
+            } else {
+                Button { activateRecentSearch(item) } label: {
+                    recentSearchLabel(item)
+                }
+                .buttonStyle(BuFiPressStyle())
+            }
+        case .album:
+            if let album = item.album {
+                NavigationLink(value: MusicRoute.album(album)) {
+                    recentSearchLabel(item)
+                }
+                .buttonStyle(BuFiPressStyle())
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        recordRecent(item)
+                        resignSearchField()
+                    }
+                )
+            } else {
+                Button { activateRecentSearch(item) } label: {
+                    recentSearchLabel(item)
+                }
+                .buttonStyle(BuFiPressStyle())
+            }
+        case .query, .song:
+            Button { activateRecentSearch(item) } label: {
+                recentSearchLabel(item)
+            }
+            .buttonStyle(BuFiPressStyle())
+        }
+    }
+
+    private func recentSearchLabel(_ item: RecentSearchItem) -> some View {
+        HStack(spacing: 12) {
+            recentLeadingArtwork(item)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(item.subtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 8)
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func recentLeadingArtwork(_ item: RecentSearchItem) -> some View {
+        switch item.kind {
+        case .query:
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.resultArtworkSize, height: Self.resultArtworkSize)
+                .background(BuFiTheme.elevated.opacity(0.55), in: Circle())
+        case .artist:
+            ArtworkView(
+                coverArt: item.coverArt,
+                size: Self.resultArtworkSize,
+                cornerRadius: Self.resultArtworkSize / 2
+            )
+            .frame(width: Self.resultArtworkSize, height: Self.resultArtworkSize)
+        case .album, .song:
+            ArtworkView(
+                coverArt: item.coverArt,
+                size: Self.resultArtworkSize,
+                cornerRadius: max(5, Self.resultArtworkSize * 0.11)
+            )
+            .frame(width: Self.resultArtworkSize, height: Self.resultArtworkSize)
+        }
+    }
+
     private func resultSection<Content: View>(
         _ title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 11) {
             SectionTitle(title: title)
-            BuFiGroupedSurface {
-                LazyVStack(spacing: 0) {
-                    content()
-                }
+                .padding(.horizontal, 16)
+            LazyVStack(spacing: 0) {
+                content()
             }
         }
     }
@@ -634,8 +808,8 @@ struct SearchView: View {
 
     private var rowSeparator: some View {
         Divider()
-            .padding(.leading, 14 + Self.resultArtworkSize + 12)
-            .opacity(0.55)
+            .padding(.leading, 16 + Self.resultArtworkSize + 12)
+            .opacity(0.42)
     }
 
     private func browseListSeparator(leading: CGFloat) -> some View {
@@ -645,6 +819,44 @@ struct SearchView: View {
     }
 
     private static let resultArtworkSize: CGFloat = 54
+
+    private func recordRecentQuery(_ value: String) {
+        guard let item = RecentSearchItem.query(value) else { return }
+        recordRecent(item)
+    }
+
+    private func recordRecent(_ item: RecentSearchItem) {
+        recentSearchesStorage = RecentSearchStore.recording(
+            item,
+            into: recentSearchesStorage
+        )
+    }
+
+    private func deleteRecentSearch(_ item: RecentSearchItem) {
+        recentSearchesStorage = RecentSearchStore.removing(
+            id: item.id,
+            from: recentSearchesStorage
+        )
+    }
+
+    private func activateRecentSearch(_ item: RecentSearchItem) {
+        switch item.kind {
+        case .query:
+            let text = item.queryText ?? item.title
+            query = text
+            recordRecentQuery(text)
+            resignSearchField()
+            Task { await model.searchImmediately(text) }
+        case .song:
+            guard let song = item.song else { return }
+            recordRecent(item)
+            resignSearchField()
+            audio.play(song, in: [song], origin: .search)
+        case .artist, .album:
+            recordRecent(item)
+            resignSearchField()
+        }
+    }
 
     private func resignSearchField() {
         guard isSearchFieldFocused else { return }
@@ -674,6 +886,7 @@ struct SearchView: View {
 }
 
 private enum SearchSurface: Hashable {
+    case recentSearches
     case browseShortcuts
     case browseRecommendedArtists
     case browseFavoriteSongsHeader
@@ -703,6 +916,7 @@ private enum SearchBrowseMode: Hashable {
 
 private enum SearchContentLayerID: Hashable {
     case searching
+    case recent
     case browse(SearchBrowseMode)
 }
 

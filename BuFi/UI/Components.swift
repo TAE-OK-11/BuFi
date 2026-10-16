@@ -690,6 +690,8 @@ struct SongRow: View {
     var fallbackTrackNumber: Int?
     var onMore: (() -> Void)?
     var textLineLimit = 1
+    /// When set, replaces the default `artist · album` secondary line.
+    var subtitleText: String? = nil
 
     @ViewBuilder
     var body: some View {
@@ -801,7 +803,7 @@ struct SongRow: View {
                             title: song.title,
                             lineLimit: textLineLimit
                         )
-                        Text([song.artist, song.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                        Text(resolvedSubtitle)
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                             .lineLimit(textLineLimit)
@@ -831,6 +833,15 @@ struct SongRow: View {
         }
         .padding(.vertical, 5)
         .accessibilityElement(children: .contain)
+    }
+
+    private var resolvedSubtitle: String {
+        if let subtitleText {
+            return subtitleText
+        }
+        return [song.artist, song.album]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
     }
 
     private var displayedTrackNumber: Int {
